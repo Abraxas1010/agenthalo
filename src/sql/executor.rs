@@ -82,6 +82,10 @@ impl<'a> SqlExecutor<'a> {
         self.pending_writes.len()
     }
 
+    pub fn db(&self) -> &NucleusDb {
+        self.db
+    }
+
     fn execute_custom(&mut self, sql: &str) -> Option<SqlResult> {
         let normalized = normalize_command(sql);
         match normalized.as_str() {
@@ -109,6 +113,7 @@ impl<'a> SqlExecutor<'a> {
         match stmt {
             Statement::Query(q) => self.execute_select(q),
             Statement::Insert(ins) => self.execute_insert(ins),
+            Statement::Commit { .. } => self.flush_commit(),
             Statement::Update {
                 table,
                 assignments,

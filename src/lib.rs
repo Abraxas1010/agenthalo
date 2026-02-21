@@ -1,5 +1,6 @@
 pub mod api;
 pub mod audit;
+pub mod cli;
 pub mod commitment;
 pub mod keymap;
 pub mod materialize;
