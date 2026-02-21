@@ -156,12 +156,14 @@ pub fn init_wal(path: &Path, db: &NucleusDb) -> Result<(), PersistenceError> {
                     got: got.schema,
                 });
             }
+            let got_keymap = got.keymap.clone().unwrap_or_default();
+            let expected_keymap = expected.keymap.clone().unwrap_or_default();
             if got.backend != expected.backend
                 || got.security_params != expected.security_params
                 || got.reduction_contracts != expected.reduction_contracts
                 || got.kzg_trusted_setup != expected.kzg_trusted_setup
                 || got.initial_state != expected.initial_state
-                || got.keymap != expected.keymap
+                || got_keymap != expected_keymap
             {
                 return Err(PersistenceError::WalMetaMismatch {
                     reason: "existing WAL metadata does not match tenant configuration".to_string(),
