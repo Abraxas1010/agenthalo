@@ -1,0 +1,7 @@
+{
+  "setup_id": "demo-trusted-setup-v1",
+  "curve": "bls12-381",
+  "max_degree": 1048576,
+  "tau_seed_hex": "8f6a2c9d4e1b7730",
+  "attestation_sha512": "b1ba68a25d64fb0e29348404c7ef8ece8503ae5bd2eb0d8a172ddbc726d70df694cb5f6d323e7435649c35fa365339e93b354262735da11e01c00ad8b17923f1"
+}

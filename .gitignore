@@ -1,0 +1,13 @@
+/target/
+
+# Runtime artifacts
+/artifacts/*.redb
+/artifacts/*.wal
+/artifacts/**/*.jsonl
+/artifacts/**/*.tmp
+
+# Keep deterministic setup fixture tracked
+!/artifacts/
+!/artifacts/.gitkeep
+!/artifacts/kzg/
+!/artifacts/kzg/demo-trusted-setup-v1.json
