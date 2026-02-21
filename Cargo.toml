@@ -49,3 +49,5 @@ clap = { version = "4", features = ["derive"] }
 rustyline = "15"
 ratatui = "0.30"
 crossterm = "0.28"
+rmcp = { version = "0.16.0", features = ["transport-io", "schemars"] }
+schemars = "1"

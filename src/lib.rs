@@ -4,6 +4,7 @@ pub mod cli;
 pub mod commitment;
 pub mod keymap;
 pub mod materialize;
+pub mod mcp;
 pub mod multitenant;
 pub mod persistence;
 pub mod protocol;

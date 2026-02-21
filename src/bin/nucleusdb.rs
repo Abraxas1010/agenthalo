@@ -2,6 +2,7 @@ use clap::Parser;
 use nucleusdb::api::serve_multitenant;
 use nucleusdb::cli::repl::{execute_sql_text, run_repl};
 use nucleusdb::cli::{default_witness_cfg, parse_backend, print_table, Cli, Commands};
+use nucleusdb::mcp::server::run_mcp_server;
 use nucleusdb::multitenant::MultiTenantPolicy;
 use nucleusdb::persistence::init_wal;
 use nucleusdb::protocol::NucleusDb;
@@ -28,10 +29,7 @@ fn run(cli: Cli) -> Result<(), String> {
             eprintln!("TUI is not implemented yet (db: {db}).");
             Ok(())
         }
-        Commands::Mcp { db } => {
-            eprintln!("MCP server is not implemented yet (db: {db}).");
-            Ok(())
-        }
+        Commands::Mcp { db } => cmd_mcp(&db),
         Commands::Sql { db, file } => cmd_sql(&db, file.as_deref()),
         Commands::Status { db } => cmd_status(&db),
         Commands::Export { db } => cmd_export(&db),
@@ -89,6 +87,12 @@ fn cmd_server(addr: &str, policy: &str) -> Result<(), String> {
         .map_err(|e| format!("failed to start tokio runtime: {e}"))?;
     rt.block_on(serve_multitenant(addr, policy))
         .map_err(|e| format!("server failed: {e}"))
+}
+
+fn cmd_mcp(db_path: &str) -> Result<(), String> {
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("failed to start tokio runtime: {e}"))?;
+    rt.block_on(run_mcp_server(db_path))
 }
 
 fn cmd_sql(db_path: &str, file: Option<&str>) -> Result<(), String> {
