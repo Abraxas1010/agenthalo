@@ -11,3 +11,6 @@
 !/artifacts/.gitkeep
 !/artifacts/kzg/
 !/artifacts/kzg/demo-trusted-setup-v1.json
+
+# Lean build artifacts
+/.lake/
