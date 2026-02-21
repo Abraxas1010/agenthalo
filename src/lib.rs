@@ -1,6 +1,7 @@
 pub mod api;
 pub mod audit;
 pub mod commitment;
+pub mod keymap;
 pub mod materialize;
 pub mod multitenant;
 pub mod persistence;
@@ -8,6 +9,7 @@ pub mod protocol;
 pub mod security;
 pub mod security_utils;
 pub mod sheaf;
+pub mod sql;
 pub mod state;
 pub mod transparency;
 pub mod vc;

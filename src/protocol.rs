@@ -1,5 +1,6 @@
 use crate::audit::CommitEvidence;
 use crate::commitment::default_commitment_policy;
+use crate::keymap::KeyMap;
 use crate::materialize::materialize;
 use crate::persistence::{load_snapshot, save_snapshot, PersistenceError};
 use crate::security::{
@@ -74,6 +75,7 @@ pub enum CommitError {
 pub struct NucleusDb {
     pub backend: VcBackend,
     pub state: State,
+    pub keymap: KeyMap,
     pub entries: Vec<CommitEntry>,
     pub witness_cfg: WitnessConfig,
     pub security_params: ParameterSet,
@@ -125,6 +127,7 @@ impl NucleusDb {
         Ok(Self {
             backend,
             state: initial,
+            keymap: KeyMap::new(),
             entries: vec![],
             witness_cfg,
             security_params,

@@ -1,3 +1,4 @@
+use crate::keymap::KeyMap;
 use crate::protocol::{CommitEntry, NucleusDb, VcBackend};
 use crate::security::{ParameterSet, ReductionContract};
 use crate::state::{apply, Delta, State};
@@ -36,6 +37,8 @@ struct SnapshotV1 {
     entries: Vec<CommitEntry>,
     ct_leaves: Vec<NodeHash>,
     current_sth: Option<SignedTreeHead>,
+    #[serde(default)]
+    keymap: Option<KeyMap>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,6 +49,8 @@ struct WalMetaV1 {
     reduction_contracts: Vec<ReductionContract>,
     kzg_trusted_setup: Option<TrustedSetupArtifact>,
     initial_state: State,
+    #[serde(default)]
+    keymap: Option<KeyMap>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,6 +84,7 @@ pub fn save_snapshot(path: &Path, db: &NucleusDb) -> Result<(), PersistenceError
             entries: db.entries.clone(),
             ct_leaves: db.ct_leaves.clone(),
             current_sth: db.current_sth.clone(),
+            keymap: Some(db.keymap.clone()),
         };
         let raw = serde_json::to_vec(&payload).map_err(PersistenceError::Json)?;
         table.insert(SNAP_KEY, raw.as_slice()).map_err(map_redb)?;
@@ -115,6 +121,7 @@ pub fn load_snapshot(
     db.entries = snapshot.entries;
     db.ct_leaves = snapshot.ct_leaves;
     db.current_sth = snapshot.current_sth;
+    db.keymap = snapshot.keymap.unwrap_or_default();
     Ok(db)
 }
 
@@ -134,6 +141,7 @@ pub fn init_wal(path: &Path, db: &NucleusDb) -> Result<(), PersistenceError> {
             reduction_contracts: db.reduction_contracts.clone(),
             kzg_trusted_setup: db.kzg_trusted_setup.clone(),
             initial_state: db.state.clone(),
+            keymap: Some(db.keymap.clone()),
         };
         let got_existing: Option<WalMetaV1> = {
             let existing = meta.get(WAL_META_KEY).map_err(map_redb)?;
@@ -153,6 +161,7 @@ pub fn init_wal(path: &Path, db: &NucleusDb) -> Result<(), PersistenceError> {
                 || got.reduction_contracts != expected.reduction_contracts
                 || got.kzg_trusted_setup != expected.kzg_trusted_setup
                 || got.initial_state != expected.initial_state
+                || got.keymap != expected.keymap
             {
                 return Err(PersistenceError::WalMetaMismatch {
                     reason: "existing WAL metadata does not match tenant configuration".to_string(),
@@ -242,6 +251,7 @@ pub fn load_wal(path: &Path, witness_cfg: WitnessConfig) -> Result<NucleusDb, Pe
     db.reduction_contracts = wal_meta.reduction_contracts;
     db.kzg_trusted_setup = wal_meta.kzg_trusted_setup;
     db.state = wal_meta.initial_state;
+    db.keymap = wal_meta.keymap.unwrap_or_default();
 
     for row in events.iter().map_err(map_redb)? {
         let (k, v) = row.map_err(map_redb)?;
