@@ -8,6 +8,7 @@ use nucleusdb::persistence::init_wal;
 use nucleusdb::protocol::NucleusDb;
 use nucleusdb::sql::executor::SqlResult;
 use nucleusdb::state::State;
+use nucleusdb::tui::app::run_tui;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -25,10 +26,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Commands::Create { db, backend, wal } => cmd_create(&db, &backend, wal.as_deref()),
         Commands::Open { db } => cmd_open(&db),
         Commands::Server { addr, policy } => cmd_server(&addr, &policy),
-        Commands::Tui { db } => {
-            eprintln!("TUI is not implemented yet (db: {db}).");
-            Ok(())
-        }
+        Commands::Tui { db } => cmd_tui(&db),
         Commands::Mcp { db } => cmd_mcp(&db),
         Commands::Sql { db, file } => cmd_sql(&db, file.as_deref()),
         Commands::Status { db } => cmd_status(&db),
@@ -93,6 +91,10 @@ fn cmd_mcp(db_path: &str) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| format!("failed to start tokio runtime: {e}"))?;
     rt.block_on(run_mcp_server(db_path))
+}
+
+fn cmd_tui(db_path: &str) -> Result<(), String> {
+    run_tui(db_path).map_err(|e| format!("TUI failed: {e}"))
 }
 
 fn cmd_sql(db_path: &str, file: Option<&str>) -> Result<(), String> {

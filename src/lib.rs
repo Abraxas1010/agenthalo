@@ -14,6 +14,7 @@ pub mod sheaf;
 pub mod sql;
 pub mod state;
 pub mod transparency;
+pub mod tui;
 pub mod vc;
 pub mod witness;
 
