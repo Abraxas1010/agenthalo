@@ -51,3 +51,4 @@ ratatui = "0.30"
 crossterm = "0.28"
 rmcp = { version = "0.16.0", features = ["transport-io", "schemars"] }
 schemars = "1"
+chrono = "0.4"

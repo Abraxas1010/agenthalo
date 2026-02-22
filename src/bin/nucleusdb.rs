@@ -4,14 +4,14 @@ use nucleusdb::cli::repl::{execute_sql_text, run_repl};
 use nucleusdb::cli::{default_witness_cfg, parse_backend, print_table, Cli, Commands};
 use nucleusdb::mcp::server::run_mcp_server;
 use nucleusdb::multitenant::MultiTenantPolicy;
-use nucleusdb::persistence::init_wal;
+use nucleusdb::persistence::{default_wal_path, init_wal};
 use nucleusdb::protocol::NucleusDb;
 use nucleusdb::sql::executor::SqlResult;
 use nucleusdb::state::State;
 use nucleusdb::tui::app::run_tui;
 use std::io::Read;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn main() {
     let cli = Cli::parse();
@@ -147,10 +147,4 @@ fn render_sql_result(out: SqlResult) {
         SqlResult::Ok { message } => println!("{message}"),
         SqlResult::Error { message } => eprintln!("Error: {message}"),
     }
-}
-
-fn default_wal_path(db_path: &Path) -> PathBuf {
-    let mut wal = db_path.to_path_buf();
-    wal.set_extension("wal");
-    wal
 }

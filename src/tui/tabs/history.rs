@@ -1,4 +1,5 @@
 use crate::transparency::ct6962::hex_encode;
+use crate::tui::app::format_unix_utc;
 use crate::tui::app::App;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
@@ -32,7 +33,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             let short_root = format!("{}...", root_hex.chars().take(12).collect::<String>());
             let row = Row::new(vec![
                 Cell::from(entry.height.to_string()),
-                Cell::from(entry.sth.timestamp_unix_secs.to_string()),
+                Cell::from(format_unix_utc(entry.sth.timestamp_unix_secs)),
                 Cell::from(short_root),
                 Cell::from(entry.delta_digest.to_string()),
             ]);
@@ -44,7 +45,13 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         })
         .collect::<Vec<_>>();
 
-    let header = Row::new(vec!["Height", "Timestamp", "State Root", "Delta"]).style(
+    let header = Row::new(vec![
+        "Height",
+        "Timestamp (UTC)",
+        "State Root",
+        "DeltaDigest",
+    ])
+    .style(
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
@@ -79,6 +86,10 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         format!("State root: {}", hex_encode(&selected_entry.state_root)),
         format!("Tree size: {}", selected_entry.sth.tree_size),
         format!("Timestamp: {}", selected_entry.sth.timestamp_unix_secs),
+        format!(
+            "Timestamp (UTC): {}",
+            format_unix_utc(selected_entry.sth.timestamp_unix_secs)
+        ),
         format!("Backend: {}", selected_entry.vc_backend_id),
         format!(
             "Witness alg: {}",

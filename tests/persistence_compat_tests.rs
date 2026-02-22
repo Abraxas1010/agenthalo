@@ -1,6 +1,6 @@
-use nucleusdb::persistence::{init_wal, load_wal};
+use nucleusdb::persistence::{default_wal_path, init_wal, load_wal, persist_snapshot_and_sync_wal};
 use nucleusdb::protocol::{NucleusDb, VcBackend};
-use nucleusdb::state::State;
+use nucleusdb::state::{Delta, State};
 use nucleusdb::witness::WitnessConfig;
 use redb::{Database, TableDefinition};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,4 +48,28 @@ fn init_wal_accepts_legacy_meta_without_keymap_field() {
     let recovered = load_wal(&wal_path, mk_cfg()).expect("load wal");
     assert_eq!(recovered.state.values, db.state.values);
     assert!(recovered.keymap.is_empty());
+}
+
+#[test]
+fn snapshot_sync_keeps_wal_compatible_with_current_snapshot_state() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let snapshot_path = std::env::temp_dir().join(format!("nucleusdb_snapshot_sync_{stamp}.redb"));
+    let wal_path = default_wal_path(&snapshot_path);
+
+    let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());
+    db.save_persistent(&snapshot_path).expect("save snapshot");
+    init_wal(&wal_path, &db).expect("init wal");
+
+    db.keymap.get_or_create("alpha");
+    db.commit(Delta::new(vec![(0, 42)]), &[])
+        .expect("commit should succeed");
+    persist_snapshot_and_sync_wal(&snapshot_path, &wal_path, &db).expect("snapshot+wal sync");
+
+    // If WAL metadata diverged from snapshot state, this would fail with WalMetaMismatch.
+    let loaded_snapshot =
+        NucleusDb::load_persistent(&snapshot_path, mk_cfg()).expect("load snapshot");
+    init_wal(&wal_path, &loaded_snapshot).expect("wal should match snapshot state");
 }

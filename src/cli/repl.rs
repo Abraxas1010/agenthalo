@@ -1,4 +1,4 @@
-use crate::persistence::save_snapshot;
+use crate::persistence::{default_wal_path, persist_snapshot_and_sync_wal};
 use crate::protocol::NucleusDb;
 use crate::sql::executor::{SqlExecutor, SqlResult};
 use rustyline::DefaultEditor;
@@ -69,7 +69,9 @@ pub fn execute_sql_text(db: &mut NucleusDb, db_path: &Path, sql_text: &str) -> R
 }
 
 fn persist_current(path: &Path, db: &NucleusDb) -> Result<(), String> {
-    save_snapshot(path, db).map_err(|e| format!("failed to persist snapshot: {e:?}"))
+    let wal_path = default_wal_path(path);
+    persist_snapshot_and_sync_wal(path, &wal_path, db)
+        .map_err(|e| format!("failed to persist snapshot+wal: {e:?}"))
 }
 
 fn print_help() {

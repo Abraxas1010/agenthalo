@@ -7,7 +7,7 @@ use crate::vc::kzg::TrustedSetupArtifact;
 use crate::witness::WitnessConfig;
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const SNAP_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("nucleusdb_snapshot");
 const SNAP_KEY: &str = "latest";
@@ -90,6 +90,22 @@ pub fn save_snapshot(path: &Path, db: &NucleusDb) -> Result<(), PersistenceError
         table.insert(SNAP_KEY, raw.as_slice()).map_err(map_redb)?;
     }
     wtx.commit().map_err(map_redb)?;
+    Ok(())
+}
+
+pub fn default_wal_path(snapshot_path: &Path) -> PathBuf {
+    let mut wal = snapshot_path.to_path_buf();
+    wal.set_extension("wal");
+    wal
+}
+
+pub fn persist_snapshot_and_sync_wal(
+    snapshot_path: &Path,
+    wal_path: &Path,
+    db: &NucleusDb,
+) -> Result<(), PersistenceError> {
+    save_snapshot(snapshot_path, db)?;
+    truncate_wal(wal_path, db)?;
     Ok(())
 }
 

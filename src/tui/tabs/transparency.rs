@@ -1,4 +1,5 @@
 use crate::transparency::ct6962::hex_encode;
+use crate::tui::app::format_unix_utc;
 use crate::tui::app::App;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
@@ -14,6 +15,10 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             format!("Tree size: {}", sth.tree_size),
             format!("Root hash: {}", hex_encode(&sth.root_hash)),
             format!("Timestamp: {}", sth.timestamp_unix_secs),
+            format!(
+                "Timestamp (UTC): {}",
+                format_unix_utc(sth.timestamp_unix_secs)
+            ),
             format!(
                 "Signature: {}...",
                 sth.sig.chars().take(40).collect::<String>()

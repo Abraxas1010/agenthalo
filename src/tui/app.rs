@@ -1,8 +1,10 @@
 use crate::cli::default_witness_cfg;
+use crate::persistence::{default_wal_path, persist_snapshot_and_sync_wal};
 use crate::protocol::{NucleusDb, VcBackend};
 use crate::sql::executor::{SqlExecutor, SqlResult};
 use crate::state::State;
 use crate::tui::tabs;
+use chrono::{TimeZone, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
@@ -123,10 +125,13 @@ impl App {
         let tabs_widget = Tabs::new(Tab::all().iter().map(|t| t.title()).collect::<Vec<_>>())
             .select(self.current_tab_idx)
             .block(Block::default().borders(Borders::ALL).title("NucleusDB"))
+            .style(Style::default().fg(Color::Gray))
+            .divider(" │ ")
             .highlight_style(
                 Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             );
         frame.render_widget(tabs_widget, chunks[0]);
 
@@ -267,9 +272,9 @@ impl App {
     }
 
     fn persist_snapshot(&self) -> io::Result<()> {
-        self.db
-            .save_persistent(&self.db_path)
-            .map_err(|e| io::Error::other(format!("failed to save snapshot: {e:?}")))
+        let wal_path = default_wal_path(&self.db_path);
+        persist_snapshot_and_sync_wal(&self.db_path, &wal_path, &self.db)
+            .map_err(|e| io::Error::other(format!("failed to save snapshot+wal: {e:?}")))
     }
 
     fn sql_history_prev(&mut self) {
@@ -364,4 +369,11 @@ impl App {
 pub fn run_tui(db_path: &str) -> io::Result<()> {
     let mut app = App::load(db_path)?;
     app.run()
+}
+
+pub(crate) fn format_unix_utc(ts: u64) -> String {
+    Utc.timestamp_opt(ts as i64, 0)
+        .single()
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| format!("invalid_unix_ts({ts})"))
 }

@@ -1,5 +1,5 @@
 use crate::cli::{default_witness_cfg, parse_backend};
-use crate::persistence::{init_wal, load_wal, truncate_wal};
+use crate::persistence::{init_wal, load_wal, persist_snapshot_and_sync_wal, truncate_wal};
 use crate::protocol::{NucleusDb, QueryProof, VcBackend};
 use crate::sql::executor::{SqlExecutor, SqlResult};
 use crate::state::State;
@@ -362,9 +362,11 @@ impl NucleusDbMcpService {
             ),
         };
         if success && req.persist.unwrap_or(true) {
-            guard.db.save_persistent(&guard.db_path).map_err(|e| {
-                McpError::internal_error(format!("failed to persist snapshot: {e:?}"), None)
-            })?;
+            persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(
+                |e| {
+                    McpError::internal_error(format!("failed to persist snapshot+wal: {e:?}"), None)
+                },
+            )?;
         }
         Ok(Json(response))
     }

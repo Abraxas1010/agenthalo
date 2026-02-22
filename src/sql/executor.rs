@@ -2,6 +2,7 @@ use crate::protocol::NucleusDb;
 use crate::sql::schema::{COL_KEY, COL_VALUE, TABLE_NAME};
 use crate::state::Delta;
 use crate::transparency::ct6962::hex_encode;
+use chrono::{TimeZone, Utc};
 use sqlparser::ast::{
     Assignment, AssignmentTarget, BinaryOperator, CreateTable, Delete, Expr, Ident, Insert,
     ObjectName, ObjectNamePart, Query, SelectItem, SetExpr, Statement, TableFactor, TableObject,
@@ -92,6 +93,9 @@ impl<'a> SqlExecutor<'a> {
             "SHOW STATUS" => Some(self.show_status()),
             "SHOW HISTORY" => Some(self.show_history()),
             "COMMIT" => Some(self.flush_commit()),
+            "VERIFY" => Some(SqlResult::Error {
+                message: "VERIFY requires a quoted key: VERIFY 'my_key'".to_string(),
+            }),
             "CHECKPOINT" => Some(SqlResult::Error {
                 message: "CHECKPOINT requires a configured snapshot/WAL path in CLI mode"
                     .to_string(),
@@ -150,10 +154,15 @@ impl<'a> SqlExecutor<'a> {
                 "sth_timestamp".to_string(),
                 sth.timestamp_unix_secs.to_string(),
             ]);
+            rows.push(vec![
+                "sth_timestamp_utc".to_string(),
+                format_unix_utc(sth.timestamp_unix_secs),
+            ]);
         } else {
             rows.push(vec!["sth_tree_size".to_string(), "0".to_string()]);
             rows.push(vec!["sth_root".to_string(), String::new()]);
             rows.push(vec!["sth_timestamp".to_string(), "0".to_string()]);
+            rows.push(vec!["sth_timestamp_utc".to_string(), "n/a".to_string()]);
         }
 
         SqlResult::Rows {
@@ -173,6 +182,7 @@ impl<'a> SqlExecutor<'a> {
                     hex_encode(&e.state_root),
                     e.sth.tree_size.to_string(),
                     e.sth.timestamp_unix_secs.to_string(),
+                    format_unix_utc(e.sth.timestamp_unix_secs),
                     e.vc_backend_id.clone(),
                     e.witness_signature_algorithm.clone(),
                 ]
@@ -183,7 +193,8 @@ impl<'a> SqlExecutor<'a> {
                 "height".to_string(),
                 "state_root".to_string(),
                 "tree_size".to_string(),
-                "timestamp".to_string(),
+                "timestamp_unix".to_string(),
+                "timestamp_utc".to_string(),
                 "backend".to_string(),
                 "witness_algorithm".to_string(),
             ],
@@ -487,6 +498,13 @@ impl std::fmt::Display for ProjectionField {
 
 fn normalize_command(sql: &str) -> String {
     sql.trim().trim_end_matches(';').trim().to_ascii_uppercase()
+}
+
+fn format_unix_utc(ts: u64) -> String {
+    Utc.timestamp_opt(ts as i64, 0)
+        .single()
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| format!("invalid_unix_ts({ts})"))
 }
 
 fn extract_single_quoted_argument(sql: &str) -> Option<String> {
