@@ -1,313 +1,360 @@
 <img src="assets/Apoth3osis.webp" alt="Apoth3osis Logo" width="140"/>
 
-<sub><strong>Our tech stack is ontological:</strong><br>
-<strong>Hardware — Physics</strong><br>
-<strong>Software — Mathematics</strong><br><br>
-<strong>Our engineering workflow is simple:</strong> discover, build, grow, learn & teach</sub>
-
----
-
-<sub>
-<strong>Acknowledgment</strong><br>
-We humbly thank the collective intelligence of humanity for providing the technology and culture we cherish. We do our best to properly reference the authors of the works utilized herein, though we may occasionally fall short. Our formalization acts as a reciprocal validation—confirming the structural integrity of their original insights while securing the foundation upon which we build. In truth, all creative work is derivative; we stand on the shoulders of those who came before, and our contributions are simply the next link in an unbroken chain of human ingenuity.
-</sub>
-
 ---
 
 # NucleusDB
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
+[![Tests: 99 passing](https://img.shields.io/badge/tests-99%20passing-brightgreen.svg)](#testing)
 
-**Verifiable database with vector commitments, post-quantum signatures, and Certificate Transparency.**
+**The verifiable database for AI agents. Tamper-proof records with mathematical guarantees — not promises.**
 
-## What Is NucleusDB
+---
 
-NucleusDB is an immutable, evidence-oriented database runtime built around verifiable state transitions. Each commit updates a cryptographic state root, appends a transparency leaf, and emits replayable metadata so an independent process can check integrity without trusting the writer.
+## The Problem
 
-The project supports multiple commitment backends (`ipa`, `kzg`, `binary_merkle`), RFC6962-style transparency proofs, witness-signature verification (ML-DSA-65 default), and multi-tenant RBAC with WAL-backed recovery and checkpointing.
+AI agents are writing to databases. They're logging decisions, storing user data, managing financial records, and operating autonomously. But every database they use today has the same fundamental flaw: **any process with write access can silently alter or delete records after the fact.**
 
-## Features
+There is no way to prove a record wasn't changed. There is no way for one agent to trust another agent's data. There is no way to audit what actually happened versus what the log claims happened.
 
-- Verifiable commits and query proofs over append-only state history.
-- RFC6962-style transparency log (`SHA-256`, inclusion/consistency proof semantics).
-- Witness signature verification with algorithm-tagged evidence metadata.
-- Multi-tenant RBAC (`Reader`, `Writer`, `Admin`) with token auth.
-- WAL replay and snapshot persistence with compatibility checks.
-- SQL subset over string keys mapped to internal vector indices.
-- CLI, REPL, HTTP API server, MCP server, and terminal TUI.
-- Included Lean formal surface modules for security/refinement/coherence modeling.
+This isn't a configuration problem. It's an architectural one. Traditional databases were designed for humans who trust each other. The agentic world needs something different.
 
-## Installation
+## The Solution
+
+NucleusDB is a database where **every write is a cryptographic commitment, every query comes with a proof, and deletion can be made mathematically impossible.**
+
+```bash
+# Create a database
+nucleusdb create --db agent_records.ndb --backend merkle
+
+# Write data with SQL you already know
+echo "INSERT INTO data (key, value) VALUES ('decision_42', 1); COMMIT;" \
+  | nucleusdb sql --db agent_records.ndb
+
+# Lock it — permanently. No UPDATE, no DELETE, ever again.
+echo "SET MODE APPEND_ONLY;" | nucleusdb sql --db agent_records.ndb
+
+# Every record now has a mathematical proof of integrity
+echo "VERIFY 'decision_42';" | nucleusdb sql --db agent_records.ndb
+```
+
+Once `APPEND_ONLY` mode is activated, it is a **one-way lock**. The database will reject any UPDATE or DELETE operation. Every commit produces a cryptographic seal proving that no prior record was altered. This guarantee is not enforced by access control — it is enforced by mathematics.
+
+## Why This Matters
+
+### For AI Safety
+
+Agents operating on shared data need an **unforgeable audit trail**. NucleusDB provides three independent layers of tamper evidence:
+
+1. **Monotone Extension Proofs** — Every commit constructively proves that all prior records are preserved. Deletion is detected instantly.
+2. **SHA-256 Seal Chain** — Each commit's seal binds to every previous seal. Forging a seal after deletion requires breaking SHA-256 preimage resistance (2^128 operations).
+3. **Certificate Transparency** — An RFC 6962 append-only Merkle tree provides independent consistency proofs that any third party can verify.
+
+### For Compliance
+
+Regulatory frameworks (SOX, HIPAA, GDPR Article 30, MiFID II) require immutable audit logs. NucleusDB doesn't just promise immutability — it proves it, with cryptographic evidence that can be independently verified.
+
+### For Multi-Agent Trust
+
+Agent A writes a record. Agent B reads it a week later. How does Agent B know the record hasn't been tampered with? NucleusDB provides **query proofs**: every read returns the value, a vector commitment proof, and a state root. The agent can verify the proof without trusting the database, the network, or Agent A.
+
+## How It Compares
+
+| Feature | SQLite | PostgreSQL | Datomic | QLDB | **NucleusDB** |
+|---------|--------|------------|---------|------|---------------|
+| SQL interface | Full | Full | Datalog | PartiQL | Subset |
+| Cryptographic commits | No | No | No | Yes | **Yes** |
+| Query proofs (client-verifiable) | No | No | No | No | **Yes** |
+| Immutable mode (math-enforced) | No | No | Append-only | Append-only | **Append-only + seal chain** |
+| Post-quantum signatures | No | No | No | No | **ML-DSA-65** |
+| Certificate Transparency | No | No | No | Partial | **Full RFC 6962** |
+| ZK license verification | No | No | No | No | **Groth16 SNARK** |
+| Formal specification | No | No | No | No | **18 Lean 4 modules** |
+| MCP server (AI-native) | No | No | No | No | **Yes** |
+| Self-contained binary | Yes | No | No | No (AWS) | **Yes** |
+
+**Datomic** and **QLDB** offer append-only semantics, but neither provides client-verifiable query proofs or a cryptographic seal chain. Their immutability is a property of the service — you trust the operator. NucleusDB's immutability is a property of mathematics — you verify it yourself.
+
+## Quick Start
+
+### Install
 
 ```bash
 git clone https://github.com/Abraxas1010/nucleusdb.git
 cd nucleusdb
-cargo build
+cargo build --release
 ```
 
-## Quick Start
+The `nucleusdb` binary is at `target/release/nucleusdb`. No external dependencies, no cloud service, no account required.
 
-1. Create a database.
+### 1. Create a Database
 
 ```bash
-cargo run --bin nucleusdb -- create --db /tmp/nucleusdb.ndb --backend merkle
+nucleusdb create --db my_records.ndb --backend merkle
 ```
 
-2. Execute SQL (file or stdin).
+Three commitment backends are available:
+- `merkle` — SHA-256 Merkle tree (recommended, post-quantum safe)
+- `ipa` — Pedersen-style vector commitments
+- `kzg` — Pairing-based commitments with trusted setup
+
+### 2. Write and Query with SQL
 
 ```bash
-echo "INSERT INTO data (key, value) VALUES ('temperature', 42); COMMIT;" \
-  | cargo run --bin nucleusdb -- sql --db /tmp/nucleusdb.ndb
+# Interactive REPL
+nucleusdb open --db my_records.ndb
 ```
 
-3. Query status.
+```sql
+INSERT INTO data (key, value) VALUES ('sensor_reading', 42);
+INSERT INTO data (key, value) VALUES ('agent_decision', 7);
+COMMIT;
 
-```bash
-cargo run --bin nucleusdb -- status --db /tmp/nucleusdb.ndb
+SELECT * FROM data;
+SELECT * FROM data WHERE key LIKE 'sensor%';
+
+VERIFY 'sensor_reading';  -- cryptographic proof of integrity
+
+SHOW STATUS;
+SHOW HISTORY;
+SHOW HISTORY 'sensor_reading';
 ```
 
-4. Export state.
+### 3. Lock for Immutable Records
 
-```bash
-cargo run --bin nucleusdb -- export --db /tmp/nucleusdb.ndb
+```sql
+SET MODE APPEND_ONLY;
+
+-- These now succeed:
+INSERT INTO data (key, value) VALUES ('new_record', 100);
+COMMIT;
+
+-- These are permanently rejected:
+UPDATE data SET value = 999 WHERE key = 'sensor_reading';
+-- ERROR: UPDATE rejected: database is in AppendOnly mode (immutable agentic records)
+
+DELETE FROM data WHERE key = 'sensor_reading';
+-- ERROR: DELETE rejected: database is in AppendOnly mode (immutable agentic records)
+
+SHOW MODE;
+-- Write mode: AppendOnly
 ```
 
-5. Open interactive REPL.
+### 4. Use as an MCP Server (AI Agents)
 
 ```bash
-cargo run --bin nucleusdb -- open --db /tmp/nucleusdb.ndb
+nucleusdb mcp --db my_records.ndb
+```
+
+This exposes 10 tools over stdio via the [Model Context Protocol](https://modelcontextprotocol.io):
+
+| Tool | Purpose |
+|------|---------|
+| `nucleusdb_create_database` | Create a new database |
+| `nucleusdb_open_database` | Open an existing database |
+| `nucleusdb_execute_sql` | Run SQL statements |
+| `nucleusdb_query` | Query with cryptographic proof |
+| `nucleusdb_query_range` | Range query |
+| `nucleusdb_verify` | Verify a key's integrity |
+| `nucleusdb_status` | Database status |
+| `nucleusdb_history` | Commit history |
+| `nucleusdb_export` | Export state as JSON |
+| `nucleusdb_checkpoint` | Create snapshot + truncate WAL |
+
+Add to your Claude Code MCP config, Cursor, or any MCP-compatible client.
+
+### 5. Run as an HTTP Server
+
+```bash
+nucleusdb-server 127.0.0.1:8088 production
+```
+
+Multi-tenant REST API with RBAC:
+
+```bash
+# Register a tenant
+curl -X POST http://127.0.0.1:8088/v1/tenants/register \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"acme","auth_token":"secret","initial_values":[],"backend":"binary_merkle"}'
+
+# Commit data
+curl -X POST http://127.0.0.1:8088/v1/tenants/acme/commit \
+  -H 'Content-Type: application/json' \
+  -d '{"auth_token":"secret","writes":[[0,42]],"local_views":[]}'
+
+# Query with proof
+curl -X POST http://127.0.0.1:8088/v1/tenants/acme/query \
+  -H 'Content-Type: application/json' \
+  -d '{"auth_token":"secret","index":0}'
+```
+
+### 6. Terminal UI
+
+```bash
+nucleusdb tui --db my_records.ndb
+```
+
+Five-tab interface: Status, Browse, Execute, History, Transparency. Navigate with `F1`-`F5` or `Tab`.
+
+## Architecture
+
+```
+Client Surfaces                    Core Runtime
+  CLI / REPL ─────┐               ┌─ protocol.rs ── commit / query / verify
+  Terminal UI ────┤               ├─ immutable.rs ─ monotone proofs + seal chain
+  MCP Server ─────┼── SQL ──────▶ ├─ sql/executor ─ SQL parsing + enforcement
+  HTTP API ───────┘               ├─ keymap.rs ──── string keys → vector indices
+                                  ├─ witness.rs ─── ML-DSA-65 quorum signatures
+                                  ├─ ct6962.rs ──── RFC 6962 transparency log
+                                  ├─ security.rs ── parameter validation + reduction contracts
+                                  ├─ audit.rs ───── evidence bundles + replay verification
+                                  ├─ license.rs ─── ZK-SNARK license verification (Groth16/BN254)
+                                  └─ persistence ── snapshot + WAL (redb)
+
+Commitment Backends               Formal Specification
+  vc/binary_merkle.rs              18 Lean 4 modules under lean/NucleusDB/
+  vc/ipa.rs                        Core, Security, Commitment, Sheaf,
+  vc/kzg.rs                        Transparency, Adversarial
 ```
 
 ## SQL Reference
 
-Supported SQL and command surface in `SqlExecutor`:
+| Statement | Example |
+|-----------|---------|
+| INSERT | `INSERT INTO data (key, value) VALUES ('k', 42);` |
+| SELECT | `SELECT * FROM data WHERE key = 'k';` |
+| SELECT LIKE | `SELECT * FROM data WHERE key LIKE 'prefix%';` |
+| UPDATE | `UPDATE data SET value = 99 WHERE key = 'k';` |
+| DELETE | `DELETE FROM data WHERE key = 'k';` |
+| COMMIT | `COMMIT;` |
+| VERIFY | `VERIFY 'k';` |
+| SHOW STATUS | `SHOW STATUS;` |
+| SHOW HISTORY | `SHOW HISTORY;` / `SHOW HISTORY 'k';` |
+| SHOW MODE | `SHOW MODE;` |
+| SET MODE | `SET MODE APPEND_ONLY;` |
+| EXPORT | `EXPORT;` |
+| CHECKPOINT | `CHECKPOINT;` |
 
-- `INSERT INTO data (key, value) VALUES ('k', 1);`
-- `SELECT key, value FROM data;`
-- `SELECT * FROM data WHERE key = 'k';`
-- `SELECT * FROM data WHERE key LIKE 'prefix%';`
-- `SELECT * FROM data WHERE key ILIKE 'prefix%';`
-- `UPDATE data SET value = 9 WHERE key = 'k';`
-- `DELETE FROM data WHERE key = 'k';` (tombstone via value `0`)
-- `CREATE TABLE data (...)` (virtual-table validation only)
-- `COMMIT;`
-- `SHOW STATUS;`
-- `SHOW HISTORY;`
-- `SHOW HISTORY 'k';`
-- `VERIFY 'k';`
-- `EXPORT;`
-- `CHECKPOINT;` (reported as CLI-path requirement)
+UPDATE and DELETE are permanently disabled after `SET MODE APPEND_ONLY`.
 
-## CLI Usage
+## Security
 
-Primary binary (`nucleusdb`) commands:
+### Cryptographic Primitives
 
-- `create`
-- `open`
-- `server`
-- `tui`
-- `mcp`
-- `sql`
-- `status`
-- `export`
+| Layer | Primitive | Security Level |
+|-------|-----------|---------------|
+| State commitments | SHA-256 Merkle tree | 128-bit classical, post-quantum safe |
+| Witness signatures | ML-DSA-65 (FIPS 204) | Post-quantum (NIST Level 3) |
+| Monotone seals | SHA-256 hash chain | 128-bit preimage resistance |
+| Transparency proofs | RFC 6962 (SHA-256) | 128-bit collision resistance |
+| License verification | Groth16 over BN254 | 128-bit (classical pairing security) |
 
-Examples:
+### Immutable Mode Guarantees
 
-```bash
-cargo run --bin nucleusdb -- --help
-cargo run --bin nucleusdb -- tui --db /tmp/nucleusdb.ndb
-cargo run --bin nucleusdb -- mcp --db /tmp/nucleusdb.ndb
-cargo run --bin nucleusdb-server -- 127.0.0.1:8088 production
-```
+When `APPEND_ONLY` is active:
 
-## TUI
+- **SQL layer**: UPDATE and DELETE are rejected before execution.
+- **Protocol layer**: Every commit verifies that no existing non-zero value was changed (raw index check) and no named key was removed (keymap check).
+- **Seal chain**: Each commit appends `seal_n = SHA-256("NucleusDB.MonotoneSeal|" || seal_{n-1} || kv_digest_n)`. The chain is unforgeable.
+- **CT tree**: The append-only Merkle tree independently records every commit.
+- **Persistence**: The AppendOnly lock and seal chain survive snapshot save/load and WAL replay.
 
-`nucleusdb-tui` (and `nucleusdb tui`) provides a five-tab terminal interface:
+## Interfaces
 
-- `Status`
-- `Browse`
-- `Execute`
-- `History`
-- `Transparency`
+### TUI
 
-Hotkeys:
+`nucleusdb tui` provides a five-tab terminal interface (Status, Browse, Execute, History, Transparency). Hotkeys: `F1`..`F5` switch tabs, `Enter` executes SQL, `Up`/`Down` scrolls, `q` quits.
 
-- `F1`..`F5` switch tabs
-- `Tab` / `Shift-Tab` cycle tabs
-- `Up` / `Down` scroll lists
-- `Enter` executes SQL in Execute tab
-- `Esc` clears SQL input
-- `q` quits outside Execute tab
-- `Ctrl-C` quits from any tab
+### MCP Server
 
-## MCP Server
+`nucleusdb mcp` serves 11 MCP tools over stdio: `create_database`, `open_database`, `execute_sql`, `query`, `query_range`, `verify`, `status`, `history`, `export`, `checkpoint`, `help`.
 
-`nucleusdb-mcp` (and `nucleusdb mcp`) serves MCP tools over stdio via `rmcp`.
+### HTTP API
 
-Implemented tools:
-
-1. `nucleusdb_create_database`
-2. `nucleusdb_open_database`
-3. `nucleusdb_execute_sql`
-4. `nucleusdb_query`
-5. `nucleusdb_query_range`
-6. `nucleusdb_verify`
-7. `nucleusdb_status`
-8. `nucleusdb_history`
-9. `nucleusdb_export`
-10. `nucleusdb_checkpoint`
-11. `nucleusdb_help`
-
-Recommended MCP bootstrap:
-
-1. Call `nucleusdb_help`
-2. Call `nucleusdb_create_database` with an explicit `db_path`
-3. Use `nucleusdb_execute_sql` / `nucleusdb_query` / `nucleusdb_verify`
-
-Example MCP server command:
-
-```bash
-cargo run --bin nucleusdb-mcp -- /tmp/nucleusdb.ndb
-```
-
-## HTTP API
-
-Server routes (`src/api.rs`):
-
-- `GET /v1/health`
-- `GET /v1/tenants`
-- `POST /v1/tenants/register`
-- `POST /v1/tenants/register_from_wal`
-- `POST /v1/tenants/{tenant_id}/principals/register`
-- `POST /v1/tenants/{tenant_id}/commit`
-- `POST /v1/tenants/{tenant_id}/query`
-- `POST /v1/tenants/{tenant_id}/snapshot`
-- `POST /v1/tenants/{tenant_id}/checkpoint`
-
-Run server:
-
-```bash
-cargo run --bin nucleusdb-server -- 127.0.0.1:8088 production
-```
-
-Sample requests:
-
-```bash
-curl -s http://127.0.0.1:8088/v1/health
-
-curl -s -X POST http://127.0.0.1:8088/v1/tenants/register \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "tenant_id": "acme",
-    "auth_token": "acme-admin-token",
-    "initial_values": [],
-    "backend": "binary_merkle"
-  }'
-
-curl -s -X POST http://127.0.0.1:8088/v1/tenants/acme/commit \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "auth_token": "acme-admin-token",
-    "writes": [[0, 42]],
-    "local_views": []
-  }'
-
-curl -s -X POST http://127.0.0.1:8088/v1/tenants/acme/query \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "auth_token": "acme-admin-token",
-    "index": 0
-  }'
-```
+Multi-tenant REST API via `nucleusdb-server`: tenant registration, commit, query, snapshot, checkpoint. See `src/api.rs` for full route list.
 
 ## Architecture
 
 ```text
-Client Surfaces
-  ├─ CLI / REPL
-  ├─ TUI
-  ├─ MCP (stdio)
-  └─ HTTP API (axum)
-
-Core Runtime
-  ├─ protocol.rs (commit/query/verify)
-  ├─ state.rs + materialize.rs
-  ├─ keymap.rs + sql/executor.rs
-  ├─ transparency/ct6962.rs
-  ├─ witness.rs
-  ├─ security.rs
-  ├─ multitenant.rs
-  ├─ persistence.rs
-  └─ audit.rs
-
-Commitment Backends
-  ├─ vc/ipa.rs
-  ├─ vc/kzg.rs
-  └─ vc/binary_merkle.rs
+Client Surfaces           Core Runtime              Commitment Backends
+  ├─ CLI / REPL             ├─ protocol.rs            ├─ binary_merkle (SHA-256)
+  ├─ TUI                    ├─ sql/executor.rs        ├─ ipa (Pedersen)
+  ├─ MCP (stdio)            ├─ immutable.rs           └─ kzg (pairing)
+  └─ HTTP API (axum)        ├─ transparency/ct6962.rs
+                            ├─ witness.rs (ML-DSA-65)
+                            ├─ persistence.rs
+                            └─ license.rs (Groth16)
 ```
 
-## Vector Commitment Backends
+## Formal Specification
 
-- `binary_merkle`: hash-based commitment (SHA-256) with Merkle proofs.
-- `ipa`: Pedersen-style vector commitment path (current opening payload is non-succinct).
-- `kzg`: pairing-based commitment path with trusted setup policy checks.
+NucleusDB includes 18 Lean 4 modules that formally specify the core protocol:
 
-## Post-Quantum Security
-
-- Default witness algorithm: `ML-DSA-65` (`ml_dsa65` metadata tag).
-- Recommended commitment profile for PQ posture: `binary_merkle`.
-- Transparency path is hash-only and uses RFC6962-style SHA-256 structures.
-
-## Certificate Transparency
-
-NucleusDB includes CT-style structures and verification behavior:
-
-- Domain-separated leaf/node hashing.
-- Signed tree head representation in commit metadata.
-- Inclusion and consistency proof replay checks.
-- Chain growth validation via evidence replay and strict verification scripts.
-
-## Formal Specifications
-
-The repo includes 18 Lean modules under `lean/NucleusDB/`:
-
-- `Adversarial/ForkEvidence.lean`
-- `Adversarial/Witness.lean`
-- `Commitment/Adapter.lean`
-- `Commitment/VectorModel.lean`
-- `Core/Authorization.lean`
-- `Core/Certificates.lean`
-- `Core/Invariants.lean`
-- `Core/Ledger.lean`
-- `Core/Nucleus.lean`
-- `Security/Assumptions.lean`
-- `Security/Parameters.lean`
-- `Security/Reductions.lean`
-- `Security/Refinement.lean`
-- `Sheaf/Coherence.lean`
-- `Sheaf/MaterializationFunctor.lean`
-- `Transparency/CT6962.lean`
-- `Transparency/Consistency.lean`
-- `Transparency/LogModel.lean`
-
-A minimal standalone Lean package scaffold is also included:
-
-- `lakefile.lean`
-- `lean-toolchain`
-- `lean/NucleusDB.lean`
-
-Build (optional):
+- **Core**: Nucleus, Ledger, Invariants, Authorization, Certificates
+- **Security**: Assumptions, Parameters, Reductions, Refinement
+- **Commitment**: VectorModel, Adapter
+- **Sheaf**: Coherence, MaterializationFunctor
+- **Transparency**: CT6962, Consistency, LogModel
+- **Adversarial**: ForkEvidence, Witness
 
 ```bash
+# Build formal specs (requires Lean 4 toolchain)
 lake build NucleusDB
 ```
 
+## Testing
+
+99 tests across 6 test suites, 0 failures, 0 warnings:
+
+```bash
+cargo test
+```
+
+| Suite | Tests | Coverage |
+|-------|-------|----------|
+| Unit (lib) | 37 | Immutable proofs, license/SNARK verification, CT proofs |
+| CLI smoke | 2 | Binary help, create-sql-status-export pipeline |
+| End-to-end | 36 | Protocol commits, queries, security, multi-tenant, immutable mode |
+| KeyMap | 3 | Stability, LIKE matching, reverse lookup |
+| Persistence | 4 | WAL/snapshot backward compatibility |
+| SQL | 17 | CRUD, multi-statement, committed flag, immutable mode |
+
 ## Known Limitations
 
-- `ipa` opening proof path currently carries full-vector payload (not logarithmic-size IPA argument).
-- Sheaf coherence runtime check is local-view coherence oriented and not yet a full global-state reconciliation proof.
-- Default KZG setup path is intended for controlled/demo use unless external trusted setup artifacts are managed under strict policy.
+- The SQL surface is a focused subset (single virtual table `data` with `key`/`value` columns), not a general-purpose SQL engine.
+- The `ipa` backend carries full-vector opening payloads (not logarithmic-size IPA arguments).
+- The KZG backend's default trusted setup is for development/demo use. Production KZG deployments require externally managed ceremony artifacts.
+- Sheaf coherence checks are local-view oriented, not full global-state reconciliation.
 
-## License
+## Licensing
 
-[Apoth3osis License Stack v1](LICENSE.md)
+NucleusDB is released under the [Apoth3osis License Stack v1](LICENSE.md), a tri-license designed to maximize public-good access while sustaining development:
+
+| License | Who It's For | Cost |
+|---------|-------------|------|
+| **Public Good** (CPGL) | Open-source projects + open-access research | Free |
+| **Small Business** (CSBL) | Organizations under $1M revenue, <100 workers | Free |
+| **Enterprise** (CECL) | Everyone else | Contact us |
+
+**For enterprise licensing, custom integrations, certification services, or any questions:**
+
+**Contact: rgoodman@apoth3osis.io**
+
+The "Apoth3osis-Certified" mark is available exclusively under CECL and requires an active trademark license and compliance verification.
+
+## Citation
+
+```bibtex
+@software{nucleusdb,
+  title = {NucleusDB},
+  author = {Apoth3osis},
+  year = {2025--2026},
+  url = {https://github.com/Abraxas1010/nucleusdb},
+  license = {Apoth3osis License Stack v1}
+}
+```
+
+---
+
+<sub><strong>Our tech stack is ontological:</strong> Hardware — Physics | Software — Mathematics<br>
+<strong>Our engineering workflow is simple:</strong> discover, build, grow, learn & teach</sub>

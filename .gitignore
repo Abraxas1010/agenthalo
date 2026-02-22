@@ -14,3 +14,17 @@
 
 # Lean build artifacts
 /.lake/
+
+# Database files (stray test outputs)
+*.ndb
+*.wal
+*.redb
+--db
+--db.wal
+
+# WIP / internal development notes
+/WIP/
+
+# OS
+.DS_Store
+Thumbs.db

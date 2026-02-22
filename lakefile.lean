@@ -6,9 +6,6 @@ package nucleusdb where
     ⟨`autoImplicit, false⟩
   ]
 
-lean_lib HeytingLean where
-  srcDir := "lean"
-
 @[default_target]
 lean_lib NucleusDB where
   srcDir := "lean"
