@@ -156,6 +156,13 @@ Implemented tools:
 8. `nucleusdb_history`
 9. `nucleusdb_export`
 10. `nucleusdb_checkpoint`
+11. `nucleusdb_help`
+
+Recommended MCP bootstrap:
+
+1. Call `nucleusdb_help`
+2. Call `nucleusdb_create_database` with an explicit `db_path`
+3. Use `nucleusdb_execute_sql` / `nucleusdb_query` / `nucleusdb_verify`
 
 Example MCP server command:
 

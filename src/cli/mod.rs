@@ -21,7 +21,11 @@ pub enum Commands {
     Create {
         #[arg(long, default_value = "nucleusdb.ndb")]
         db: String,
-        #[arg(long, default_value = "merkle")]
+        #[arg(
+            long,
+            default_value = "merkle",
+            help = "VC backend: merkle|binary_merkle|binary-merkle|ipa|kzg"
+        )]
         backend: String,
         #[arg(long)]
         wal: Option<String>,
@@ -35,7 +39,11 @@ pub enum Commands {
     Server {
         #[arg(long, default_value = "127.0.0.1:8088")]
         addr: String,
-        #[arg(long, default_value = "permissive")]
+        #[arg(
+            long,
+            default_value = "permissive",
+            help = "Policy profile: permissive|production"
+        )]
         policy: String,
     },
     /// Start terminal UI
@@ -73,7 +81,7 @@ pub fn parse_backend(backend: &str) -> Result<VcBackend, String> {
         "kzg" => Ok(VcBackend::Kzg),
         "binary_merkle" | "binary-merkle" | "merkle" => Ok(VcBackend::BinaryMerkle),
         other => Err(format!(
-            "invalid backend '{other}', expected one of: ipa|kzg|merkle"
+            "invalid backend '{other}', expected one of: merkle|binary_merkle|binary-merkle|ipa|kzg"
         )),
     }
 }

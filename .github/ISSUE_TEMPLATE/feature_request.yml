@@ -1,0 +1,29 @@
+name: Feature request
+description: Propose an improvement.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user or operator problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior and interfaces.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and verification impact
+      description: Note any effect on fail-closed behavior, proofs, or persistence.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

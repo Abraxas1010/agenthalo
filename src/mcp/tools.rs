@@ -6,7 +6,7 @@ use crate::state::State;
 use crate::transparency::ct6962::hex_encode;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerInfo},
+    model::{Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router, ErrorData as McpError, Json, ServerHandler,
 };
 use schemars::JsonSchema;
@@ -30,48 +30,63 @@ pub struct NucleusDbMcpService {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CreateDatabaseRequest {
-    pub db_path: Option<String>,
+    /// Snapshot path to create, for example `/tmp/nucleusdb.ndb`.
+    pub db_path: String,
+    /// Backend id: `binary_merkle` (recommended), `ipa`, or `kzg`.
     pub backend: Option<String>,
+    /// Optional WAL path. Defaults to `<db_path>.wal` when omitted.
     pub wal_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OpenDatabaseRequest {
+    /// Snapshot path to open. If omitted, uses the current server path.
     pub db_path: Option<String>,
+    /// WAL path to pair with the snapshot. Defaults to `<db_path>.wal`.
     pub wal_path: Option<String>,
+    /// If true, opens from WAL replay when WAL exists; otherwise snapshot-first.
     pub prefer_wal: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExecuteSqlRequest {
+    /// SQL text in the NucleusDB dialect (INSERT/SELECT/UPDATE/DELETE/SHOW/COMMIT/VERIFY/EXPORT).
     pub sql: String,
+    /// Persist snapshot+WAL after successful execution. Defaults to true.
     pub persist: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct QueryRequest {
+    /// Exact key to query.
     pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct QueryRangeRequest {
+    /// Exact key or prefix pattern, for example `acct:%`.
     pub pattern: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct VerifyRequest {
+    /// Exact key to verify.
     pub key: String,
+    /// Optional expected value check in addition to proof verification.
     pub expected_value: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HistoryRequest {
+    /// Optional max number of entries (newest first).
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckpointRequest {
+    /// Optional snapshot target path. Defaults to active path.
     pub db_path: Option<String>,
+    /// Optional WAL path. Defaults to active WAL path.
     pub wal_path: Option<String>,
 }
 
@@ -152,12 +167,32 @@ pub struct ExportResponse {
     pub json: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HelpResponse {
+    pub server: String,
+    pub version: String,
+    pub backends: Vec<String>,
+    pub policy_profiles: Vec<String>,
+    pub sql_reference: Vec<String>,
+    pub notes: Vec<String>,
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for NucleusDbMcpService {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
+            server_info: Implementation {
+                name: "nucleusdb".to_string(),
+                title: Some("NucleusDB MCP Server".to_string()),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                description: Some(
+                    "Verifiable immutable database tools over MCP (stdio transport).".to_string(),
+                ),
+                icons: None,
+                website_url: Some("https://github.com/Abraxas1010/nucleusdb".to_string()),
+            },
             instructions: Some(
-                "NucleusDB MCP server for verifiable SQL execution, query proofs, and release-safe checkpointing."
+                "Use nucleusdb_help first to discover SQL syntax, backend ids, and safe defaults."
                     .into(),
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
@@ -266,14 +301,19 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_create_database",
-        description = "Create a new NucleusDB snapshot and WAL with selected backend."
+        description = "Create a new NucleusDB snapshot and WAL with selected backend. Example: {\"db_path\":\"/tmp/app.ndb\",\"backend\":\"binary_merkle\"}"
     )]
     pub async fn create_database(
         &self,
         Parameters(req): Parameters<CreateDatabaseRequest>,
     ) -> Result<Json<OperationStatus>, McpError> {
-        let current_db_path = { self.state.lock().await.db_path.clone() };
-        let db_path = req.db_path.map(PathBuf::from).unwrap_or(current_db_path);
+        if req.db_path.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "db_path must be non-empty (example: /tmp/nucleusdb.ndb)",
+                None,
+            ));
+        }
+        let db_path = PathBuf::from(req.db_path.trim());
         let wal_path = req
             .wal_path
             .map(PathBuf::from)
@@ -295,7 +335,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_open_database",
-        description = "Open an existing NucleusDB snapshot (or WAL) and switch active server state."
+        description = "Open an existing snapshot (or WAL) and switch active state. Example: {\"db_path\":\"/tmp/app.ndb\",\"prefer_wal\":true}"
     )]
     pub async fn open_database(
         &self,
@@ -324,7 +364,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_execute_sql",
-        description = "Execute SQL statements against the active database."
+        description = "Execute SQL in the active DB. Example: {\"sql\":\"INSERT INTO data (key, value) VALUES ('acct:1', 42); COMMIT;\"}"
     )]
     pub async fn execute_sql(
         &self,
@@ -373,7 +413,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_query",
-        description = "Query a single key and return value with proof verification status."
+        description = "Query a single key and return value plus proof verification status. Example: {\"key\":\"acct:1\"}"
     )]
     pub async fn query(
         &self,
@@ -391,7 +431,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_query_range",
-        description = "Query keys matching an exact key or prefix pattern like 'prefix%'."
+        description = "Query keys by exact match or prefix pattern like 'acct:%'. Example: {\"pattern\":\"acct:%\"}"
     )]
     pub async fn query_range(
         &self,
@@ -412,7 +452,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_verify",
-        description = "Verify a key's proof against current state root, with optional expected value check."
+        description = "Verify a key proof against current root, optionally assert expected value. Example: {\"key\":\"acct:1\",\"expected_value\":42}"
     )]
     pub async fn verify(
         &self,
@@ -461,7 +501,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_status",
-        description = "Return current DB status including backend, sizes, and Signed Tree Head metadata."
+        description = "Return backend, state sizes, and Signed Tree Head metadata for the active DB."
     )]
     pub async fn status(&self) -> Result<Json<StatusResponse>, McpError> {
         let guard = self.state.lock().await;
@@ -488,7 +528,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_history",
-        description = "List commit history from newest to oldest with backend and witness metadata."
+        description = "List commit history newest-first. Example: {\"limit\":20}"
     )]
     pub async fn history(
         &self,
@@ -517,7 +557,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_export",
-        description = "Export current key/value state as pretty JSON."
+        description = "Export current key/value state as pretty JSON payload."
     )]
     pub async fn export(&self) -> Result<Json<ExportResponse>, McpError> {
         let guard = self.state.lock().await;
@@ -566,6 +606,38 @@ impl NucleusDbMcpService {
             db_path: db_path.display().to_string(),
             wal_path: wal_path.display().to_string(),
             backend: Self::backend_label(&guard.db.backend).to_string(),
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_help",
+        description = "Return SQL dialect reference, backend ids, and policy profiles for agent-safe usage."
+    )]
+    pub async fn help(&self) -> Result<Json<HelpResponse>, McpError> {
+        Ok(Json(HelpResponse {
+            server: "nucleusdb".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            backends: vec![
+                "binary_merkle (recommended)".to_string(),
+                "ipa".to_string(),
+                "kzg".to_string(),
+            ],
+            policy_profiles: vec!["permissive".to_string(), "production".to_string()],
+            sql_reference: vec![
+                "INSERT INTO data (key, value) VALUES ('k', 1);".to_string(),
+                "SELECT key, value FROM data WHERE key = 'k';".to_string(),
+                "SELECT key, value FROM data WHERE key LIKE 'prefix%';".to_string(),
+                "UPDATE data SET value = 2 WHERE key = 'k';".to_string(),
+                "DELETE FROM data WHERE key = 'k';".to_string(),
+                "SHOW STATUS; SHOW HISTORY; SHOW HISTORY 'k';".to_string(),
+                "VERIFY 'k'; EXPORT; COMMIT;".to_string(),
+            ],
+            notes: vec![
+                "Use explicit db_path values when creating databases to avoid collisions."
+                    .to_string(),
+                "persist defaults to true in nucleusdb_execute_sql.".to_string(),
+                "prefer_wal defaults to false in nucleusdb_open_database.".to_string(),
+            ],
         }))
     }
 }
