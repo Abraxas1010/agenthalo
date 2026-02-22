@@ -5,7 +5,7 @@
 # NucleusDB
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-[![Tests: 99 passing](https://img.shields.io/badge/tests-99%20passing-brightgreen.svg)](#testing)
+[![Tests: 101 passing](https://img.shields.io/badge/tests-101%20passing-brightgreen.svg)](#testing)
 
 **The verifiable database for AI agents. Tamper-proof records with mathematical guarantees — not promises.**
 
@@ -273,19 +273,6 @@ When `APPEND_ONLY` is active:
 
 Multi-tenant REST API via `nucleusdb-server`: tenant registration, commit, query, snapshot, checkpoint. See `src/api.rs` for full route list.
 
-## Architecture
-
-```text
-Client Surfaces           Core Runtime              Commitment Backends
-  ├─ CLI / REPL             ├─ protocol.rs            ├─ binary_merkle (SHA-256)
-  ├─ TUI                    ├─ sql/executor.rs        ├─ ipa (Pedersen)
-  ├─ MCP (stdio)            ├─ immutable.rs           └─ kzg (pairing)
-  └─ HTTP API (axum)        ├─ transparency/ct6962.rs
-                            ├─ witness.rs (ML-DSA-65)
-                            ├─ persistence.rs
-                            └─ license.rs (Groth16)
-```
-
 ## Formal Specification
 
 NucleusDB includes 18 Lean 4 modules that formally specify the core protocol:
@@ -304,7 +291,7 @@ lake build NucleusDB
 
 ## Testing
 
-99 tests across 6 test suites, 0 failures, 0 warnings:
+101 tests across 6 test suites, 0 failures, 0 warnings:
 
 ```bash
 cargo test
@@ -316,8 +303,8 @@ cargo test
 | CLI smoke | 2 | Binary help, create-sql-status-export pipeline |
 | End-to-end | 36 | Protocol commits, queries, security, multi-tenant, immutable mode |
 | KeyMap | 3 | Stability, LIKE matching, reverse lookup |
-| Persistence | 4 | WAL/snapshot backward compatibility |
-| SQL | 17 | CRUD, multi-statement, committed flag, immutable mode |
+| Persistence | 5 | WAL/snapshot compat, Bug #1/#3 regression |
+| SQL | 18 | CRUD, multi-statement, committed flag, immutable mode |
 
 ## Known Limitations
 
