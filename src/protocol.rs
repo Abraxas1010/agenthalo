@@ -1,5 +1,6 @@
 use crate::audit::CommitEvidence;
 use crate::commitment::default_commitment_policy;
+use crate::immutable::{self, WriteMode};
 use crate::keymap::KeyMap;
 use crate::materialize::materialize;
 use crate::persistence::{load_snapshot, save_snapshot, PersistenceError};
@@ -69,6 +70,7 @@ pub enum CommitError {
 
     SecurityPolicyInvalid(SecurityPolicyError),
     SecurityRefinementFailed(RefinementError),
+    MonotoneViolation,
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +85,8 @@ pub struct NucleusDb {
     pub kzg_trusted_setup: Option<TrustedSetupArtifact>,
     pub(crate) ct_leaves: Vec<NodeHash>,
     pub(crate) current_sth: Option<SignedTreeHead>,
+    pub write_mode: WriteMode,
+    pub(crate) monotone_seals: Vec<NodeHash>,
 }
 
 impl NucleusDb {
@@ -135,6 +139,8 @@ impl NucleusDb {
             kzg_trusted_setup,
             ct_leaves: vec![],
             current_sth: None,
+            write_mode: WriteMode::Normal,
+            monotone_seals: vec![],
         })
     }
 
@@ -192,6 +198,23 @@ impl NucleusDb {
         witness_cfg: WitnessConfig,
     ) -> Result<Self, PersistenceError> {
         load_snapshot(path.as_ref(), witness_cfg)
+    }
+
+    /// Get the current write mode.
+    pub fn write_mode(&self) -> &WriteMode {
+        &self.write_mode
+    }
+
+    /// Lock the database into append-only mode.  This is a one-way operation:
+    /// once enabled, the lock cannot be reverted.  Every subsequent commit
+    /// will verify monotone extension and produce a cryptographic seal.
+    pub fn set_append_only(&mut self) {
+        self.write_mode = WriteMode::AppendOnly;
+    }
+
+    /// Get the current monotone seal chain.
+    pub fn monotone_seals(&self) -> &[NodeHash] {
+        &self.monotone_seals
     }
 
     fn state_root_for(&self, vec: &[u64]) -> NodeHash {
@@ -255,6 +278,15 @@ impl NucleusDb {
         let next = apply(&self.state, &delta);
         validate_commit_shape(&self.security_params, delta.writes.len(), next.values.len())
             .map_err(CommitError::SecurityRefinementFailed)?;
+
+        // Monotone extension check (AppendOnly mode).
+        if self.write_mode == WriteMode::AppendOnly
+            && !immutable::verify_monotone_extension(
+                &self.state, &self.keymap, &next, &self.keymap,
+            )
+        {
+            return Err(CommitError::MonotoneViolation);
+        }
 
         let sheaf_pf = build_sheaf_coherence(local_views);
         if !verify_sheaf_coherence(&next, &sheaf_pf) {
@@ -342,6 +374,19 @@ impl NucleusDb {
         )
         .map_err(CommitError::SecurityRefinementFailed)?;
         self.entries.push(entry.clone());
+
+        // Compute and chain monotone seal (AppendOnly mode).
+        if self.write_mode == WriteMode::AppendOnly {
+            let kv_digest = immutable::key_value_digest(&self.state, &self.keymap);
+            let prev_seal = self
+                .monotone_seals
+                .last()
+                .copied()
+                .unwrap_or_else(immutable::genesis_seal);
+            let seal = immutable::next_seal(&prev_seal, &kv_digest);
+            self.monotone_seals.push(seal);
+        }
+
         Ok(entry)
     }
 

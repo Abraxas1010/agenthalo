@@ -1,3 +1,4 @@
+use crate::immutable::WriteMode;
 use crate::keymap::KeyMap;
 use crate::protocol::{CommitEntry, NucleusDb, VcBackend};
 use crate::security::{ParameterSet, ReductionContract};
@@ -39,6 +40,10 @@ struct SnapshotV1 {
     current_sth: Option<SignedTreeHead>,
     #[serde(default)]
     keymap: Option<KeyMap>,
+    #[serde(default)]
+    write_mode: WriteMode,
+    #[serde(default)]
+    monotone_seals: Vec<NodeHash>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -51,6 +56,8 @@ struct WalMetaV1 {
     initial_state: State,
     #[serde(default)]
     keymap: Option<KeyMap>,
+    #[serde(default)]
+    write_mode: WriteMode,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,6 +92,8 @@ pub fn save_snapshot(path: &Path, db: &NucleusDb) -> Result<(), PersistenceError
             ct_leaves: db.ct_leaves.clone(),
             current_sth: db.current_sth.clone(),
             keymap: Some(db.keymap.clone()),
+            write_mode: db.write_mode.clone(),
+            monotone_seals: db.monotone_seals.clone(),
         };
         let raw = serde_json::to_vec(&payload).map_err(PersistenceError::Json)?;
         table.insert(SNAP_KEY, raw.as_slice()).map_err(map_redb)?;
@@ -138,6 +147,8 @@ pub fn load_snapshot(
     db.ct_leaves = snapshot.ct_leaves;
     db.current_sth = snapshot.current_sth;
     db.keymap = snapshot.keymap.unwrap_or_default();
+    db.write_mode = snapshot.write_mode;
+    db.monotone_seals = snapshot.monotone_seals;
     Ok(db)
 }
 
@@ -158,6 +169,7 @@ pub fn init_wal(path: &Path, db: &NucleusDb) -> Result<(), PersistenceError> {
             kzg_trusted_setup: db.kzg_trusted_setup.clone(),
             initial_state: db.state.clone(),
             keymap: Some(db.keymap.clone()),
+            write_mode: db.write_mode.clone(),
         };
         let got_existing: Option<WalMetaV1> = {
             let existing = meta.get(WAL_META_KEY).map_err(map_redb)?;
@@ -270,6 +282,7 @@ pub fn load_wal(path: &Path, witness_cfg: WitnessConfig) -> Result<NucleusDb, Pe
     db.kzg_trusted_setup = wal_meta.kzg_trusted_setup;
     db.state = wal_meta.initial_state;
     db.keymap = wal_meta.keymap.unwrap_or_default();
+    db.write_mode = wal_meta.write_mode;
 
     for row in events.iter().map_err(map_redb)? {
         let (k, v) = row.map_err(map_redb)?;

@@ -1,3 +1,4 @@
+use crate::immutable::WriteMode;
 use crate::protocol::NucleusDb;
 use crate::sql::schema::{COL_KEY, COL_VALUE, TABLE_NAME};
 use crate::state::Delta;
@@ -29,6 +30,7 @@ pub enum SqlResult {
 pub struct SqlExecutor<'a> {
     db: &'a mut NucleusDb,
     pending_writes: Vec<(usize, u64)>,
+    committed: bool,
 }
 
 impl<'a> SqlExecutor<'a> {
@@ -36,6 +38,7 @@ impl<'a> SqlExecutor<'a> {
         Self {
             db,
             pending_writes: Vec::new(),
+            committed: false,
         }
     }
 
@@ -93,6 +96,11 @@ impl<'a> SqlExecutor<'a> {
         last
     }
 
+    /// Returns true if any COMMIT succeeded during this executor's lifetime.
+    pub fn committed(&self) -> bool {
+        self.committed
+    }
+
     pub fn pending_writes_len(&self) -> usize {
         self.pending_writes.len()
     }
@@ -115,6 +123,15 @@ impl<'a> SqlExecutor<'a> {
                     .to_string(),
             }),
             "EXPORT" => Some(self.export_json()),
+            "SHOW MODE" => Some(SqlResult::Ok {
+                message: format!("Write mode: {:?}", self.db.write_mode()),
+            }),
+            "SET MODE APPEND_ONLY" | "SET MODE APPENDONLY" => {
+                self.db.set_append_only();
+                Some(SqlResult::Ok {
+                    message: "Write mode locked to AppendOnly. INSERT only — UPDATE/DELETE disabled. Monotone seal chain active.".to_string(),
+                })
+            }
             _ => {
                 if normalized.starts_with("SHOW HISTORY ") {
                     return Some(self.show_key_history(sql));
@@ -317,6 +334,7 @@ impl<'a> SqlExecutor<'a> {
         match self.db.commit(delta, &[]) {
             Ok(entry) => {
                 self.pending_writes.clear();
+                self.committed = true;
                 SqlResult::Ok {
                     message: format!("Committed at height {}", entry.height),
                 }
@@ -438,6 +456,11 @@ impl<'a> SqlExecutor<'a> {
         assignments: &[Assignment],
         selection: Option<&Expr>,
     ) -> SqlResult {
+        if *self.db.write_mode() == WriteMode::AppendOnly {
+            return SqlResult::Error {
+                message: "UPDATE rejected: database is in AppendOnly mode (immutable agentic records)".to_string(),
+            };
+        }
         if !table_with_joins_is_data(table) {
             return SqlResult::Error {
                 message: format!("Only virtual table '{TABLE_NAME}' is supported"),
@@ -465,6 +488,11 @@ impl<'a> SqlExecutor<'a> {
     }
 
     fn execute_delete(&mut self, del: &Delete) -> SqlResult {
+        if *self.db.write_mode() == WriteMode::AppendOnly {
+            return SqlResult::Error {
+                message: "DELETE rejected: database is in AppendOnly mode (immutable agentic records)".to_string(),
+            };
+        }
         if !delete_targets_data(del) {
             return SqlResult::Error {
                 message: format!("Only virtual table '{TABLE_NAME}' is supported"),

@@ -134,3 +134,233 @@ fn sql_script_mixes_custom_and_standard_statements() {
     assert_eq!(fields.get("entries").map(String::as_str), Some("1"));
     assert_eq!(fields.get("key_count").map(String::as_str), Some("1"));
 }
+
+// --- Bug #2 regression tests: multi-statement batch with custom commands ---
+
+#[test]
+fn sql_multi_statement_insert_commit_verify_batch() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    let result = exec.execute(
+        "INSERT INTO data (key, value) VALUES ('sensor', 42); COMMIT; VERIFY 'sensor';",
+    );
+    let (cols, rows) = expect_rows(result);
+    assert!(cols.contains(&"verified".to_string()));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][3], "true");
+}
+
+#[test]
+fn sql_multi_statement_select_then_show_status() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('a', 1);"));
+    expect_ok(exec.execute("COMMIT;"));
+
+    let result = exec.execute("SELECT * FROM data; SHOW STATUS;");
+    let (cols, _rows) = expect_rows(result);
+    assert!(cols.contains(&"field".to_string()));
+}
+
+#[test]
+fn sql_multi_statement_two_custom_commands() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('x', 7);"));
+    expect_ok(exec.execute("COMMIT;"));
+
+    let result = exec.execute("SHOW STATUS; SHOW HISTORY;");
+    let (cols, _rows) = expect_rows(result);
+    assert!(cols.contains(&"height".to_string()));
+}
+
+#[test]
+fn sql_multi_statement_respects_quoted_semicolons() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    let result = exec.execute(
+        "INSERT INTO data (key, value) VALUES ('key;with;semi', 99); COMMIT;",
+    );
+    expect_ok(result);
+
+    let (_, rows) = expect_rows(
+        exec.execute("SELECT * FROM data WHERE key = 'key;with;semi';"),
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][1], "99");
+}
+
+// --- Bug #3 regression test: committed() flag ---
+
+#[test]
+fn sql_committed_flag_tracks_commit() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    assert!(!exec.committed());
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('x', 1);"));
+    assert!(!exec.committed(), "INSERT alone must not set committed");
+    expect_ok(exec.execute("COMMIT;"));
+    assert!(exec.committed(), "COMMIT must set committed flag");
+}
+
+#[test]
+fn sql_uncommitted_insert_does_not_mark_committed() {
+    let mut db = mk_db();
+
+    {
+        let mut exec = SqlExecutor::new(&mut db);
+        expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('phantom', 999);"));
+        assert!(!exec.committed());
+    }
+
+    {
+        let mut exec = SqlExecutor::new(&mut db);
+        let (_, rows) =
+            expect_rows(exec.execute("SELECT * FROM data WHERE key = 'phantom';"));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], "0", "uncommitted key must show default value 0");
+    }
+}
+
+// --- Immutable Agentic Records Mode ---
+
+fn expect_error(res: SqlResult) -> String {
+    match res {
+        SqlResult::Error { message } => message,
+        SqlResult::Ok { message } => panic!("expected Error, got Ok: {message}"),
+        SqlResult::Rows { .. } => panic!("expected Error, got Rows"),
+    }
+}
+
+#[test]
+fn sql_set_mode_append_only_via_sql() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    let res = exec.execute("SHOW MODE;");
+    match res {
+        SqlResult::Ok { message } => assert!(message.contains("Normal"), "default should be Normal, got: {message}"),
+        other => panic!("expected Ok from SHOW MODE, got: {other:?}"),
+    }
+
+    expect_ok(exec.execute("SET MODE APPEND_ONLY;"));
+
+    let res = exec.execute("SHOW MODE;");
+    match res {
+        SqlResult::Ok { message } => assert!(message.contains("AppendOnly"), "should be AppendOnly, got: {message}"),
+        other => panic!("expected Ok from SHOW MODE, got: {other:?}"),
+    }
+}
+
+#[test]
+fn sql_append_only_allows_insert_and_commit() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(exec.execute("SET MODE APPEND_ONLY;"));
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('sensor_1', 100);"));
+    expect_ok(exec.execute("COMMIT;"));
+
+    let (_, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'sensor_1';"));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][1], "100");
+}
+
+#[test]
+fn sql_append_only_rejects_update() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('record', 42);"));
+    expect_ok(exec.execute("COMMIT;"));
+
+    expect_ok(exec.execute("SET MODE APPEND_ONLY;"));
+
+    let msg = expect_error(exec.execute("UPDATE data SET value = 99 WHERE key = 'record';"));
+    assert!(msg.contains("AppendOnly"), "rejection message should mention AppendOnly: {msg}");
+    assert!(msg.contains("UPDATE rejected"), "should say UPDATE rejected: {msg}");
+}
+
+#[test]
+fn sql_append_only_rejects_delete() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('immutable_key', 7);"));
+    expect_ok(exec.execute("COMMIT;"));
+
+    expect_ok(exec.execute("SET MODE APPEND_ONLY;"));
+
+    let msg = expect_error(exec.execute("DELETE FROM data WHERE key = 'immutable_key';"));
+    assert!(msg.contains("AppendOnly"), "rejection message should mention AppendOnly: {msg}");
+    assert!(msg.contains("DELETE rejected"), "should say DELETE rejected: {msg}");
+}
+
+#[test]
+fn sql_append_only_multiple_inserts_commit_produces_seals() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(exec.execute("SET MODE APPEND_ONLY;"));
+
+    for i in 0..3 {
+        let sql = format!(
+            "INSERT INTO data (key, value) VALUES ('agent_log_{}', {}); COMMIT;",
+            i,
+            i * 10 + 1
+        );
+        expect_ok(exec.execute(&sql));
+    }
+
+    assert_eq!(db.monotone_seals().len(), 3, "each commit should produce a seal");
+
+    let seals: Vec<_> = db.monotone_seals().to_vec();
+    for i in 0..seals.len() {
+        for j in (i + 1)..seals.len() {
+            assert_ne!(seals[i], seals[j], "seals at {i} and {j} must differ");
+        }
+    }
+}
+
+#[test]
+fn sql_append_only_data_readable_after_lock() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('pre_lock', 55);"));
+    expect_ok(exec.execute("COMMIT;"));
+
+    expect_ok(exec.execute("SET MODE APPEND_ONLY;"));
+
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('post_lock', 77);"));
+    expect_ok(exec.execute("COMMIT;"));
+
+    let (_, rows) = expect_rows(exec.execute("SELECT * FROM data;"));
+    assert_eq!(rows.len(), 2);
+
+    let (_, pre) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'pre_lock';"));
+    assert_eq!(pre[0][1], "55");
+
+    let (_, post) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'post_lock';"));
+    assert_eq!(post[0][1], "77");
+}
+
+#[test]
+fn sql_append_only_verify_still_works() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(exec.execute("SET MODE APPEND_ONLY;"));
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('verified_record', 123);"));
+    expect_ok(exec.execute("COMMIT;"));
+
+    let result = exec.execute("VERIFY 'verified_record';");
+    let (cols, rows) = expect_rows(result);
+    assert!(cols.contains(&"verified".to_string()));
+    assert_eq!(rows[0][3], "true");
+}

@@ -868,3 +868,150 @@ fn multi_tenant_checkpoint_truncates_wal_and_preserves_state() {
     assert_eq!(snap.state_values, vec![99, 20]);
     assert_eq!(snap.entries, 1);
 }
+
+// --- Immutable Agentic Records (protocol-level integration tests) ---
+
+use nucleusdb::immutable::{genesis_seal, WriteMode};
+
+#[test]
+fn append_only_commit_produces_seals() {
+    let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());
+    db.set_append_only();
+    assert_eq!(*db.write_mode(), WriteMode::AppendOnly);
+
+    // First commit: insert key 0.
+    db.commit(Delta::new(vec![(0, 42)]), &coherent_views())
+        .expect("append-only insert should succeed");
+    assert_eq!(db.monotone_seals().len(), 1, "first commit should produce one seal");
+
+    // Second commit: insert key 1 (new key, monotone).
+    db.commit(Delta::new(vec![(1, 99)]), &coherent_views())
+        .expect("second append should succeed");
+    assert_eq!(db.monotone_seals().len(), 2, "second commit should add a seal");
+
+    // Seals are distinct.
+    assert_ne!(db.monotone_seals()[0], db.monotone_seals()[1]);
+}
+
+#[test]
+fn append_only_rejects_overwrite_at_protocol_level() {
+    let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());
+
+    // Insert key 0 in Normal mode.
+    db.commit(Delta::new(vec![(0, 42)]), &coherent_views())
+        .expect("normal insert");
+
+    // Lock to AppendOnly.
+    db.set_append_only();
+
+    // Attempt to overwrite key 0 — should fail with MonotoneViolation.
+    let err = db
+        .commit(Delta::new(vec![(0, 99)]), &coherent_views())
+        .expect_err("overwrite should be rejected");
+    assert!(
+        matches!(err, CommitError::MonotoneViolation),
+        "expected MonotoneViolation, got: {err:?}"
+    );
+}
+
+#[test]
+fn append_only_allows_new_keys_after_lock() {
+    let mut db = NucleusDb::new(State::new(vec![10, 20]), VcBackend::BinaryMerkle, mk_cfg());
+    db.set_append_only();
+
+    // Insert a new key (index 2) — monotone extension satisfied.
+    db.commit(Delta::new(vec![(2, 55)]), &coherent_views())
+        .expect("inserting new key in append-only should succeed");
+
+    let (val, proof, root) = db.query(2).expect("query newly inserted key");
+    assert_eq!(val, 55);
+    assert!(db.verify_query(2, val, &proof, root));
+}
+
+#[test]
+fn append_only_seal_chain_verifiable() {
+    let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());
+    db.set_append_only();
+
+    // Perform 5 successive inserts.
+    for i in 0u64..5 {
+        db.commit(Delta::new(vec![(i as usize, i * 10 + 1)]), &coherent_views())
+            .expect("sequential append");
+    }
+
+    assert_eq!(db.monotone_seals().len(), 5);
+
+    // Manually recompute the seal chain to verify it matches.
+    let mut prev = genesis_seal();
+    for seal in db.monotone_seals() {
+        // We can't easily reconstruct intermediate states from outside,
+        // but we can verify the chain is self-consistent by checking
+        // that each seal differs from previous (non-trivial).
+        assert_ne!(*seal, prev, "each seal should differ from previous");
+        prev = *seal;
+    }
+}
+
+#[test]
+fn append_only_normal_mode_allows_overwrite() {
+    // Sanity: in Normal mode, overwriting is allowed and no seals are produced.
+    let mut db = NucleusDb::new(State::new(vec![42]), VcBackend::BinaryMerkle, mk_cfg());
+    assert_eq!(*db.write_mode(), WriteMode::Normal);
+
+    db.commit(Delta::new(vec![(0, 99)]), &coherent_views())
+        .expect("overwrite in normal mode should succeed");
+
+    assert!(db.monotone_seals().is_empty(), "no seals in normal mode");
+}
+
+#[test]
+fn append_only_persists_through_snapshot() {
+    let tmp = std::env::temp_dir().join(format!(
+        "nucleusdb_test_immutable_snap_{}.ndb",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+
+    let seals_before;
+    {
+        let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());
+        db.set_append_only();
+
+        db.commit(Delta::new(vec![(0, 10)]), &coherent_views())
+            .expect("append commit 1");
+        db.commit(Delta::new(vec![(1, 20)]), &coherent_views())
+            .expect("append commit 2");
+
+        seals_before = db.monotone_seals().to_vec();
+        assert_eq!(seals_before.len(), 2);
+
+        nucleusdb::persistence::save_snapshot(&tmp, &db).expect("save");
+    }
+
+    // Restore from snapshot.
+    let restored = nucleusdb::persistence::load_snapshot(&tmp, mk_cfg()).expect("load");
+    assert_eq!(*restored.write_mode(), WriteMode::AppendOnly);
+    assert_eq!(restored.monotone_seals(), seals_before.as_slice());
+
+    // Clean up.
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn append_only_ct_proofs_still_valid() {
+    let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());
+    db.set_append_only();
+
+    // Insert and query — CT consistency proofs must still work.
+    db.commit(Delta::new(vec![(0, 42)]), &coherent_views())
+        .expect("append commit");
+
+    let (val, proof, root) = db.query(0).expect("query");
+    assert_eq!(val, 42);
+    assert!(db.verify_query(0, val, &proof, root));
+
+    // CT head should be present.
+    assert!(db.current_sth().is_some());
+}
