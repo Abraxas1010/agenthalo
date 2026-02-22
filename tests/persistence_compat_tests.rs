@@ -1,5 +1,9 @@
-use nucleusdb::persistence::{default_wal_path, init_wal, load_wal, persist_snapshot_and_sync_wal};
+use nucleusdb::persistence::{
+    default_wal_path, init_wal, load_wal, persist_snapshot_and_sync_wal, save_snapshot,
+    truncate_wal,
+};
 use nucleusdb::protocol::{NucleusDb, VcBackend};
+use nucleusdb::sql::executor::SqlExecutor;
 use nucleusdb::state::{Delta, State};
 use nucleusdb::witness::WitnessConfig;
 use redb::{Database, TableDefinition};
@@ -72,4 +76,106 @@ fn snapshot_sync_keeps_wal_compatible_with_current_snapshot_state() {
     let loaded_snapshot =
         NucleusDb::load_persistent(&snapshot_path, mk_cfg()).expect("load snapshot");
     init_wal(&wal_path, &loaded_snapshot).expect("wal should match snapshot state");
+}
+
+// --- Bug #1 regression test: WAL/snapshot sync after commit ---
+
+#[test]
+fn snapshot_then_wal_init_succeeds_after_truncate() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let db_path =
+        std::env::temp_dir().join(format!("nucleusdb_wal_sync_bug1_{stamp}.redb"));
+    let wal_path = default_wal_path(&db_path);
+
+    // Create db and init WAL.
+    let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());
+    save_snapshot(&db_path, &db).expect("save initial snapshot");
+    init_wal(&wal_path, &db).expect("init WAL");
+
+    // Simulate INSERT + COMMIT via SQL executor.
+    {
+        let mut exec = SqlExecutor::new(&mut db);
+        exec.execute("INSERT INTO data (key, value) VALUES ('x', 42);");
+        exec.execute("COMMIT;");
+        assert!(exec.committed());
+    }
+
+    // Save snapshot AND truncate WAL (the fix).
+    save_snapshot(&db_path, &db).expect("save updated snapshot");
+    truncate_wal(&wal_path, &db).expect("truncate WAL to match");
+
+    // Now init_wal must succeed — this previously failed with WalMetaMismatch
+    // because the old WAL had stale initial_state.
+    init_wal(&wal_path, &db).expect("init_wal after truncate must succeed");
+
+    // Verify data survived.
+    let recovered = NucleusDb::load_persistent(&db_path, mk_cfg()).expect("load snapshot");
+    assert_eq!(recovered.keymap.get("x"), Some(0));
+    let (value, proof, root) = recovered.query(0).expect("query");
+    assert_eq!(value, 42);
+    assert!(recovered.verify_query(0, value, &proof, root));
+}
+
+#[test]
+fn snapshot_without_wal_truncate_causes_mismatch() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let db_path =
+        std::env::temp_dir().join(format!("nucleusdb_wal_nosync_bug1_{stamp}.redb"));
+    let wal_path = default_wal_path(&db_path);
+
+    let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());
+    save_snapshot(&db_path, &db).expect("save initial");
+    init_wal(&wal_path, &db).expect("init WAL");
+
+    // Mutate state.
+    {
+        let mut exec = SqlExecutor::new(&mut db);
+        exec.execute("INSERT INTO data (key, value) VALUES ('y', 99);");
+        exec.execute("COMMIT;");
+    }
+
+    // Save snapshot but DO NOT truncate WAL — this is the bug scenario.
+    save_snapshot(&db_path, &db).expect("save updated");
+
+    // init_wal should fail because WAL still has the old initial_state.
+    let err = init_wal(&wal_path, &db);
+    assert!(err.is_err(), "init_wal must fail when WAL is stale");
+}
+
+// --- Bug #3 regression test: uncommitted keymap not persisted ---
+
+#[test]
+fn uncommitted_insert_keymap_not_persisted() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let db_path =
+        std::env::temp_dir().join(format!("nucleusdb_phantom_bug3_{stamp}.redb"));
+
+    // Create and save initial empty db.
+    let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());
+    save_snapshot(&db_path, &db).expect("save initial");
+
+    // INSERT without COMMIT — keymap is mutated in memory.
+    {
+        let mut exec = SqlExecutor::new(&mut db);
+        exec.execute("INSERT INTO data (key, value) VALUES ('phantom', 777);");
+        assert!(!exec.committed());
+    }
+    // The in-memory keymap has the phantom key, but we do NOT persist
+    // because committed() is false (this is what the application layer does).
+
+    // Load from the persisted snapshot — phantom key must not exist.
+    let recovered = NucleusDb::load_persistent(&db_path, mk_cfg()).expect("load");
+    assert!(
+        recovered.keymap.get("phantom").is_none(),
+        "uncommitted key must not appear in persisted snapshot"
+    );
 }

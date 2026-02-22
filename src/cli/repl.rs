@@ -54,17 +54,21 @@ pub fn run_repl(db: &mut NucleusDb, db_path: &Path) -> Result<(), String> {
 }
 
 pub fn execute_sql_text(db: &mut NucleusDb, db_path: &Path, sql_text: &str) -> Result<(), String> {
-    let mut executor = SqlExecutor::new(db);
-    let out = executor.execute(sql_text);
-    match out {
-        SqlResult::Rows { columns, rows } => print_table(&columns, &rows),
+    let (out, committed) = {
+        let mut executor = SqlExecutor::new(db);
+        let result = executor.execute(sql_text);
+        (result, executor.committed())
+    };
+    match &out {
+        SqlResult::Rows { columns, rows } => print_table(columns, rows),
         SqlResult::Ok { message } => println!("{message}"),
-        SqlResult::Error { message } => {
-            eprintln!("Error: {message}");
-            return Ok(());
-        }
+        SqlResult::Error { message } => eprintln!("Error: {message}"),
     }
-    persist_current(db_path, executor.db())?;
+    // Only persist when a COMMIT actually happened — prevents uncommitted
+    // keymap pollution from being saved to disk (Bug #3).
+    if committed {
+        persist_current(db_path, db)?;
+    }
     Ok(())
 }
 

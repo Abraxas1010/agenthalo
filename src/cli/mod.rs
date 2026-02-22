@@ -11,6 +11,10 @@ use clap::{Parser, Subcommand};
     about = "Verifiable database with vector commitments"
 )]
 pub struct Cli {
+    /// Path to CAB license certificate (enables Pro features).
+    #[arg(long, global = true)]
+    pub license: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -72,6 +76,11 @@ pub enum Commands {
     Export {
         #[arg(long, default_value = "nucleusdb.ndb")]
         db: String,
+    },
+    /// Verify a CAB license certificate
+    License {
+        /// Path to the certificate JSON file
+        cert: String,
     },
 }
 

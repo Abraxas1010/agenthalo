@@ -238,9 +238,10 @@ impl App {
         self.sql_history.push(sql_owned.clone());
         self.sql_history_cursor = None;
 
-        let result = {
+        let (result, committed) = {
             let mut executor = SqlExecutor::new(&mut self.db);
-            executor.execute(&sql_owned)
+            let r = executor.execute(&sql_owned);
+            (r, executor.committed())
         };
 
         match result {
@@ -256,15 +257,18 @@ impl App {
                 } else {
                     lines
                 };
-                self.persist_snapshot()?;
             }
             SqlResult::Ok { message } => {
                 self.sql_output = vec![format!("OK: {message}")];
-                self.persist_snapshot()?;
             }
             SqlResult::Error { message } => {
                 self.sql_output = vec![format!("Error: {message}")];
             }
+        }
+
+        // Only persist when a COMMIT actually happened (Bug #3 fix).
+        if committed {
+            self.persist_snapshot()?;
         }
 
         self.sql_input.clear();

@@ -218,9 +218,7 @@ impl NucleusDbMcpService {
     }
 
     fn default_wal_path(db_path: &Path) -> PathBuf {
-        let mut wal = db_path.to_path_buf();
-        wal.set_extension("wal");
-        wal
+        crate::persistence::default_wal_path(db_path)
     }
 
     fn backend_label(backend: &VcBackend) -> &'static str {
@@ -371,37 +369,33 @@ impl NucleusDbMcpService {
         Parameters(req): Parameters<ExecuteSqlRequest>,
     ) -> Result<Json<SqlExecutionResponse>, McpError> {
         let mut guard = self.state.lock().await;
-        let mut exec = SqlExecutor::new(&mut guard.db);
-        let (response, success) = match exec.execute(&req.sql) {
-            SqlResult::Rows { columns, rows } => (
-                SqlExecutionResponse {
+        let (response, committed) = {
+            let mut exec = SqlExecutor::new(&mut guard.db);
+            let result = exec.execute(&req.sql);
+            let committed = exec.committed();
+            let resp = match result {
+                SqlResult::Rows { columns, rows } => SqlExecutionResponse {
                     status: "rows".to_string(),
                     message: format!("returned {} row(s)", rows.len()),
                     columns,
                     rows,
                 },
-                true,
-            ),
-            SqlResult::Ok { message } => (
-                SqlExecutionResponse {
+                SqlResult::Ok { message } => SqlExecutionResponse {
                     status: "ok".to_string(),
                     message,
                     columns: Vec::new(),
                     rows: Vec::new(),
                 },
-                true,
-            ),
-            SqlResult::Error { message } => (
-                SqlExecutionResponse {
+                SqlResult::Error { message } => SqlExecutionResponse {
                     status: "error".to_string(),
                     message,
                     columns: Vec::new(),
                     rows: Vec::new(),
                 },
-                false,
-            ),
+            };
+            (resp, committed)
         };
-        if success && req.persist.unwrap_or(true) {
+        if committed && req.persist.unwrap_or(true) {
             persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(
                 |e| {
                     McpError::internal_error(format!("failed to persist snapshot+wal: {e:?}"), None)
