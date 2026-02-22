@@ -882,12 +882,20 @@ fn append_only_commit_produces_seals() {
     // First commit: insert key 0.
     db.commit(Delta::new(vec![(0, 42)]), &coherent_views())
         .expect("append-only insert should succeed");
-    assert_eq!(db.monotone_seals().len(), 1, "first commit should produce one seal");
+    assert_eq!(
+        db.monotone_seals().len(),
+        1,
+        "first commit should produce one seal"
+    );
 
     // Second commit: insert key 1 (new key, monotone).
     db.commit(Delta::new(vec![(1, 99)]), &coherent_views())
         .expect("second append should succeed");
-    assert_eq!(db.monotone_seals().len(), 2, "second commit should add a seal");
+    assert_eq!(
+        db.monotone_seals().len(),
+        2,
+        "second commit should add a seal"
+    );
 
     // Seals are distinct.
     assert_ne!(db.monotone_seals()[0], db.monotone_seals()[1]);
@@ -935,8 +943,11 @@ fn append_only_seal_chain_verifiable() {
 
     // Perform 5 successive inserts.
     for i in 0u64..5 {
-        db.commit(Delta::new(vec![(i as usize, i * 10 + 1)]), &coherent_views())
-            .expect("sequential append");
+        db.commit(
+            Delta::new(vec![(i as usize, i * 10 + 1)]),
+            &coherent_views(),
+        )
+        .expect("sequential append");
     }
 
     assert_eq!(db.monotone_seals().len(), 5);

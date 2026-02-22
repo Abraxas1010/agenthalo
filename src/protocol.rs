@@ -281,9 +281,7 @@ impl NucleusDb {
 
         // Monotone extension check (AppendOnly mode).
         if self.write_mode == WriteMode::AppendOnly
-            && !immutable::verify_monotone_extension(
-                &self.state, &self.keymap, &next, &self.keymap,
-            )
+            && !immutable::verify_monotone_extension(&self.state, &self.keymap, &next, &self.keymap)
         {
             return Err(CommitError::MonotoneViolation);
         }

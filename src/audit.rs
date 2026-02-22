@@ -369,8 +369,12 @@ pub fn replay_verify_evidence(
             if e.consistency_with_prev.is_some() {
                 return Err(ReplayError::UnexpectedConsistencyEvidenceAtGenesis);
             }
-            if !verify_quorum_for_algorithm(witness_cfg, sig_alg, &msg_for_entry(e), &e.witness_sigs)
-            {
+            if !verify_quorum_for_algorithm(
+                witness_cfg,
+                sig_alg,
+                &msg_for_entry(e),
+                &e.witness_sigs,
+            ) {
                 return Err(ReplayError::WitnessQuorumFailed { height: e.height });
             }
             continue;
@@ -412,8 +416,7 @@ pub fn replay_verify_evidence(
         if !verify_consistency_proof(&proof, &old_root, &new_root) {
             return Err(ReplayError::InvalidConsistencyEvidence { height: e.height });
         }
-        if !verify_quorum_for_algorithm(witness_cfg, sig_alg, &msg_for_entry(e), &e.witness_sigs)
-        {
+        if !verify_quorum_for_algorithm(witness_cfg, sig_alg, &msg_for_entry(e), &e.witness_sigs) {
             return Err(ReplayError::WitnessQuorumFailed { height: e.height });
         }
     }

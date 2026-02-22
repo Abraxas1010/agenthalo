@@ -1,5 +1,4 @@
 import NucleusDB.Commitment.Adapter
-import HeytingLean.Crypto.Commit.Spec
 
 namespace HeytingLean
 namespace NucleusDB

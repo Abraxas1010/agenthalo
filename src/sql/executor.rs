@@ -458,7 +458,9 @@ impl<'a> SqlExecutor<'a> {
     ) -> SqlResult {
         if *self.db.write_mode() == WriteMode::AppendOnly {
             return SqlResult::Error {
-                message: "UPDATE rejected: database is in AppendOnly mode (immutable agentic records)".to_string(),
+                message:
+                    "UPDATE rejected: database is in AppendOnly mode (immutable agentic records)"
+                        .to_string(),
             };
         }
         if !table_with_joins_is_data(table) {
@@ -490,7 +492,9 @@ impl<'a> SqlExecutor<'a> {
     fn execute_delete(&mut self, del: &Delete) -> SqlResult {
         if *self.db.write_mode() == WriteMode::AppendOnly {
             return SqlResult::Error {
-                message: "DELETE rejected: database is in AppendOnly mode (immutable agentic records)".to_string(),
+                message:
+                    "DELETE rejected: database is in AppendOnly mode (immutable agentic records)"
+                        .to_string(),
             };
         }
         if !delete_targets_data(del) {

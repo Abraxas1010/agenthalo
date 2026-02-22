@@ -86,8 +86,7 @@ fn snapshot_then_wal_init_succeeds_after_truncate() {
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let db_path =
-        std::env::temp_dir().join(format!("nucleusdb_wal_sync_bug1_{stamp}.redb"));
+    let db_path = std::env::temp_dir().join(format!("nucleusdb_wal_sync_bug1_{stamp}.redb"));
     let wal_path = default_wal_path(&db_path);
 
     // Create db and init WAL.
@@ -125,8 +124,7 @@ fn snapshot_without_wal_truncate_causes_mismatch() {
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let db_path =
-        std::env::temp_dir().join(format!("nucleusdb_wal_nosync_bug1_{stamp}.redb"));
+    let db_path = std::env::temp_dir().join(format!("nucleusdb_wal_nosync_bug1_{stamp}.redb"));
     let wal_path = default_wal_path(&db_path);
 
     let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());
@@ -156,8 +154,7 @@ fn uncommitted_insert_keymap_not_persisted() {
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let db_path =
-        std::env::temp_dir().join(format!("nucleusdb_phantom_bug3_{stamp}.redb"));
+    let db_path = std::env::temp_dir().join(format!("nucleusdb_phantom_bug3_{stamp}.redb"));
 
     // Create and save initial empty db.
     let mut db = NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, mk_cfg());

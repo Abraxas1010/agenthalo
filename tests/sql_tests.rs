@@ -142,9 +142,8 @@ fn sql_multi_statement_insert_commit_verify_batch() {
     let mut db = mk_db();
     let mut exec = SqlExecutor::new(&mut db);
 
-    let result = exec.execute(
-        "INSERT INTO data (key, value) VALUES ('sensor', 42); COMMIT; VERIFY 'sensor';",
-    );
+    let result = exec
+        .execute("INSERT INTO data (key, value) VALUES ('sensor', 42); COMMIT; VERIFY 'sensor';");
     let (cols, rows) = expect_rows(result);
     assert!(cols.contains(&"verified".to_string()));
     assert_eq!(rows.len(), 1);
@@ -182,14 +181,11 @@ fn sql_multi_statement_respects_quoted_semicolons() {
     let mut db = mk_db();
     let mut exec = SqlExecutor::new(&mut db);
 
-    let result = exec.execute(
-        "INSERT INTO data (key, value) VALUES ('key;with;semi', 99); COMMIT;",
-    );
+    let result =
+        exec.execute("INSERT INTO data (key, value) VALUES ('key;with;semi', 99); COMMIT;");
     expect_ok(result);
 
-    let (_, rows) = expect_rows(
-        exec.execute("SELECT * FROM data WHERE key = 'key;with;semi';"),
-    );
+    let (_, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'key;with;semi';"));
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0][1], "99");
 }
@@ -220,8 +216,7 @@ fn sql_uncommitted_insert_does_not_mark_committed() {
 
     {
         let mut exec = SqlExecutor::new(&mut db);
-        let (_, rows) =
-            expect_rows(exec.execute("SELECT * FROM data WHERE key = 'phantom';"));
+        let (_, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'phantom';"));
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0][1], "0", "uncommitted key must show default value 0");
     }
@@ -244,7 +239,10 @@ fn sql_set_mode_append_only_via_sql() {
 
     let res = exec.execute("SHOW MODE;");
     match res {
-        SqlResult::Ok { message } => assert!(message.contains("Normal"), "default should be Normal, got: {message}"),
+        SqlResult::Ok { message } => assert!(
+            message.contains("Normal"),
+            "default should be Normal, got: {message}"
+        ),
         other => panic!("expected Ok from SHOW MODE, got: {other:?}"),
     }
 
@@ -252,7 +250,10 @@ fn sql_set_mode_append_only_via_sql() {
 
     let res = exec.execute("SHOW MODE;");
     match res {
-        SqlResult::Ok { message } => assert!(message.contains("AppendOnly"), "should be AppendOnly, got: {message}"),
+        SqlResult::Ok { message } => assert!(
+            message.contains("AppendOnly"),
+            "should be AppendOnly, got: {message}"
+        ),
         other => panic!("expected Ok from SHOW MODE, got: {other:?}"),
     }
 }
@@ -282,8 +283,14 @@ fn sql_append_only_rejects_update() {
     expect_ok(exec.execute("SET MODE APPEND_ONLY;"));
 
     let msg = expect_error(exec.execute("UPDATE data SET value = 99 WHERE key = 'record';"));
-    assert!(msg.contains("AppendOnly"), "rejection message should mention AppendOnly: {msg}");
-    assert!(msg.contains("UPDATE rejected"), "should say UPDATE rejected: {msg}");
+    assert!(
+        msg.contains("AppendOnly"),
+        "rejection message should mention AppendOnly: {msg}"
+    );
+    assert!(
+        msg.contains("UPDATE rejected"),
+        "should say UPDATE rejected: {msg}"
+    );
 }
 
 #[test]
@@ -297,8 +304,14 @@ fn sql_append_only_rejects_delete() {
     expect_ok(exec.execute("SET MODE APPEND_ONLY;"));
 
     let msg = expect_error(exec.execute("DELETE FROM data WHERE key = 'immutable_key';"));
-    assert!(msg.contains("AppendOnly"), "rejection message should mention AppendOnly: {msg}");
-    assert!(msg.contains("DELETE rejected"), "should say DELETE rejected: {msg}");
+    assert!(
+        msg.contains("AppendOnly"),
+        "rejection message should mention AppendOnly: {msg}"
+    );
+    assert!(
+        msg.contains("DELETE rejected"),
+        "should say DELETE rejected: {msg}"
+    );
 }
 
 #[test]
@@ -317,7 +330,11 @@ fn sql_append_only_multiple_inserts_commit_produces_seals() {
         expect_ok(exec.execute(&sql));
     }
 
-    assert_eq!(db.monotone_seals().len(), 3, "each commit should produce a seal");
+    assert_eq!(
+        db.monotone_seals().len(),
+        3,
+        "each commit should produce a seal"
+    );
 
     let seals: Vec<_> = db.monotone_seals().to_vec();
     for i in 0..seals.len() {

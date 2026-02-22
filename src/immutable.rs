@@ -30,20 +30,15 @@ use serde::{Deserialize, Serialize};
 const DOMAIN_SEAL: &[u8] = b"NucleusDB.MonotoneSeal|";
 
 /// Write mode controlling mutation permissions on the database.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum WriteMode {
     /// Normal mode — INSERT, UPDATE, DELETE all permitted.
+    #[default]
     Normal,
     /// Append-only — INSERT permitted, UPDATE and DELETE rejected.
     /// Every commit produces a monotone extension proof.
     /// Once enabled, cannot be reverted (one-way lock).
     AppendOnly,
-}
-
-impl Default for WriteMode {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 /// Compute a deterministic digest over all key-value pairs in the current state.
@@ -59,7 +54,7 @@ pub fn key_value_digest(state: &State, keymap: &KeyMap) -> NodeHash {
             (k, v)
         })
         .collect();
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs.sort_by(|a, b| a.0.cmp(b.0));
 
     let mut buf = Vec::new();
     buf.extend_from_slice(b"NucleusDB.KeyValueDigest|");
@@ -146,10 +141,7 @@ pub fn genesis_seal() -> NodeHash {
 
 /// Verify a seal chain against a sequence of state snapshots.
 /// Returns `true` if the chain is valid (no deletion detected).
-pub fn verify_seal_chain(
-    seals: &[NodeHash],
-    states: &[(State, KeyMap)],
-) -> bool {
+pub fn verify_seal_chain(seals: &[NodeHash], states: &[(State, KeyMap)]) -> bool {
     if seals.len() != states.len() {
         return false;
     }
@@ -189,7 +181,10 @@ mod tests {
         let (old_state, old_keymap) = make_state(&[("a", 1), ("b", 2)]);
         let (new_state, new_keymap) = make_state(&[("a", 1), ("b", 2), ("c", 3)]);
         assert!(verify_monotone_extension(
-            &old_state, &old_keymap, &new_state, &new_keymap
+            &old_state,
+            &old_keymap,
+            &new_state,
+            &new_keymap
         ));
     }
 
@@ -198,7 +193,10 @@ mod tests {
         let (old_state, old_keymap) = make_state(&[("a", 1), ("b", 2)]);
         let (new_state, new_keymap) = make_state(&[("a", 1)]); // b deleted
         assert!(!verify_monotone_extension(
-            &old_state, &old_keymap, &new_state, &new_keymap
+            &old_state,
+            &old_keymap,
+            &new_state,
+            &new_keymap
         ));
     }
 
@@ -207,7 +205,10 @@ mod tests {
         let (old_state, old_keymap) = make_state(&[("a", 1), ("b", 2)]);
         let (new_state, new_keymap) = make_state(&[("a", 1), ("b", 999)]); // b changed
         assert!(!verify_monotone_extension(
-            &old_state, &old_keymap, &new_state, &new_keymap
+            &old_state,
+            &old_keymap,
+            &new_state,
+            &new_keymap
         ));
     }
 
@@ -216,7 +217,10 @@ mod tests {
         let (old_state, old_keymap) = make_state(&[("a", 0)]); // zero = absent
         let (new_state, new_keymap) = make_state(&[("a", 42)]);
         assert!(verify_monotone_extension(
-            &old_state, &old_keymap, &new_state, &new_keymap
+            &old_state,
+            &old_keymap,
+            &new_state,
+            &new_keymap
         ));
     }
 
@@ -237,7 +241,10 @@ mod tests {
         let (s2, km2) = make_state(&[("x", 20)]);
         let seal_a = next_seal(&gen, &key_value_digest(&s1, &km1));
         let seal_b = next_seal(&gen, &key_value_digest(&s2, &km2));
-        assert_ne!(seal_a, seal_b, "different data must produce different seals");
+        assert_ne!(
+            seal_a, seal_b,
+            "different data must produce different seals"
+        );
     }
 
     #[test]
@@ -247,10 +254,7 @@ mod tests {
         let gen = genesis_seal();
         let seal1 = next_seal(&gen, &key_value_digest(&s1, &km1));
         let seal2 = next_seal(&seal1, &key_value_digest(&s2, &km2));
-        assert!(verify_seal_chain(
-            &[seal1, seal2],
-            &[(s1, km1), (s2, km2)]
-        ));
+        assert!(verify_seal_chain(&[seal1, seal2], &[(s1, km1), (s2, km2)]));
     }
 
     #[test]
@@ -282,9 +286,6 @@ mod tests {
         // Regardless of insertion order, same keys+values → same digest.
         let (s1, km1) = make_state(&[("a", 1), ("b", 2)]);
         let (s2, km2) = make_state(&[("b", 2), ("a", 1)]);
-        assert_eq!(
-            key_value_digest(&s1, &km1),
-            key_value_digest(&s2, &km2)
-        );
+        assert_eq!(key_value_digest(&s1, &km1), key_value_digest(&s2, &km2));
     }
 }

@@ -2,9 +2,7 @@ use clap::Parser;
 use nucleusdb::api::serve_multitenant;
 use nucleusdb::cli::repl::{execute_sql_text, run_repl};
 use nucleusdb::cli::{default_witness_cfg, parse_backend, print_table, Cli, Commands};
-use nucleusdb::license::{
-    load_and_verify, verification_report, LicenseLevel, ProFeature,
-};
+use nucleusdb::license::{load_and_verify, verification_report, LicenseLevel, ProFeature};
 use nucleusdb::mcp::server::run_mcp_server;
 use nucleusdb::multitenant::MultiTenantPolicy;
 use nucleusdb::persistence::{default_wal_path, init_wal};
@@ -63,7 +61,9 @@ fn run(cli: Cli) -> Result<(), String> {
     let license = resolve_license(cli.license.as_deref());
 
     match cli.command {
-        Commands::Create { db, backend, wal } => cmd_create(&db, &backend, wal.as_deref(), &license),
+        Commands::Create { db, backend, wal } => {
+            cmd_create(&db, &backend, wal.as_deref(), &license)
+        }
         Commands::Open { db } => cmd_open(&db),
         Commands::Server { addr, policy } => {
             require_pro(&license, &ProFeature::MultiTenant, "HTTP API server")?;
@@ -84,7 +84,12 @@ fn run(cli: Cli) -> Result<(), String> {
     }
 }
 
-fn cmd_create(db_path: &str, backend: &str, wal_path: Option<&str>, license: &LicenseLevel) -> Result<(), String> {
+fn cmd_create(
+    db_path: &str,
+    backend: &str,
+    wal_path: Option<&str>,
+    license: &LicenseLevel,
+) -> Result<(), String> {
     let backend = parse_backend_gated(backend, license)?;
     let cfg = default_witness_cfg();
     let db = NucleusDb::new(State::new(vec![]), backend, cfg);
@@ -214,10 +219,10 @@ fn cmd_license(cert_path: &str) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("certificate file not found: {}", path.display()));
     }
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read certificate: {e}"))?;
-    let cert: nucleusdb::license::LicenseCertificate = serde_json::from_str(&raw)
-        .map_err(|e| format!("failed to parse certificate JSON: {e}"))?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| format!("failed to read certificate: {e}"))?;
+    let cert: nucleusdb::license::LicenseCertificate =
+        serde_json::from_str(&raw).map_err(|e| format!("failed to parse certificate JSON: {e}"))?;
     println!("{}", verification_report(&cert));
     Ok(())
 }

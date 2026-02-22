@@ -5,10 +5,10 @@
 //! the binary re-derives the Merkle root over the licensed feature set
 //! and checks it against a baked-in foundation commitment.  No phone-home.
 
+use crate::transparency::ct6962::sha256;
 use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G2Affine};
 use ark_groth16::{prepare_verifying_key, Groth16, Proof as Groth16Proof, VerifyingKey};
 use ark_snark::SNARK;
-use crate::transparency::ct6962::sha256;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,9 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Regenerate with:
 ///   echo -n "NucleusDB.CAB.Foundation|v1" | sha256sum
 const KNOWN_FOUNDATION: [u8; 32] = [
-    0xde, 0xca, 0x4e, 0x53, 0xfb, 0x61, 0x34, 0xb0, 0x00, 0x70, 0x53, 0x41, 0xd5, 0xdb, 0x3d,
-    0xe0, 0x23, 0xdc, 0xd8, 0xa9, 0x5e, 0x17, 0x4b, 0xce, 0x0c, 0x4e, 0x21, 0xbc, 0xab, 0x6e,
-    0x8c, 0xf9,
+    0xde, 0xca, 0x4e, 0x53, 0xfb, 0x61, 0x34, 0xb0, 0x00, 0x70, 0x53, 0x41, 0xd5, 0xdb, 0x3d, 0xe0,
+    0x23, 0xdc, 0xd8, 0xa9, 0x5e, 0x17, 0x4b, 0xce, 0x0c, 0x4e, 0x21, 0xbc, 0xab, 0x6e, 0x8c, 0xf9,
 ];
 
 /// Domain separator mirroring Heyting LeanTT0 `H` / `Hcat` convention.
@@ -96,9 +95,10 @@ impl ProFeature {
 }
 
 /// Active license level at runtime.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum LicenseLevel {
     /// Free tier — core features only.
+    #[default]
     Community,
     /// Paid tier — certificate-verified feature set.
     Pro {
@@ -106,12 +106,6 @@ pub enum LicenseLevel {
         licensee: String,
         expiry_unix_secs: u64,
     },
-}
-
-impl Default for LicenseLevel {
-    fn default() -> Self {
-        Self::Community
-    }
 }
 
 impl LicenseLevel {
@@ -268,7 +262,7 @@ fn merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
     }
     let mut layer: Vec<[u8; 32]> = leaves.to_vec();
     while layer.len() > 1 {
-        let mut next = Vec::with_capacity((layer.len() + 1) / 2);
+        let mut next = Vec::with_capacity(layer.len().div_ceil(2));
         let mut i = 0;
         while i + 1 < layer.len() {
             let mut buf = Vec::with_capacity(65);
@@ -449,10 +443,7 @@ fn verify_snark_proof(proof: &SnarkProof) -> Result<(), LicenseError> {
     if proof.pi_a.len() < 2 || proof.pi_c.len() < 2 {
         return Err(LicenseError::SnarkVerificationFailed);
     }
-    if proof.pi_b.len() < 2
-        || proof.pi_b[0].len() < 2
-        || proof.pi_b[1].len() < 2
-    {
+    if proof.pi_b.len() < 2 || proof.pi_b[0].len() < 2 || proof.pi_b[1].len() < 2 {
         return Err(LicenseError::SnarkVerificationFailed);
     }
 
@@ -581,10 +572,7 @@ pub fn verify_certificate(cert: &LicenseCertificate) -> Result<LicenseLevel, Lic
     }
 
     // 6. Re-derive proof digest.
-    let expected_digest = hcat(
-        DOMAIN_LICENSE,
-        &[&foundation_got, &got_root, &got_licensee],
-    );
+    let expected_digest = hcat(DOMAIN_LICENSE, &[&foundation_got, &got_root, &got_licensee]);
     let got_digest = hex_to_32(&cert.proof_digest).ok_or(LicenseError::ProofDigestMismatch)?;
     if got_digest != expected_digest {
         return Err(LicenseError::ProofDigestMismatch);
@@ -749,7 +737,8 @@ mod tests {
             .as_secs()
             + 365 * 24 * 3600;
         let mut cert = mint_certificate("test@example.com", &features, expiry);
-        cert.foundation_commitment = "0x0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        cert.foundation_commitment =
+            "0x0000000000000000000000000000000000000000000000000000000000000000".to_string();
         let err = verify_certificate(&cert);
         assert!(matches!(err, Err(LicenseError::FoundationMismatch)));
     }
@@ -796,10 +785,7 @@ mod tests {
 
     #[test]
     fn merkle_root_deterministic() {
-        let leaves: Vec<[u8; 32]> = vec!["a", "b", "c"]
-            .into_iter()
-            .map(feature_leaf)
-            .collect();
+        let leaves: Vec<[u8; 32]> = vec!["a", "b", "c"].into_iter().map(feature_leaf).collect();
         let root1 = merkle_root(&leaves);
         let root2 = merkle_root(&leaves);
         assert_eq!(root1, root2);
@@ -811,29 +797,39 @@ mod tests {
             protocol: "groth16".to_string(),
             curve: "bn128".to_string(),
             pi_a: vec![
-                "21395058710715221512141136997577943222444054556201088705185109505677362522313".to_string(),
-                "4579204029766272866587044832554240078169508494400311183784970114481255036590".to_string(),
+                "21395058710715221512141136997577943222444054556201088705185109505677362522313"
+                    .to_string(),
+                "4579204029766272866587044832554240078169508494400311183784970114481255036590"
+                    .to_string(),
                 "1".to_string(),
             ],
             pi_b: vec![
                 vec![
-                    "5202294881725992217980051469091140593603060690090479418590364461196679826436".to_string(),
-                    "3874299196029840840005590017697452158959263525655996160796037001458805009770".to_string(),
+                    "5202294881725992217980051469091140593603060690090479418590364461196679826436"
+                        .to_string(),
+                    "3874299196029840840005590017697452158959263525655996160796037001458805009770"
+                        .to_string(),
                 ],
                 vec![
-                    "17779469406488213294468910677045021564849628076372499955495679563736323507938".to_string(),
-                    "7063076278734608474516354088060440657810112068353853767850783433319766131774".to_string(),
+                    "17779469406488213294468910677045021564849628076372499955495679563736323507938"
+                        .to_string(),
+                    "7063076278734608474516354088060440657810112068353853767850783433319766131774"
+                        .to_string(),
                 ],
                 vec!["1".to_string(), "0".to_string()],
             ],
             pi_c: vec![
-                "10725084923489509678962196352520219987459344786999429978446344967026680290054".to_string(),
-                "11926696386234588152796050475063893399913854466682164509978597141240696416859".to_string(),
+                "10725084923489509678962196352520219987459344786999429978446344967026680290054"
+                    .to_string(),
+                "11926696386234588152796050475063893399913854466682164509978597141240696416859"
+                    .to_string(),
                 "1".to_string(),
             ],
             public_signals: vec![
-                "10498408604190631903661670351841509167761295075626051572612706182854256519760".to_string(),
-                "11883432733534932235095524943887047101085430713026189147570957712288595065002".to_string(),
+                "10498408604190631903661670351841509167761295075626051572612706182854256519760"
+                    .to_string(),
+                "11883432733534932235095524943887047101085430713026189147570957712288595065002"
+                    .to_string(),
             ],
         }
     }
@@ -948,7 +944,11 @@ mod tests {
     #[test]
     fn embedded_vk_parses_correctly() {
         let vk = build_embedded_vk().expect("embedded VK must parse");
-        assert_eq!(vk.gamma_abc_g1.len(), 3, "2 public inputs + 1 = 3 IC points");
+        assert_eq!(
+            vk.gamma_abc_g1.len(),
+            3,
+            "2 public inputs + 1 = 3 IC points"
+        );
     }
 
     #[test]
