@@ -273,6 +273,7 @@ pub fn validate_commit_shape(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn verify_post_commit_refinement(
     expected_height: u64,
     expected_prev_root: NodeHash,

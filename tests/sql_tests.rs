@@ -114,3 +114,23 @@ fn sql_update_and_delete_apply_on_commit() {
         expect_rows(exec.execute("SELECT key, value FROM data WHERE key = 'k';"));
     assert_eq!(rows_after_delete[0], vec!["k".to_string(), "0".to_string()]);
 }
+
+#[test]
+fn sql_script_mixes_custom_and_standard_statements() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+    let script = r#"
+        INSERT INTO data (key, value) VALUES ('acct:1', 7);
+        COMMIT;
+        VERIFY 'acct:1';
+        SHOW STATUS;
+    "#;
+    let (cols, rows) = expect_rows(exec.execute(script));
+    assert_eq!(cols, vec!["field".to_string(), "value".to_string()]);
+    let fields: BTreeMap<String, String> = rows
+        .into_iter()
+        .map(|r| (r[0].clone(), r[1].clone()))
+        .collect();
+    assert_eq!(fields.get("entries").map(String::as_str), Some("1"));
+    assert_eq!(fields.get("key_count").map(String::as_str), Some("1"));
+}

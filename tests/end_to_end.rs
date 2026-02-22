@@ -187,8 +187,11 @@ fn with_security_rejects_commitment_scheme_mismatch() {
 
 #[test]
 fn with_security_accepts_auto_commitment_policy_for_profile() {
-    let mut params = ParameterSet::default();
-    params.commitment_policy = default_commitment_policy(VcProfile::Ipa, params.max_vector_len);
+    let max_vector_len = ParameterSet::default().max_vector_len;
+    let params = ParameterSet {
+        commitment_policy: default_commitment_policy(VcProfile::Ipa, max_vector_len),
+        ..Default::default()
+    };
     let db = NucleusDb::with_security(
         State::new(vec![1]),
         VcBackend::Ipa,
@@ -202,9 +205,11 @@ fn with_security_accepts_auto_commitment_policy_for_profile() {
 
 #[test]
 fn with_security_rejects_missing_kzg_setup_when_required() {
-    let mut params = ParameterSet::default();
-    params.require_kzg_trusted_setup = true;
-    params.kzg_trusted_setup_id = None;
+    let params = ParameterSet {
+        require_kzg_trusted_setup: true,
+        kzg_trusted_setup_id: None,
+        ..Default::default()
+    };
     let err = NucleusDb::with_security(
         State::new(vec![1]),
         VcBackend::Kzg,
@@ -221,9 +226,11 @@ fn with_security_rejects_missing_kzg_setup_when_required() {
 
 #[test]
 fn with_security_rejects_missing_kzg_setup_path_when_required() {
-    let mut params = ParameterSet::default();
-    params.require_kzg_trusted_setup = true;
-    params.kzg_trusted_setup_path = None;
+    let params = ParameterSet {
+        require_kzg_trusted_setup: true,
+        kzg_trusted_setup_path: None,
+        ..Default::default()
+    };
     let err = NucleusDb::with_security(
         State::new(vec![1]),
         VcBackend::Kzg,
@@ -240,10 +247,12 @@ fn with_security_rejects_missing_kzg_setup_path_when_required() {
 
 #[test]
 fn with_security_rejects_kzg_setup_attestation_mismatch() {
-    let mut params = ParameterSet::default();
-    params.require_kzg_trusted_setup = true;
-    params.kzg_trusted_setup_attestation_sha512 =
-        Some("00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad".to_string());
+    let params = ParameterSet {
+        require_kzg_trusted_setup: true,
+        kzg_trusted_setup_attestation_sha512:
+            Some("00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad00bad".to_string()),
+        ..Default::default()
+    };
     let err = NucleusDb::with_security(
         State::new(vec![1]),
         VcBackend::Kzg,
@@ -265,8 +274,10 @@ fn with_security_rejects_kzg_setup_attestation_mismatch() {
 
 #[test]
 fn with_security_rejects_kzg_setup_degree_cap_below_vector_limit() {
-    let mut params = ParameterSet::default();
-    params.max_vector_len = (1 << 20) + 1;
+    let params = ParameterSet {
+        max_vector_len: (1 << 20) + 1,
+        ..Default::default()
+    };
     let err = NucleusDb::with_security(
         State::new(vec![1]),
         VcBackend::Kzg,
@@ -288,8 +299,10 @@ fn with_security_rejects_kzg_setup_degree_cap_below_vector_limit() {
 
 #[test]
 fn commit_rejects_oversized_delta_by_refinement_gate() {
-    let mut params = ParameterSet::default();
-    params.max_delta_writes = 1;
+    let params = ParameterSet {
+        max_delta_writes: 1,
+        ..Default::default()
+    };
 
     let mut db = NucleusDb::with_security(
         State::new(vec![1, 2]),

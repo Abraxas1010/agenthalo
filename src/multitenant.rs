@@ -408,6 +408,7 @@ impl MultiTenantNucleusDb {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn verify_query_as(
         &self,
         tenant_id: &str,

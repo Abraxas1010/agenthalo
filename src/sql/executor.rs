@@ -47,6 +47,20 @@ impl<'a> SqlExecutor<'a> {
             };
         }
 
+        let statements = split_sql_statements(trimmed);
+        if statements.len() > 1 {
+            let mut last = SqlResult::Ok {
+                message: "No-op".to_string(),
+            };
+            for stmt in statements {
+                last = self.execute(&stmt);
+                if matches!(last, SqlResult::Error { .. }) {
+                    return last;
+                }
+            }
+            return last;
+        }
+
         if let Some(custom) = self.execute_custom(trimmed) {
             return custom;
         }
@@ -383,12 +397,12 @@ impl<'a> SqlExecutor<'a> {
             };
         };
 
-        if !select.from.is_empty() {
-            if select.from.len() != 1 || !table_with_joins_is_data(&select.from[0]) {
-                return SqlResult::Error {
-                    message: format!("Only SELECT ... FROM {TABLE_NAME} is supported"),
-                };
-            }
+        if !select.from.is_empty()
+            && (select.from.len() != 1 || !table_with_joins_is_data(&select.from[0]))
+        {
+            return SqlResult::Error {
+                message: format!("Only SELECT ... FROM {TABLE_NAME} is supported"),
+            };
         }
 
         let projection = match resolve_projection(&select.projection) {
@@ -498,6 +512,41 @@ impl std::fmt::Display for ProjectionField {
 
 fn normalize_command(sql: &str) -> String {
     sql.trim().trim_end_matches(';').trim().to_ascii_uppercase()
+}
+
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_single_quote = false;
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '\'' {
+            cur.push(ch);
+            // SQL escapes single quote inside string as ''.
+            if in_single_quote && i + 1 < chars.len() && chars[i + 1] == '\'' {
+                cur.push(chars[i + 1]);
+                i += 1;
+            } else {
+                in_single_quote = !in_single_quote;
+            }
+        } else if ch == ';' && !in_single_quote {
+            let stmt = cur.trim();
+            if !stmt.is_empty() {
+                out.push(stmt.to_string());
+            }
+            cur.clear();
+        } else {
+            cur.push(ch);
+        }
+        i += 1;
+    }
+    let tail = cur.trim();
+    if !tail.is_empty() {
+        out.push(tail.to_string());
+    }
+    out
 }
 
 fn format_unix_utc(ts: u64) -> String {
