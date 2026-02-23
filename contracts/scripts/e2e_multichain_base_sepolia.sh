@@ -39,7 +39,7 @@ require_env() {
 
 extract_tx_hash() {
   local raw="$1"
-  printf '%s\n' "${raw}" | grep -Eo '0x[0-9a-fA-F]{64}' | head -n1
+  printf '%s\n' "${raw}" | grep -Eo '0x[0-9a-fA-F]{64}' | grep -Evi '^0x0{64}$' | tail -n1
 }
 
 normalize_bool_output() {

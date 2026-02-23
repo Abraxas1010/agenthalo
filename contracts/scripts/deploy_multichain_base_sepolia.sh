@@ -22,6 +22,7 @@ set -euo pipefail
 #   CHAIN_1_VERIFIER                   (default: TRUST_VERIFIER_GROTH16_VERIFIER)
 #   CHAIN_42161_VERIFIER               (default: TRUST_VERIFIER_GROTH16_VERIFIER)
 #   BASESCAN_API_KEY                   (optional; enables forge --verify)
+#   TX_GAS_PRICE_WEI                   (default: 60000000)
 #   DEPLOYMENT_OUT                     (optional JSON report path)
 #   ETH_KEYSTORE / ETH_PASSWORD_FILE   (preferred signer mode)
 #   PRIVATE_KEY                        (fallback signer mode)
@@ -46,7 +47,28 @@ extract_address() {
 
 extract_tx_hash() {
   local raw="$1"
-  printf '%s\n' "${raw}" | grep -Eo '0x[0-9a-fA-F]{64}' | head -n1
+  printf '%s\n' "${raw}" | grep -Eo '0x[0-9a-fA-F]{64}' | grep -Evi '^0x0{64}$' | tail -n1
+}
+
+normalize_bool_output() {
+  local raw="$1"
+  local token
+  token="$(printf '%s' "${raw}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  case "${token}" in
+    true|1|0x1) echo "true" ;;
+    false|0|0x0) echo "false" ;;
+    *) echo "${token}" ;;
+  esac
+}
+
+parse_uint_output() {
+  local raw="$1"
+  local token="${raw%% *}"
+  if [[ "${token}" == 0x* ]]; then
+    cast to-dec "${token}"
+  else
+    echo "${token}"
+  fi
 }
 
 build_signer_args() {
@@ -79,19 +101,44 @@ run_send() {
   local contract="$1"
   local selector="$2"
   shift 2
-  local nonce_arg=()
-  if [[ -n "${SENDER_ADDRESS:-}" ]]; then
-    local pending_nonce
-    pending_nonce="$(cast nonce --rpc-url "${RPC_URL_BASE_SEPOLIA}" --block pending "${SENDER_ADDRESS}" | tr -d '[:space:]')"
-    nonce_arg=(--nonce "${pending_nonce}")
-  fi
-  cast send \
-    --rpc-url "${RPC_URL_BASE_SEPOLIA}" \
-    "${nonce_arg[@]}" \
-    "${SIGNER_ARGS[@]}" \
-    "${contract}" \
-    "${selector}" \
-    "$@"
+  local base_gas="${TX_GAS_PRICE_WEI:-60000000}"
+  local gas_prices=("${base_gas}" "90000000" "120000000" "180000000")
+  local out=""
+
+  for gas in "${gas_prices[@]}"; do
+    local nonce_arg=()
+    if [[ -n "${SENDER_ADDRESS:-}" ]]; then
+      local pending_nonce
+      pending_nonce="$(cast nonce --rpc-url "${RPC_URL_BASE_SEPOLIA}" --block pending "${SENDER_ADDRESS}" | tr -d '[:space:]')"
+      nonce_arg=(--nonce "${pending_nonce}")
+    fi
+    set +e
+    out="$(
+      cast send \
+        --rpc-url "${RPC_URL_BASE_SEPOLIA}" \
+        --gas-price "${gas}" \
+        "${nonce_arg[@]}" \
+        "${SIGNER_ARGS[@]}" \
+        "${contract}" \
+        "${selector}" \
+        "$@" 2>&1
+    )"
+    local rc=$?
+    set -e
+    if [[ ${rc} -eq 0 ]]; then
+      printf '%s\n' "${out}"
+      return 0
+    fi
+    if printf '%s' "${out}" | grep -Eiq 'replacement transaction underpriced|nonce too low'; then
+      sleep 2
+      continue
+    fi
+    printf '%s\n' "${out}" >&2
+    return "${rc}"
+  done
+
+  printf '%s\n' "${out}" >&2
+  return 1
 }
 
 register_chain() {
@@ -120,6 +167,27 @@ register_chain() {
     exit 1
   fi
 
+  local registered_ok=""
+  local observed_fee=""
+  for _attempt in 1 2 3 4; do
+    local chain_info
+    chain_info="$(cast call --rpc-url "${RPC_URL_BASE_SEPOLIA}" "${contract}" "chainInfo(uint256)(bool,address,bytes32,uint64,uint256)" "${chain_id}")"
+    registered_ok="$(normalize_bool_output "$(printf '%s\n' "${chain_info}" | sed -n '1p')")"
+    observed_fee="$(parse_uint_output "$(cast call --rpc-url "${RPC_URL_BASE_SEPOLIA}" "${contract}" "chainFees(uint256)(uint256)" "${chain_id}")")"
+    if [[ "${registered_ok}" == "true" && "${observed_fee}" == "${fee}" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${registered_ok}" != "true" ]]; then
+    echo "postcondition failed: chain ${chain_id} not registered after registerChain" >&2
+    exit 1
+  fi
+  if [[ "${observed_fee}" != "${fee}" ]]; then
+    echo "postcondition failed: chain ${chain_id} fee expected ${fee}, observed ${observed_fee}" >&2
+    exit 1
+  fi
+
   echo "${chain_id}:${reg_tx}:${fee_tx}"
 }
 
@@ -133,6 +201,7 @@ TRUST_DEFAULT_FEE_WEI="${TRUST_DEFAULT_FEE_WEI:-1000000}"
 TRUST_BASE_CHAIN_FEE_WEI="${TRUST_BASE_CHAIN_FEE_WEI:-1000000}"
 TRUST_ETH_CHAIN_FEE_WEI="${TRUST_ETH_CHAIN_FEE_WEI:-5000000}"
 TRUST_ARB_CHAIN_FEE_WEI="${TRUST_ARB_CHAIN_FEE_WEI:-2000000}"
+TX_GAS_PRICE_WEI="${TX_GAS_PRICE_WEI:-60000000}"
 
 REGISTER_BASE_CHAIN="${REGISTER_BASE_CHAIN:-true}"
 REGISTER_ETH_CHAIN="${REGISTER_ETH_CHAIN:-true}"
