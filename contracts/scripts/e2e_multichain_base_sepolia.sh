@@ -150,8 +150,10 @@ if [[ -z "${TRUST_TREASURY:-}" ]]; then
   TRUST_TREASURY="$(run_call "treasury()(address)" | tr -d '[:space:]')"
 fi
 
-BASE_CHAIN_OK="$(normalize_bool_output "$(run_call "chainInfo(uint256)(bool,address,bytes32,uint64,uint256)" "8453")")"
-ETH_CHAIN_OK="$(normalize_bool_output "$(run_call "chainInfo(uint256)(bool,address,bytes32,uint64,uint256)" "1")")"
+BASE_CHAIN_INFO="$(run_call "chainInfo(uint256)(bool,address,bytes32,uint64,uint256)" "8453")"
+ETH_CHAIN_INFO="$(run_call "chainInfo(uint256)(bool,address,bytes32,uint64,uint256)" "1")"
+BASE_CHAIN_OK="$(normalize_bool_output "$(printf '%s\n' "${BASE_CHAIN_INFO}" | sed -n '1p')")"
+ETH_CHAIN_OK="$(normalize_bool_output "$(printf '%s\n' "${ETH_CHAIN_INFO}" | sed -n '1p')")"
 if [[ "${BASE_CHAIN_OK}" != "true" ]]; then
   echo "chain 8453 not registered in TrustVerifierMultiChain" >&2
   exit 1

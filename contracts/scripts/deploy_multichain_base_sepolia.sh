@@ -51,6 +51,7 @@ extract_tx_hash() {
 
 build_signer_args() {
   SIGNER_ARGS=()
+  SENDER_ADDRESS=""
   if [[ -n "${ETH_KEYSTORE:-}" ]]; then
     SIGNER_ARGS+=(--keystore "${ETH_KEYSTORE}")
     if [[ -n "${ETH_PASSWORD_FILE:-}" ]]; then
@@ -58,8 +59,16 @@ build_signer_args() {
     elif [[ -n "${ETH_PASSWORD:-}" ]]; then
       SIGNER_ARGS+=(--password-file "${ETH_PASSWORD}")
     fi
+    local addr_args=(--keystore "${ETH_KEYSTORE}")
+    if [[ -n "${ETH_PASSWORD_FILE:-}" ]]; then
+      addr_args+=(--password-file "${ETH_PASSWORD_FILE}")
+    elif [[ -n "${ETH_PASSWORD:-}" ]]; then
+      addr_args+=(--password-file "${ETH_PASSWORD}")
+    fi
+    SENDER_ADDRESS="$(cast wallet address "${addr_args[@]}" | tr -d '[:space:]')"
   elif [[ -n "${PRIVATE_KEY:-}" ]]; then
     SIGNER_ARGS+=(--private-key "${PRIVATE_KEY}")
+    SENDER_ADDRESS="$(cast wallet address --private-key "${PRIVATE_KEY}" | tr -d '[:space:]')"
   else
     echo "missing signer credentials: set ETH_KEYSTORE (preferred) or PRIVATE_KEY" >&2
     exit 1
@@ -70,8 +79,15 @@ run_send() {
   local contract="$1"
   local selector="$2"
   shift 2
+  local nonce_arg=()
+  if [[ -n "${SENDER_ADDRESS:-}" ]]; then
+    local pending_nonce
+    pending_nonce="$(cast nonce --rpc-url "${RPC_URL_BASE_SEPOLIA}" --block pending "${SENDER_ADDRESS}" | tr -d '[:space:]')"
+    nonce_arg=(--nonce "${pending_nonce}")
+  fi
   cast send \
     --rpc-url "${RPC_URL_BASE_SEPOLIA}" \
+    "${nonce_arg[@]}" \
     "${SIGNER_ARGS[@]}" \
     "${contract}" \
     "${selector}" \
@@ -144,6 +160,7 @@ fi
 DEPLOY_OUT="$(
   forge create \
     --rpc-url "${RPC_URL_BASE_SEPOLIA}" \
+    --broadcast \
     "${SIGNER_ARGS[@]}" \
     "${VERIFY_ARGS[@]}" \
     TrustVerifierMultiChain.sol:TrustVerifierMultiChain \
