@@ -27,7 +27,12 @@ name = "nucleusdb-mcp"
 path = "src/bin/nucleusdb_mcp.rs"
 
 [features]
-default = []
+default = ["puf-server"]
+puf-server = []
+puf-tpm = ["dep:tss-esapi"]
+puf-dgx = ["puf-server"]
+puf-browser = []
+container-runtime = []
 
 [dependencies]
 axum = "0.8.6"
@@ -56,3 +61,4 @@ crossterm = "0.28"
 rmcp = { version = "0.16.0", features = ["transport-io", "schemars"] }
 schemars = "1"
 chrono = "0.4"
+tss-esapi = { version = "7", optional = true, default-features = false }

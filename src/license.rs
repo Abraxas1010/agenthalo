@@ -5,6 +5,8 @@
 //! the binary re-derives the Merkle root over the licensed feature set
 //! and checks it against a baked-in foundation commitment.  No phone-home.
 
+use crate::pcn::PcnComplianceWitness;
+use crate::puf::collect_auto;
 use crate::transparency::ct6962::sha256;
 use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G2Affine};
 use ark_groth16::{prepare_verifying_key, Groth16, Proof as Groth16Proof, VerifyingKey};
@@ -29,8 +31,10 @@ const KNOWN_FOUNDATION: [u8; 32] = [
 ];
 
 /// Domain separator mirroring Heyting LeanTT0 `H` / `Hcat` convention.
-const DOMAIN_LICENSE: &[u8] = b"NucleusDB.License|";
+const DOMAIN_LICENSE_V1: &[u8] = b"NucleusDB.License|";
+const DOMAIN_LICENSE_V2: &[u8] = b"NucleusDB.License.v2|";
 const DOMAIN_FOUNDATION: &[u8] = b"NucleusDB.CAB.Foundation|";
+const DOMAIN_COMPLIANCE: &[u8] = b"NucleusDB.License.Compliance|";
 
 /// Poseidon hash of "NucleusDB.CAB.Foundation.v1" — ZK public signal root-of-trust.
 /// The first public signal in any valid SNARK proof must equal this value.
@@ -144,6 +148,18 @@ pub struct SnarkProof {
     pub public_signals: Vec<String>,
 }
 
+/// Public compliance inputs bound into v2 certificates.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompliancePublicInputs {
+    /// Merkle root over channel-level feasibility witnesses.
+    pub feasibility_root: String,
+    /// Monotone sequence upper-bound used for replay prevention.
+    pub replay_seq: u64,
+    /// Optional PUF digest mirrored inside compliance payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub puf_digest: Option<String>,
+}
+
 /// On-disk license certificate (JSON).  Issued by P2PCLAW, verified locally.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LicenseCertificate {
@@ -184,6 +200,15 @@ pub struct LicenseCertificate {
     /// Groth16 SNARK proof (verifiable against embedded verification key).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snark_proof: Option<SnarkProof>,
+    /// Optional host PUF fingerprint digest (`0x`-prefixed hex of 32 bytes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub puf_digest: Option<String>,
+    /// Optional compliance inputs for v2 certificates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compliance_inputs: Option<CompliancePublicInputs>,
+    /// Commitment over compliance inputs (`0x`-prefixed hex of 32 bytes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compliance_commitment: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +227,12 @@ pub enum LicenseError {
     UnsupportedVersion(String),
     EmptyFeatures,
     SnarkVerificationFailed,
+    SnarkPublicSignalMismatch,
+    PufUnavailable,
+    PufDigestMismatch,
+    MissingComplianceInputs,
+    ComplianceInputMalformed,
+    ComplianceCommitmentMismatch,
 }
 
 impl std::fmt::Display for LicenseError {
@@ -224,6 +255,30 @@ impl std::fmt::Display for LicenseError {
             Self::EmptyFeatures => write!(f, "license has no features"),
             Self::SnarkVerificationFailed => {
                 write!(f, "SNARK proof verification failed")
+            }
+            Self::SnarkPublicSignalMismatch => {
+                write!(
+                    f,
+                    "SNARK public signals are not bound to this certificate payload"
+                )
+            }
+            Self::PufUnavailable => {
+                write!(
+                    f,
+                    "license requires PUF binding but no compatible PUF source is available"
+                )
+            }
+            Self::PufDigestMismatch => {
+                write!(f, "license PUF digest does not match this device")
+            }
+            Self::MissingComplianceInputs => {
+                write!(f, "license v2 requires compliance inputs")
+            }
+            Self::ComplianceInputMalformed => {
+                write!(f, "license compliance inputs are malformed")
+            }
+            Self::ComplianceCommitmentMismatch => {
+                write!(f, "license compliance commitment does not match inputs")
             }
         }
     }
@@ -310,6 +365,46 @@ fn to_hex(bytes: &[u8; 32]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+fn is_null_digest_sentinel(raw: &str) -> bool {
+    let v = raw.trim();
+    v.is_empty() || v.eq_ignore_ascii_case("none") || v.eq_ignore_ascii_case("null")
+}
+
+fn build_compliance_commitment(inputs: &CompliancePublicInputs) -> Result<[u8; 32], LicenseError> {
+    let feasibility =
+        hex_to_32(&inputs.feasibility_root).ok_or(LicenseError::ComplianceInputMalformed)?;
+    let puf = if let Some(ref digest) = inputs.puf_digest {
+        if is_null_digest_sentinel(digest) {
+            return Err(LicenseError::ComplianceInputMalformed);
+        }
+        hex_to_32(digest).ok_or(LicenseError::ComplianceInputMalformed)?
+    } else {
+        [0u8; 32]
+    };
+    let puf_flag = [u8::from(inputs.puf_digest.is_some())];
+    Ok(hcat(
+        DOMAIN_COMPLIANCE,
+        &[
+            &feasibility,
+            &inputs.replay_seq.to_be_bytes(),
+            &puf_flag,
+            &puf,
+        ],
+    ))
+}
+
+/// Convert runtime PCN witness data into certificate-ready compliance inputs.
+pub fn compliance_inputs_from_pcn_witness(
+    witness: &PcnComplianceWitness,
+    puf_digest: Option<[u8; 32]>,
+) -> CompliancePublicInputs {
+    CompliancePublicInputs {
+        feasibility_root: to_hex(&witness.feasibility_root),
+        replay_seq: witness.replay_seq,
+        puf_digest: puf_digest.map(|d| to_hex(&d)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -416,7 +511,10 @@ fn build_embedded_vk() -> Result<VerifyingKey<Bn254>, LicenseError> {
 
 /// Verify a Groth16 SNARK proof from a license certificate.
 /// Cost: three elliptic-curve pairings (~1.2ms on modern hardware).
-fn verify_snark_proof(proof: &SnarkProof) -> Result<(), LicenseError> {
+fn verify_snark_proof(
+    proof: &SnarkProof,
+    expected_digest_poseidon: Option<&str>,
+) -> Result<(), LicenseError> {
     // Protocol / curve guard.
     if proof.protocol != "groth16" || proof.curve != "bn128" {
         return Err(LicenseError::SnarkVerificationFailed);
@@ -430,6 +528,13 @@ fn verify_snark_proof(proof: &SnarkProof) -> Result<(), LicenseError> {
     // First public signal must match our baked-in foundation Poseidon hash.
     if proof.public_signals[0] != KNOWN_FOUNDATION_POSEIDON {
         return Err(LicenseError::SnarkVerificationFailed);
+    }
+
+    // Optional binding: ensure the proof's digest signal matches certificate payload.
+    if let Some(expected) = expected_digest_poseidon {
+        if proof.public_signals[1] != expected {
+            return Err(LicenseError::SnarkPublicSignalMismatch);
+        }
     }
 
     // Parse public inputs as scalar field elements.
@@ -496,7 +601,7 @@ pub fn mint_certificate(
 
     // Proof digest = Hcat(DOMAIN_LICENSE, [foundation, rules_root, licensee_commitment]).
     let proof_digest = hcat(
-        DOMAIN_LICENSE,
+        DOMAIN_LICENSE_V1,
         &[&foundation, &rules_root, &licensee_commitment],
     );
 
@@ -516,7 +621,63 @@ pub fn mint_certificate(
         feature_hashes_poseidon: None,
         licensee_field: None,
         snark_proof: None,
+        puf_digest: None,
+        compliance_inputs: None,
+        compliance_commitment: None,
     }
+}
+
+/// Mint a v2 certificate binding PCN compliance inputs into the license digest.
+pub fn mint_certificate_v2(
+    licensee: &str,
+    features: &[ProFeature],
+    expiry_unix_secs: u64,
+    compliance_inputs: CompliancePublicInputs,
+) -> Result<LicenseCertificate, LicenseError> {
+    let foundation = h(DOMAIN_FOUNDATION, b"v1");
+
+    let mut feature_strs: Vec<&str> = features.iter().map(|f| f.as_leaf_str()).collect();
+    feature_strs.sort();
+    let leaves: Vec<[u8; 32]> = feature_strs.iter().map(|f| feature_leaf(f)).collect();
+    let rules_root = merkle_root(&leaves);
+
+    let expiry_bytes = expiry_unix_secs.to_be_bytes();
+    let licensee_commitment = hcat(
+        b"NucleusDB.Licensee|",
+        &[licensee.as_bytes(), &expiry_bytes],
+    );
+
+    let compliance_commitment = build_compliance_commitment(&compliance_inputs)?;
+    let proof_digest = hcat(
+        DOMAIN_LICENSE_V2,
+        &[
+            &foundation,
+            &rules_root,
+            &licensee_commitment,
+            &compliance_commitment,
+        ],
+    );
+
+    Ok(LicenseCertificate {
+        version: "nucleusdb-license-cab-2".to_string(),
+        foundation_commitment: to_hex(&foundation),
+        rules_root: to_hex(&rules_root),
+        licensee_commitment: to_hex(&licensee_commitment),
+        proof_digest: to_hex(&proof_digest),
+        licensee: licensee.to_string(),
+        expiry_unix_secs,
+        features: feature_strs.iter().map(|s| s.to_string()).collect(),
+        foundation_poseidon: None,
+        rules_root_poseidon: None,
+        licensee_commitment_poseidon: None,
+        proof_digest_poseidon: None,
+        feature_hashes_poseidon: None,
+        licensee_field: None,
+        snark_proof: None,
+        puf_digest: compliance_inputs.puf_digest.clone(),
+        compliance_inputs: Some(compliance_inputs),
+        compliance_commitment: Some(to_hex(&compliance_commitment)),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -533,7 +694,9 @@ pub fn load_and_verify(path: &Path) -> Result<LicenseLevel, LicenseError> {
 /// Verify a parsed certificate.
 pub fn verify_certificate(cert: &LicenseCertificate) -> Result<LicenseLevel, LicenseError> {
     // 1. Version check.
-    if cert.version != "nucleusdb-license-cab-1" {
+    let is_v1 = cert.version == "nucleusdb-license-cab-1";
+    let is_v2 = cert.version == "nucleusdb-license-cab-2";
+    if !is_v1 && !is_v2 {
         return Err(LicenseError::UnsupportedVersion(cert.version.clone()));
     }
 
@@ -572,7 +735,46 @@ pub fn verify_certificate(cert: &LicenseCertificate) -> Result<LicenseLevel, Lic
     }
 
     // 6. Re-derive proof digest.
-    let expected_digest = hcat(DOMAIN_LICENSE, &[&foundation_got, &got_root, &got_licensee]);
+    let mut compliance_bound_puf: Option<String> = None;
+    let expected_digest = if is_v1 {
+        hcat(
+            DOMAIN_LICENSE_V1,
+            &[&foundation_got, &got_root, &got_licensee],
+        )
+    } else {
+        let compliance = cert
+            .compliance_inputs
+            .as_ref()
+            .ok_or(LicenseError::MissingComplianceInputs)?;
+        let expected_compliance = build_compliance_commitment(compliance)?;
+        let got_compliance = cert
+            .compliance_commitment
+            .as_deref()
+            .and_then(hex_to_32)
+            .ok_or(LicenseError::ComplianceCommitmentMismatch)?;
+        if got_compliance != expected_compliance {
+            return Err(LicenseError::ComplianceCommitmentMismatch);
+        }
+        if let Some(ref puf) = compliance.puf_digest {
+            compliance_bound_puf = Some(puf.clone());
+        }
+        if let (Some(cert_puf), Some(comp_puf)) =
+            (cert.puf_digest.as_ref(), compliance.puf_digest.as_ref())
+        {
+            if cert_puf != comp_puf {
+                return Err(LicenseError::PufDigestMismatch);
+            }
+        }
+        hcat(
+            DOMAIN_LICENSE_V2,
+            &[
+                &foundation_got,
+                &got_root,
+                &got_licensee,
+                &expected_compliance,
+            ],
+        )
+    };
     let got_digest = hex_to_32(&cert.proof_digest).ok_or(LicenseError::ProofDigestMismatch)?;
     if got_digest != expected_digest {
         return Err(LicenseError::ProofDigestMismatch);
@@ -589,7 +791,20 @@ pub fn verify_certificate(cert: &LicenseCertificate) -> Result<LicenseLevel, Lic
 
     // 8. SNARK proof verification (when present).
     if let Some(ref snark) = cert.snark_proof {
-        verify_snark_proof(snark)?;
+        verify_snark_proof(snark, cert.proof_digest_poseidon.as_deref())?;
+    }
+
+    // 8b. Optional PUF-device binding.
+    let effective_puf_digest = cert.puf_digest.clone().or(compliance_bound_puf);
+    if let Some(ref puf_digest_hex) = effective_puf_digest {
+        if is_null_digest_sentinel(puf_digest_hex) {
+            return Err(LicenseError::PufDigestMismatch);
+        }
+        let expected = hex_to_32(puf_digest_hex).ok_or(LicenseError::PufDigestMismatch)?;
+        let current = collect_auto().ok_or(LicenseError::PufUnavailable)?;
+        if current.fingerprint != expected {
+            return Err(LicenseError::PufDigestMismatch);
+        }
     }
 
     // 9. Map feature strings to ProFeature enum.
@@ -837,7 +1052,7 @@ mod tests {
     #[test]
     fn snark_proof_verifies_valid() {
         let proof = test_snark_proof();
-        verify_snark_proof(&proof).expect("valid SNARK proof must verify");
+        verify_snark_proof(&proof, None).expect("valid SNARK proof must verify");
     }
 
     #[test]
@@ -845,7 +1060,7 @@ mod tests {
         let mut proof = test_snark_proof();
         // Tamper with the foundation public signal.
         proof.public_signals[0] = "999999999999999999".to_string();
-        let err = verify_snark_proof(&proof);
+        let err = verify_snark_proof(&proof, None);
         assert!(matches!(err, Err(LicenseError::SnarkVerificationFailed)));
     }
 
@@ -854,7 +1069,7 @@ mod tests {
         let mut proof = test_snark_proof();
         // Tamper with the proof digest public signal (second signal).
         proof.public_signals[1] = "123456789".to_string();
-        let err = verify_snark_proof(&proof);
+        let err = verify_snark_proof(&proof, None);
         assert!(matches!(err, Err(LicenseError::SnarkVerificationFailed)));
     }
 
@@ -862,7 +1077,7 @@ mod tests {
     fn snark_proof_rejects_wrong_protocol() {
         let mut proof = test_snark_proof();
         proof.protocol = "plonk".to_string();
-        let err = verify_snark_proof(&proof);
+        let err = verify_snark_proof(&proof, None);
         assert!(matches!(err, Err(LicenseError::SnarkVerificationFailed)));
     }
 
@@ -870,8 +1085,15 @@ mod tests {
     fn snark_proof_rejects_wrong_curve() {
         let mut proof = test_snark_proof();
         proof.curve = "bls12-381".to_string();
-        let err = verify_snark_proof(&proof);
+        let err = verify_snark_proof(&proof, None);
         assert!(matches!(err, Err(LicenseError::SnarkVerificationFailed)));
+    }
+
+    #[test]
+    fn snark_public_signal_mismatch_rejected_when_expected_digest_provided() {
+        let proof = test_snark_proof();
+        let err = verify_snark_proof(&proof, Some("42"));
+        assert!(matches!(err, Err(LicenseError::SnarkPublicSignalMismatch)));
     }
 
     #[test]
@@ -964,5 +1186,119 @@ mod tests {
         let parsed: LicenseCertificate = serde_json::from_str(&json).unwrap();
         let level = verify_certificate(&parsed).expect("roundtrip must verify");
         assert!(level.is_pro());
+    }
+
+    #[test]
+    fn v2_certificate_roundtrip_with_compliance_inputs() {
+        let features = vec![ProFeature::MultiTenant, ProFeature::McpServer];
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 365 * 24 * 3600;
+        let compliance = CompliancePublicInputs {
+            feasibility_root: "0x11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff"
+                .to_string(),
+            replay_seq: 17,
+            puf_digest: None,
+        };
+        let cert = mint_certificate_v2(
+            "phase3@nucleusdb.com",
+            &features,
+            expiry,
+            compliance.clone(),
+        )
+        .expect("mint v2");
+        assert_eq!(cert.version, "nucleusdb-license-cab-2");
+        assert!(cert.compliance_commitment.is_some());
+        let parsed = serde_json::from_str::<LicenseCertificate>(
+            &serde_json::to_string_pretty(&cert).expect("serialize"),
+        )
+        .expect("deserialize");
+        let level = verify_certificate(&parsed).expect("v2 cert must verify");
+        assert!(level.is_pro());
+        assert_eq!(
+            parsed
+                .compliance_inputs
+                .as_ref()
+                .expect("inputs")
+                .replay_seq,
+            compliance.replay_seq
+        );
+    }
+
+    #[test]
+    fn v2_certificate_missing_compliance_inputs_rejected() {
+        let features = vec![ProFeature::MultiTenant];
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 365 * 24 * 3600;
+        let mut cert = mint_certificate("missing@phase3.com", &features, expiry);
+        cert.version = "nucleusdb-license-cab-2".to_string();
+        let err = verify_certificate(&cert);
+        assert!(matches!(err, Err(LicenseError::MissingComplianceInputs)));
+    }
+
+    #[test]
+    fn v2_certificate_tampered_compliance_inputs_rejected() {
+        let features = vec![ProFeature::MultiTenant];
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 365 * 24 * 3600;
+        let compliance = CompliancePublicInputs {
+            feasibility_root: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_string(),
+            replay_seq: 4,
+            puf_digest: None,
+        };
+        let mut cert =
+            mint_certificate_v2("tamper@phase3.com", &features, expiry, compliance.clone())
+                .expect("mint v2");
+        cert.compliance_inputs = Some(CompliancePublicInputs {
+            replay_seq: compliance.replay_seq + 1,
+            ..compliance
+        });
+        let err = verify_certificate(&cert);
+        assert!(matches!(
+            err,
+            Err(LicenseError::ComplianceCommitmentMismatch)
+                | Err(LicenseError::ProofDigestMismatch)
+        ));
+    }
+
+    #[test]
+    fn v2_certificate_rejects_none_sentinel_puf_digest() {
+        let features = vec![ProFeature::MultiTenant];
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 365 * 24 * 3600;
+        let compliance = CompliancePublicInputs {
+            feasibility_root: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_string(),
+            replay_seq: 4,
+            puf_digest: Some("NONE".to_string()),
+        };
+        let err = mint_certificate_v2("none@phase3.com", &features, expiry, compliance);
+        assert!(matches!(err, Err(LicenseError::ComplianceInputMalformed)));
+    }
+
+    #[test]
+    fn v1_certificate_rejects_none_sentinel_puf_digest() {
+        let features = vec![ProFeature::MultiTenant];
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 365 * 24 * 3600;
+        let mut cert = mint_certificate("none-v1@phase3.com", &features, expiry);
+        cert.puf_digest = Some("NONE".to_string());
+        let err = verify_certificate(&cert);
+        assert!(matches!(err, Err(LicenseError::PufDigestMismatch)));
     }
 }
