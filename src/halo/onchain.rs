@@ -6,11 +6,17 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::process::Command;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 const BASE_SEPOLIA_RPC: &str = "https://sepolia.base.org";
 const BASE_SEPOLIA_CHAIN_ID: u64 = 84532;
 const MAX_VERIFY_GAS: u64 = 500_000;
 const NONCE_RETRY_MAX: usize = 3;
+const STUB_OVERRIDE_UNSET: u8 = 0;
+const STUB_OVERRIDE_TRUE: u8 = 1;
+const STUB_OVERRIDE_FALSE: u8 = 2;
+
+static ONCHAIN_STUB_OVERRIDE: AtomicU8 = AtomicU8::new(STUB_OVERRIDE_UNSET);
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -104,10 +110,26 @@ pub fn save_onchain_config(path: &std::path::Path, cfg: &OnchainConfig) -> Resul
 }
 
 pub fn signer_mode_label(cfg: &OnchainConfig) -> &'static str {
-    match select_signer(cfg) {
-        Ok(SignerSelection::Keystore { .. }) => "keystore",
-        Ok(SignerSelection::PrivateKeyEnv { .. }) => "private_key_env",
-        Err(_) => "unconfigured",
+    let has_ks = cfg
+        .keystore_path
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+        == false
+        && cfg
+            .keystore_password_file
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+            == false;
+    if has_ks {
+        return "keystore";
+    }
+    match cfg.signer_mode {
+        SignerMode::Keystore => "keystore (not configured)",
+        SignerMode::PrivateKeyEnv => "private_key_env",
     }
 }
 
@@ -152,6 +174,7 @@ pub fn post_attestation(
 
     let signer = select_signer(cfg)?;
     let signer_args = signer.cast_signer_args();
+    let signer_env = signer.signer_env();
     let signer_address = signer.signer_address()?;
     let fn_sig = if anonymous {
         "verifyAndRecordAnonymous(uint256[8],uint256[])"
@@ -172,7 +195,7 @@ pub fn post_attestation(
     args.push(format!("[{}]", bundle.proof_words.join(",")));
     args.push(format!("[{}]", bundle.public_inputs.join(",")));
 
-    let cast_out = run_cast_send_with_nonce_retry(cfg, &args, &signer_address)?;
+    let cast_out = run_cast_send_with_nonce_retry(cfg, &args, &signer_env, &signer_address)?;
     let tx_hash = extract_hash(&cast_out)
         .ok_or_else(|| format!("failed to parse tx hash from cast output: {cast_out}"))?;
 
@@ -203,14 +226,17 @@ pub fn query_attestation(
             raw: "stub".to_string(),
         }));
     }
-    let raw = run_cast(&[
-        "call".to_string(),
-        "--rpc-url".to_string(),
-        cfg.rpc_url.clone(),
-        cfg.contract_address.clone(),
-        "isVerified(bytes32)(bool)".to_string(),
-        normalize_digest(attestation_digest)?,
-    ])?;
+    let raw = run_cast(
+        &[
+            "call".to_string(),
+            "--rpc-url".to_string(),
+            cfg.rpc_url.clone(),
+            cfg.contract_address.clone(),
+            "isVerified(bytes32)(bool)".to_string(),
+            normalize_digest(attestation_digest)?,
+        ],
+        &[],
+    )?;
     let verified = parse_bool_output(&raw)?;
     Ok(Some(OnchainAttestationStatus {
         attestation_digest: normalize_digest(attestation_digest)?,
@@ -254,6 +280,7 @@ pub fn deploy_trust_verifier(cfg: &OnchainConfig) -> Result<String, String> {
         cfg.rpc_url.clone(),
     ];
     args.extend(signer.cast_signer_args());
+    let signer_env = signer.signer_env();
     args.push("contracts/TrustVerifier.sol:TrustVerifier".to_string());
     args.push("--constructor-args".to_string());
     args.push(cfg.verifier_address.clone());
@@ -261,7 +288,7 @@ pub fn deploy_trust_verifier(cfg: &OnchainConfig) -> Result<String, String> {
     args.push(cfg.treasury_address.clone());
     args.push(cfg.fee_wei.to_string());
 
-    let out = run_cast(&args)?;
+    let out = run_cast(&args, &signer_env)?;
     extract_address(&out).ok_or_else(|| format!("failed to parse contract address from `{out}`"))
 }
 
@@ -316,9 +343,7 @@ enum SignerSelection {
 impl SignerSelection {
     fn cast_signer_args(&self) -> Vec<String> {
         match self {
-            Self::PrivateKeyEnv { private_key, .. } => {
-                vec!["--private-key".to_string(), private_key.clone()]
-            }
+            Self::PrivateKeyEnv { .. } => vec![],
             Self::Keystore {
                 path,
                 password_file,
@@ -331,10 +356,19 @@ impl SignerSelection {
         }
     }
 
+    fn signer_env(&self) -> Vec<(String, String)> {
+        match self {
+            Self::PrivateKeyEnv { private_key } => {
+                vec![("ETH_PRIVATE_KEY".to_string(), private_key.clone())]
+            }
+            Self::Keystore { .. } => vec![],
+        }
+    }
+
     fn signer_address(&self) -> Result<String, String> {
         let mut args = vec!["wallet".to_string(), "address".to_string()];
         args.extend(self.cast_signer_args());
-        let out = run_cast(&args)?;
+        let out = run_cast(&args, &self.signer_env())?;
         extract_address(&out).ok_or_else(|| format!("failed to parse signer address from `{out}`"))
     }
 }
@@ -388,7 +422,7 @@ fn estimate_verify_gas(
         format!("[{}]", bundle.proof_words.join(",")),
         format!("[{}]", bundle.public_inputs.join(",")),
     ];
-    let out = run_cast(&args)?;
+    let out = run_cast(&args, &[])?;
     let gas = parse_first_u64_token(&out)
         .ok_or_else(|| format!("gas estimate parse failed from `{out}`"))?;
     enforce_gas_cap(gas)?;
@@ -408,6 +442,7 @@ fn enforce_gas_cap(gas_estimate: u64) -> Result<(), String> {
 fn run_cast_send_with_nonce_retry(
     cfg: &OnchainConfig,
     base_args: &[String],
+    env: &[(String, String)],
     signer_address: &str,
 ) -> Result<String, String> {
     let mut last_err = String::new();
@@ -418,7 +453,7 @@ fn run_cast_send_with_nonce_retry(
             args.push("--nonce".to_string());
             args.push(nonce.to_string());
         }
-        match run_cast(&args) {
+        match run_cast(&args, env) {
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.clone();
@@ -532,14 +567,18 @@ fn parse_first_u64_token(raw: &str) -> Option<u64> {
     })
 }
 
-fn run_cast(args: &[String]) -> Result<String, String> {
-    let out = Command::new("cast").args(args).output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            "`cast` command not found".to_string()
-        } else {
-            format!("cast execution failed: {e}")
-        }
-    })?;
+fn run_cast(args: &[String], env: &[(String, String)]) -> Result<String, String> {
+    let out = Command::new("cast")
+        .args(args)
+        .envs(env.iter().cloned())
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "`cast` command not found".to_string()
+            } else {
+                format!("cast execution failed: {e}")
+            }
+        })?;
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if !out.status.success() {
@@ -595,6 +634,11 @@ fn parse_bool_output(raw: &str) -> Result<bool, String> {
 }
 
 pub fn onchain_stub_enabled() -> bool {
+    match ONCHAIN_STUB_OVERRIDE.load(Ordering::Relaxed) {
+        STUB_OVERRIDE_TRUE => return true,
+        STUB_OVERRIDE_FALSE => return false,
+        _ => {}
+    }
     for key in ["AGENTHALO_ONCHAIN_STUB", "AGENTHALO_AGENTPMT_STUB"] {
         if let Ok(v) = std::env::var(key) {
             if matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes") {
@@ -606,10 +650,41 @@ pub fn onchain_stub_enabled() -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn set_onchain_stub_override(val: Option<bool>) {
+    let code = match val {
+        Some(true) => STUB_OVERRIDE_TRUE,
+        Some(false) => STUB_OVERRIDE_FALSE,
+        None => STUB_OVERRIDE_UNSET,
+    };
+    ONCHAIN_STUB_OVERRIDE.store(code, Ordering::Relaxed);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::halo::circuit::AttestationProofBundle;
     use crate::halo::public_input_schema::PUBLIC_INPUT_SCHEMA_VERSION;
+    use std::sync::{Mutex, MutexGuard};
+
+    static STUB_OVERRIDE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct StubOverrideGuard {
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl StubOverrideGuard {
+        fn new(val: bool) -> Self {
+            let lock = STUB_OVERRIDE_TEST_LOCK.lock().expect("lock stub override");
+            set_onchain_stub_override(Some(val));
+            Self { _guard: lock }
+        }
+    }
+
+    impl Drop for StubOverrideGuard {
+        fn drop(&mut self) {
+            set_onchain_stub_override(None);
+        }
+    }
 
     #[test]
     fn test_abi_encode_verify_and_record() {
@@ -642,6 +717,49 @@ mod tests {
     }
 
     #[test]
+    fn test_private_key_not_in_cast_args() {
+        let signer = SignerSelection::PrivateKeyEnv {
+            private_key: "0xabc".to_string(),
+        };
+        assert!(signer.cast_signer_args().is_empty());
+    }
+
+    #[test]
+    fn test_signer_env_contains_private_key() {
+        let signer = SignerSelection::PrivateKeyEnv {
+            private_key: "0xabc".to_string(),
+        };
+        let env = signer.signer_env();
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, "ETH_PRIVATE_KEY");
+        assert_eq!(env[0].1, "0xabc");
+
+        let keystore = SignerSelection::Keystore {
+            path: "/tmp/ks".to_string(),
+            password_file: "/tmp/pw".to_string(),
+        };
+        assert!(keystore.signer_env().is_empty());
+    }
+
+    #[test]
+    fn test_signer_label_without_env_var() {
+        let cfg = OnchainConfig::default();
+        assert_eq!(signer_mode_label(&cfg), "private_key_env");
+
+        let mut keystore_cfg = OnchainConfig {
+            signer_mode: SignerMode::Keystore,
+            ..OnchainConfig::default()
+        };
+        assert_eq!(
+            signer_mode_label(&keystore_cfg),
+            "keystore (not configured)"
+        );
+        keystore_cfg.keystore_path = Some("/tmp/ks".to_string());
+        keystore_cfg.keystore_password_file = Some("/tmp/pw".to_string());
+        assert_eq!(signer_mode_label(&keystore_cfg), "keystore");
+    }
+
+    #[test]
     fn test_onchain_config_roundtrip_with_signer_fields() {
         let dir = std::env::temp_dir().join(format!(
             "agenthalo_onchain_cfg_{}_{}",
@@ -671,7 +789,7 @@ mod tests {
 
     #[test]
     fn test_query_attestation_not_found() {
-        std::env::set_var("AGENTHALO_ONCHAIN_STUB", "1");
+        let _guard = StubOverrideGuard::new(true);
         let cfg = OnchainConfig {
             contract_address: "0x1111111111111111111111111111111111111111".to_string(),
             ..OnchainConfig::default()
@@ -680,7 +798,6 @@ mod tests {
             .expect("query")
             .expect("some");
         assert!(!status.verified);
-        std::env::remove_var("AGENTHALO_ONCHAIN_STUB");
     }
 
     #[test]

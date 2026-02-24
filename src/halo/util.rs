@@ -40,11 +40,43 @@ pub fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
-fn hex_nibble(b: u8) -> Option<u8> {
+pub fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
+    let s = hex.strip_prefix("0x").unwrap_or(hex);
+    if s.len() % 2 != 0 {
+        return Err("hex input must have even length".to_string());
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for pair in s.as_bytes().chunks_exact(2) {
+        let hi = hex_nibble(pair[0]).ok_or_else(|| format!("invalid hex in {hex}"))?;
+        let lo = hex_nibble(pair[1]).ok_or_else(|| format!("invalid hex in {hex}"))?;
+        out.push((hi << 4) | lo);
+    }
+    Ok(out)
+}
+
+pub(crate) fn hex_nibble(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hex_decode_variable_length() {
+        assert_eq!(hex_decode("").expect("empty"), Vec::<u8>::new());
+        assert_eq!(hex_decode("00").expect("single"), vec![0u8]);
+        assert_eq!(hex_decode("0x0aFF").expect("mixed"), vec![0x0a, 0xff]);
+        assert_eq!(
+            hex_decode("deadbeef").expect("bytes"),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+        assert!(hex_decode("abc").is_err());
+        assert!(hex_decode("zz").is_err());
     }
 }

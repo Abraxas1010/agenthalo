@@ -7,7 +7,7 @@ use crate::halo::config;
 use crate::halo::public_input_schema::{
     build_public_inputs, PUBLIC_INPUT_SCHEMA_VERSION, REQUIRED_PUBLIC_INPUTS,
 };
-use crate::halo::util::{digest_bytes, hex_decode_32, hex_encode};
+use crate::halo::util::{digest_bytes, hex_decode, hex_decode_32, hex_encode};
 use ark_bn254::{Bn254, Fq, Fr};
 use ark_ff::{BigInteger, PrimeField};
 use ark_groth16::{prepare_verifying_key, Groth16, Proof, ProvingKey, VerifyingKey};
@@ -192,8 +192,11 @@ fn load_or_setup_attestation_keys_from_paths(
     let keys_exist = has_pk && has_vk;
     if has_pk ^ has_vk {
         return Err(format!(
-            "partial circuit artifacts detected (pk exists: {}, vk exists: {}); remove both or regenerate",
-            has_pk, has_vk
+            "partial circuit artifacts detected: pk({})={}, vk({})={}; remove both or regenerate",
+            pk_path.display(),
+            if has_pk { "present" } else { "missing" },
+            vk_path.display(),
+            if has_vk { "present" } else { "missing" }
         ));
     }
 
@@ -271,6 +274,7 @@ fn load_or_setup_attestation_keys_from_paths(
         && metadata.max_events != requested_max_events
     {
         metadata.max_events = requested_max_events;
+        save_metadata(metadata_path, &metadata)?;
     }
 
     Ok((
@@ -397,7 +401,7 @@ pub fn verify_attestation_proof(
             bundle.public_inputs.len()
         ));
     }
-    let proof_raw = hex_decode_bytes(&bundle.proof_hex)?;
+    let proof_raw = hex_decode(&bundle.proof_hex)?;
     let mut proof_slice = proof_raw.as_slice();
     let proof = Proof::<Bn254>::deserialize_compressed(&mut proof_slice)
         .map_err(|e| format!("decode proof: {e}"))?;
@@ -457,29 +461,6 @@ fn fq_to_decimal(fq: &Fq) -> String {
 
 fn bigint_to_decimal(bytes_le: Vec<u8>) -> String {
     BigUint::from_bytes_le(&bytes_le).to_str_radix(10)
-}
-
-fn hex_decode_bytes(hex: &str) -> Result<Vec<u8>, String> {
-    let s = hex.strip_prefix("0x").unwrap_or(hex);
-    if s.len() % 2 != 0 {
-        return Err("hex input must have even length".to_string());
-    }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for pair in s.as_bytes().chunks_exact(2) {
-        let hi = hex_nibble(pair[0]).ok_or_else(|| "invalid hex".to_string())?;
-        let lo = hex_nibble(pair[1]).ok_or_else(|| "invalid hex".to_string())?;
-        out.push((hi << 4) | lo);
-    }
-    Ok(out)
-}
-
-fn hex_nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -664,6 +645,42 @@ mod tests {
             loaded.public_input_schema_version,
             PUBLIC_INPUT_SCHEMA_VERSION
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dev_policy_persists_max_events_change() {
+        let dir = std::env::temp_dir().join(format!(
+            "agenthalo_circuit_dev_max_events_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let pk = dir.join("pk.bin");
+        let vk = dir.join("vk.bin");
+        let metadata = dir.join("metadata.json");
+
+        load_or_setup_attestation_keys_from_paths(
+            128,
+            CircuitPolicy::DevDeterministic,
+            &pk,
+            &vk,
+            &metadata,
+        )
+        .expect("initial dev setup");
+
+        load_or_setup_attestation_keys_from_paths(
+            256,
+            CircuitPolicy::DevDeterministic,
+            &pk,
+            &vk,
+            &metadata,
+        )
+        .expect("reload with new max_events");
+
+        let loaded = load_metadata(&metadata).expect("load metadata");
+        assert_eq!(loaded.max_events, 256);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

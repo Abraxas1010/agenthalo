@@ -138,35 +138,9 @@ contract TrustVerifier {
         uint256[8] calldata proofWords,
         uint256[] calldata publicInputs
     ) external {
-        if (publicInputs.length < 5) revert InvalidPublicInputs();
-        bytes memory proofBytes = abi.encode(
-            [proofWords[0], proofWords[1]],
-            [[proofWords[2], proofWords[3]], [proofWords[4], proofWords[5]]],
-            [proofWords[6], proofWords[7]]
-        );
-        if (!verifier.verifyProof(proofBytes, publicInputs)) revert InvalidProof();
-
+        bytes32 attestationDigest = _verifyAndRecordInternal(proofWords, publicInputs, msg.sender);
         bytes32 merkleRoot = _packBytes32(publicInputs[0], publicInputs[1]);
-        bytes32 attestationDigest = _packBytes32(publicInputs[2], publicInputs[3]);
         uint64 eventCount = uint64(publicInputs[4]);
-        if (attestationDigest == bytes32(0)) revert InvalidDigest();
-        if (attestations[attestationDigest].blockTimestamp != 0) revert AttestationAlreadyRecorded();
-
-        if (feeWei > 0) {
-            bool ok = usdc.transferFrom(msg.sender, treasury, feeWei);
-            if (!ok) revert TransferFailed();
-        }
-
-        attestations[attestationDigest] = AttestationRecord({
-            merkleRoot: merkleRoot,
-            attestationDigest: attestationDigest,
-            eventCount: eventCount,
-            attester: msg.sender,
-            blockTimestamp: uint64(block.timestamp),
-            verified: true
-        });
-        totalAttestations++;
-        totalVerifiedAttestations++;
         emit AttestationRecorded(merkleRoot, attestationDigest, eventCount, msg.sender, block.timestamp);
     }
 
@@ -176,6 +150,17 @@ contract TrustVerifier {
         uint256[8] calldata proofWords,
         uint256[] calldata publicInputs
     ) external {
+        bytes32 attestationDigest = _verifyAndRecordInternal(proofWords, publicInputs, address(0));
+        bytes32 merkleRoot = _packBytes32(publicInputs[0], publicInputs[1]);
+        uint64 eventCount = uint64(publicInputs[4]);
+        emit AnonymousAttestationRecorded(merkleRoot, attestationDigest, eventCount, block.timestamp);
+    }
+
+    function _verifyAndRecordInternal(
+        uint256[8] calldata proofWords,
+        uint256[] calldata publicInputs,
+        address attester
+    ) internal returns (bytes32) {
         if (publicInputs.length < 5) revert InvalidPublicInputs();
         bytes memory proofBytes = abi.encode(
             [proofWords[0], proofWords[1]],
@@ -199,13 +184,13 @@ contract TrustVerifier {
             merkleRoot: merkleRoot,
             attestationDigest: attestationDigest,
             eventCount: eventCount,
-            attester: address(0),
+            attester: attester,
             blockTimestamp: uint64(block.timestamp),
             verified: true
         });
         totalAttestations++;
         totalVerifiedAttestations++;
-        emit AnonymousAttestationRecorded(merkleRoot, attestationDigest, eventCount, block.timestamp);
+        return attestationDigest;
     }
 
     function isVerified(bytes32 attestationDigest) external view returns (bool) {
