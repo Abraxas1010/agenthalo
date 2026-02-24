@@ -1,6 +1,7 @@
 use nucleusdb::halo::attest::{attest_session, AttestationRequest};
 use nucleusdb::halo::audit::{audit_contract_source, AuditRequest, AuditSize};
 use nucleusdb::halo::auth::{save_credentials, Credentials};
+use nucleusdb::halo::pq::{keygen_pq, sign_pq_payload, verify_detached_signature};
 use nucleusdb::halo::pricing::{calculate_cost, default_pricing};
 use nucleusdb::halo::runner::AgentRunner;
 use nucleusdb::halo::schema::{
@@ -9,6 +10,7 @@ use nucleusdb::halo::schema::{
 use nucleusdb::halo::trace::{
     list_sessions, now_unix_secs, paid_operations, session_events, session_summary, TraceWriter,
 };
+use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::wrap::{unwrap_agent, wrap_agent};
 use std::path::PathBuf;
 
@@ -308,4 +310,72 @@ fn halo_paid_operation_write_and_read() {
     assert_eq!(ops.len(), 1);
     assert_eq!(ops[0].operation_type, "attest");
     assert_eq!(ops[0].credits_spent, 10);
+}
+
+#[test]
+fn halo_trust_query_reports_score() {
+    let db_path = temp_db_path("trust-score");
+    let mut writer = TraceWriter::new(&db_path).expect("writer");
+    writer
+        .start_session(SessionMetadata {
+            session_id: "sess-trust-1".to_string(),
+            agent: "codex".to_string(),
+            model: None,
+            started_at: now_unix_secs(),
+            ended_at: None,
+            prompt: None,
+            status: SessionStatus::Running,
+            user_id: None,
+            machine_id: None,
+            puf_digest: None,
+        })
+        .expect("start");
+    writer.end_session(SessionStatus::Completed).expect("end");
+    writer
+        .record_paid_operation(PaidOperation {
+            operation_id: "op-trust-1".to_string(),
+            timestamp: now_unix_secs(),
+            operation_type: "attest".to_string(),
+            credits_spent: 10,
+            usd_equivalent: 0.1,
+            session_id: Some("sess-trust-1".to_string()),
+            result_digest: Some("deadbeef".to_string()),
+            success: true,
+            error: None,
+        })
+        .expect("record");
+
+    let score = query_trust_score(&db_path, Some("sess-trust-1")).expect("trust score");
+    assert!(score.score > 0.0 && score.score <= 1.0);
+    assert_eq!(score.attestation_count, 1);
+}
+
+#[test]
+fn halo_pq_keygen_and_sign_detached_roundtrip() {
+    let old_home = std::env::var("AGENTHALO_HOME").ok();
+    let home = std::env::temp_dir().join(format!(
+        "agenthalo_pq_integration_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create temp home");
+    std::env::set_var("AGENTHALO_HOME", &home);
+
+    let key = keygen_pq(false).expect("keygen");
+    let payload = b"integration-test-message";
+    let (sig, _sig_path) =
+        sign_pq_payload(payload, "message", Some("inline".to_string())).expect("sign");
+    assert_eq!(sig.key_id, key.key_id);
+    assert!(
+        verify_detached_signature(payload, &sig.public_key_hex, &sig.signature_hex)
+            .expect("verify")
+    );
+
+    if let Some(v) = old_home {
+        std::env::set_var("AGENTHALO_HOME", v);
+    } else {
+        std::env::remove_var("AGENTHALO_HOME");
+    }
+    let _ = std::fs::remove_dir_all(&home);
 }

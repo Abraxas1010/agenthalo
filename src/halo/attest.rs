@@ -24,6 +24,22 @@ pub struct AttestationResult {
     pub timestamp: u64,
     pub anonymous: bool,
     pub proof_type: String,
+    pub anonymous_membership_proof: Option<AnonymousMembershipProof>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AnonymousMembershipProof {
+    pub membership_root: String,
+    pub leaf_hash: String,
+    pub tree_size: u64,
+    pub leaf_index: u64,
+    pub steps: Vec<AnonymousMembershipStep>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AnonymousMembershipStep {
+    pub sibling_hash: String,
+    pub sibling_is_left: bool,
 }
 
 pub fn resolve_session_id(db_path: &Path, session_id: Option<&str>) -> Result<String, String> {
@@ -62,6 +78,12 @@ pub fn attest_session(
     let merkle_root = merkle_root_from_hashes(&verified_hashes)?;
     let timestamp = now_unix_secs();
     let blinded = blinded_session_reference(&request.session_id);
+    let anonymous_membership_proof = if request.anonymous {
+        let sessions = list_sessions(db_path)?;
+        Some(build_anonymous_membership_proof(&sessions, &blinded)?)
+    } else {
+        None
+    };
     let public_ref = if request.anonymous {
         blinded.clone()
     } else {
@@ -88,7 +110,12 @@ pub fn attest_session(
         attestation_digest,
         timestamp,
         anonymous: request.anonymous,
-        proof_type: "merkle-sha256".to_string(),
+        proof_type: if request.anonymous {
+            "merkle-sha256+anon-membership".to_string()
+        } else {
+            "merkle-sha256".to_string()
+        },
+        anonymous_membership_proof,
     })
 }
 
@@ -180,6 +207,118 @@ fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest);
     out
+}
+
+fn anon_leaf_hash(blinded_ref: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agenthalo.anon.membership.leaf.v1");
+    hasher.update([0u8]);
+    hasher.update(blinded_ref);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn anon_node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agenthalo.anon.membership.node.v1");
+    hasher.update([0u8]);
+    hasher.update(left);
+    hasher.update(right);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn build_anonymous_membership_proof(
+    sessions: &[crate::halo::schema::SessionMetadata],
+    target_blinded_ref_hex: &str,
+) -> Result<AnonymousMembershipProof, String> {
+    let mut leaves: Vec<(String, [u8; 32])> = sessions
+        .iter()
+        .map(|s| {
+            let blinded = blinded_session_reference(&s.session_id);
+            let bytes = hex_decode_32(&blinded)?;
+            Ok((blinded, anon_leaf_hash(&bytes)))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if leaves.is_empty() {
+        return Err("cannot build anonymous membership proof: no sessions found".to_string());
+    }
+    leaves.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let target_leaf = {
+        let target_bytes = hex_decode_32(target_blinded_ref_hex)?;
+        anon_leaf_hash(&target_bytes)
+    };
+    let mut target_index = leaves
+        .iter()
+        .position(|(_, leaf)| leaf == &target_leaf)
+        .ok_or_else(|| "target session not found in anonymous membership tree".to_string())?;
+
+    let mut level: Vec<[u8; 32]> = leaves.iter().map(|(_, leaf)| *leaf).collect();
+    let mut steps = Vec::new();
+    while level.len() > 1 {
+        if target_index % 2 == 0 {
+            if target_index + 1 < level.len() {
+                steps.push(AnonymousMembershipStep {
+                    sibling_hash: hex_encode(&level[target_index + 1]),
+                    sibling_is_left: false,
+                });
+            }
+        } else {
+            steps.push(AnonymousMembershipStep {
+                sibling_hash: hex_encode(&level[target_index - 1]),
+                sibling_is_left: true,
+            });
+        }
+
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        let mut i = 0usize;
+        while i < level.len() {
+            if i + 1 < level.len() {
+                next.push(anon_node_hash(&level[i], &level[i + 1]));
+            } else {
+                next.push(level[i]);
+            }
+            i += 2;
+        }
+        target_index /= 2;
+        level = next;
+    }
+    let membership_root = level
+        .first()
+        .map(|h| hex_encode(h))
+        .ok_or_else(|| "failed to build anonymous membership root".to_string())?;
+
+    let leaf_index = leaves
+        .iter()
+        .position(|(_, leaf)| *leaf == target_leaf)
+        .ok_or_else(|| "target session not found for membership proof".to_string())?
+        as u64;
+
+    Ok(AnonymousMembershipProof {
+        membership_root,
+        leaf_hash: hex_encode(&target_leaf),
+        tree_size: leaves.len() as u64,
+        leaf_index,
+        steps,
+    })
+}
+
+pub fn verify_anonymous_membership_proof(proof: &AnonymousMembershipProof) -> Result<bool, String> {
+    let mut acc = hex_decode_32(&proof.leaf_hash)?;
+    for step in &proof.steps {
+        let sibling = hex_decode_32(&step.sibling_hash)?;
+        acc = if step.sibling_is_left {
+            anon_node_hash(&sibling, &acc)
+        } else {
+            anon_node_hash(&acc, &sibling)
+        };
+    }
+    Ok(hex_encode(&acc).eq_ignore_ascii_case(&proof.membership_root))
 }
 
 fn hex_decode_32(s: &str) -> Result<[u8; 32], String> {
@@ -336,6 +475,15 @@ mod tests {
 
         assert!(result.session_id.is_none());
         assert!(result.blinded_session_ref.is_some());
+        assert_eq!(result.proof_type, "merkle-sha256+anon-membership");
+        let membership = result
+            .anonymous_membership_proof
+            .as_ref()
+            .expect("membership proof exists");
+        assert!(
+            verify_anonymous_membership_proof(membership).expect("verify membership proof"),
+            "membership proof should verify"
+        );
     }
 
     #[test]

@@ -10,7 +10,9 @@ use nucleusdb::halo::audit::{
     audit_contract_file, audit_contract_source, save_audit_result, AuditRequest, AuditSize,
 };
 use nucleusdb::halo::config;
+use nucleusdb::halo::pq::{has_wallet, sign_pq_payload};
 use nucleusdb::halo::trace::record_paid_operation_for_halo;
+use nucleusdb::halo::trust::query_trust_score;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -89,7 +91,7 @@ async fn health() -> Json<Value> {
     Json(json!({
         "status": "ok",
         "service": "agenthalo-mcp-server",
-        "phase": "1-live"
+        "phase": "2-live"
     }))
 }
 
@@ -124,15 +126,15 @@ async fn mcp(
     let result = match req.method.as_str() {
         "initialize" => json!({
             "protocolVersion": "2025-03-26",
-            "serverInfo": {"name": "agenthalo-mcp-server", "version": "0.1.0-phase1"},
+            "serverInfo": {"name": "agenthalo-mcp-server", "version": "0.1.0-phase2"},
             "capabilities": {"tools": {}}
         }),
         "tools/list" => json!({
             "tools": [
                 {"name":"attest","description":"AgentHALO Merkle attestation (paid)"},
-                {"name":"sign_pq","description":"AgentHALO post-quantum signing (Phase 0 stub)"},
+                {"name":"sign_pq","description":"AgentHALO post-quantum detached signing (paid)"},
                 {"name":"audit_contract","description":"AgentHALO Solidity static audit (paid)"},
-                {"name":"trust_query","description":"AgentHALO trust query (Phase 0 stub)"},
+                {"name":"trust_query","description":"AgentHALO trust score query (paid)"},
                 {"name":"vote","description":"AgentHALO DAO vote (Phase 0 stub)"},
                 {"name":"sync","description":"AgentHALO cloud sync (Phase 0 stub)"},
                 {"name":"privacy_pool_create","description":"AgentHALO privacy pool create (Phase 0 stub)"},
@@ -201,35 +203,28 @@ fn tool_call_response(name: &str, arguments: Value) -> Value {
 fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
     match name {
         "attest" => tool_attest(arguments),
-        "sign_pq" => Ok(json!({
-            "status": "stub",
-            "message": "PQ signing not yet implemented (Phase 1)"
-        })),
+        "sign_pq" => tool_sign_pq(arguments),
         "audit_contract" => tool_audit_contract(arguments),
-        "trust_query" => Ok(json!({
-            "status": "stub",
-            "score": 0.5,
-            "attestation_count": 0
-        })),
+        "trust_query" => tool_trust_query(arguments),
         "vote" => Ok(json!({
             "status": "stub",
             "message": "DAO voting not yet implemented (Phase 1)"
         })),
         "sync" => Ok(json!({
             "status": "stub",
-            "message": "Cloud sync not yet implemented (Phase 2)"
+            "message": "Cloud sync not yet implemented (Phase 3)"
         })),
         "privacy_pool_create" => Ok(json!({
             "status": "stub",
-            "message": "Privacy pool create not yet implemented (Phase 2)"
+            "message": "Privacy pool create not yet implemented (Phase 3)"
         })),
         "privacy_pool_withdraw" => Ok(json!({
             "status": "stub",
-            "message": "Privacy pool withdraw not yet implemented (Phase 2)"
+            "message": "Privacy pool withdraw not yet implemented (Phase 3)"
         })),
         "pq_bridge_transfer" => Ok(json!({
             "status": "stub",
-            "message": "PQ bridge transfer not yet implemented (Phase 2)"
+            "message": "PQ bridge transfer not yet implemented (Phase 3)"
         })),
         other => Err(format!("unknown tool: {other}")),
     }
@@ -351,6 +346,111 @@ fn tool_audit_contract(arguments: Value) -> Result<Value, String> {
         Err(e) => {
             let _ = record_paid_operation_for_halo(op, cost, None, None, false, Some(e.clone()));
             Err(format!("audit failed after credit deduction: {e}"))
+        }
+    }
+}
+
+fn tool_sign_pq(arguments: Value) -> Result<Value, String> {
+    if !has_wallet() {
+        return Err("no PQ wallet found. Run: agenthalo keygen --pq".to_string());
+    }
+    let message_arg = arguments
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(|s| s.as_bytes().to_vec());
+    let file_arg = arguments
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let (payload, payload_kind, payload_hint) = match (message_arg, file_arg) {
+        (Some(_), Some(_)) => return Err("provide only one of message or file_path".to_string()),
+        (Some(bytes), None) => (bytes, "message".to_string(), Some("inline".to_string())),
+        (None, Some(path)) => {
+            let bytes =
+                std::fs::read(&path).map_err(|e| format!("read signature payload file: {e}"))?;
+            (bytes, "file".to_string(), Some(path))
+        }
+        (None, None) => return Err("sign_pq requires message or file_path".to_string()),
+    };
+
+    let op = "sign_pq";
+    let cost = agentpmt::operation_cost(op).unwrap_or(0);
+    let client = require_agentpmt()?;
+    let deducted = client.deduct(op, 1)?;
+    if !deducted.success {
+        return Err(format!(
+            "insufficient credits. Have: {}, need: {}",
+            deducted.remaining_credits, cost
+        ));
+    }
+
+    match sign_pq_payload(&payload, &payload_kind, payload_hint) {
+        Ok((envelope, save_path)) => {
+            record_paid_operation_for_halo(
+                op,
+                cost,
+                None,
+                Some(envelope.signature_digest.clone()),
+                true,
+                None,
+            )?;
+            Ok(json!({
+                "status": "ok",
+                "remaining_credits": deducted.remaining_credits,
+                "signature_path": save_path.display().to_string(),
+                "signature": envelope
+            }))
+        }
+        Err(e) => {
+            let _ = record_paid_operation_for_halo(op, cost, None, None, false, Some(e.clone()));
+            Err(format!("signing failed after credit deduction: {e}"))
+        }
+    }
+}
+
+fn tool_trust_query(arguments: Value) -> Result<Value, String> {
+    let op = "trust_query";
+    let cost = agentpmt::operation_cost(op).unwrap_or(0);
+    let client = require_agentpmt()?;
+    let deducted = client.deduct(op, 1)?;
+    if !deducted.success {
+        return Err(format!(
+            "insufficient credits. Have: {}, need: {}",
+            deducted.remaining_credits, cost
+        ));
+    }
+
+    let requested_session = arguments
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let db_path = config::db_path();
+    match query_trust_score(&db_path, requested_session.as_deref()) {
+        Ok(score) => {
+            record_paid_operation_for_halo(
+                op,
+                cost,
+                requested_session,
+                Some(score.digest.clone()),
+                true,
+                None,
+            )?;
+            Ok(json!({
+                "status": "ok",
+                "remaining_credits": deducted.remaining_credits,
+                "score": score
+            }))
+        }
+        Err(e) => {
+            let _ = record_paid_operation_for_halo(
+                op,
+                cost,
+                requested_session,
+                None,
+                false,
+                Some(e.clone()),
+            );
+            Err(format!("trust query failed after credit deduction: {e}"))
         }
     }
 }

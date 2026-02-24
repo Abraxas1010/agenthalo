@@ -32,6 +32,14 @@ pub fn audits_dir() -> PathBuf {
     halo_dir().join("audits")
 }
 
+pub fn signatures_dir() -> PathBuf {
+    halo_dir().join("signatures")
+}
+
+pub fn pq_wallet_path() -> PathBuf {
+    halo_dir().join("pq_wallet.json")
+}
+
 pub fn ensure_halo_dir() -> Result<(), String> {
     std::fs::create_dir_all(halo_dir()).map_err(|e| format!("create halo dir: {e}"))
 }
@@ -42,4 +50,8 @@ pub fn ensure_attestations_dir() -> Result<(), String> {
 
 pub fn ensure_audits_dir() -> Result<(), String> {
     std::fs::create_dir_all(audits_dir()).map_err(|e| format!("create audits dir: {e}"))
+}
+
+pub fn ensure_signatures_dir() -> Result<(), String> {
+    std::fs::create_dir_all(signatures_dir()).map_err(|e| format!("create signatures dir: {e}"))
 }

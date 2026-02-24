@@ -11,9 +11,11 @@ use nucleusdb::halo::auth::{
 };
 use nucleusdb::halo::config;
 use nucleusdb::halo::detect::AgentType;
+use nucleusdb::halo::pq::{has_wallet, keygen_pq, sign_pq_payload};
 use nucleusdb::halo::runner::AgentRunner;
 use nucleusdb::halo::schema::{SessionMetadata, SessionStatus};
 use nucleusdb::halo::trace::{now_unix_secs, record_paid_operation_for_halo, TraceWriter};
+use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
 use std::io::{self, Write};
 use std::path::Path;
@@ -42,6 +44,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "credits" => cmd_credits(&args[2..]),
         "attest" => cmd_attest(&args[2..]),
         "audit" => cmd_audit(&args[2..]),
+        "keygen" => cmd_keygen(&args[2..]),
+        "sign" => cmd_sign(&args[2..]),
+        "trust" => cmd_trust(&args[2..]),
         "addon" => cmd_addon(&args[2..]),
         "license" => cmd_license(&args[2..]),
         "wrap" => cmd_wrap(&args[2..]),
@@ -272,6 +277,7 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
             let has_auth = is_authenticated(&creds_path) || resolve_api_key(&creds_path).is_some();
             println!("AUTHENTICATED={has_auth}");
             println!("AGENTPMT_CONFIGURED={}", is_agentpmt_configured());
+            println!("PQ_WALLET_PRESENT={}", has_wallet());
             Ok(())
         }
         other => Err(format!("unknown config command: {other}")),
@@ -490,6 +496,158 @@ fn cmd_audit(args: &[String]) -> Result<(), String> {
     }
 }
 
+fn cmd_keygen(args: &[String]) -> Result<(), String> {
+    if !args.iter().any(|a| a == "--pq") {
+        return Err("usage: agenthalo keygen --pq [--force]".to_string());
+    }
+    let force = args.iter().any(|a| a == "--force");
+    let result = keygen_pq(force)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result)
+            .map_err(|e| format!("serialize keygen output: {e}"))?
+    );
+    Ok(())
+}
+
+fn cmd_sign(args: &[String]) -> Result<(), String> {
+    if !args.iter().any(|a| a == "--pq") {
+        return Err("usage: agenthalo sign --pq (--message TEXT | --file PATH)".to_string());
+    }
+    if !has_wallet() {
+        return Err(
+            "no PQ wallet found. Run: agenthalo keygen --pq (or --force to rotate)".to_string(),
+        );
+    }
+
+    let message_arg = args
+        .iter()
+        .position(|a| a == "--message")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    let file_arg = args
+        .iter()
+        .position(|a| a == "--file")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    let (payload, payload_kind, payload_hint) = match (message_arg, file_arg) {
+        (Some(_), Some(_)) => {
+            return Err("choose one payload source: --message or --file".to_string());
+        }
+        (Some(m), None) => (
+            m.into_bytes(),
+            "message".to_string(),
+            Some("inline".to_string()),
+        ),
+        (None, Some(path)) => {
+            let bytes =
+                std::fs::read(&path).map_err(|e| format!("read payload file {}: {e}", path))?;
+            (bytes, "file".to_string(), Some(path))
+        }
+        (None, None) => {
+            return Err("usage: agenthalo sign --pq (--message TEXT | --file PATH)".to_string());
+        }
+    };
+
+    let op = "sign_pq";
+    let cost = agentpmt::operation_cost(op).unwrap_or(0);
+    println!("Signing cost: {cost} credits (${:.2})", cost as f64 * 0.01);
+    let client = require_agentpmt()?;
+    let deduct_result = client.deduct(op, 1)?;
+    if !deduct_result.success {
+        return Err(format!(
+            "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
+            deduct_result.remaining_credits, cost
+        ));
+    }
+
+    match sign_pq_payload(&payload, &payload_kind, payload_hint) {
+        Ok((envelope, save_path)) => {
+            println!("PQ signing successful.");
+            println!("Signature file: {}", save_path.display());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&envelope)
+                    .map_err(|e| format!("serialize signature output: {e}"))?
+            );
+            println!("Remaining credits: {}", deduct_result.remaining_credits);
+            record_paid_operation_for_halo(
+                op,
+                cost,
+                None,
+                Some(envelope.signature_digest.clone()),
+                true,
+                None,
+            )?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = record_paid_operation_for_halo(op, cost, None, None, false, Some(e.clone()));
+            Err(format!("signing failed after credit deduction: {e}"))
+        }
+    }
+}
+
+fn cmd_trust(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("query");
+    match sub {
+        "query" | "score" => {
+            let session_id = args
+                .iter()
+                .position(|a| a == "--session")
+                .and_then(|i| args.get(i + 1))
+                .cloned();
+            let op = "trust_query";
+            let cost = agentpmt::operation_cost(op).unwrap_or(0);
+            println!(
+                "Trust query cost: {cost} credits (${:.2})",
+                cost as f64 * 0.01
+            );
+            let client = require_agentpmt()?;
+            let deduct_result = client.deduct(op, 1)?;
+            if !deduct_result.success {
+                return Err(format!(
+                    "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
+                    deduct_result.remaining_credits, cost
+                ));
+            }
+
+            let db_path = config::db_path();
+            match query_trust_score(&db_path, session_id.as_deref()) {
+                Ok(score) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&score)
+                            .map_err(|e| format!("serialize trust output: {e}"))?
+                    );
+                    println!("Remaining credits: {}", deduct_result.remaining_credits);
+                    record_paid_operation_for_halo(
+                        op,
+                        cost,
+                        session_id,
+                        Some(score.digest.clone()),
+                        true,
+                        None,
+                    )?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = record_paid_operation_for_halo(
+                        op,
+                        cost,
+                        session_id,
+                        None,
+                        false,
+                        Some(e.clone()),
+                    );
+                    Err(format!("trust query failed after credit deduction: {e}"))
+                }
+            }
+        }
+        _ => Err("usage: agenthalo trust [query|score] [--session ID]".to_string()),
+    }
+}
+
 fn cmd_addon(args: &[String]) -> Result<(), String> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
     match sub {
@@ -659,6 +817,6 @@ fn require_agentpmt() -> Result<AgentPmtClient, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.1.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT API key\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month] [--paid]   Show model costs or paid operation usage\n  credits [balance|add|history]\n                             Check or add AgentPMT credits\n  attest [--session ID] [--anonymous]\n                             Build local Merkle attestation for a session (paid)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit (paid)\n  license [status|buy <tier>]\n                             Manage NucleusDB license\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_AGENTPMT_STUB=1   Enable local stub mode for AgentPMT credits"
+        "agenthalo 0.1.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT API key\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month] [--paid]   Show model costs or paid operation usage\n  credits [balance|add|history]\n                             Check or add AgentPMT credits\n  attest [--session ID] [--anonymous]\n                             Build local Merkle attestation for a session (paid)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit (paid)\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature (paid)\n  trust [query|score] [--session ID]\n                             Query trust score (paid)\n  license [status|buy <tier>]\n                             Manage NucleusDB license\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_AGENTPMT_STUB=1   Enable local stub mode for AgentPMT credits"
     );
 }
