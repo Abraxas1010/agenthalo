@@ -1,8 +1,5 @@
 use nucleusdb::halo::addons;
-use nucleusdb::halo::agentpmt::{
-    self, agentpmt_config_path, is_agentpmt_configured, load_agentpmt_config, save_agentpmt_config,
-    AgentPmtClient, AgentPmtConfig,
-};
+use nucleusdb::halo::agentpmt;
 use nucleusdb::halo::attest::{
     attest_session, resolve_session_id, save_attestation, AttestationRequest,
 };
@@ -30,6 +27,7 @@ use nucleusdb::halo::trace::{
 use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::util::digest_json;
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
+use nucleusdb::license;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -54,7 +52,6 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "config" => cmd_config(&args[2..]),
         "traces" => cmd_traces(&args[2..]),
         "costs" => cmd_costs(&args[2..]),
-        "credits" => cmd_credits(&args[2..]),
         "attest" => cmd_attest(&args[2..]),
         "audit" => cmd_audit(&args[2..]),
         "keygen" => cmd_keygen(&args[2..]),
@@ -69,7 +66,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "wrap" => cmd_wrap(&args[2..]),
         "unwrap" => cmd_unwrap(&args[2..]),
         "version" | "--version" | "-V" => {
-            println!("agenthalo 0.1.0");
+            println!("agenthalo 0.2.0");
             Ok(())
         }
         "help" | "--help" | "-h" => {
@@ -233,7 +230,8 @@ fn cmd_login(args: &[String]) -> Result<(), String> {
 fn cmd_config(args: &[String]) -> Result<(), String> {
     if args.is_empty() {
         return Err(
-            "usage: agenthalo config set-key <key> | set-agentpmt-key <key> | show".to_string(),
+            "usage: agenthalo config set-key <key> | tool-proxy enable|disable|status|refresh | show"
+                .to_string(),
         );
     }
     config::ensure_halo_dir()?;
@@ -241,8 +239,6 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
 
     match args[0].as_str() {
         "set-key" => {
-            // Accept key as arg for scripted use, or prompt interactively.
-            // Interactive prompt avoids exposing the key in ps/shell history.
             let key = if let Some(k) = args.get(1).cloned() {
                 k
             } else {
@@ -262,29 +258,60 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
             println!("API key saved at {}", creds_path.display());
             Ok(())
         }
-        "set-agentpmt-key" => {
-            let key = if let Some(k) = args.get(1).cloned() {
-                k
-            } else {
-                print!("Enter AgentPMT API key: ");
-                io::stdout()
-                    .flush()
-                    .map_err(|e| format!("flush stdout: {e}"))?;
-                read_line_trimmed()?
-            };
-            if key.trim().is_empty() {
-                return Err("AgentPMT API key cannot be empty".to_string());
+        "tool-proxy" => {
+            let sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+            match sub {
+                "enable" => {
+                    let path = agentpmt::agentpmt_config_path();
+                    let mut cfg = agentpmt::load_or_default();
+                    cfg.enabled = true;
+                    cfg.updated_at = now_unix_secs();
+                    if let Some(tag) = args.get(2) {
+                        cfg.budget_tag = Some(tag.clone());
+                    }
+                    agentpmt::save_config(&path, &cfg)?;
+                    println!("AgentPMT tool proxy enabled.");
+                    if let Some(ref tag) = cfg.budget_tag {
+                        println!("Budget tag: {tag}");
+                    }
+                    Ok(())
+                }
+                "disable" => {
+                    let path = agentpmt::agentpmt_config_path();
+                    let mut cfg = agentpmt::load_or_default();
+                    cfg.enabled = false;
+                    cfg.updated_at = now_unix_secs();
+                    agentpmt::save_config(&path, &cfg)?;
+                    println!("AgentPMT tool proxy disabled.");
+                    Ok(())
+                }
+                "status" => {
+                    let cfg = agentpmt::load_or_default();
+                    println!("TOOL_PROXY_ENABLED={}", cfg.enabled);
+                    println!(
+                        "BUDGET_TAG={}",
+                        cfg.budget_tag.as_deref().unwrap_or("(none)")
+                    );
+                    println!(
+                        "MCP_ENDPOINT={}",
+                        cfg.mcp_endpoint.as_deref().unwrap_or("(default)")
+                    );
+                    Ok(())
+                }
+                "refresh" => {
+                    let catalog = agentpmt::refresh_tool_catalog()?;
+                    println!(
+                        "AgentPMT tool catalog refreshed: {} tools -> {}",
+                        catalog.tools.len(),
+                        agentpmt::tool_catalog_path().display()
+                    );
+                    Ok(())
+                }
+                _ => Err(
+                    "usage: agenthalo config tool-proxy [enable|disable|status|refresh]"
+                        .to_string(),
+                ),
             }
-            let cfg = AgentPmtConfig {
-                api_key: key,
-                cached_balance: None,
-                balance_refreshed_at: None,
-                history: vec![],
-            };
-            let path = agentpmt_config_path();
-            save_agentpmt_config(&path, &cfg)?;
-            println!("AgentPMT key saved at {}", path.display());
-            Ok(())
         }
         "show" => {
             println!("AGENTHALO_HOME={}", config::halo_dir().display());
@@ -293,7 +320,12 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
             println!("PRICING={}", config::pricing_path().display());
             let has_auth = is_authenticated(&creds_path) || resolve_api_key(&creds_path).is_some();
             println!("AUTHENTICATED={has_auth}");
-            println!("AGENTPMT_CONFIGURED={}", is_agentpmt_configured());
+            let pmt_cfg = agentpmt::load_or_default();
+            println!("TOOL_PROXY_ENABLED={}", pmt_cfg.enabled);
+            println!(
+                "TOOL_PROXY_BUDGET_TAG={}",
+                pmt_cfg.budget_tag.as_deref().unwrap_or("(none)")
+            );
             println!("PQ_WALLET_PRESENT={}", has_wallet());
             let addons_cfg = addons::load_or_default();
             println!("ADDON_P2PCLAW_ENABLED={}", addons_cfg.p2pclaw_enabled);
@@ -324,58 +356,7 @@ fn cmd_costs(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn cmd_credits(args: &[String]) -> Result<(), String> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("balance");
-    match sub {
-        "balance" => {
-            let client = require_agentpmt()?;
-            let balance = client.balance()?;
-            println!(
-                "Credits: {} (${:.2})",
-                balance.credits,
-                balance.credits as f64 * 0.01
-            );
-            Ok(())
-        }
-        "add" => {
-            let _ = webbrowser::open("https://www.agentpmt.com/billing");
-            println!("Opened AgentPMT billing in your browser.");
-            println!("Add credits there, then retry your operation.");
-            Ok(())
-        }
-        "history" => {
-            let path = agentpmt_config_path();
-            let cfg = load_agentpmt_config(&path).map_err(|_| {
-                "not connected to AgentPMT. Run: agenthalo config set-agentpmt-key <key>"
-                    .to_string()
-            })?;
-            if cfg.history.is_empty() {
-                println!("No local credit history yet.");
-                return Ok(());
-            }
-            println!("Recent credit history (newest first):");
-            for entry in cfg.history.iter().rev().take(20) {
-                println!(
-                    "  ts={} product={} units={} total={} remaining={} tx={}",
-                    entry.timestamp,
-                    entry.product_slug,
-                    entry.units,
-                    entry.total_credits,
-                    entry.remaining_credits,
-                    entry
-                        .transaction_id
-                        .clone()
-                        .unwrap_or_else(|| "none".to_string())
-                );
-            }
-            Ok(())
-        }
-        _ => Err("usage: agenthalo credits [balance|add|history]".to_string()),
-    }
-}
-
 fn cmd_attest(args: &[String]) -> Result<(), String> {
-    let client = require_agentpmt()?;
     let anonymous = args.iter().any(|a| a == "--anonymous");
     let onchain = args.iter().any(|a| a == "--onchain");
     let requested_session_id = args
@@ -391,16 +372,6 @@ fn cmd_attest(args: &[String]) -> Result<(), String> {
         (false, true) => "attest_anon",
         (false, false) => "attest",
     };
-    let cost = agentpmt::operation_cost(op).unwrap_or(0);
-    println!("Cost: {} credits (${:.2})", cost, cost as f64 * 0.01);
-
-    let deduct_result = client.deduct(op, 1)?;
-    if !deduct_result.success {
-        return Err(format!(
-            "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
-            deduct_result.remaining_credits, cost
-        ));
-    }
 
     let attestation = attest_session(
         &db_path,
@@ -448,10 +419,9 @@ fn cmd_attest(args: &[String]) -> Result<(), String> {
                 serde_json::to_string_pretty(&result)
                     .map_err(|e| format!("serialize attestation output: {e}"))?
             );
-            println!("Remaining credits: {}", deduct_result.remaining_credits);
             record_paid_operation_for_halo(
                 op,
-                cost,
+                0,
                 Some(resolved_session_id),
                 Some(result.attestation_digest.clone()),
                 true,
@@ -462,13 +432,13 @@ fn cmd_attest(args: &[String]) -> Result<(), String> {
         Err(e) => {
             let _ = record_paid_operation_for_halo(
                 op,
-                cost,
+                0,
                 Some(resolved_session_id),
                 None,
                 false,
                 Some(e.clone()),
             );
-            Err(format!("attestation failed after credit deduction: {e}"))
+            Err(format!("attestation failed: {e}"))
         }
     }
 }
@@ -493,18 +463,6 @@ fn cmd_audit(args: &[String]) -> Result<(), String> {
         AuditSize::Medium => "audit_medium",
         AuditSize::Large => "audit_large",
     };
-    let cost = agentpmt::operation_cost(op).unwrap_or(0);
-    println!(
-        "Audit cost ({}): {cost} credits (${:.2})",
-        size.as_str(),
-        cost as f64 * 0.01
-    );
-
-    let client = require_agentpmt()?;
-    let deduct_result = client.deduct(op, 1)?;
-    if !deduct_result.success {
-        return Err("insufficient credits. Run: agenthalo credits add".to_string());
-    }
 
     let audit = audit_contract_file(Path::new(contract), size);
     match audit {
@@ -535,10 +493,9 @@ fn cmd_audit(args: &[String]) -> Result<(), String> {
                 }
             }
             println!("Audit file: {}", save_path.display());
-            println!("Remaining credits: {}", deduct_result.remaining_credits);
             record_paid_operation_for_halo(
                 op,
-                cost,
+                0,
                 None,
                 Some(result.contract_hash.clone()),
                 true,
@@ -547,8 +504,8 @@ fn cmd_audit(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Err(e) => {
-            let _ = record_paid_operation_for_halo(op, cost, None, None, false, Some(e.clone()));
-            Err(format!("audit failed after credit deduction: {e}"))
+            let _ = record_paid_operation_for_halo(op, 0, None, None, false, Some(e.clone()));
+            Err(format!("audit failed: {e}"))
         }
     }
 }
@@ -607,17 +564,6 @@ fn cmd_sign(args: &[String]) -> Result<(), String> {
     };
 
     let op = "sign_pq";
-    let cost = agentpmt::operation_cost(op).unwrap_or(0);
-    println!("Signing cost: {cost} credits (${:.2})", cost as f64 * 0.01);
-    let client = require_agentpmt()?;
-    let deduct_result = client.deduct(op, 1)?;
-    if !deduct_result.success {
-        return Err(format!(
-            "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
-            deduct_result.remaining_credits, cost
-        ));
-    }
-
     match sign_pq_payload(&payload, &payload_kind, payload_hint) {
         Ok((envelope, save_path)) => {
             println!("PQ signing successful.");
@@ -627,10 +573,9 @@ fn cmd_sign(args: &[String]) -> Result<(), String> {
                 serde_json::to_string_pretty(&envelope)
                     .map_err(|e| format!("serialize signature output: {e}"))?
             );
-            println!("Remaining credits: {}", deduct_result.remaining_credits);
             record_paid_operation_for_halo(
                 op,
-                cost,
+                0,
                 None,
                 Some(envelope.signature_digest.clone()),
                 true,
@@ -639,8 +584,8 @@ fn cmd_sign(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Err(e) => {
-            let _ = record_paid_operation_for_halo(op, cost, None, None, false, Some(e.clone()));
-            Err(format!("signing failed after credit deduction: {e}"))
+            let _ = record_paid_operation_for_halo(op, 0, None, None, false, Some(e.clone()));
+            Err(format!("signing failed: {e}"))
         }
     }
 }
@@ -655,19 +600,6 @@ fn cmd_trust(args: &[String]) -> Result<(), String> {
                 .and_then(|i| args.get(i + 1))
                 .cloned();
             let op = "trust_query";
-            let cost = agentpmt::operation_cost(op).unwrap_or(0);
-            println!(
-                "Trust query cost: {cost} credits (${:.2})",
-                cost as f64 * 0.01
-            );
-            let client = require_agentpmt()?;
-            let deduct_result = client.deduct(op, 1)?;
-            if !deduct_result.success {
-                return Err(format!(
-                    "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
-                    deduct_result.remaining_credits, cost
-                ));
-            }
 
             let db_path = config::db_path();
             match query_trust_score(&db_path, session_id.as_deref()) {
@@ -677,10 +609,9 @@ fn cmd_trust(args: &[String]) -> Result<(), String> {
                         serde_json::to_string_pretty(&score)
                             .map_err(|e| format!("serialize trust output: {e}"))?
                     );
-                    println!("Remaining credits: {}", deduct_result.remaining_credits);
                     record_paid_operation_for_halo(
                         op,
-                        cost,
+                        0,
                         session_id,
                         Some(score.digest.clone()),
                         true,
@@ -691,13 +622,13 @@ fn cmd_trust(args: &[String]) -> Result<(), String> {
                 Err(e) => {
                     let _ = record_paid_operation_for_halo(
                         op,
-                        cost,
+                        0,
                         session_id,
                         None,
                         false,
                         Some(e.clone()),
                     );
-                    Err(format!("trust query failed after credit deduction: {e}"))
+                    Err(format!("trust query failed: {e}"))
                 }
             }
         }
@@ -734,17 +665,6 @@ fn cmd_vote(args: &[String]) -> Result<(), String> {
         .cloned();
 
     let op = "vote";
-    let cost = agentpmt::operation_cost(op).unwrap_or(0);
-    println!("Vote cost: {cost} credits (${:.2})", cost as f64 * 0.01);
-    let client = require_agentpmt()?;
-    let deduct_result = client.deduct(op, 1)?;
-    if !deduct_result.success {
-        return Err(format!(
-            "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
-            deduct_result.remaining_credits, cost
-        ));
-    }
-
     let vote_id = uuid::Uuid::new_v4().to_string();
     let payload = serde_json::json!({
         "vote_id": vote_id,
@@ -759,13 +679,12 @@ fn cmd_vote(args: &[String]) -> Result<(), String> {
         serde_json::to_string_pretty(&serde_json::json!({
             "status": "ok",
             "operation": "vote",
-            "remaining_credits": deduct_result.remaining_credits,
             "result_digest": result_digest,
             "vote": payload
         }))
         .map_err(|e| format!("serialize vote output: {e}"))?
     );
-    record_paid_operation_for_halo(op, cost, None, Some(result_digest), true, None)?;
+    record_paid_operation_for_halo(op, 0, None, Some(result_digest), true, None)?;
     Ok(())
 }
 
@@ -777,16 +696,6 @@ fn cmd_sync(args: &[String]) -> Result<(), String> {
         .cloned()
         .unwrap_or_else(|| "cloudflare".to_string());
     let op = "sync";
-    let cost = agentpmt::operation_cost(op).unwrap_or(0);
-    println!("Sync cost: {cost} credits (${:.2})", cost as f64 * 0.01);
-    let client = require_agentpmt()?;
-    let deduct_result = client.deduct(op, 1)?;
-    if !deduct_result.success {
-        return Err(format!(
-            "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
-            deduct_result.remaining_credits, cost
-        ));
-    }
 
     let db_path = config::db_path();
     let synced_sessions = list_sessions(&db_path)?.len() as u64;
@@ -803,13 +712,12 @@ fn cmd_sync(args: &[String]) -> Result<(), String> {
         serde_json::to_string_pretty(&serde_json::json!({
             "status": "ok",
             "operation": "sync",
-            "remaining_credits": deduct_result.remaining_credits,
             "result_digest": result_digest,
             "sync": payload
         }))
         .map_err(|e| format!("serialize sync output: {e}"))?
     );
-    record_paid_operation_for_halo(op, cost, None, Some(result_digest), true, None)?;
+    record_paid_operation_for_halo(op, 0, None, Some(result_digest), true, None)?;
     Ok(())
 }
 
@@ -1024,20 +932,6 @@ fn cmd_protocol_privacy_pool_create(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("invalid denomination: {e}"))?;
 
     let op = "privacy_pool_create";
-    let cost = agentpmt::operation_cost(op).unwrap_or(0);
-    println!(
-        "Privacy pool create cost: {cost} credits (${:.2})",
-        cost as f64 * 0.01
-    );
-    let client = require_agentpmt()?;
-    let deduct_result = client.deduct(op, 1)?;
-    if !deduct_result.success {
-        return Err(format!(
-            "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
-            deduct_result.remaining_credits, cost
-        ));
-    }
-
     let payload = serde_json::json!({
         "pool_id": format!("pool-{}", uuid::Uuid::new_v4()),
         "chain": chain,
@@ -1052,13 +946,12 @@ fn cmd_protocol_privacy_pool_create(args: &[String]) -> Result<(), String> {
         serde_json::to_string_pretty(&serde_json::json!({
             "status": "ok",
             "operation": op,
-            "remaining_credits": deduct_result.remaining_credits,
             "result_digest": result_digest,
             "pool": payload
         }))
         .map_err(|e| format!("serialize pool create output: {e}"))?
     );
-    record_paid_operation_for_halo(op, cost, None, Some(result_digest), true, None)?;
+    record_paid_operation_for_halo(op, 0, None, Some(result_digest), true, None)?;
     Ok(())
 }
 
@@ -1097,20 +990,6 @@ fn cmd_protocol_privacy_pool_withdraw(args: &[String]) -> Result<(), String> {
         .unwrap_or(1);
 
     let op = "privacy_pool_withdraw";
-    let cost = agentpmt::operation_cost(op).unwrap_or(0);
-    println!(
-        "Privacy pool withdraw cost: {cost} credits (${:.2})",
-        cost as f64 * 0.01
-    );
-    let client = require_agentpmt()?;
-    let deduct_result = client.deduct(op, 1)?;
-    if !deduct_result.success {
-        return Err(format!(
-            "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
-            deduct_result.remaining_credits, cost
-        ));
-    }
-
     let payload = serde_json::json!({
         "withdrawal_id": format!("wd-{}", uuid::Uuid::new_v4()),
         "pool_id": pool_id,
@@ -1125,13 +1004,12 @@ fn cmd_protocol_privacy_pool_withdraw(args: &[String]) -> Result<(), String> {
         serde_json::to_string_pretty(&serde_json::json!({
             "status": "ok",
             "operation": op,
-            "remaining_credits": deduct_result.remaining_credits,
             "result_digest": result_digest,
             "withdrawal": payload
         }))
         .map_err(|e| format!("serialize pool withdraw output: {e}"))?
     );
-    record_paid_operation_for_halo(op, cost, None, Some(result_digest), true, None)?;
+    record_paid_operation_for_halo(op, 0, None, Some(result_digest), true, None)?;
     Ok(())
 }
 
@@ -1187,20 +1065,6 @@ fn cmd_protocol_bridge_transfer(args: &[String]) -> Result<(), String> {
         })?;
 
     let op = "pq_bridge_transfer";
-    let cost = agentpmt::operation_cost(op).unwrap_or(0);
-    println!(
-        "PQ bridge transfer cost: {cost} credits (${:.2})",
-        cost as f64 * 0.01
-    );
-    let client = require_agentpmt()?;
-    let deduct_result = client.deduct(op, 1)?;
-    if !deduct_result.success {
-        return Err(format!(
-            "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
-            deduct_result.remaining_credits, cost
-        ));
-    }
-
     let payload = serde_json::json!({
         "transfer_id": format!("xfer-{}", uuid::Uuid::new_v4()),
         "from_chain": from_chain,
@@ -1217,13 +1081,12 @@ fn cmd_protocol_bridge_transfer(args: &[String]) -> Result<(), String> {
         serde_json::to_string_pretty(&serde_json::json!({
             "status": "ok",
             "operation": op,
-            "remaining_credits": deduct_result.remaining_credits,
             "result_digest": result_digest,
             "transfer": payload
         }))
         .map_err(|e| format!("serialize bridge transfer output: {e}"))?
     );
-    record_paid_operation_for_halo(op, cost, None, Some(result_digest), true, None)?;
+    record_paid_operation_for_halo(op, 0, None, Some(result_digest), true, None)?;
     Ok(())
 }
 
@@ -1231,10 +1094,11 @@ fn cmd_addon(args: &[String]) -> Result<(), String> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
     match sub {
         "list" => {
-            let pmt = if is_agentpmt_configured() {
-                "ACTIVE"
+            let pmt_cfg = agentpmt::load_or_default();
+            let pmt = if pmt_cfg.enabled {
+                "ENABLED"
             } else {
-                "NOT CONFIGURED"
+                "DISABLED"
             };
             let cfg = addons::load_or_default();
             let p2pclaw = if cfg.p2pclaw_enabled {
@@ -1247,9 +1111,9 @@ fn cmd_addon(args: &[String]) -> Result<(), String> {
             } else {
                 "DISABLED"
             };
-            println!("  agentpmt            {pmt}   (mandatory payment rail)");
-            println!("  p2pclaw             {p2pclaw}        (optional marketplace)");
-            println!("  agentpmt-workflows  {workflows}        (optional challenges)");
+            println!("  tool-proxy (AgentPMT)  {pmt}   (third-party tool access via AgentPMT)");
+            println!("  p2pclaw               {p2pclaw}        (optional marketplace)");
+            println!("  agentpmt-workflows    {workflows}        (optional challenges)");
             Ok(())
         }
         "enable" => {
@@ -1267,8 +1131,17 @@ fn cmd_addon(args: &[String]) -> Result<(), String> {
                     println!("Enabled agentpmt-workflows add-on.");
                     Ok(())
                 }
+                "tool-proxy" => {
+                    let path = agentpmt::agentpmt_config_path();
+                    let mut cfg = agentpmt::load_or_default();
+                    cfg.enabled = true;
+                    cfg.updated_at = now_unix_secs();
+                    agentpmt::save_config(&path, &cfg)?;
+                    println!("Enabled AgentPMT tool proxy.");
+                    Ok(())
+                }
                 _ => Err(format!(
-                    "unknown add-on: {name}. Available: p2pclaw, agentpmt-workflows"
+                    "unknown add-on: {name}. Available: p2pclaw, agentpmt-workflows, tool-proxy"
                 )),
             }
         }
@@ -1287,8 +1160,17 @@ fn cmd_addon(args: &[String]) -> Result<(), String> {
                     println!("Disabled {name} add-on.");
                     Ok(())
                 }
+                "tool-proxy" => {
+                    let path = agentpmt::agentpmt_config_path();
+                    let mut cfg = agentpmt::load_or_default();
+                    cfg.enabled = false;
+                    cfg.updated_at = now_unix_secs();
+                    agentpmt::save_config(&path, &cfg)?;
+                    println!("Disabled AgentPMT tool proxy.");
+                    Ok(())
+                }
                 _ => Err(format!(
-                    "unknown add-on: {name}. Available: p2pclaw, agentpmt-workflows"
+                    "unknown add-on: {name}. Available: p2pclaw, agentpmt-workflows, tool-proxy"
                 )),
             }
         }
@@ -1301,38 +1183,24 @@ fn cmd_license(args: &[String]) -> Result<(), String> {
     match sub {
         "status" => {
             println!("License: Community (free)");
-            println!("To upgrade: agenthalo license buy [starter|professional|enterprise]");
+            println!("To upgrade, obtain a CAB certificate from the AgentPMT marketplace.");
+            println!("Then: agenthalo license verify <path-to-certificate.json>");
             Ok(())
         }
-        "buy" => {
-            let tier = args.get(1).ok_or_else(|| {
-                "usage: agenthalo license buy <starter|professional|enterprise>".to_string()
+        "verify" => {
+            let path = args.get(1).ok_or_else(|| {
+                "usage: agenthalo license verify <path-to-certificate.json>".to_string()
             })?;
-            let op = match tier.as_str() {
-                "starter" => "license_starter",
-                "professional" => "license_professional",
-                "enterprise" => "license_enterprise",
-                _ => return Err("tier must be starter, professional, or enterprise".to_string()),
-            };
-
-            let client = require_agentpmt()?;
-            let cost = agentpmt::operation_cost(op).unwrap_or(0);
-            println!(
-                "License cost: {cost} credits/month (${:.2}/month)",
-                cost as f64 * 0.01
-            );
-
-            let result = client.deduct(op, 1)?;
-            if !result.success {
-                return Err("insufficient credits. Run: agenthalo credits add".to_string());
+            match license::load_and_verify(Path::new(path)) {
+                Ok(level) => {
+                    println!("License certificate valid.");
+                    println!("License level: {}", level.label());
+                    Ok(())
+                }
+                Err(e) => Err(format!("license verification failed: {e}")),
             }
-
-            println!("License purchase not yet fully implemented (Phase 1). Credits deducted.");
-            println!("Remaining credits: {}", result.remaining_credits);
-            record_paid_operation_for_halo(op, cost, None, None, true, None)?;
-            Ok(())
         }
-        _ => Err("usage: agenthalo license [status|buy <tier>]".to_string()),
+        _ => Err("usage: agenthalo license [status|verify <certificate.json>]".to_string()),
     }
 }
 
@@ -1387,7 +1255,6 @@ fn infer_model(args: &[String]) -> Option<String> {
 }
 
 fn infer_prompt(args: &[String]) -> Option<String> {
-    // For prompt-style invocations, keep a compact textual preview in metadata.
     if args.len() <= 1 {
         return None;
     }
@@ -1407,14 +1274,8 @@ fn read_line_trimmed() -> Result<String, String> {
     Ok(s.trim().to_string())
 }
 
-fn require_agentpmt() -> Result<AgentPmtClient, String> {
-    AgentPmtClient::from_config().ok_or_else(|| {
-        "not connected to AgentPMT. Run: agenthalo config set-agentpmt-key <key>".to_string()
-    })
-}
-
 fn print_usage() {
     println!(
-        "agenthalo 0.1.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT API key\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month] [--paid]   Show model costs or paid operation usage\n  credits [balance|add|history]\n                             Check or add AgentPMT credits\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit (paid)\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature (paid)\n  trust [query|score] [--session ID]\n                             Query trust score (paid)\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n                             Submit governance vote intent (paid)\n  sync [--target cloudflare|local]\n                             Run sync operation (paid)\n  onchain [config|deploy|verify|status] ...\n                             Config fields: --signer-mode private_key_env|keystore --keystore-path --keystore-password-file --circuit-policy dev|production\n  protocol privacy-pool-create --denomination <u64> [--chain NAME] [--asset SYMBOL]\n                             Create privacy pool request (paid; workflows add-on)\n  protocol privacy-pool-withdraw --pool-id <id> --recipient <addr> [--amount u64]\n                             Submit privacy withdrawal request (paid; workflows add-on)\n  protocol pq-bridge-transfer --from <chain> --to <chain> --asset <symbol> --amount <u64> --recipient <addr>\n                             Submit PQ bridge transfer request (paid; p2pclaw add-on)\n  license [status|buy <tier>]\n                             Manage NucleusDB license\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_AGENTPMT_STUB=1   Enable local stub mode for AgentPMT credits\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
+        "agenthalo 0.2.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config tool-proxy [enable|disable|status|refresh]\n                             Manage AgentPMT tool proxy integration\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month] [--paid]   Show model costs or operation usage\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n                             Submit governance vote intent\n  sync [--target cloudflare|local]\n                             Run sync operation\n  onchain [config|deploy|verify|status] ...\n                             Config fields: --signer-mode private_key_env|keystore --keystore-path --keystore-password-file --circuit-policy dev|production\n  protocol privacy-pool-create --denomination <u64> [--chain NAME] [--asset SYMBOL]\n                             Create privacy pool request (workflows add-on)\n  protocol privacy-pool-withdraw --pool-id <id> --recipient <addr> [--amount u64]\n                             Submit privacy withdrawal request (workflows add-on)\n  protocol pq-bridge-transfer --from <chain> --to <chain> --asset <symbol> --amount <u64> --recipient <addr>\n                             Submit PQ bridge transfer request (p2pclaw add-on)\n  license [status|verify <certificate.json>]\n                             Check or verify CAB license certificate\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons (p2pclaw, agentpmt-workflows, tool-proxy)\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
     );
 }
