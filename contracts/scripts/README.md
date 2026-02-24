@@ -66,6 +66,33 @@ Runs a full one-command mock-backed E2E validation on Base Sepolia:
 | `REQUIRED_MULTI_FAIL` | no | `[8453,42161]` | Negative multichain verification check set. |
 | `EVIDENCE_OUT` | no | unset | If set, writes JSON evidence with `script_sha256`. |
 
+## Production Deployment with Groth16VerifierAdapter
+
+For production use, deploy the `Groth16VerifierAdapter` to bridge a snarkjs-generated Groth16 verifier to the `ITrustProofVerifier` interface:
+
+```bash
+cd contracts
+
+# 1. Generate verifier from circuit (see circuits/README.md)
+#    This produces Groth16TrustVerifier.sol with verifyProof(uint256[2], uint256[2][2], uint256[2], uint256[6])
+
+# 2. Deploy the snarkjs-generated verifier
+forge create Groth16TrustVerifier --rpc-url $RPC_URL --private-key $PK
+# → GROTH16_ADDRESS=0x...
+
+# 3. Deploy the adapter (wraps Groth16 verifier into ITrustProofVerifier)
+forge create Groth16VerifierAdapter --constructor-args $GROTH16_ADDRESS \
+  --rpc-url $RPC_URL --private-key $PK
+# → ADAPTER_ADDRESS=0x...
+
+# 4. Deploy TrustVerifierMultiChain with the adapter as verifier
+forge create TrustVerifierMultiChain \
+  --constructor-args $ADAPTER_ADDRESS $USDC_ADDRESS $TREASURY $FEE $DEFAULT_FEE \
+  --rpc-url $RPC_URL --private-key $PK
+```
+
+The adapter encodes proofs as `abi.encode(uint256[2] a, uint256[2][2] b, uint256[2] c)` (256 bytes) and expects exactly 6 public signals matching the `[pufDigest_limb0..3, tier, replaySeq]` convention.
+
 ## Example Invocation Sequence
 
 ```bash

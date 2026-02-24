@@ -5,7 +5,7 @@
 # NucleusDB
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-[![Tests: 150 passing](https://img.shields.io/badge/tests-150%20passing-brightgreen.svg)](#testing)
+[![Tests: 162 passing](https://img.shields.io/badge/tests-162%20passing-brightgreen.svg)](#testing)
 
 **The verifiable database for AI agents. Tamper-proof records with mathematical guarantees — not promises.**
 
@@ -215,7 +215,9 @@ Client Surfaces                    Core Runtime
 Commitment Backends               On-Chain Trust (Solidity)
   vc/binary_merkle.rs              contracts/TrustVerifier.sol ─── single-chain attestation
   vc/ipa.rs                        contracts/TrustVerifierMultiChain.sol ─ composite multi-chain
-  vc/kzg.rs                        contracts/mocks/ ─── test verifier + token
+  vc/kzg.rs                        contracts/Groth16VerifierAdapter.sol ── ITrustProofVerifier ↔ Groth16
+                                   contracts/circuits/ ─── circom circuit + setup docs
+                                   contracts/mocks/ ─── test verifier + token
 
 Formal Specification
   18 Lean 4 modules under lean/NucleusDB/
@@ -294,12 +296,18 @@ NucleusDB includes Solidity smart contracts for on-chain agent trust attestation
 - Composite attestation across multiple chains in a single transaction
 - Per-chain and multi-chain verification views
 
+**Groth16VerifierAdapter** — production ZK proof bridge:
+- Adapts any snarkjs-generated Groth16 verifier to the `ITrustProofVerifier` interface
+- Decodes ABI-encoded proof bytes into `(a, b, c)` BN254 curve points
+- Converts dynamic `uint256[]` signals to fixed-size `uint256[6]` for the verifier
+- Includes circom circuit definition for 6-signal trust attestation (SHA-256 PUF preimage proof)
+
 ```bash
 # Run contract tests (requires Foundry)
 cd contracts && forge test
 ```
 
-Contracts are deployed on Base Sepolia. See `contracts/scripts/README.md` for deployment and E2E testing documentation.
+Contracts are deployed on Base Sepolia. See `contracts/scripts/README.md` for deployment and E2E testing documentation, and `contracts/circuits/README.md` for circuit compilation and trusted setup.
 
 ## Formal Specification
 
@@ -319,11 +327,11 @@ lake build NucleusDB
 
 ## Testing
 
-150 tests across 8 test suites, 0 failures, 0 warnings:
+162 tests across 10 test suites, 0 failures, 0 warnings:
 
 ```bash
 cargo test          # 128 Rust tests
-cd contracts && forge test   # 22 Solidity tests
+cd contracts && forge test   # 34 Solidity tests
 ```
 
 | Suite | Tests | Coverage |
@@ -335,8 +343,10 @@ cd contracts && forge test   # 22 Solidity tests
 | Persistence | 5 | WAL/snapshot compat, Bug #1/#3 regression |
 | SQL | 18 | CRUD, multi-statement, committed flag, immutable mode |
 | Monitor | 2 | Channel parsing, config CSV |
-| Solidity (Forge) | 22 | TrustVerifier (11) + TrustVerifierMultiChain (11): attestation, fees, proofs, replay, views |
-| **Total** | **150** | |
+| Solidity: TrustVerifier | 11 | Attestation, fees, proofs, replay, views |
+| Solidity: TrustVerifierMultiChain | 11 | Chain registry, composite attestation, tiered fees, multichain verification |
+| Solidity: Groth16VerifierAdapter | 12 | Proof decoding, signal validation, length checks, integration with both verifiers |
+| **Total** | **162** | |
 
 ## Known Limitations
 
