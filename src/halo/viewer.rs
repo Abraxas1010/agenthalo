@@ -1,4 +1,7 @@
-use crate::halo::trace::{cost_buckets, list_sessions, session_events, session_summary};
+use crate::halo::trace::{
+    cost_buckets, list_sessions, paid_breakdown_by_operation_type, paid_cost_buckets,
+    session_events, session_summary,
+};
 use std::path::Path;
 
 pub fn print_traces(db_path: &Path, maybe_session_id: Option<&str>) -> Result<(), String> {
@@ -116,6 +119,64 @@ pub fn print_costs(db_path: &Path, monthly: bool) -> Result<(), String> {
         format_number(total_tokens),
         total_cost
     );
+    Ok(())
+}
+
+pub fn print_paid_costs(db_path: &Path, monthly: bool) -> Result<(), String> {
+    let buckets = paid_cost_buckets(db_path, monthly)?;
+    if buckets.is_empty() {
+        println!("No paid operations recorded yet.");
+        return Ok(());
+    }
+
+    let mut total_ops = 0u64;
+    let mut total_credits = 0u64;
+    let mut total_usd = 0.0f64;
+    let rows: Vec<Vec<String>> = buckets
+        .iter()
+        .map(|bucket| {
+            total_ops += bucket.operations;
+            total_credits = total_credits.saturating_add(bucket.credits_spent);
+            total_usd += bucket.usd_spent;
+            vec![
+                bucket.label.clone(),
+                bucket.operations.to_string(),
+                format_number(bucket.credits_spent),
+                format!("${:.2}", bucket.usd_spent),
+            ]
+        })
+        .collect();
+    print_table(
+        &["Bucket", "Operations", "Credits Spent", "USD Spent"],
+        &rows,
+    );
+    println!(
+        "TOTAL: operations={} credits={} usd=${:.2}",
+        total_ops,
+        format_number(total_credits),
+        total_usd
+    );
+
+    let by_type = paid_breakdown_by_operation_type(db_path)?;
+    if !by_type.is_empty() {
+        println!();
+        println!("By operation type:");
+        let type_rows: Vec<Vec<String>> = by_type
+            .into_iter()
+            .map(|(operation_type, count, credits, usd)| {
+                vec![
+                    operation_type,
+                    count.to_string(),
+                    format_number(credits),
+                    format!("${:.2}", usd),
+                ]
+            })
+            .collect();
+        print_table(
+            &["Operation", "Count", "Credits Spent", "USD Spent"],
+            &type_rows,
+        );
+    }
     Ok(())
 }
 

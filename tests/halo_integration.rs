@@ -1,9 +1,13 @@
+use nucleusdb::halo::attest::{attest_session, AttestationRequest};
+use nucleusdb::halo::audit::{audit_contract_source, AuditRequest, AuditSize};
 use nucleusdb::halo::auth::{save_credentials, Credentials};
 use nucleusdb::halo::pricing::{calculate_cost, default_pricing};
 use nucleusdb::halo::runner::AgentRunner;
-use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
+use nucleusdb::halo::schema::{
+    EventType, PaidOperation, SessionMetadata, SessionStatus, TraceEvent,
+};
 use nucleusdb::halo::trace::{
-    list_sessions, now_unix_secs, session_events, session_summary, TraceWriter,
+    list_sessions, now_unix_secs, paid_operations, session_events, session_summary, TraceWriter,
 };
 use nucleusdb::halo::wrap::{unwrap_agent, wrap_agent};
 use std::path::PathBuf;
@@ -184,4 +188,124 @@ fn halo_save_credentials_enforces_0600_on_existing_file() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o600, "credentials mode should be 0600");
+}
+
+#[test]
+fn halo_attestation_engine_roundtrip() {
+    let db_path = temp_db_path("attestation");
+    let mut writer = TraceWriter::new(&db_path).expect("trace writer");
+    let sid = format!("sess-attest-{}", now_unix_secs());
+    writer
+        .start_session(SessionMetadata {
+            session_id: sid.clone(),
+            agent: "echo".to_string(),
+            model: Some("gpt-4.1".to_string()),
+            started_at: now_unix_secs(),
+            ended_at: None,
+            prompt: Some("attest me".to_string()),
+            status: SessionStatus::Running,
+            user_id: None,
+            machine_id: None,
+            puf_digest: None,
+        })
+        .expect("start session");
+    writer
+        .write_event(TraceEvent {
+            seq: 0,
+            timestamp: now_unix_secs(),
+            event_type: EventType::Assistant,
+            content: serde_json::json!({"text":"hello"}),
+            input_tokens: Some(1),
+            output_tokens: Some(1),
+            cache_read_tokens: Some(0),
+            tool_name: None,
+            tool_input: None,
+            tool_output: None,
+            file_path: None,
+            content_hash: String::new(),
+        })
+        .expect("write");
+    writer
+        .end_session(SessionStatus::Completed)
+        .expect("end session");
+
+    let sid_for_assert = sid.clone();
+    let full = attest_session(
+        &db_path,
+        AttestationRequest {
+            session_id: sid.clone(),
+            anonymous: false,
+        },
+    )
+    .expect("full attestation");
+    let anon = attest_session(
+        &db_path,
+        AttestationRequest {
+            session_id: sid,
+            anonymous: true,
+        },
+    )
+    .expect("anon attestation");
+
+    assert_eq!(full.event_count, 1);
+    assert!(!full.merkle_root.is_empty());
+    assert_eq!(full.session_id.as_deref(), Some(sid_for_assert.as_str()));
+    assert!(anon.session_id.is_none());
+    assert!(anon.blinded_session_ref.is_some());
+}
+
+#[test]
+fn halo_audit_engine_detects_reentrancy() {
+    let source = r#"
+        pragma solidity ^0.8.0;
+        contract V {
+            mapping(address => uint256) public balances;
+            function withdraw() public {
+                (bool ok,) = msg.sender.call{value: balances[msg.sender]}("");
+                require(ok);
+                balances[msg.sender] = 0;
+            }
+        }
+    "#;
+    let result = audit_contract_source(
+        source,
+        AuditRequest {
+            contract_path: "inline.sol".to_string(),
+            size: AuditSize::Small,
+        },
+    )
+    .expect("audit");
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|f| f.category == "reentrancy-cei-violation"),
+        "expected CEI finding: {:?}",
+        result.findings
+    );
+    assert!(result.risk_score > 0.0);
+}
+
+#[test]
+fn halo_paid_operation_write_and_read() {
+    let db_path = temp_db_path("paid");
+    let mut writer = TraceWriter::new(&db_path).expect("writer");
+    writer
+        .record_paid_operation(PaidOperation {
+            operation_id: "op-paid-1".to_string(),
+            timestamp: now_unix_secs(),
+            operation_type: "attest".to_string(),
+            credits_spent: 10,
+            usd_equivalent: 0.10,
+            session_id: Some("sess-1".to_string()),
+            result_digest: Some("deadbeef".to_string()),
+            success: true,
+            error: None,
+        })
+        .expect("record paid");
+
+    let ops = paid_operations(&db_path).expect("read paid");
+    assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0].operation_type, "attest");
+    assert_eq!(ops[0].credits_spent, 10);
 }

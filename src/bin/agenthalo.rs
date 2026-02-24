@@ -2,16 +2,21 @@ use nucleusdb::halo::agentpmt::{
     self, agentpmt_config_path, is_agentpmt_configured, load_agentpmt_config, save_agentpmt_config,
     AgentPmtClient, AgentPmtConfig,
 };
+use nucleusdb::halo::attest::{
+    attest_session, resolve_session_id, save_attestation, AttestationRequest,
+};
+use nucleusdb::halo::audit::{audit_contract_file, save_audit_result, AuditSize};
 use nucleusdb::halo::auth::{
     is_authenticated, load_credentials, oauth_login, resolve_api_key, save_credentials, Credentials,
 };
 use nucleusdb::halo::config;
 use nucleusdb::halo::detect::AgentType;
 use nucleusdb::halo::runner::AgentRunner;
-use nucleusdb::halo::schema::{SessionMetadata, SessionStatus};
+use nucleusdb::halo::schema::{PaidOperation, SessionMetadata, SessionStatus};
 use nucleusdb::halo::trace::{now_unix_secs, TraceWriter};
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
 use std::io::{self, Write};
+use std::path::Path;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -281,8 +286,13 @@ fn cmd_traces(args: &[String]) -> Result<(), String> {
 
 fn cmd_costs(args: &[String]) -> Result<(), String> {
     let monthly = args.iter().any(|a| a == "--month");
+    let paid = args.iter().any(|a| a == "--paid");
     let db_path = config::db_path();
-    viewer::print_costs(&db_path, monthly)
+    if paid {
+        viewer::print_paid_costs(&db_path, monthly)
+    } else {
+        viewer::print_costs(&db_path, monthly)
+    }
 }
 
 fn cmd_credits(args: &[String]) -> Result<(), String> {
@@ -338,29 +348,66 @@ fn cmd_credits(args: &[String]) -> Result<(), String> {
 fn cmd_attest(args: &[String]) -> Result<(), String> {
     let client = require_agentpmt()?;
     let anonymous = args.iter().any(|a| a == "--anonymous");
-    let session_id = args
+    let requested_session_id = args
         .iter()
         .position(|a| a == "--session")
         .and_then(|i| args.get(i + 1))
         .cloned();
+    let db_path = config::db_path();
+    let resolved_session_id = resolve_session_id(&db_path, requested_session_id.as_deref())?;
     let op = if anonymous { "attest_anon" } else { "attest" };
     let cost = agentpmt::operation_cost(op).unwrap_or(0);
     println!("Cost: {} credits (${:.2})", cost, cost as f64 * 0.01);
 
-    let result = client.deduct(op, 1)?;
-    if !result.success {
+    let deduct_result = client.deduct(op, 1)?;
+    if !deduct_result.success {
         return Err(format!(
             "insufficient credits. Have: {}, need: {}. Run: agenthalo credits add",
-            result.remaining_credits, cost
+            deduct_result.remaining_credits, cost
         ));
     }
 
-    println!("Attestation not yet implemented (Phase 1). Credits deducted successfully.");
-    if let Some(id) = session_id {
-        println!("Session: {id}");
+    let attestation = attest_session(
+        &db_path,
+        AttestationRequest {
+            session_id: resolved_session_id.clone(),
+            anonymous,
+        },
+    );
+    match attestation {
+        Ok(result) => {
+            let save_path = save_attestation(&resolved_session_id, &result)?;
+            println!("Attestation successful.");
+            println!("Session: {resolved_session_id}");
+            println!("Attestation file: {}", save_path.display());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result)
+                    .map_err(|e| format!("serialize attestation output: {e}"))?
+            );
+            println!("Remaining credits: {}", deduct_result.remaining_credits);
+            record_paid_operation(
+                op,
+                cost,
+                Some(resolved_session_id),
+                Some(result.attestation_digest.clone()),
+                true,
+                None,
+            )?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = record_paid_operation(
+                op,
+                cost,
+                Some(resolved_session_id),
+                None,
+                false,
+                Some(e.clone()),
+            );
+            Err(format!("attestation failed after credit deduction: {e}"))
+        }
     }
-    println!("Remaining credits: {}", result.remaining_credits);
-    Ok(())
 }
 
 fn cmd_audit(args: &[String]) -> Result<(), String> {
@@ -370,34 +417,77 @@ fn cmd_audit(args: &[String]) -> Result<(), String> {
         );
     }
     let contract = &args[0];
-    let size = args
+    let size_name = args
         .iter()
         .position(|a| a == "--size")
         .and_then(|i| args.get(i + 1))
         .map(|s| s.as_str())
         .unwrap_or("small");
+    let size = AuditSize::parse(size_name)?;
 
     let op = match size {
-        "small" => "audit_small",
-        "medium" => "audit_medium",
-        "large" => "audit_large",
-        _ => return Err("size must be small, medium, or large".to_string()),
+        AuditSize::Small => "audit_small",
+        AuditSize::Medium => "audit_medium",
+        AuditSize::Large => "audit_large",
     };
     let cost = agentpmt::operation_cost(op).unwrap_or(0);
     println!(
-        "Audit cost ({size}): {cost} credits (${:.2})",
+        "Audit cost ({}): {cost} credits (${:.2})",
+        size.as_str(),
         cost as f64 * 0.01
     );
 
     let client = require_agentpmt()?;
-    let result = client.deduct(op, 1)?;
-    if !result.success {
+    let deduct_result = client.deduct(op, 1)?;
+    if !deduct_result.success {
         return Err("insufficient credits. Run: agenthalo credits add".to_string());
     }
 
-    println!("Audit of {contract} not yet implemented (Phase 1). Credits deducted.");
-    println!("Remaining credits: {}", result.remaining_credits);
-    Ok(())
+    let audit = audit_contract_file(Path::new(contract), size);
+    match audit {
+        Ok(result) => {
+            let save_path = save_audit_result(&result)?;
+            println!("Audit completed: {}", result.contract_path);
+            println!(
+                "Findings: {} | Risk score: {:.3} | Digest: {}",
+                result.findings.len(),
+                result.risk_score,
+                result.attestation_digest
+            );
+            if result.findings.is_empty() {
+                println!("No findings detected.");
+            } else {
+                println!("Findings:");
+                for finding in &result.findings {
+                    println!(
+                        "  - [{:?}] {}: {} ({})",
+                        finding.severity,
+                        finding.category,
+                        finding.description,
+                        finding
+                            .line_range
+                            .map(|(a, b)| format!("lines {a}-{b}"))
+                            .unwrap_or_else(|| "line n/a".to_string())
+                    );
+                }
+            }
+            println!("Audit file: {}", save_path.display());
+            println!("Remaining credits: {}", deduct_result.remaining_credits);
+            record_paid_operation(
+                op,
+                cost,
+                None,
+                Some(result.contract_hash.clone()),
+                true,
+                None,
+            )?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = record_paid_operation(op, cost, None, None, false, Some(e.clone()));
+            Err(format!("audit failed after credit deduction: {e}"))
+        }
+    }
 }
 
 fn cmd_addon(args: &[String]) -> Result<(), String> {
@@ -483,6 +573,7 @@ fn cmd_license(args: &[String]) -> Result<(), String> {
 
             println!("License purchase not yet fully implemented (Phase 1). Credits deducted.");
             println!("Remaining credits: {}", result.remaining_credits);
+            record_paid_operation(op, cost, None, None, true, None)?;
             Ok(())
         }
         _ => Err("usage: agenthalo license [status|buy <tier>]".to_string()),
@@ -566,8 +657,31 @@ fn require_agentpmt() -> Result<AgentPmtClient, String> {
     })
 }
 
+fn record_paid_operation(
+    operation_type: &str,
+    credits_spent: u64,
+    session_id: Option<String>,
+    result_digest: Option<String>,
+    success: bool,
+    error: Option<String>,
+) -> Result<(), String> {
+    let db_path = config::db_path();
+    let mut writer = TraceWriter::new(&db_path)?;
+    writer.record_paid_operation(PaidOperation {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        timestamp: now_unix_secs(),
+        operation_type: operation_type.to_string(),
+        credits_spent,
+        usd_equivalent: (credits_spent as f64) * 0.01,
+        session_id,
+        result_digest,
+        success,
+        error,
+    })
+}
+
 fn print_usage() {
     println!(
-        "agenthalo 0.1.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT API key\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month]            Show cost summaries\n  credits [balance|add|history]\n                             Check or add AgentPMT credits\n  attest [--session ID] [--anonymous]\n                             Attest session on-chain (paid)\n  audit <contract.sol> [--size small|medium|large]\n                             Audit smart contract (paid)\n  license [status|buy <tier>]\n                             Manage NucleusDB license\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_AGENTPMT_STUB=1   Enable local stub mode for AgentPMT credits"
+        "agenthalo 0.1.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT API key\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month] [--paid]   Show model costs or paid operation usage\n  credits [balance|add|history]\n                             Check or add AgentPMT credits\n  attest [--session ID] [--anonymous]\n                             Build local Merkle attestation for a session (paid)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit (paid)\n  license [status|buy <tier>]\n                             Manage NucleusDB license\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_AGENTPMT_STUB=1   Enable local stub mode for AgentPMT credits"
     );
 }

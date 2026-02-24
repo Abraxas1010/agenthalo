@@ -1,5 +1,7 @@
 pub mod adapters;
 pub mod agentpmt;
+pub mod attest;
+pub mod audit;
 pub mod auth;
 pub mod config;
 pub mod detect;

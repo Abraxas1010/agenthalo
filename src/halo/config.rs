@@ -24,6 +24,22 @@ pub fn pricing_path() -> PathBuf {
     halo_dir().join("pricing.json")
 }
 
+pub fn attestations_dir() -> PathBuf {
+    halo_dir().join("attestations")
+}
+
+pub fn audits_dir() -> PathBuf {
+    halo_dir().join("audits")
+}
+
 pub fn ensure_halo_dir() -> Result<(), String> {
     std::fs::create_dir_all(halo_dir()).map_err(|e| format!("create halo dir: {e}"))
+}
+
+pub fn ensure_attestations_dir() -> Result<(), String> {
+    std::fs::create_dir_all(attestations_dir()).map_err(|e| format!("create attestations dir: {e}"))
+}
+
+pub fn ensure_audits_dir() -> Result<(), String> {
+    std::fs::create_dir_all(audits_dir()).map_err(|e| format!("create audits dir: {e}"))
 }

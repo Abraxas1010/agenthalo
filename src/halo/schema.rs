@@ -78,6 +78,19 @@ pub struct SessionSummary {
     pub model: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PaidOperation {
+    pub operation_id: String,
+    pub timestamp: u64,
+    pub operation_type: String,
+    pub credits_spent: u64,
+    pub usd_equivalent: f64,
+    pub session_id: Option<String>,
+    pub result_digest: Option<String>,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 pub const SESSION_PREFIX: &str = "halo:session:";
 pub const EVENT_PREFIX: &str = "halo:event:";
 pub const SUMMARY_PREFIX: &str = "halo:summary:";
@@ -86,3 +99,5 @@ pub const IDX_DATE_PREFIX: &str = "halo:idx:date:";
 pub const IDX_MODEL_PREFIX: &str = "halo:idx:model:";
 pub const COSTS_DAILY_PREFIX: &str = "halo:costs:daily:";
 pub const COSTS_MONTHLY_PREFIX: &str = "halo:costs:monthly:";
+pub const PAID_OPS_PREFIX: &str = "halo:paid:";
+pub const PAID_DAILY_PREFIX: &str = "halo:paid:daily:";

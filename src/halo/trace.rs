@@ -10,7 +10,7 @@ use crate::protocol::{NucleusDb, VcBackend};
 use crate::state::{Delta, State};
 use crate::witness::{WitnessConfig, WitnessSignatureAlgorithm};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,6 +22,14 @@ pub struct CostBucket {
     pub output_tokens: u64,
     pub cache_tokens: u64,
     pub cost_usd: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PaidCostBucket {
+    pub label: String,
+    pub operations: u64,
+    pub credits_spent: u64,
+    pub usd_spent: f64,
 }
 
 pub struct TraceWriter {
@@ -214,6 +222,24 @@ impl TraceWriter {
         Ok(self.summary.clone())
     }
 
+    pub fn record_paid_operation(&mut self, op: PaidOperation) -> Result<(), String> {
+        let mut writes = Vec::new();
+        let base = format!("{PAID_OPS_PREFIX}{}", op.operation_id);
+        let raw = serde_json::to_vec(&op).map_err(|e| format!("serialize paid operation: {e}"))?;
+        append_blob_writes(&base, &raw, &mut writes);
+
+        let day = day_label(op.timestamp);
+        writes.push((
+            format!("{PAID_DAILY_PREFIX}{day}:{}", op.operation_id),
+            op.credits_spent,
+        ));
+
+        self.commit_writes(writes)?;
+        persist_snapshot_and_sync_wal(&self.db_path, &self.wal_path, &self.db)
+            .map_err(|e| format!("persist trace DB {}: {e:?}", self.db_path.display()))?;
+        Ok(())
+    }
+
     fn append_cost_aggregate_writes(
         &self,
         writes: &mut Vec<(String, u64)>,
@@ -388,6 +414,77 @@ pub fn cost_buckets(db_path: &Path, monthly: bool) -> Result<Vec<CostBucket>, St
     Ok(out)
 }
 
+pub fn paid_operations(db_path: &Path) -> Result<Vec<PaidOperation>, String> {
+    let db = load_db(db_path)?;
+    let mut out = Vec::new();
+    for (key, _) in db.keymap.all_keys() {
+        if !key.starts_with(PAID_OPS_PREFIX) || !key.ends_with(":len") {
+            continue;
+        }
+        let base = key.trim_end_matches(":len");
+        if let Some(bytes) = read_blob(&db, base)? {
+            if let Ok(op) = serde_json::from_slice::<PaidOperation>(&bytes) {
+                out.push(op);
+            }
+        }
+    }
+    out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(out)
+}
+
+pub fn paid_cost_buckets(db_path: &Path, monthly: bool) -> Result<Vec<PaidCostBucket>, String> {
+    let ops = paid_operations(db_path)?;
+    let mut by_label: BTreeMap<String, (u64, u64, f64)> = BTreeMap::new();
+    for op in ops {
+        if !op.success {
+            continue;
+        }
+        let label = if monthly {
+            month_label(op.timestamp)
+        } else {
+            day_label(op.timestamp)
+        };
+        let entry = by_label.entry(label).or_insert((0, 0, 0.0));
+        entry.0 += 1;
+        entry.1 = entry.1.saturating_add(op.credits_spent);
+        entry.2 += op.usd_equivalent;
+    }
+
+    Ok(by_label
+        .into_iter()
+        .map(
+            |(label, (operations, credits_spent, usd_spent))| PaidCostBucket {
+                label,
+                operations,
+                credits_spent,
+                usd_spent,
+            },
+        )
+        .collect())
+}
+
+pub fn paid_breakdown_by_operation_type(
+    db_path: &Path,
+) -> Result<Vec<(String, u64, u64, f64)>, String> {
+    let ops = paid_operations(db_path)?;
+    let mut by_type: BTreeMap<String, (u64, u64, f64)> = BTreeMap::new();
+    for op in ops {
+        if !op.success {
+            continue;
+        }
+        let entry = by_type
+            .entry(op.operation_type.clone())
+            .or_insert((0, 0, 0.0));
+        entry.0 += 1;
+        entry.1 = entry.1.saturating_add(op.credits_spent);
+        entry.2 += op.usd_equivalent;
+    }
+    Ok(by_type
+        .into_iter()
+        .map(|(kind, (count, credits, usd))| (kind, count, credits, usd))
+        .collect())
+}
+
 fn load_db(db_path: &Path) -> Result<NucleusDb, String> {
     if !db_path.exists() {
         return Ok(NucleusDb::new(
@@ -494,5 +591,71 @@ fn month_label(ts: u64) -> String {
         dt.format("%Y-%m").to_string()
     } else {
         "1970-01".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::halo::schema::PaidOperation;
+
+    fn temp_db_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "agenthalo_paid_{tag}_{}_{}.ndb",
+            std::process::id(),
+            now_unix_secs()
+        ))
+    }
+
+    #[test]
+    fn paid_operation_recorded() {
+        let db_path = temp_db_path("record");
+        let mut writer = TraceWriter::new(&db_path).expect("writer");
+        writer
+            .record_paid_operation(PaidOperation {
+                operation_id: "op-1".to_string(),
+                timestamp: now_unix_secs(),
+                operation_type: "attest".to_string(),
+                credits_spent: 10,
+                usd_equivalent: 0.10,
+                session_id: Some("sess-1".to_string()),
+                result_digest: Some("abcd".to_string()),
+                success: true,
+                error: None,
+            })
+            .expect("record paid op");
+
+        let ops = paid_operations(&db_path).expect("read paid ops");
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].operation_type, "attest");
+        assert_eq!(ops[0].credits_spent, 10);
+    }
+
+    #[test]
+    fn daily_aggregation() {
+        let db_path = temp_db_path("daily");
+        let base_ts = now_unix_secs();
+        let mut writer = TraceWriter::new(&db_path).expect("writer");
+
+        for (idx, credits) in [10u64, 20u64].iter().enumerate() {
+            writer
+                .record_paid_operation(PaidOperation {
+                    operation_id: format!("op-{idx}"),
+                    timestamp: base_ts,
+                    operation_type: "audit_small".to_string(),
+                    credits_spent: *credits,
+                    usd_equivalent: (*credits as f64) * 0.01,
+                    session_id: None,
+                    result_digest: None,
+                    success: true,
+                    error: None,
+                })
+                .expect("record paid op");
+        }
+
+        let buckets = paid_cost_buckets(&db_path, false).expect("daily buckets");
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].operations, 2);
+        assert_eq!(buckets[0].credits_spent, 30);
     }
 }
