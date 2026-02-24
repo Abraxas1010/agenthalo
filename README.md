@@ -345,7 +345,7 @@ cd contracts && forge test   # 34 Solidity tests
 | Monitor | 2 | Channel parsing, config CSV |
 | Solidity: TrustVerifier | 11 | Attestation, fees, proofs, replay, views |
 | Solidity: TrustVerifierMultiChain | 11 | Chain registry, composite attestation, tiered fees, multichain verification |
-| Solidity: Groth16VerifierAdapter | 12 | Proof decoding, signal validation, length checks, integration with both verifiers |
+| Solidity: Groth16VerifierAdapter | 12 | Proof decoding, signal validation, constructor guards, legacy ABI-mismatch fail-closed behavior, integration paths |
 | **Total** | **162** | |
 
 ## Known Limitations

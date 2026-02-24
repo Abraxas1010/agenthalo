@@ -47,6 +47,9 @@ interface IGroth16Verifier {
 ///     const publicSignals = [limb0, limb1, limb2, limb3, tier, replaySeq];
 ///
 contract Groth16VerifierAdapter is ITrustProofVerifier {
+    error InvalidVerifierAddress();
+    error VerifierCodeMissing();
+
     IGroth16Verifier public immutable groth16;
 
     /// @notice Expected proof byte length: 8 BN254 field elements x 32 bytes.
@@ -56,6 +59,8 @@ contract Groth16VerifierAdapter is ITrustProofVerifier {
     uint256 public constant SIGNAL_COUNT = 6;
 
     constructor(address groth16_) {
+        if (groth16_ == address(0)) revert InvalidVerifierAddress();
+        if (groth16_.code.length == 0) revert VerifierCodeMissing();
         groth16 = IGroth16Verifier(groth16_);
     }
 
@@ -83,6 +88,12 @@ contract Groth16VerifierAdapter is ITrustProofVerifier {
         sigs[4] = publicSignals[4];
         sigs[5] = publicSignals[5];
 
-        return groth16.verifyProof(a, b, c, sigs);
+        // Treat downstream verifier reverts as verification failure so callers
+        // receive a stable false result instead of bubbling an internal revert.
+        try groth16.verifyProof(a, b, c, sigs) returns (bool ok) {
+            return ok;
+        } catch {
+            return false;
+        }
     }
 }

@@ -81,14 +81,21 @@ This matches `IGroth16Verifier` in `Groth16VerifierAdapter.sol`.
 ## Generating a Proof
 
 ```bash
-# 1. Create input.json with witness values
-cat > input.json << 'EOF'
-{
-  "pufResponse": [1,0,1,...],  // 256 bits from PUF challenge-response
-  "tierIn": 2,                 // Agent tier
-  "replaySeqIn": 42            // Monotone sequence number
+# 1. Create input.json with witness values (valid JSON, 256 witness bits)
+python3 - << 'PY'
+import json
+
+# Example deterministic witness bits for reproducible local tests.
+puf_bits = [(i % 2) for i in range(256)]
+payload = {
+    "pufResponse": puf_bits,
+    "tierIn": 2,
+    "replaySeqIn": 42,
 }
-EOF
+with open("input.json", "w", encoding="utf-8") as f:
+    json.dump(payload, f)
+print("wrote input.json with", len(puf_bits), "bits")
+PY
 
 # 2. Generate witness
 node build/trust_attestation_js/generate_witness.js \
