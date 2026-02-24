@@ -27,6 +27,12 @@ impl AgentRunner {
         }
     }
 
+    /// Override the auto-detected agent name (e.g. `--agent-name Abraxas`).
+    pub fn with_agent_name(mut self, name: &str) -> Self {
+        self.agent_type = AgentType::with_name(name);
+        self
+    }
+
     pub fn agent_type(&self) -> &AgentType {
         &self.agent_type
     }

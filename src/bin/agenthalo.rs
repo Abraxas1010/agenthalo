@@ -49,7 +49,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
 fn cmd_run(args: &[String]) -> Result<(), String> {
     if args.is_empty() {
-        return Err("usage: agenthalo run <agent-command> [args...]".to_string());
+        return Err("usage: agenthalo run [--agent-name NAME] [--model MODEL] <agent-command> [args...]".to_string());
     }
 
     config::ensure_halo_dir()?;
@@ -60,8 +60,42 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
         );
     }
 
-    let command = args[0].clone();
-    let runner = AgentRunner::new(command.clone(), args[1..].to_vec());
+    // Parse --agent-name and --model flags before the command.
+    let mut agent_name_override: Option<String> = None;
+    let mut model_override: Option<String> = None;
+    let mut cmd_start = 0;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--agent-name" {
+            if let Some(name) = args.get(i + 1) {
+                agent_name_override = Some(name.clone());
+                i += 2;
+                cmd_start = i;
+                continue;
+            }
+        } else if args[i] == "--model" {
+            if let Some(model) = args.get(i + 1) {
+                model_override = Some(model.clone());
+                i += 2;
+                cmd_start = i;
+                continue;
+            }
+        } else {
+            break;
+        }
+        i += 1;
+    }
+
+    let cmd_args = &args[cmd_start..];
+    if cmd_args.is_empty() {
+        return Err("usage: agenthalo run [--agent-name NAME] [--model MODEL] <agent-command> [args...]".to_string());
+    }
+
+    let command = cmd_args[0].clone();
+    let mut runner = AgentRunner::new(command.clone(), cmd_args[1..].to_vec());
+    if let Some(ref name) = agent_name_override {
+        runner = runner.with_agent_name(name);
+    }
     if matches!(runner.agent_type(), AgentType::Generic(_)) && !generic_agents_allowed() {
         return Err(
             "custom agent commands are disabled in free tier. Set AGENTHALO_ALLOW_GENERIC=1 to enable paid-tier behavior.".to_string(),
@@ -74,13 +108,14 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
     let now = now_unix_secs();
     let session_id = format!("sess-{now}-{}", std::process::id());
     let creds = load_credentials(&creds_path).unwrap_or_default();
+    let model = model_override.or_else(|| infer_model(cmd_args));
     let meta = SessionMetadata {
         session_id: session_id.clone(),
         agent: runner.agent_type().as_str().to_string(),
-        model: infer_model(args),
+        model,
         started_at: now,
         ended_at: None,
-        prompt: infer_prompt(args),
+        prompt: infer_prompt(cmd_args),
         status: SessionStatus::Running,
         user_id: creds.user_id,
         machine_id: std::env::var("HOSTNAME").ok(),
@@ -281,6 +316,6 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.1.0\n\nCommands:\n  run <agent> [args...]      Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month]            Show cost summaries\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1  Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1   (default behavior: zero telemetry)"
+        "agenthalo 0.1.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month]            Show cost summaries\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1  Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1   (default behavior: zero telemetry)"
     );
 }

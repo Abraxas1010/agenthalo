@@ -7,6 +7,19 @@ pub enum AgentType {
 }
 
 impl AgentType {
+    /// Override the display name while preserving adapter behavior.
+    /// Named agents keep their adapter; unknown names become Generic.
+    pub fn with_name(name: &str) -> Self {
+        match name.to_ascii_lowercase().as_str() {
+            "claude" => AgentType::Claude,
+            "codex" => AgentType::Codex,
+            "gemini" => AgentType::Gemini,
+            other => AgentType::Generic(other.to_string()),
+        }
+    }
+}
+
+impl AgentType {
     pub fn as_str(&self) -> &str {
         match self {
             AgentType::Claude => "claude",
