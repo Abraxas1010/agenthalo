@@ -10,8 +10,7 @@ use nucleusdb::halo::audit::{
     audit_contract_file, audit_contract_source, save_audit_result, AuditRequest, AuditSize,
 };
 use nucleusdb::halo::config;
-use nucleusdb::halo::schema::PaidOperation;
-use nucleusdb::halo::trace::{now_unix_secs, TraceWriter};
+use nucleusdb::halo::trace::record_paid_operation_for_halo;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -268,7 +267,7 @@ fn tool_attest(arguments: Value) -> Result<Value, String> {
     match attestation {
         Ok(result) => {
             let saved_path = save_attestation(&session_id, &result)?;
-            record_paid_operation(
+            record_paid_operation_for_halo(
                 op,
                 cost,
                 Some(session_id),
@@ -284,7 +283,14 @@ fn tool_attest(arguments: Value) -> Result<Value, String> {
             }))
         }
         Err(e) => {
-            let _ = record_paid_operation(op, cost, Some(session_id), None, false, Some(e.clone()));
+            let _ = record_paid_operation_for_halo(
+                op,
+                cost,
+                Some(session_id),
+                None,
+                false,
+                Some(e.clone()),
+            );
             Err(format!("attestation failed after credit deduction: {e}"))
         }
     }
@@ -327,7 +333,7 @@ fn tool_audit_contract(arguments: Value) -> Result<Value, String> {
     match result {
         Ok(result) => {
             let saved_path = save_audit_result(&result)?;
-            record_paid_operation(
+            record_paid_operation_for_halo(
                 op,
                 cost,
                 None,
@@ -343,7 +349,7 @@ fn tool_audit_contract(arguments: Value) -> Result<Value, String> {
             }))
         }
         Err(e) => {
-            let _ = record_paid_operation(op, cost, None, None, false, Some(e.clone()));
+            let _ = record_paid_operation_for_halo(op, cost, None, None, false, Some(e.clone()));
             Err(format!("audit failed after credit deduction: {e}"))
         }
     }
@@ -387,29 +393,6 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 fn require_agentpmt() -> Result<AgentPmtClient, String> {
     AgentPmtClient::from_config().ok_or_else(|| {
         "not connected to AgentPMT. Run: agenthalo config set-agentpmt-key <key>".to_string()
-    })
-}
-
-fn record_paid_operation(
-    operation_type: &str,
-    credits_spent: u64,
-    session_id: Option<String>,
-    result_digest: Option<String>,
-    success: bool,
-    error: Option<String>,
-) -> Result<(), String> {
-    let db_path = config::db_path();
-    let mut writer = TraceWriter::new(&db_path)?;
-    writer.record_paid_operation(PaidOperation {
-        operation_id: uuid::Uuid::new_v4().to_string(),
-        timestamp: now_unix_secs(),
-        operation_type: operation_type.to_string(),
-        credits_spent,
-        usd_equivalent: (credits_spent as f64) * 0.01,
-        session_id,
-        result_digest,
-        success,
-        error,
     })
 }
 

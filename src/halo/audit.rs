@@ -515,6 +515,9 @@ fn check_cross_function_reentrancy(functions: &[FunctionWindow]) -> Vec<AuditFin
         }
         for (_, line) in &function.body_lines {
             for callee in extract_function_calls(line) {
+                if callee.eq_ignore_ascii_case(&function.name) {
+                    continue;
+                }
                 if names.contains(&callee) && dangerous.contains(&callee) {
                     out.push(AuditFinding {
                         severity: FindingSeverity::Medium,
@@ -883,7 +886,7 @@ fn looks_like_state_write(line: &str) -> bool {
     if t.contains("==") || t.contains("!=") || t.contains(">=") || t.contains("<=") {
         return false;
     }
-    t.contains('=') || t.contains("+=") || t.contains("-=")
+    t.contains('=')
 }
 
 fn looks_like_arithmetic_state_update(line: &str) -> bool {
@@ -1083,5 +1086,30 @@ mod tests {
         let restored: AuditResult = serde_json::from_slice(&raw).expect("deserialize");
         assert_eq!(restored.contract_hash, result.contract_hash);
         assert_eq!(restored.audit_level, result.audit_level);
+    }
+
+    #[test]
+    fn cross_function_reentrancy_does_not_self_reference_signature() {
+        let source = r#"
+            pragma solidity 0.8.21;
+            contract R {
+              mapping(address => uint256) public balances;
+              function withdraw() public {
+                uint256 amount = balances[msg.sender];
+                balances[msg.sender] = 0;
+                (bool ok,) = msg.sender.call{value: amount}("");
+                require(ok);
+              }
+            }
+        "#;
+        let result = audit_from_source(source, AuditSize::Large);
+        assert!(
+            !result
+                .findings
+                .iter()
+                .any(|f| f.category == "cross-function-reentrancy-path"),
+            "unexpected cross-function finding: {:?}",
+            result.findings
+        );
     }
 }

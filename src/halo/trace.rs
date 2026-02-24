@@ -485,6 +485,29 @@ pub fn paid_breakdown_by_operation_type(
         .collect())
 }
 
+pub fn record_paid_operation_for_halo(
+    operation_type: &str,
+    credits_spent: u64,
+    session_id: Option<String>,
+    result_digest: Option<String>,
+    success: bool,
+    error: Option<String>,
+) -> Result<(), String> {
+    let db_path = config::db_path();
+    let mut writer = TraceWriter::new(&db_path)?;
+    writer.record_paid_operation(PaidOperation {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        timestamp: now_unix_secs(),
+        operation_type: operation_type.to_string(),
+        credits_spent,
+        usd_equivalent: (credits_spent as f64) * 0.01,
+        session_id,
+        result_digest,
+        success,
+        error,
+    })
+}
+
 fn load_db(db_path: &Path) -> Result<NucleusDb, String> {
     if !db_path.exists() {
         return Ok(NucleusDb::new(

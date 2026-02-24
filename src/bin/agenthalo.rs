@@ -12,8 +12,8 @@ use nucleusdb::halo::auth::{
 use nucleusdb::halo::config;
 use nucleusdb::halo::detect::AgentType;
 use nucleusdb::halo::runner::AgentRunner;
-use nucleusdb::halo::schema::{PaidOperation, SessionMetadata, SessionStatus};
-use nucleusdb::halo::trace::{now_unix_secs, TraceWriter};
+use nucleusdb::halo::schema::{SessionMetadata, SessionStatus};
+use nucleusdb::halo::trace::{now_unix_secs, record_paid_operation_for_halo, TraceWriter};
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
 use std::io::{self, Write};
 use std::path::Path;
@@ -386,7 +386,7 @@ fn cmd_attest(args: &[String]) -> Result<(), String> {
                     .map_err(|e| format!("serialize attestation output: {e}"))?
             );
             println!("Remaining credits: {}", deduct_result.remaining_credits);
-            record_paid_operation(
+            record_paid_operation_for_halo(
                 op,
                 cost,
                 Some(resolved_session_id),
@@ -397,7 +397,7 @@ fn cmd_attest(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Err(e) => {
-            let _ = record_paid_operation(
+            let _ = record_paid_operation_for_halo(
                 op,
                 cost,
                 Some(resolved_session_id),
@@ -473,7 +473,7 @@ fn cmd_audit(args: &[String]) -> Result<(), String> {
             }
             println!("Audit file: {}", save_path.display());
             println!("Remaining credits: {}", deduct_result.remaining_credits);
-            record_paid_operation(
+            record_paid_operation_for_halo(
                 op,
                 cost,
                 None,
@@ -484,7 +484,7 @@ fn cmd_audit(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Err(e) => {
-            let _ = record_paid_operation(op, cost, None, None, false, Some(e.clone()));
+            let _ = record_paid_operation_for_halo(op, cost, None, None, false, Some(e.clone()));
             Err(format!("audit failed after credit deduction: {e}"))
         }
     }
@@ -573,7 +573,7 @@ fn cmd_license(args: &[String]) -> Result<(), String> {
 
             println!("License purchase not yet fully implemented (Phase 1). Credits deducted.");
             println!("Remaining credits: {}", result.remaining_credits);
-            record_paid_operation(op, cost, None, None, true, None)?;
+            record_paid_operation_for_halo(op, cost, None, None, true, None)?;
             Ok(())
         }
         _ => Err("usage: agenthalo license [status|buy <tier>]".to_string()),
@@ -654,29 +654,6 @@ fn read_line_trimmed() -> Result<String, String> {
 fn require_agentpmt() -> Result<AgentPmtClient, String> {
     AgentPmtClient::from_config().ok_or_else(|| {
         "not connected to AgentPMT. Run: agenthalo config set-agentpmt-key <key>".to_string()
-    })
-}
-
-fn record_paid_operation(
-    operation_type: &str,
-    credits_spent: u64,
-    session_id: Option<String>,
-    result_digest: Option<String>,
-    success: bool,
-    error: Option<String>,
-) -> Result<(), String> {
-    let db_path = config::db_path();
-    let mut writer = TraceWriter::new(&db_path)?;
-    writer.record_paid_operation(PaidOperation {
-        operation_id: uuid::Uuid::new_v4().to_string(),
-        timestamp: now_unix_secs(),
-        operation_type: operation_type.to_string(),
-        credits_spent,
-        usd_equivalent: (credits_spent as f64) * 0.01,
-        session_id,
-        result_digest,
-        success,
-        error,
     })
 }
 
