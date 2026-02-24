@@ -64,7 +64,7 @@ Verify:
 
 ```bash
 agenthalo version
-# agenthalo 0.1.0
+# agenthalo 0.2.0
 ```
 
 ## Authentication
@@ -304,6 +304,14 @@ The `GenericAdapter` captures every stdout line as a `RawOutput` event. No struc
 | Trace database | `~/.agenthalo/traces.ndb` | Session + event storage (NucleusDB) |
 | Credentials | `~/.agenthalo/credentials.json` | OAuth tokens / API key (mode 0600) |
 | Pricing table | `~/.agenthalo/pricing.json` | Model cost table (auto-generated) |
+| AgentPMT config | `~/.agenthalo/agentpmt.json` | Tool proxy enabled/disabled, budget tag |
+| AgentPMT catalog | `~/.agenthalo/agentpmt_tools.json` | Cached tool catalog from AgentPMT |
+| Add-ons config | `~/.agenthalo/addons.json` | p2pclaw, agentpmt-workflows toggles |
+| On-chain config | `~/.agenthalo/onchain.json` | RPC URL, contract address, signer mode |
+| PQ wallet | `~/.agenthalo/pq_wallet.json` | ML-DSA-65 keypair (mode 0600) |
+| Attestations | `~/.agenthalo/attestations/` | Saved attestation results |
+| Audits | `~/.agenthalo/audits/` | Saved audit results |
+| Signatures | `~/.agenthalo/signatures/` | Saved PQ signature envelopes |
 
 ### Custom Pricing
 
@@ -326,6 +334,99 @@ On first run, `pricing.json` is written with default rates. Edit it to add or up
 
 Pricing is per million tokens. Cache-read pricing is optional (`null` if the model doesn't support prompt caching).
 
+## Additional Commands (v0.2.0)
+
+### Attestation
+
+```bash
+# Local Merkle attestation
+agenthalo attest --session sess-17...
+
+# On-chain Groth16 attestation (posts to Base Sepolia)
+agenthalo attest --session sess-17... --onchain
+
+# Anonymous attestation (attester identity masked)
+agenthalo attest --session sess-17... --anonymous
+```
+
+### Contract Audit
+
+```bash
+agenthalo audit contracts/MyContract.sol --size small
+```
+
+Static analysis with findings, risk score, and attestation digest.
+
+### Post-Quantum Signing
+
+```bash
+# Generate ML-DSA-65 keypair
+agenthalo keygen --pq
+
+# Sign a message
+agenthalo sign --pq --message "critical decision recorded"
+
+# Sign a file
+agenthalo sign --pq --file artifacts/report.json
+```
+
+### Trust Query
+
+```bash
+agenthalo trust query --session sess-17...
+```
+
+### On-Chain Configuration
+
+```bash
+# Show on-chain config
+agenthalo onchain status
+
+# Configure Base Sepolia
+agenthalo onchain config --rpc-url https://sepolia.base.org \
+  --contract 0x... --signer-mode private_key_env
+
+# Deploy TrustVerifier
+agenthalo onchain deploy
+
+# Verify attestation on-chain
+agenthalo onchain verify <attestation-digest>
+```
+
+### AgentPMT Tool Proxy
+
+```bash
+# Enable/disable tool proxy
+agenthalo config tool-proxy enable [budget-tag]
+agenthalo config tool-proxy disable
+
+# Refresh tool catalog from AgentPMT
+agenthalo config tool-proxy refresh
+
+# Check status
+agenthalo config tool-proxy status
+```
+
+When enabled, AgentPMT tools appear alongside native tools in the MCP `tools/list` response with an `agentpmt/` prefix. Budget controls and credentials are managed on the AgentPMT side.
+
+### Add-ons
+
+```bash
+agenthalo addon list
+agenthalo addon enable tool-proxy
+agenthalo addon enable p2pclaw
+agenthalo addon enable agentpmt-workflows
+```
+
+### License
+
+```bash
+agenthalo license status
+agenthalo license verify path/to/certificate.json
+```
+
+CAB certificate verification is fully offline — no phone-home.
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -335,6 +436,7 @@ Pricing is per million tokens. Cache-read pricing is optional (`null` if the mod
 | `AGENTHALO_API_KEY` | (none) | API key (takes precedence over saved credentials) |
 | `AGENTHALO_ALLOW_GENERIC` | `0` | Set to `1`, `true`, or `yes` to enable custom agent wrapping |
 | `AGENTHALO_NO_TELEMETRY` | `1` | Always 1. Documented for transparency. |
+| `AGENTHALO_ONCHAIN_STUB` | `0` | Set to `1` to disable real RPC posting (returns deterministic stub tx hashes) |
 
 ## Pricing Tables
 
@@ -462,22 +564,41 @@ Computed at session end:
 
 ```
 src/halo/
-  mod.rs          — module root, generic_agents_allowed()
-  auth.rs         — OAuth flow, API key, credential storage (0600 perms)
-  config.rs       — path resolution (AGENTHALO_HOME, DB_PATH)
-  detect.rs       — agent type detection, flag injection with dedup
-  pricing.rs      — model pricing table, cost calculation
-  runner.rs       — subprocess management, signal forwarding, adapter dispatch
-  schema.rs       — SessionMetadata, TraceEvent, EventType, SessionSummary
-  trace.rs        — TraceWriter (NucleusDB writes), read-side queries, blob encoding
-  viewer.rs       — CLI output formatting (tables, timestamps, costs)
-  wrap.rs         — shell alias management (.bashrc/.zshrc)
+  mod.rs               — module root, generic_agents_allowed()
+  addons.rs            — add-on toggle mechanism (p2pclaw, agentpmt-workflows)
+  agentpmt.rs          — AgentPMT tool proxy config, catalog, and unified surface
+  attest.rs            — session attestation (Merkle root, event digest)
+  audit.rs             — Solidity static analysis engine
+  auth.rs              — OAuth flow, API key, credential storage (0600 perms)
+  circuit.rs           — Groth16 proving/verifying (BN254, arkworks)
+  circuit_policy.rs    — dev vs production circuit key policy
+  config.rs            — path resolution (AGENTHALO_HOME, DB_PATH)
+  detect.rs            — agent type detection, flag injection with dedup
+  onchain.rs           — Base L2 posting, signer modes, TrustVerifier calls
+  pq.rs                — ML-DSA-65 keygen and signing
+  pricing.rs           — model pricing table, cost calculation
+  public_input_schema.rs — Groth16 public input layout versioning
+  runner.rs            — subprocess management, signal forwarding, adapter dispatch
+  schema.rs            — SessionMetadata, TraceEvent, EventType, SessionSummary
+  trace.rs             — TraceWriter (NucleusDB writes), read-side queries, blob encoding
+  trust.rs             — trust score computation
+  util.rs              — SHA-256 digest helpers, hex encode/decode
+  viewer.rs            — CLI output formatting (tables, timestamps, costs)
+  wrap.rs              — shell alias management (.bashrc/.zshrc)
   adapters/
-    mod.rs        — StreamAdapter trait
-    claude.rs     — Claude Code stream-json parser
-    codex.rs      — Codex JSON parser
-    gemini.rs     — Gemini CLI parser
-    generic.rs    — Raw stdout capture
+    mod.rs             — StreamAdapter trait
+    claude.rs          — Claude Code stream-json parser
+    codex.rs           — Codex JSON parser
+    gemini.rs          — Gemini CLI parser
+    generic.rs         — Raw stdout capture
+
+src/bin/
+  agenthalo.rs             — CLI binary (run, attest, audit, sign, trust, onchain, ...)
+  agenthalo_mcp_server.rs  — HTTP MCP server (9 native + proxied tools)
+  nucleusdb.rs             — NucleusDB CLI binary
+  nucleusdb_mcp.rs         — NucleusDB MCP server (stdio + HTTP transport)
+  nucleusdb_server.rs      — NucleusDB multi-tenant HTTP server
+  nucleusdb_tui.rs         — NucleusDB terminal UI
 ```
 
 ## Security

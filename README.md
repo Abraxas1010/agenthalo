@@ -43,7 +43,7 @@ We humbly thank the collective intelligence of humanity for providing the techno
 <br>
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-![Tests](https://img.shields.io/badge/tests-237%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-248%20passing-brightgreen.svg)
 ![Lean 4](https://img.shields.io/badge/Lean%204-63%20modules-blue.svg)
 ![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
 
@@ -175,7 +175,7 @@ A cloud dashboard can show you what it claims happened. It cannot prove the log 
 | **Cryptographic seals** | None | Hash chain — each commit binds to all prior commits |
 | **Works offline** | No | Yes |
 | **Agent support** | Framework-specific SDKs | Wraps any CLI agent directly |
-| **MCP native** | No | Yes — 11 tools over stdio, 25 tools over HTTP |
+| **MCP native** | No | Yes — 9 native + proxied tools over HTTP, 11 tools over stdio |
 | **Formal verification** | No | 63 Lean 4 modules with sheaf-theoretic proofs |
 
 H.A.L.O. doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.
@@ -217,37 +217,36 @@ If these problems matter to you, [open an issue](https://github.com/Abraxas1010/
 
 ---
 
-## AgentPMT — Agent-Native Payments
+## AgentPMT Integration — Unified Tool Surface
 
 <p align="center">
   <img src="assets/agentpmt_logo.svg" alt="AgentPMT" width="260"/>
 </p>
 
-The cypherpunk thesis says agents should be sovereign. Sovereignty means economic autonomy — an agent that can't manage its own money isn't autonomous, it's a puppet.
-
-[AgentPMT](https://www.agentpmt.com/autonomous-agents) gives every AI agent its own wallet, its own identity, and its own spending capacity. No API keys. No human intermediaries. The agent authenticates by signing messages with its own private key, and pays for services with its own credits.
+[AgentPMT](https://www.agentpmt.com) is an MCP-native tool infrastructure platform providing budget-controlled access to 100+ third-party tools — Gmail, Stripe, Google Workspace, blockchain scanners, and more. H.A.L.O. integrates AgentPMT as a **tool proxy**, not a payment gateway.
 
 ### How It Works
 
-**1. Agent gets a wallet** — [AgentAddress](https://www.agentpmt.com) generates an EVM wallet for any agent: address, secret key, recovery phrase. This is the agent's identity — not a token that can be revoked, but a cryptographic keypair that the agent controls.
+**Agents see one unified tool surface.** When tool proxy is enabled, AgentPMT's tools appear alongside H.A.L.O.'s native tools in a single MCP `tools/list` response. Native tools appear as-is (`attest`, `audit_contract`, etc.). AgentPMT tools appear with an `agentpmt/` prefix (`agentpmt/gmail_send`, `agentpmt/stripe_charge`). The agent doesn't need to know which tools are native and which are proxied.
 
-**2. Agent buys credits** — 100 credits = $1. The agent purchases spending capacity using USDC or EURC via the [x402 payment protocol](https://www.x402.org/) (EIP-3009 authorizations). Supported across Base, Arbitrum, Optimism, Polygon, and Avalanche. Alternatively, a human can sponsor an agent's wallet with capped credit allowances.
+**Budget controls live on the AgentPMT side.** The human configures spending limits, credentials, and workflow permissions via the [AgentPMT dashboard](https://www.agentpmt.com). H.A.L.O. records every proxied tool call in its tamper-evident trace for cost tracking and auditability.
 
-**3. Agent authenticates by signing** — No API keys to manage or leak. The agent signs a standardized message (EIP-191 personal-sign) with its wallet key. Credits are tied to the wallet address, not to a bearer token.
+**AgentPMT evolves independently.** The tool catalog is stored as a separate JSON file (`~/.agenthalo/agentpmt_tools.json`) and can be refreshed without touching H.A.L.O.'s core. New tools appear in the agent's surface with a single `agenthalo config tool-proxy refresh`.
 
-**4. Agent operates autonomously** — Once funded, the agent creates session nonces, checks balances, browses the tool marketplace, invokes tools, and executes multi-step workflows — all via HTTP, all authenticated by signature.
+```bash
+# Enable tool proxy
+agenthalo config tool-proxy enable
 
-### AgentPMT + H.A.L.O.
+# Refresh available tools from AgentPMT
+agenthalo config tool-proxy refresh
 
-AgentPMT's wallet identity is the economic identity — the **A** layer. H.A.L.O.'s NucleusDB provides the trust layer on top:
+# Check status
+agenthalo config tool-proxy status
+```
 
-- **On-chain trust attestation** — The agent's wallet address, PUF hardware fingerprint, and tier are registered on-chain via `TrustVerifier` on Base L2. Other agents can verify trust status without revealing private state. USDC routes automatically to treasury on attestation.
+### H.A.L.O. Feature Gating
 
-- **CAB license verification** — P2PCLAW mints a Cryptographic Assurance Bundle after payment — a Groth16 SNARK proof over a Poseidon Merkle tree of licensed features. NucleusDB verifies it locally against a baked-in foundation commitment. No phone-home. No license server. The math is the gatekeeper.
-
-- **Payment monitoring** — H.A.L.O.'s container runtime tracks every transaction the agent makes — amount, counterparty, direction, tx hash — with the same tamper-evident Merkle proofs as all other trace events.
-
-**Why this matters:** When agents can manage their own wallets, prove their identity on-chain, purchase their own capabilities, and have every transaction sealed into a tamper-evident record — you have the building blocks of a trustworthy agentic economy. Not "trust the platform." Trust the mathematics.
+H.A.L.O.'s own features (attest, audit, trust, sign) are gated by the **CAB license system**, not by AgentPMT credits. P2PCLAW mints a Cryptographic Assurance Bundle after payment — NucleusDB verifies it locally against a baked-in foundation commitment. No phone-home. No license server. The math is the gatekeeper.
 
 ### Pricing
 
@@ -487,7 +486,7 @@ Phase 5 scripts:
   └─────────────────────────────────────────────────────────────┘
 ```
 
-**86 Rust source files** | **17,700 lines** | **2,300 lines of tests** | **21 Solidity contracts** | **63 Lean 4 modules**
+**98 Rust source files** | **20,000+ lines** | **2,500+ lines of tests** | **20 Solidity contracts** | **63 Lean 4 modules**
 
 ## Security
 
@@ -513,18 +512,18 @@ When `APPEND_ONLY` is active:
 
 ## Testing
 
-237 tests passing (2026-02-24 snapshot), 0 failures:
+248 tests passing (2026-02-24 snapshot), 0 failures, 0 warnings:
 
 ```bash
-cargo test                        # 198 Rust tests
+cargo test                        # 209 Rust tests
 cd contracts && forge test        # 39 Solidity tests
 ```
 
 | Suite | Tests |
 |-------|-------|
-| Rust (unit + integration + binary tests) | 198 |
+| Rust (unit + integration + binary tests) | 209 |
 | Solidity (Foundry) | 39 |
-| **Total** | **237** |
+| **Total** | **248** |
 
 ## Known Limitations
 
