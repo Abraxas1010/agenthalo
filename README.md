@@ -1,30 +1,30 @@
-<p align="center">
-  <img src="assets/Apoth3osis.webp" alt="Apoth3osis" width="120"/>
-</p>
+<img src="assets/Apoth3osis.webp" alt="Apoth3osis Logo" width="140"/>
 
-<h1 align="center">NucleusDB</h1>
-
-<p align="center">
-  <strong>The verifiable database for AI agents.</strong><br>
-  <em>Tamper-proof records with mathematical guarantees — not promises.</em>
-</p>
-
-<p align="center">
-  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-0d1117.svg?style=flat-square&labelColor=0d1117&color=4ec9b0" alt="License"></a>
-  <a href="#testing"><img src="https://img.shields.io/badge/tests-182%20passing-0d1117.svg?style=flat-square&labelColor=0d1117&color=4ec9b0" alt="Tests"></a>
-  <a href="#formal-specification"><img src="https://img.shields.io/badge/Lean%204-63%20modules-0d1117.svg?style=flat-square&labelColor=0d1117&color=4ec9b0" alt="Lean 4"></a>
-  <a href="#on-chain-trust-verification"><img src="https://img.shields.io/badge/chain-Base%20L2-0d1117.svg?style=flat-square&labelColor=0d1117&color=d4a843" alt="Base L2"></a>
-</p>
-
-<p align="center">
-  <a href="#quick-start">Quick Start</a> &middot;
-  <a href="#agenthalo">AgentHALO</a> &middot;
-  <a href="#architecture">Architecture</a> &middot;
-  <a href="Docs/AGENTHALO.md">AgentHALO Guide</a> &middot;
-  <a href="CONTRIBUTING.md">Contributing</a>
-</p>
+<sub><strong>Our tech stack is ontological:</strong><br>
+<strong>Hardware — Physics</strong><br>
+<strong>Software — Mathematics</strong><br><br>
+<strong>Our engineering workflow is simple:</strong> discover, build, grow, learn & teach</sub>
 
 ---
+
+<sub>
+<strong>Acknowledgment</strong><br>
+We humbly thank the collective intelligence of humanity for providing the technology and culture we cherish. We do our best to properly reference the authors of the works utilized herein, though we may occasionally fall short. Our formalization acts as a reciprocal validation—confirming the structural integrity of their original insights while securing the foundation upon which we build. In truth, all creative work is derivative; we stand on the shoulders of those who came before, and our contributions are simply the next link in an unbroken chain of human ingenuity.
+</sub>
+
+---
+
+# NucleusDB
+
+**The verifiable database for AI agents.**
+*Tamper-proof records with mathematical guarantees — not promises.*
+
+[![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
+![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen.svg)
+![Lean 4](https://img.shields.io/badge/Lean%204-63%20modules-blue.svg)
+![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
+
+[Quick Start](#quick-start) · [AgentHALO](#agenthalo) · [Architecture](#architecture) · [AgentHALO Guide](Docs/AGENTHALO.md) · [Contributing](CONTRIBUTING.md)
 
 ## The Problem
 
@@ -501,21 +501,9 @@ cd contracts && forge test        # 34 Solidity tests
 - Sheaf coherence checks are local-view oriented, not full global-state reconciliation.
 - AgentHALO cloud sync is planned but not yet implemented; traces are currently local-only.
 
-## Licensing
+## License
 
-NucleusDB is released under the [Apoth3osis License Stack v1](LICENSE.md), a tri-license designed to maximize public-good access while sustaining development:
-
-| License | Who It's For | Cost |
-|---------|-------------|------|
-| **Public Good** (CPGL) | Open-source projects + open-access research | Free |
-| **Small Business** (CSBL) | Organizations under $1M revenue, <100 workers | Free |
-| **Enterprise** (CECL) | Everyone else | Contact us |
-
-**For enterprise licensing, custom integrations, certification services, or any questions:**
-
-**Contact: rgoodman@apoth3osis.io**
-
-The "Apoth3osis-Certified" mark is available exclusively under CECL and requires an active trademark license and compliance verification.
+[Apoth3osis License Stack v1](LICENSE.md)
 
 ## Citation
 
@@ -529,13 +517,3 @@ The "Apoth3osis-Certified" mark is available exclusively under CECL and requires
 }
 ```
 
----
-
-<p align="center">
-  <img src="assets/Apoth3osis.webp" alt="Apoth3osis" width="80"/>
-</p>
-
-<p align="center">
-  <sub><strong>Our tech stack is ontological:</strong> Hardware — Physics | Software — Mathematics</sub><br>
-  <sub><strong>Our engineering workflow is simple:</strong> discover, build, grow, learn & teach</sub>
-</p>
