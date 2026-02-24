@@ -5,7 +5,7 @@
 # NucleusDB
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-[![Tests: 101 passing](https://img.shields.io/badge/tests-101%20passing-brightgreen.svg)](#testing)
+[![Tests: 150 passing](https://img.shields.io/badge/tests-150%20passing-brightgreen.svg)](#testing)
 
 **The verifiable database for AI agents. Tamper-proof records with mathematical guarantees — not promises.**
 
@@ -70,6 +70,7 @@ Agent A writes a record. Agent B reads it a week later. How does Agent B know th
 | Certificate Transparency | No | No | No | Partial | **Full RFC 6962** |
 | ZK license verification | No | No | No | No | **Groth16 SNARK** |
 | Formal specification | No | No | No | No | **18 Lean 4 modules** |
+| On-chain trust attestation | No | No | No | No | **Base L2 (Solidity)** |
 | MCP server (AI-native) | No | No | No | No | **Yes** |
 | Self-contained binary | Yes | No | No | No (AWS) | **Yes** |
 
@@ -211,10 +212,14 @@ Client Surfaces                    Core Runtime
                                   ├─ license.rs ─── ZK-SNARK license verification (Groth16/BN254)
                                   └─ persistence ── snapshot + WAL (redb)
 
-Commitment Backends               Formal Specification
-  vc/binary_merkle.rs              18 Lean 4 modules under lean/NucleusDB/
-  vc/ipa.rs                        Core, Security, Commitment, Sheaf,
-  vc/kzg.rs                        Transparency, Adversarial
+Commitment Backends               On-Chain Trust (Solidity)
+  vc/binary_merkle.rs              contracts/TrustVerifier.sol ─── single-chain attestation
+  vc/ipa.rs                        contracts/TrustVerifierMultiChain.sol ─ composite multi-chain
+  vc/kzg.rs                        contracts/mocks/ ─── test verifier + token
+
+Formal Specification
+  18 Lean 4 modules under lean/NucleusDB/
+  Core, Security, Commitment, Sheaf, Transparency, Adversarial
 ```
 
 ## SQL Reference
@@ -273,6 +278,29 @@ When `APPEND_ONLY` is active:
 
 Multi-tenant REST API via `nucleusdb-server`: tenant registration, commit, query, snapshot, checkpoint. See `src/api.rs` for full route list.
 
+### On-Chain Trust Verification
+
+NucleusDB includes Solidity smart contracts for on-chain agent trust attestation and payment routing on Base (Coinbase L2).
+
+**TrustVerifier** — single-chain attestation:
+- Verifies a ZK proof against a configurable verifier contract
+- Registers/refreshes agent identity (PUF digest, tier, replay sequence)
+- Routes USDC payment to treasury on successful attestation
+- Monotone replay sequence prevents attestation replay
+
+**TrustVerifierMultiChain** — composite multi-chain attestation:
+- Extends TrustVerifier with a chain registry (up to 8 chains per attestation)
+- Tiered per-chain fees (e.g., Base: 1 USDC, Ethereum: 5 USDC)
+- Composite attestation across multiple chains in a single transaction
+- Per-chain and multi-chain verification views
+
+```bash
+# Run contract tests (requires Foundry)
+cd contracts && forge test
+```
+
+Contracts are deployed on Base Sepolia. See `contracts/scripts/README.md` for deployment and E2E testing documentation.
+
 ## Formal Specification
 
 NucleusDB includes 18 Lean 4 modules that formally specify the core protocol:
@@ -291,20 +319,24 @@ lake build NucleusDB
 
 ## Testing
 
-101 tests across 6 test suites, 0 failures, 0 warnings:
+150 tests across 8 test suites, 0 failures, 0 warnings:
 
 ```bash
-cargo test
+cargo test          # 128 Rust tests
+cd contracts && forge test   # 22 Solidity tests
 ```
 
 | Suite | Tests | Coverage |
 |-------|-------|----------|
-| Unit (lib) | 37 | Immutable proofs, license/SNARK verification, CT proofs |
+| Unit (lib) | 55 | Immutable proofs, license/SNARK verification, CT proofs, PUF, PCN, on-chain trust |
 | CLI smoke | 2 | Binary help, create-sql-status-export pipeline |
 | End-to-end | 36 | Protocol commits, queries, security, multi-tenant, immutable mode |
 | KeyMap | 3 | Stability, LIKE matching, reverse lookup |
 | Persistence | 5 | WAL/snapshot compat, Bug #1/#3 regression |
 | SQL | 18 | CRUD, multi-statement, committed flag, immutable mode |
+| Monitor | 2 | Channel parsing, config CSV |
+| Solidity (Forge) | 22 | TrustVerifier (11) + TrustVerifierMultiChain (11): attestation, fees, proofs, replay, views |
+| **Total** | **150** | |
 
 ## Known Limitations
 

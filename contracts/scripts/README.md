@@ -45,7 +45,7 @@ Runs a full one-command mock-backed E2E validation on Base Sepolia:
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `RPC_URL_BASE_SEPOLIA` | no | `https://sepolia.base.org` | Must resolve to chain id `84532`. |
-| `PRIVATE_KEY` | conditional | from `apps/base-contracts/.env.testnet` | Required if not present in default env file. |
+| `PRIVATE_KEY` | conditional | from `.env.testnet` at repo root | Required if not present in default env file. |
 | `AGENT_PRIVATE_KEY` | no | `PRIVATE_KEY` | Agent signer key for attestation submission. |
 | `AGENT_ADDRESS` | no | derived from `AGENT_PRIVATE_KEY` | Must match `AGENT_PRIVATE_KEY` when explicitly set. |
 | `TREASURY_ADDRESS` | no | `0x1111111111111111111111111111111111111111` | Treasury receives attestation fees. |
@@ -69,7 +69,7 @@ Runs a full one-command mock-backed E2E validation on Base Sepolia:
 ## Example Invocation Sequence
 
 ```bash
-cd projects/nucleusdb/contracts
+cd contracts
 
 export RPC_URL_BASE_SEPOLIA="..."
 export TRUST_VERIFIER_GROTH16_VERIFIER="0x..."
@@ -92,7 +92,7 @@ export EVIDENCE_OUT="artifacts/ops/multichain_sepolia/e2e_report.json"
 Mock one-command E2E:
 
 ```bash
-cd projects/nucleusdb/contracts
+cd contracts
 export EVIDENCE_OUT="artifacts/ops/multichain_sepolia/mock_e2e_$(date -u +%Y%m%dT%H%M%SZ).json"
 ./scripts/deploy_mock_e2e_base_sepolia.sh
 ```

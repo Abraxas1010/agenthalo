@@ -15,7 +15,7 @@ set -euo pipefail
 #
 # Env:
 #   RPC_URL_BASE_SEPOLIA              (default: https://sepolia.base.org)
-#   PRIVATE_KEY                       (optional; defaults from apps/base-contracts/.env.testnet)
+#   PRIVATE_KEY                       (required; or set via .env.testnet at repo root)
 #   AGENT_PRIVATE_KEY                 (optional; default: PRIVATE_KEY)
 #   AGENT_ADDRESS                     (optional; default: address from AGENT_PRIVATE_KEY)
 #   TREASURY_ADDRESS                  (optional; default: 0x1111111111111111111111111111111111111111)
@@ -38,8 +38,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTRACTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-REPO_ROOT="$(cd "${CONTRACTS_DIR}/../../.." && pwd)"
-DEFAULT_ENV_FILE="${REPO_ROOT}/apps/base-contracts/.env.testnet"
+# Walk up to find repo root (directory containing Cargo.toml or .git)
+_d="${CONTRACTS_DIR}"
+while [[ "${_d}" != "/" ]]; do
+  if [[ -f "${_d}/Cargo.toml" || -d "${_d}/.git" ]]; then break; fi
+  _d="$(dirname "${_d}")"
+done
+REPO_ROOT="${_d}"
+DEFAULT_ENV_FILE="${REPO_ROOT}/.env.testnet"
 SCRIPT_SHA256="$(sha256sum "${BASH_SOURCE[0]}" | awk '{print $1}')"
 
 require_cmd() {
