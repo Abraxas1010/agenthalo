@@ -15,6 +15,12 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 const PQ_CONTEXT: &[u8] = b"";
 
+#[derive(Clone, Debug)]
+pub struct PqStoragePaths {
+    pub wallet_path: PathBuf,
+    pub signatures_dir: PathBuf,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PqWallet {
     pub version: u8,
@@ -48,12 +54,30 @@ pub struct PqSignatureEnvelope {
 }
 
 pub fn has_wallet() -> bool {
-    config::pq_wallet_path().exists()
+    has_wallet_with_paths(&default_storage_paths())
+}
+
+pub fn has_wallet_with_paths(paths: &PqStoragePaths) -> bool {
+    paths.wallet_path.exists()
 }
 
 pub fn keygen_pq(force: bool) -> Result<PqKeygenResult, String> {
-    config::ensure_halo_dir()?;
-    let wallet_path = config::pq_wallet_path();
+    keygen_pq_with_paths(&default_storage_paths(), force)
+}
+
+pub fn keygen_pq_with_paths(paths: &PqStoragePaths, force: bool) -> Result<PqKeygenResult, String> {
+    if let Some(parent) = paths.wallet_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create wallet parent {}: {e}", parent.display()))?;
+    }
+    std::fs::create_dir_all(&paths.signatures_dir).map_err(|e| {
+        format!(
+            "create signatures dir {}: {e}",
+            paths.signatures_dir.display()
+        )
+    })?;
+
+    let wallet_path = &paths.wallet_path;
     if wallet_path.exists() && !force {
         return Err(format!(
             "PQ wallet already exists at {} (use --force to rotate)",
@@ -83,7 +107,7 @@ pub fn keygen_pq(force: bool) -> Result<PqKeygenResult, String> {
         key_id,
         public_key_hex,
         created_at,
-        wallet_path: wallet_path.display().to_string(),
+        wallet_path: paths.wallet_path.display().to_string(),
     })
 }
 
@@ -92,8 +116,21 @@ pub fn sign_pq_payload(
     payload_kind: &str,
     payload_hint: Option<String>,
 ) -> Result<(PqSignatureEnvelope, PathBuf), String> {
-    let wallet_path = config::pq_wallet_path();
-    let wallet = load_wallet(&wallet_path)?;
+    sign_pq_payload_with_paths(
+        &default_storage_paths(),
+        payload,
+        payload_kind,
+        payload_hint,
+    )
+}
+
+pub fn sign_pq_payload_with_paths(
+    paths: &PqStoragePaths,
+    payload: &[u8],
+    payload_kind: &str,
+    payload_hint: Option<String>,
+) -> Result<(PqSignatureEnvelope, PathBuf), String> {
+    let wallet = load_wallet(&paths.wallet_path)?;
     let kp = keypair_from_wallet(&wallet)?;
     let sig = kp
         .signing_key()
@@ -130,7 +167,7 @@ pub fn sign_pq_payload(
         payload_hint,
     };
 
-    let save_path = save_signature(&envelope)?;
+    let save_path = save_signature(&paths.signatures_dir, &envelope)?;
     Ok((envelope, save_path))
 }
 
@@ -196,15 +233,29 @@ fn keypair_from_wallet(wallet: &PqWallet) -> Result<ml_dsa::KeyPair<MlDsa65>, St
     Ok(kp)
 }
 
-fn save_signature(envelope: &PqSignatureEnvelope) -> Result<PathBuf, String> {
-    config::ensure_halo_dir()?;
-    config::ensure_signatures_dir()?;
+fn save_signature(
+    signatures_dir: &Path,
+    envelope: &PqSignatureEnvelope,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(signatures_dir)
+        .map_err(|e| format!("create signatures dir {}: {e}", signatures_dir.display()))?;
     let short_key = envelope.key_id.chars().take(16).collect::<String>();
-    let path = config::signatures_dir().join(format!("{}_{}.json", short_key, envelope.created_at));
+    let nonce = uuid::Uuid::new_v4();
+    let path = signatures_dir.join(format!(
+        "{}_{}_{}.json",
+        short_key, envelope.created_at, nonce
+    ));
     let raw = serde_json::to_vec_pretty(envelope)
         .map_err(|e| format!("serialize signature envelope: {e}"))?;
     std::fs::write(&path, raw).map_err(|e| format!("write signature {}: {e}", path.display()))?;
     Ok(path)
+}
+
+fn default_storage_paths() -> PqStoragePaths {
+    PqStoragePaths {
+        wallet_path: config::pq_wallet_path(),
+        signatures_dir: config::signatures_dir(),
+    }
 }
 
 fn random_seed_32() -> [u8; 32] {
@@ -268,52 +319,62 @@ fn hex_encode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    fn with_temp_home<T>(tag: &str, f: impl FnOnce() -> T) -> T {
-        let old_home = std::env::var("AGENTHALO_HOME").ok();
-        let dir = std::env::temp_dir().join(format!(
+    fn temp_paths(tag: &str) -> (PqStoragePaths, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
             "agenthalo_pq_{tag}_{}_{}",
             std::process::id(),
             now_unix_secs()
         ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create temp home");
-        std::env::set_var("AGENTHALO_HOME", &dir);
-        let out = f();
-        if let Some(v) = old_home {
-            std::env::set_var("AGENTHALO_HOME", v);
-        } else {
-            std::env::remove_var("AGENTHALO_HOME");
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-        out
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create temp home");
+        let paths = PqStoragePaths {
+            wallet_path: root.join("pq_wallet.json"),
+            signatures_dir: root.join("signatures"),
+        };
+        (paths, root)
     }
 
     #[test]
     fn keygen_and_sign_roundtrip() {
-        with_temp_home("roundtrip", || {
-            let key = keygen_pq(false).expect("keygen");
-            assert_eq!(key.algorithm, "ml_dsa65");
-            assert!(has_wallet());
+        let (paths, root) = temp_paths("roundtrip");
+        let key = keygen_pq_with_paths(&paths, false).expect("keygen");
+        assert_eq!(key.algorithm, "ml_dsa65");
+        assert!(has_wallet_with_paths(&paths));
 
-            let message = b"phase2 signing test";
-            let (env, _path) =
-                sign_pq_payload(message, "message", Some("inline".to_string())).expect("sign");
-            assert_eq!(env.algorithm, "ml_dsa65");
-            assert_eq!(env.key_id, key.key_id);
-            assert!(
-                verify_detached_signature(message, &env.public_key_hex, &env.signature_hex)
-                    .expect("verify")
-            );
-        });
+        let message = b"phase2 signing test";
+        let (env, _path) =
+            sign_pq_payload_with_paths(&paths, message, "message", Some("inline".to_string()))
+                .expect("sign");
+        assert_eq!(env.algorithm, "ml_dsa65");
+        assert_eq!(env.key_id, key.key_id);
+        assert!(
+            verify_detached_signature(message, &env.public_key_hex, &env.signature_hex)
+                .expect("verify")
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn keygen_requires_force_for_rotation() {
-        with_temp_home("rotate", || {
-            let _ = keygen_pq(false).expect("first key");
-            let err = keygen_pq(false).expect_err("second key should require force");
-            assert!(err.contains("already exists"));
-            let _ = keygen_pq(true).expect("forced rotation");
-        });
+        let (paths, root) = temp_paths("rotate");
+        let _ = keygen_pq_with_paths(&paths, false).expect("first key");
+        let err = keygen_pq_with_paths(&paths, false).expect_err("second key should require force");
+        assert!(err.contains("already exists"));
+        let _ = keygen_pq_with_paths(&paths, true).expect("forced rotation");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn signature_paths_are_unique_per_sign_call() {
+        let (paths, root) = temp_paths("sigpath");
+        let _ = keygen_pq_with_paths(&paths, false).expect("keygen");
+        let (_sig1, path1) =
+            sign_pq_payload_with_paths(&paths, b"m1", "message", None).expect("sign 1");
+        let (_sig2, path2) =
+            sign_pq_payload_with_paths(&paths, b"m2", "message", None).expect("sign 2");
+        assert_ne!(path1, path2);
+        assert!(path1.exists());
+        assert!(path2.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

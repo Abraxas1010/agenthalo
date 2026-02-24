@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Verifiable database with vector commitments, post-quantum signatures, and Certificate Transparency"
 license = "Apoth3osis-License-Stack-v1"
-repository = "https://github.com/Abraxas1010/nucleusdb"
+repository = "https://github.com/Abraxas1010/agenthalo"
 
 [lib]
 name = "nucleusdb"

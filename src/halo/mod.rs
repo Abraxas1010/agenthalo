@@ -1,4 +1,5 @@
 pub mod adapters;
+pub mod addons;
 pub mod agentpmt;
 pub mod attest;
 pub mod audit;

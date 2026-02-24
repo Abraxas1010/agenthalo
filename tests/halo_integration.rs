@@ -1,7 +1,9 @@
 use nucleusdb::halo::attest::{attest_session, AttestationRequest};
 use nucleusdb::halo::audit::{audit_contract_source, AuditRequest, AuditSize};
 use nucleusdb::halo::auth::{save_credentials, Credentials};
-use nucleusdb::halo::pq::{keygen_pq, sign_pq_payload, verify_detached_signature};
+use nucleusdb::halo::pq::{
+    keygen_pq_with_paths, sign_pq_payload_with_paths, verify_detached_signature, PqStoragePaths,
+};
 use nucleusdb::halo::pricing::{calculate_cost, default_pricing};
 use nucleusdb::halo::runner::AgentRunner;
 use nucleusdb::halo::schema::{
@@ -352,30 +354,27 @@ fn halo_trust_query_reports_score() {
 
 #[test]
 fn halo_pq_keygen_and_sign_detached_roundtrip() {
-    let old_home = std::env::var("AGENTHALO_HOME").ok();
-    let home = std::env::temp_dir().join(format!(
+    let root = std::env::temp_dir().join(format!(
         "agenthalo_pq_integration_{}_{}",
         std::process::id(),
         now_unix_secs()
     ));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&home).expect("create temp home");
-    std::env::set_var("AGENTHALO_HOME", &home);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create temp root");
+    let paths = PqStoragePaths {
+        wallet_path: root.join("pq_wallet.json"),
+        signatures_dir: root.join("signatures"),
+    };
 
-    let key = keygen_pq(false).expect("keygen");
+    let key = keygen_pq_with_paths(&paths, false).expect("keygen");
     let payload = b"integration-test-message";
     let (sig, _sig_path) =
-        sign_pq_payload(payload, "message", Some("inline".to_string())).expect("sign");
+        sign_pq_payload_with_paths(&paths, payload, "message", Some("inline".to_string()))
+            .expect("sign");
     assert_eq!(sig.key_id, key.key_id);
     assert!(
         verify_detached_signature(payload, &sig.public_key_hex, &sig.signature_hex)
             .expect("verify")
     );
-
-    if let Some(v) = old_home {
-        std::env::set_var("AGENTHALO_HOME", v);
-    } else {
-        std::env::remove_var("AGENTHALO_HOME");
-    }
-    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&root);
 }

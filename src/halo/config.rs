@@ -24,6 +24,10 @@ pub fn pricing_path() -> PathBuf {
     halo_dir().join("pricing.json")
 }
 
+pub fn addons_path() -> PathBuf {
+    halo_dir().join("addons.json")
+}
+
 pub fn attestations_dir() -> PathBuf {
     halo_dir().join("attestations")
 }

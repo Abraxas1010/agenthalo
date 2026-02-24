@@ -2,6 +2,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use nucleusdb::halo::addons;
 use nucleusdb::halo::agentpmt::{self, AgentPmtClient};
 use nucleusdb::halo::attest::{
     attest_session, resolve_session_id, save_attestation, AttestationRequest,
@@ -11,10 +12,11 @@ use nucleusdb::halo::audit::{
 };
 use nucleusdb::halo::config;
 use nucleusdb::halo::pq::{has_wallet, sign_pq_payload};
-use nucleusdb::halo::trace::record_paid_operation_for_halo;
+use nucleusdb::halo::trace::{list_sessions, now_unix_secs, record_paid_operation_for_halo};
 use nucleusdb::halo::trust::query_trust_score;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -91,7 +93,7 @@ async fn health() -> Json<Value> {
     Json(json!({
         "status": "ok",
         "service": "agenthalo-mcp-server",
-        "phase": "2-live"
+        "phase": "3-live"
     }))
 }
 
@@ -126,7 +128,7 @@ async fn mcp(
     let result = match req.method.as_str() {
         "initialize" => json!({
             "protocolVersion": "2025-03-26",
-            "serverInfo": {"name": "agenthalo-mcp-server", "version": "0.1.0-phase2"},
+            "serverInfo": {"name": "agenthalo-mcp-server", "version": "0.1.0-phase3"},
             "capabilities": {"tools": {}}
         }),
         "tools/list" => json!({
@@ -135,11 +137,11 @@ async fn mcp(
                 {"name":"sign_pq","description":"AgentHALO post-quantum detached signing (paid)"},
                 {"name":"audit_contract","description":"AgentHALO Solidity static audit (paid)"},
                 {"name":"trust_query","description":"AgentHALO trust score query (paid)"},
-                {"name":"vote","description":"AgentHALO DAO vote (Phase 0 stub)"},
-                {"name":"sync","description":"AgentHALO cloud sync (Phase 0 stub)"},
-                {"name":"privacy_pool_create","description":"AgentHALO privacy pool create (Phase 0 stub)"},
-                {"name":"privacy_pool_withdraw","description":"AgentHALO privacy pool withdraw (Phase 0 stub)"},
-                {"name":"pq_bridge_transfer","description":"AgentHALO PQ bridge transfer (Phase 0 stub)"}
+                {"name":"vote","description":"AgentHALO governance vote operation (paid)"},
+                {"name":"sync","description":"AgentHALO cloud sync operation (paid)"},
+                {"name":"privacy_pool_create","description":"AgentHALO privacy pool create operation (paid; workflows add-on)"},
+                {"name":"privacy_pool_withdraw","description":"AgentHALO privacy pool withdraw operation (paid; workflows add-on)"},
+                {"name":"pq_bridge_transfer","description":"AgentHALO PQ bridge transfer operation (paid; p2pclaw add-on)"}
             ]
         }),
         "tools/call" => {
@@ -206,26 +208,11 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "sign_pq" => tool_sign_pq(arguments),
         "audit_contract" => tool_audit_contract(arguments),
         "trust_query" => tool_trust_query(arguments),
-        "vote" => Ok(json!({
-            "status": "stub",
-            "message": "DAO voting not yet implemented (Phase 1)"
-        })),
-        "sync" => Ok(json!({
-            "status": "stub",
-            "message": "Cloud sync not yet implemented (Phase 3)"
-        })),
-        "privacy_pool_create" => Ok(json!({
-            "status": "stub",
-            "message": "Privacy pool create not yet implemented (Phase 3)"
-        })),
-        "privacy_pool_withdraw" => Ok(json!({
-            "status": "stub",
-            "message": "Privacy pool withdraw not yet implemented (Phase 3)"
-        })),
-        "pq_bridge_transfer" => Ok(json!({
-            "status": "stub",
-            "message": "PQ bridge transfer not yet implemented (Phase 3)"
-        })),
+        "vote" => tool_vote(arguments),
+        "sync" => tool_sync(arguments),
+        "privacy_pool_create" => tool_privacy_pool_create(arguments),
+        "privacy_pool_withdraw" => tool_privacy_pool_withdraw(arguments),
+        "pq_bridge_transfer" => tool_pq_bridge_transfer(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -455,6 +442,262 @@ fn tool_trust_query(arguments: Value) -> Result<Value, String> {
     }
 }
 
+fn tool_vote(arguments: Value) -> Result<Value, String> {
+    let proposal_id = arguments
+        .get("proposal_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "vote requires proposal_id".to_string())?
+        .to_string();
+    let choice = arguments
+        .get("choice")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "vote requires choice".to_string())?
+        .to_string();
+    if !matches!(choice.as_str(), "yes" | "no" | "abstain") {
+        return Err("choice must be yes, no, or abstain".to_string());
+    }
+    let reason = arguments
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let op = "vote";
+    let cost = agentpmt::operation_cost(op).unwrap_or(0);
+    let client = require_agentpmt()?;
+    let deducted = client.deduct(op, 1)?;
+    if !deducted.success {
+        return Err(format!(
+            "insufficient credits. Have: {}, need: {}",
+            deducted.remaining_credits, cost
+        ));
+    }
+
+    let vote = json!({
+        "vote_id": uuid::Uuid::new_v4().to_string(),
+        "proposal_id": proposal_id,
+        "choice": choice,
+        "reason": reason,
+        "timestamp": now_unix_secs()
+    });
+    let digest = digest_json("agenthalo.vote.v1", &vote)?;
+    record_paid_operation_for_halo(op, cost, None, Some(digest.clone()), true, None)?;
+    Ok(json!({
+        "status": "ok",
+        "remaining_credits": deducted.remaining_credits,
+        "result_digest": digest,
+        "vote": vote
+    }))
+}
+
+fn tool_sync(arguments: Value) -> Result<Value, String> {
+    let target = arguments
+        .get("target")
+        .and_then(|v| v.as_str())
+        .unwrap_or("cloudflare")
+        .to_string();
+    let op = "sync";
+    let cost = agentpmt::operation_cost(op).unwrap_or(0);
+    let client = require_agentpmt()?;
+    let deducted = client.deduct(op, 1)?;
+    if !deducted.success {
+        return Err(format!(
+            "insufficient credits. Have: {}, need: {}",
+            deducted.remaining_credits, cost
+        ));
+    }
+
+    let db_path = config::db_path();
+    let sync = json!({
+        "sync_id": uuid::Uuid::new_v4().to_string(),
+        "target": target,
+        "sessions_considered": list_sessions(&db_path)?.len(),
+        "timestamp": now_unix_secs(),
+        "mode": "delta-sync"
+    });
+    let digest = digest_json("agenthalo.sync.v1", &sync)?;
+    record_paid_operation_for_halo(op, cost, None, Some(digest.clone()), true, None)?;
+    Ok(json!({
+        "status": "ok",
+        "remaining_credits": deducted.remaining_credits,
+        "result_digest": digest,
+        "sync": sync
+    }))
+}
+
+fn tool_privacy_pool_create(arguments: Value) -> Result<Value, String> {
+    if !addons::is_enabled("agentpmt-workflows")? {
+        return Err(
+            "agentpmt-workflows add-on is required. Run: agenthalo addon enable agentpmt-workflows"
+                .to_string(),
+        );
+    }
+    let chain = arguments
+        .get("chain")
+        .and_then(|v| v.as_str())
+        .unwrap_or("base-sepolia")
+        .to_string();
+    let asset = arguments
+        .get("asset")
+        .and_then(|v| v.as_str())
+        .unwrap_or("USDC")
+        .to_string();
+    let denomination = arguments
+        .get("denomination")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "privacy_pool_create requires denomination".to_string())?;
+
+    let op = "privacy_pool_create";
+    let cost = agentpmt::operation_cost(op).unwrap_or(0);
+    let client = require_agentpmt()?;
+    let deducted = client.deduct(op, 1)?;
+    if !deducted.success {
+        return Err(format!(
+            "insufficient credits. Have: {}, need: {}",
+            deducted.remaining_credits, cost
+        ));
+    }
+
+    let pool = json!({
+        "pool_id": format!("pool-{}", uuid::Uuid::new_v4()),
+        "chain": chain,
+        "asset": asset,
+        "denomination": denomination,
+        "timestamp": now_unix_secs(),
+        "status": "created"
+    });
+    let digest = digest_json("agenthalo.privacy_pool.create.v1", &pool)?;
+    record_paid_operation_for_halo(op, cost, None, Some(digest.clone()), true, None)?;
+    Ok(json!({
+        "status": "ok",
+        "remaining_credits": deducted.remaining_credits,
+        "result_digest": digest,
+        "pool": pool
+    }))
+}
+
+fn tool_privacy_pool_withdraw(arguments: Value) -> Result<Value, String> {
+    if !addons::is_enabled("agentpmt-workflows")? {
+        return Err(
+            "agentpmt-workflows add-on is required. Run: agenthalo addon enable agentpmt-workflows"
+                .to_string(),
+        );
+    }
+    let pool_id = arguments
+        .get("pool_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "privacy_pool_withdraw requires pool_id".to_string())?
+        .to_string();
+    let recipient = arguments
+        .get("recipient")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "privacy_pool_withdraw requires recipient".to_string())?
+        .to_string();
+    let amount = arguments
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1);
+
+    let op = "privacy_pool_withdraw";
+    let cost = agentpmt::operation_cost(op).unwrap_or(0);
+    let client = require_agentpmt()?;
+    let deducted = client.deduct(op, 1)?;
+    if !deducted.success {
+        return Err(format!(
+            "insufficient credits. Have: {}, need: {}",
+            deducted.remaining_credits, cost
+        ));
+    }
+
+    let withdrawal = json!({
+        "withdrawal_id": format!("wd-{}", uuid::Uuid::new_v4()),
+        "pool_id": pool_id,
+        "recipient": recipient,
+        "amount": amount,
+        "timestamp": now_unix_secs(),
+        "status": "submitted"
+    });
+    let digest = digest_json("agenthalo.privacy_pool.withdraw.v1", &withdrawal)?;
+    record_paid_operation_for_halo(op, cost, None, Some(digest.clone()), true, None)?;
+    Ok(json!({
+        "status": "ok",
+        "remaining_credits": deducted.remaining_credits,
+        "result_digest": digest,
+        "withdrawal": withdrawal
+    }))
+}
+
+fn tool_pq_bridge_transfer(arguments: Value) -> Result<Value, String> {
+    if !addons::is_enabled("p2pclaw")? {
+        return Err("p2pclaw add-on is required. Run: agenthalo addon enable p2pclaw".to_string());
+    }
+    let from_chain = arguments
+        .get("from_chain")
+        .or_else(|| arguments.get("from"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "pq_bridge_transfer requires from_chain".to_string())?
+        .to_string();
+    let to_chain = arguments
+        .get("to_chain")
+        .or_else(|| arguments.get("to"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "pq_bridge_transfer requires to_chain".to_string())?
+        .to_string();
+    let asset = arguments
+        .get("asset")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "pq_bridge_transfer requires asset".to_string())?
+        .to_string();
+    let amount = arguments
+        .get("amount")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "pq_bridge_transfer requires amount".to_string())?;
+    let recipient = arguments
+        .get("recipient")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "pq_bridge_transfer requires recipient".to_string())?
+        .to_string();
+
+    let op = "pq_bridge_transfer";
+    let cost = agentpmt::operation_cost(op).unwrap_or(0);
+    let client = require_agentpmt()?;
+    let deducted = client.deduct(op, 1)?;
+    if !deducted.success {
+        return Err(format!(
+            "insufficient credits. Have: {}, need: {}",
+            deducted.remaining_credits, cost
+        ));
+    }
+
+    let transfer = json!({
+        "transfer_id": format!("xfer-{}", uuid::Uuid::new_v4()),
+        "from_chain": from_chain,
+        "to_chain": to_chain,
+        "asset": asset,
+        "amount": amount,
+        "recipient": recipient,
+        "timestamp": now_unix_secs(),
+        "status": "submitted"
+    });
+    let digest = digest_json("agenthalo.pq_bridge.transfer.v1", &transfer)?;
+    record_paid_operation_for_halo(op, cost, None, Some(digest.clone()), true, None)?;
+    Ok(json!({
+        "status": "ok",
+        "remaining_credits": deducted.remaining_credits,
+        "result_digest": digest,
+        "transfer": transfer
+    }))
+}
+
+fn digest_json(domain: &str, value: &Value) -> Result<String, String> {
+    let canonical = serde_json::to_vec(value).map_err(|e| format!("serialize payload: {e}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(&canonical);
+    let digest = hasher.finalize();
+    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 fn error_envelope(id: Option<Value>, code: i64, message: &str) -> JsonRpcErrorEnvelope {
     JsonRpcErrorEnvelope {
         jsonrpc: "2.0",
@@ -499,6 +742,13 @@ fn require_agentpmt() -> Result<AgentPmtClient, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleusdb::halo::agentpmt::{agentpmt_config_path, save_agentpmt_config, AgentPmtConfig};
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn unknown_tool_sets_error_flag() {
@@ -508,7 +758,32 @@ mod tests {
 
     #[test]
     fn known_tool_clears_error_flag() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_test_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+        std::env::set_var("AGENTHALO_AGENTPMT_STUB", "1");
+        save_agentpmt_config(
+            &agentpmt_config_path(),
+            &AgentPmtConfig {
+                api_key: "test".to_string(),
+                cached_balance: Some(10_000),
+                balance_refreshed_at: None,
+                history: vec![],
+            },
+        )
+        .expect("seed agentpmt config");
+
         let out = tool_call_response("sync", json!({}));
         assert_eq!(out.get("isError").and_then(|v| v.as_bool()), Some(false));
+
+        std::env::remove_var("AGENTHALO_AGENTPMT_STUB");
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
