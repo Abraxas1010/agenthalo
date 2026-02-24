@@ -12,6 +12,17 @@ Deploys `TrustVerifierMultiChain` to Base Sepolia, sets default fees, and regist
 
 Runs live attestation flow against a deployed `TrustVerifierMultiChain` contract, validates verification views, and checks treasury fee delta.
 
+### `deploy_mock_e2e_base_sepolia.sh`
+
+Runs a full one-command mock-backed E2E validation on Base Sepolia:
+- deploy `MockTrustProofVerifier`
+- deploy `MockUSDC` and mint test funds
+- deploy `TrustVerifierMultiChain` wired to mocks
+- register chains + tiered fees
+- run single and multichain attestations
+- validate verification views and treasury economics
+- write JSON evidence
+
 ## Environment Variables
 
 | Variable | Deploy | E2E | Required | Notes |
@@ -28,6 +39,32 @@ Runs live attestation flow against a deployed `TrustVerifierMultiChain` contract
 | `DEPLOYMENT_OUT` | yes | yes | no | Deploy writes JSON evidence; E2E uses file hash if path exists. |
 | `EVIDENCE_OUT` | no | yes | no | E2E JSON evidence output path. |
 | `USDC_BASE_SEPOLIA` | yes | yes | no | Deploy default is Base Sepolia USDC; E2E reads from contract if unset. |
+
+## Mock E2E Environment Variables (`deploy_mock_e2e_base_sepolia.sh`)
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `RPC_URL_BASE_SEPOLIA` | no | `https://sepolia.base.org` | Must resolve to chain id `84532`. |
+| `PRIVATE_KEY` | conditional | from `apps/base-contracts/.env.testnet` | Required if not present in default env file. |
+| `AGENT_PRIVATE_KEY` | no | `PRIVATE_KEY` | Agent signer key for attestation submission. |
+| `AGENT_ADDRESS` | no | derived from `AGENT_PRIVATE_KEY` | Must match `AGENT_PRIVATE_KEY` when explicitly set. |
+| `TREASURY_ADDRESS` | no | `0x1111111111111111111111111111111111111111` | Treasury receives attestation fees. |
+| `TX_GAS_PRICE_WEI` | no | `6000000` | Base gas-price floor for retry ladder. |
+| `MOCK_MINT_AMOUNT` | no | `100000000` | Mock USDC mint amount for deployer. |
+| `TRUST_LEGACY_FEE_WEI` | no | `0` | Constructor legacy fee arg (unused by multichain economics). |
+| `TRUST_DEFAULT_FEE_WEI` | no | `1000000` | Default fallback fee when chain-specific fee is not set. |
+| `TRUST_BASE_CHAIN_FEE_WEI` | no | `1000000` | Fee configured for chain `8453`. |
+| `TRUST_ETH_CHAIN_FEE_WEI` | no | `5000000` | Fee configured for chain `1`. |
+| `EXPECT_TREASURY_ABS_BALANCE` | no | `7000000` | Expected final treasury balance after two attestations. |
+| `PROOF_HEX_SINGLE` | no | `0x01` | Single-chain proof payload for mock verifier. |
+| `PROOF_HEX_MULTI` | no | `0x01` | Multi-chain proof payload for mock verifier. |
+| `PUBLIC_SIGNALS_SINGLE` | no | `[1,2,3,4,2,1]` | Single-chain public signal vector. |
+| `PUBLIC_SIGNALS_MULTI` | no | `[1,2,3,4,2,2]` | Multi-chain public signal vector (replay seq increases). |
+| `CHAINS_SINGLE` | no | `[8453]` | Single-chain attestation path. |
+| `CHAINS_MULTI` | no | `[8453,1]` | Multi-chain attestation path. |
+| `REQUIRED_MULTI_PASS` | no | `[8453,1]` | Positive multichain verification check set. |
+| `REQUIRED_MULTI_FAIL` | no | `[8453,42161]` | Negative multichain verification check set. |
+| `EVIDENCE_OUT` | no | unset | If set, writes JSON evidence with `script_sha256`. |
 
 ## Example Invocation Sequence
 
@@ -52,6 +89,14 @@ export EVIDENCE_OUT="artifacts/ops/multichain_sepolia/e2e_report.json"
 ./scripts/e2e_multichain_base_sepolia.sh
 ```
 
+Mock one-command E2E:
+
+```bash
+cd projects/nucleusdb/contracts
+export EVIDENCE_OUT="artifacts/ops/multichain_sepolia/mock_e2e_$(date -u +%Y%m%dT%H%M%SZ).json"
+./scripts/deploy_mock_e2e_base_sepolia.sh
+```
+
 ## Expected Outputs
 
 - Deploy script:
@@ -62,3 +107,11 @@ export EVIDENCE_OUT="artifacts/ops/multichain_sepolia/e2e_report.json"
   - optional JSON file at `EVIDENCE_OUT` including:
     - `script_sha256`
     - `deployment_evidence_sha256` (when `DEPLOYMENT_OUT` is provided and exists)
+- Mock E2E script:
+  - stdout summary with deployed mock addresses, attestation tx hashes, verification checks, and treasury delta
+  - optional JSON file at `EVIDENCE_OUT` including:
+    - all deployed addresses
+    - all tx hashes
+    - positive/negative verification outcomes
+    - treasury economics check
+    - `script_sha256`
