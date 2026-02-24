@@ -12,6 +12,11 @@ use crate::trust::onchain::{
     load_private_key_env, now_unix_secs, prepare_attestation_bundle, send_attestation,
     verify_agent_onchain, CastSigner,
 };
+use crate::vcs::{
+    analyze_records, export_state_to_worktree, git_status_porcelain, hash_hex as vcs_hash_hex,
+    parse_hash_hex as vcs_parse_hash_hex, work_records_from_workspace,
+    QueryFilter as VcsQueryFilter, WorkRecord, WorkRecordInput, WorkRecordStore, WorkRecordView,
+};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{Implementation, ServerCapabilities, ServerInfo},
@@ -30,6 +35,7 @@ struct ServiceState {
     db: NucleusDb,
     db_path: PathBuf,
     wal_path: PathBuf,
+    work_record_store: WorkRecordStore,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +90,143 @@ pub struct VerifyRequest {
     pub key: String,
     /// Optional expected value check in addition to proof verification.
     pub expected_value: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasSubmitRecordRequest {
+    /// WorkRecord JSON payload matching WorkRecordInput schema.
+    pub record_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasQueryRecordsRequest {
+    /// Optional exact record hash (0x + 64 hex).
+    pub hash: Option<String>,
+    /// Optional author PUF digest (0x + 64 hex).
+    pub author_puf: Option<String>,
+    /// Optional path prefix filter.
+    pub path_prefix: Option<String>,
+    /// Optional lower bound timestamp (inclusive).
+    pub start_timestamp: Option<u64>,
+    /// Optional upper bound timestamp (inclusive).
+    pub end_timestamp: Option<u64>,
+    /// Optional max result size.
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasSubmitRecordResponse {
+    pub hash: String,
+    pub proof_ref: u64,
+    pub commit_height: u64,
+    pub state_root: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasQueryRecordsResponse {
+    pub count: usize,
+    pub records: Vec<WorkRecordView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasRecordStatusResponse {
+    pub record_count: usize,
+    pub latest_hash: Option<String>,
+    pub latest_timestamp: Option<u64>,
+    pub sth_tree_size: u64,
+    pub sth_root: Option<String>,
+    pub sth_timestamp: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasMergeStatusResponse {
+    pub record_count: usize,
+    pub merged_count: usize,
+    pub conflict_count: usize,
+    pub head_hash: Option<String>,
+    pub conflicts: Vec<AbraxasConflictView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasConflictView {
+    pub path: String,
+    pub left_hash: String,
+    pub right_hash: String,
+    pub left_timestamp: u64,
+    pub right_timestamp: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasExportGitRequest {
+    pub repo_path: String,
+    pub commit_message: Option<String>,
+    pub dry_run: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasExportGitResponse {
+    pub exported_files: usize,
+    pub deleted_files: usize,
+    pub final_paths: usize,
+    pub committed: bool,
+    pub commit_sha: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasResolveConflictRequest {
+    pub path: String,
+    pub preferred_hash: String,
+    pub author_puf: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasResolveConflictResponse {
+    pub resolved: bool,
+    pub hash: Option<String>,
+    pub proof_ref: Option<u64>,
+    pub commit_height: Option<u64>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasWorkspaceInitRequest {
+    pub workspace_path: String,
+    pub init_git: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasWorkspaceInitResponse {
+    pub workspace_path: String,
+    pub git_initialized: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasWorkspaceDiffRequest {
+    pub workspace_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasWorkspaceDiffResponse {
+    pub workspace_path: String,
+    pub changed_count: usize,
+    pub porcelain_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasWorkspaceSubmitRequest {
+    pub workspace_path: String,
+    pub author_puf: String,
+    pub timestamp: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AbraxasWorkspaceSubmitResponse {
+    pub submitted_count: usize,
+    pub hashes: Vec<String>,
+    pub commit_heights: Vec<u64>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -523,7 +666,8 @@ impl ServerHandler for NucleusDbMcpService {
                 title: Some("NucleusDB MCP Server".to_string()),
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 description: Some(
-                    "Verifiable immutable database tools over MCP (stdio transport).".to_string(),
+                    "Verifiable immutable database with trust attestation tools over MCP."
+                        .to_string(),
                 ),
                 icons: None,
                 website_url: Some("https://github.com/Abraxas1010/nucleusdb".to_string()),
@@ -676,6 +820,33 @@ impl NucleusDbMcpService {
         })
     }
 
+    fn run_git(repo_path: &str, args: &[&str]) -> Result<String, McpError> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo_path)
+            .args(args)
+            .output()
+            .map_err(|e| McpError::internal_error(format!("failed to run git: {e}"), None))?;
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if !out.status.success() {
+            return Err(McpError::invalid_params(
+                format!(
+                    "git failed (status={}): stdout=`{}` stderr=`{}`",
+                    out.status, stdout, stderr
+                ),
+                None,
+            ));
+        }
+        Ok(if stdout.is_empty() {
+            stderr
+        } else if stderr.is_empty() {
+            stdout
+        } else {
+            format!("{stdout}\n{stderr}")
+        })
+    }
+
     fn cast_send(
         rpc_url: &str,
         contract: &str,
@@ -766,6 +937,7 @@ impl NucleusDbMcpService {
             db,
             db_path,
             wal_path,
+            work_record_store: WorkRecordStore::new(),
         })
     }
 
@@ -793,6 +965,7 @@ impl NucleusDbMcpService {
             db,
             db_path,
             wal_path,
+            work_record_store: WorkRecordStore::new(),
         })
     }
 
@@ -809,6 +982,16 @@ impl NucleusDbMcpService {
             proof_kind: Self::proof_kind_name(&proof).to_string(),
             state_root: hex_encode(&root),
         })
+    }
+
+    fn parse_optional_hash(raw: Option<&str>, label: &str) -> Result<Option<[u8; 32]>, McpError> {
+        raw.map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                vcs_parse_hash_hex(v)
+                    .map_err(|e| McpError::invalid_params(format!("invalid {label}: {e}"), None))
+            })
+            .transpose()
     }
 
     #[tool(
@@ -1117,10 +1300,7 @@ impl NucleusDbMcpService {
         }))
     }
 
-    #[tool(
-        name = "nucleusdb_open_channel",
-        description = "Open a PCN channel as append-only records. Example: {\"p1\":\"0xabc\",\"p2\":\"0xdef\",\"capacity\":1000}"
-    )]
+    // Kept as an internal helper (not exposed in the constrained 25-tool surface).
     pub async fn open_channel(
         &self,
         Parameters(req): Parameters<OpenChannelRequest>,
@@ -1145,10 +1325,7 @@ impl NucleusDbMcpService {
         }))
     }
 
-    #[tool(
-        name = "nucleusdb_update_channel",
-        description = "Append a channel balance update with conservation enforcement. Example: {\"p1\":\"0xabc\",\"p2\":\"0xdef\",\"balance1\":700,\"balance2\":300}"
-    )]
+    // Kept as an internal helper (not exposed in the constrained 25-tool surface).
     pub async fn update_channel(
         &self,
         Parameters(req): Parameters<UpdateChannelRequest>,
@@ -1174,10 +1351,7 @@ impl NucleusDbMcpService {
         }))
     }
 
-    #[tool(
-        name = "nucleusdb_close_channel",
-        description = "Append a channel close operation. Example: {\"p1\":\"0xabc\",\"p2\":\"0xdef\"}"
-    )]
+    // Kept as an internal helper (not exposed in the constrained 25-tool surface).
     pub async fn close_channel(
         &self,
         Parameters(req): Parameters<CloseChannelRequest>,
@@ -1201,10 +1375,7 @@ impl NucleusDbMcpService {
         }))
     }
 
-    #[tool(
-        name = "nucleusdb_query_channel",
-        description = "Return current channel record plus append-only op history. Example: {\"p1\":\"0xabc\",\"p2\":\"0xdef\"}"
-    )]
+    // Kept as an internal helper (not exposed in the constrained 25-tool surface).
     pub async fn query_channel(
         &self,
         Parameters(req): Parameters<QueryChannelRequest>,
@@ -1406,10 +1577,7 @@ impl NucleusDbMcpService {
         Ok(Json(resp))
     }
 
-    #[tool(
-        name = "nucleusdb_agent_reattest",
-        description = "Evaluate attestation freshness and optionally submit re-attestation. Example: {\"contract_address\":\"0x...\",\"rpc_url\":\"https://...\",\"agent_address\":\"0x...\",\"stale_after_secs\":3600,\"submit_onchain\":false}"
-    )]
+    // Kept as an internal helper (not exposed in the constrained 25-tool surface).
     pub async fn agent_reattest(
         &self,
         Parameters(req): Parameters<AgentReattestRequest>,
@@ -1607,8 +1775,11 @@ impl NucleusDbMcpService {
             req.keystore_password_file.as_deref(),
         )?;
 
-        let metadata_hash =
-            Self::normalize_metadata_hash(req.chain_id, req.verifier_address.trim(), req.metadata_hash.as_deref());
+        let metadata_hash = Self::normalize_metadata_hash(
+            req.chain_id,
+            req.verifier_address.trim(),
+            req.metadata_hash.as_deref(),
+        );
         if !(metadata_hash.starts_with("0x") && metadata_hash.len() == 66) {
             return Err(McpError::invalid_params(
                 "metadata_hash must be 0x-prefixed bytes32",
@@ -1705,10 +1876,7 @@ impl NucleusDbMcpService {
         }))
     }
 
-    #[tool(
-        name = "generate_composite_cab",
-        description = "Generate a composite CAB payload for multi-chain attestation. Example: {\"chain_ids\":[8453,1,42161]}"
-    )]
+    // Kept as an internal helper for multichain workflows.
     pub async fn generate_composite_cab(
         &self,
         Parameters(req): Parameters<GenerateCompositeCabRequest>,
@@ -1731,14 +1899,12 @@ impl NucleusDbMcpService {
             composite_cab_hash,
             proof_hex: placeholder.proof_hex,
             public_signals: placeholder.public_signals,
-            note: "placeholder payload generated; wire proof backend to replace proof_hex".to_string(),
+            note: "placeholder payload generated; wire proof backend to replace proof_hex"
+                .to_string(),
         }))
     }
 
-    #[tool(
-        name = "submit_composite_attestation",
-        description = "Submit composite CAB proof to TrustVerifierMultiChain. Example: {\"contract_address\":\"0x...\",\"rpc_url\":\"https://...\",\"proof_hex\":\"0x...\",\"chain_ids\":[8453,1]}"
-    )]
+    // Kept as an internal helper (not exposed in the constrained 25-tool surface).
     pub async fn submit_composite_attestation(
         &self,
         Parameters(req): Parameters<SubmitCompositeAttestationRequest>,
@@ -1911,10 +2077,7 @@ impl NucleusDbMcpService {
         }))
     }
 
-    #[tool(
-        name = "query_cross_chain_attestation",
-        description = "Prepare (or submit) a cross-chain attestation query payload using ICrossChainAttestationQuery."
-    )]
+    // Kept as an internal helper for multichain workflows.
     pub async fn query_cross_chain_attestation(
         &self,
         Parameters(req): Parameters<QueryCrossChainAttestationRequest>,
@@ -2034,10 +2197,7 @@ impl NucleusDbMcpService {
         }))
     }
 
-    #[tool(
-        name = "list_registered_chains",
-        description = "List all registered chain IDs from TrustVerifierMultiChain."
-    )]
+    // Kept as an internal helper for multichain workflows.
     pub async fn list_registered_chains(
         &self,
         Parameters(req): Parameters<ListRegisteredChainsRequest>,
@@ -2090,6 +2250,345 @@ impl NucleusDbMcpService {
     }
 
     #[tool(
+        name = "abraxas_submit_record",
+        description = "Submit an Abraxas WorkRecord JSON payload into append-only NucleusDB storage. Returns record hash and proof reference."
+    )]
+    pub async fn abraxas_submit_record(
+        &self,
+        Parameters(req): Parameters<AbraxasSubmitRecordRequest>,
+    ) -> Result<Json<AbraxasSubmitRecordResponse>, McpError> {
+        if req.record_json.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "record_json must be non-empty",
+                None,
+            ));
+        }
+        let input: WorkRecordInput = serde_json::from_str(req.record_json.trim()).map_err(|e| {
+            McpError::invalid_params(format!("invalid WorkRecordInput JSON: {e}"), None)
+        })?;
+        let now = WorkRecordStore::now_unix_secs();
+        let record = input
+            .into_record(now)
+            .map_err(|e| McpError::invalid_params(e, None))?;
+
+        let mut guard = self.state.lock().await;
+        let store = guard.work_record_store.clone();
+        let submitted = store
+            .submit_record(&mut guard.db, record)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(|e| {
+            McpError::internal_error(format!("failed to persist snapshot+wal: {e:?}"), None)
+        })?;
+
+        Ok(Json(AbraxasSubmitRecordResponse {
+            hash: vcs_hash_hex(&submitted.hash),
+            proof_ref: submitted.proof_ref,
+            commit_height: submitted.commit_height,
+            state_root: hex_encode(&submitted.state_root),
+        }))
+    }
+
+    #[tool(
+        name = "abraxas_query_records",
+        description = "Query Abraxas WorkRecords by hash, author_puf, path prefix, or timestamp range."
+    )]
+    pub async fn abraxas_query_records(
+        &self,
+        Parameters(req): Parameters<AbraxasQueryRecordsRequest>,
+    ) -> Result<Json<AbraxasQueryRecordsResponse>, McpError> {
+        let hash = Self::parse_optional_hash(req.hash.as_deref(), "hash")?;
+        let author_puf = Self::parse_optional_hash(req.author_puf.as_deref(), "author_puf")?;
+        let filter = VcsQueryFilter {
+            hash,
+            author_puf,
+            path_prefix: req
+                .path_prefix
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            start_timestamp: req.start_timestamp,
+            end_timestamp: req.end_timestamp,
+            limit: req.limit,
+        };
+
+        let guard = self.state.lock().await;
+        let records = guard.work_record_store.query_records(&guard.db, &filter);
+        let views = records.iter().map(WorkRecordView::from).collect::<Vec<_>>();
+        Ok(Json(AbraxasQueryRecordsResponse {
+            count: views.len(),
+            records: views,
+        }))
+    }
+
+    #[tool(
+        name = "abraxas_record_status",
+        description = "Return Abraxas WorkRecord store status: count, latest hash/timestamp, and current transparency STH."
+    )]
+    pub async fn abraxas_record_status(
+        &self,
+    ) -> Result<Json<AbraxasRecordStatusResponse>, McpError> {
+        let guard = self.state.lock().await;
+        let status = guard.work_record_store.status(&guard.db);
+        Ok(Json(AbraxasRecordStatusResponse {
+            record_count: status.record_count,
+            latest_hash: status.latest_hash.as_ref().map(vcs_hash_hex),
+            latest_timestamp: status.latest_timestamp,
+            sth_tree_size: status.sth_tree_size,
+            sth_root: status.sth_root.as_ref().map(|h| hex_encode(h)),
+            sth_timestamp: status.sth_timestamp,
+        }))
+    }
+
+    #[tool(
+        name = "abraxas_merge_status",
+        description = "Return Abraxas merge-agent status, including conflict candidates discovered from concurrent same-path records."
+    )]
+    pub async fn abraxas_merge_status(&self) -> Result<Json<AbraxasMergeStatusResponse>, McpError> {
+        let guard = self.state.lock().await;
+        let records = guard
+            .work_record_store
+            .query_records(&guard.db, &VcsQueryFilter::default());
+        let snapshot = analyze_records(&records);
+        let conflicts = snapshot
+            .conflicts
+            .into_iter()
+            .map(|c| AbraxasConflictView {
+                path: c.path,
+                left_hash: vcs_hash_hex(&c.left_hash),
+                right_hash: vcs_hash_hex(&c.right_hash),
+                left_timestamp: c.left_timestamp,
+                right_timestamp: c.right_timestamp,
+            })
+            .collect::<Vec<_>>();
+        Ok(Json(AbraxasMergeStatusResponse {
+            record_count: snapshot.record_count,
+            merged_count: snapshot.merged_count,
+            conflict_count: snapshot.conflict_count,
+            head_hash: snapshot.head_hash.as_ref().map(vcs_hash_hex),
+            conflicts,
+        }))
+    }
+
+    #[tool(
+        name = "abraxas_resolve_conflict",
+        description = "Resolve a same-path conflict by writing a deterministic preferred-hash Modify record."
+    )]
+    pub async fn abraxas_resolve_conflict(
+        &self,
+        Parameters(req): Parameters<AbraxasResolveConflictRequest>,
+    ) -> Result<Json<AbraxasResolveConflictResponse>, McpError> {
+        if req.path.trim().is_empty() {
+            return Err(McpError::invalid_params("path must be non-empty", None));
+        }
+        let preferred_hash = vcs_parse_hash_hex(req.preferred_hash.trim())
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        let author_puf = match req.author_puf.as_deref() {
+            Some(v) if !v.trim().is_empty() => {
+                vcs_parse_hash_hex(v.trim()).map_err(|e| McpError::invalid_params(e, None))?
+            }
+            _ => [0u8; 32],
+        };
+
+        let record = WorkRecord {
+            hash: [0u8; 32],
+            parents: vec![],
+            author_puf,
+            timestamp: WorkRecordStore::now_unix_secs(),
+            op: crate::vcs::FileOp::Modify {
+                path: req.path.trim().to_string(),
+                old_hash: preferred_hash,
+                new_hash: preferred_hash,
+                patch: None,
+            },
+            proof_ref: None,
+        };
+
+        let mut guard = self.state.lock().await;
+        let store = guard.work_record_store.clone();
+        let submitted = store
+            .submit_record(&mut guard.db, record)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(|e| {
+            McpError::internal_error(format!("failed to persist snapshot+wal: {e:?}"), None)
+        })?;
+
+        Ok(Json(AbraxasResolveConflictResponse {
+            resolved: true,
+            hash: Some(vcs_hash_hex(&submitted.hash)),
+            proof_ref: Some(submitted.proof_ref),
+            commit_height: Some(submitted.commit_height),
+            message: "conflict resolution record committed".to_string(),
+        }))
+    }
+
+    #[tool(
+        name = "abraxas_export_git",
+        description = "Export materialized Abraxas canonical state to a git worktree path; optionally commit."
+    )]
+    pub async fn abraxas_export_git(
+        &self,
+        Parameters(req): Parameters<AbraxasExportGitRequest>,
+    ) -> Result<Json<AbraxasExportGitResponse>, McpError> {
+        let repo_path = req.repo_path.trim();
+        if repo_path.is_empty() {
+            return Err(McpError::invalid_params(
+                "repo_path must be non-empty",
+                None,
+            ));
+        }
+        let dry_run = req.dry_run.unwrap_or(false);
+
+        let guard = self.state.lock().await;
+        let records = guard
+            .work_record_store
+            .query_records(&guard.db, &VcsQueryFilter::default());
+        drop(guard);
+
+        if dry_run {
+            let state = crate::vcs::materialize_state(&records);
+            let final_paths = state.values().filter(|v| v.is_some()).count();
+            return Ok(Json(AbraxasExportGitResponse {
+                exported_files: final_paths,
+                deleted_files: 0,
+                final_paths,
+                committed: false,
+                commit_sha: None,
+                message: "dry run only; no files written".to_string(),
+            }));
+        }
+
+        let stats = export_state_to_worktree(&records, Path::new(repo_path))
+            .map_err(|e| McpError::internal_error(e, None))?;
+
+        let mut committed = false;
+        let mut commit_sha = None;
+        if Path::new(repo_path).join(".git").exists() {
+            let _ = Self::run_git(repo_path, &["add", "-A"])?;
+            if Self::run_git(
+                repo_path,
+                &[
+                    "commit",
+                    "-m",
+                    req.commit_message
+                        .as_deref()
+                        .unwrap_or("abraxas export: materialized canonical state"),
+                ],
+            )
+            .is_ok()
+            {
+                committed = true;
+                let sha = Self::run_git(repo_path, &["rev-parse", "HEAD"])?;
+                commit_sha = Some(sha.trim().to_string());
+            }
+        }
+
+        Ok(Json(AbraxasExportGitResponse {
+            exported_files: stats.written_files,
+            deleted_files: stats.deleted_files,
+            final_paths: stats.final_paths,
+            committed,
+            commit_sha,
+            message: "git export completed".to_string(),
+        }))
+    }
+
+    #[tool(
+        name = "abraxas_workspace_init",
+        description = "Initialize an Abraxas workspace directory; optionally run git init."
+    )]
+    pub async fn abraxas_workspace_init(
+        &self,
+        Parameters(req): Parameters<AbraxasWorkspaceInitRequest>,
+    ) -> Result<Json<AbraxasWorkspaceInitResponse>, McpError> {
+        let workspace = req.workspace_path.trim();
+        if workspace.is_empty() {
+            return Err(McpError::invalid_params(
+                "workspace_path must be non-empty",
+                None,
+            ));
+        }
+        std::fs::create_dir_all(workspace)
+            .map_err(|e| McpError::internal_error(format!("create workspace: {e}"), None))?;
+        let mut git_initialized = false;
+        if req.init_git.unwrap_or(true) {
+            let _ = Self::run_git(workspace, &["init"])?;
+            git_initialized = true;
+        }
+        Ok(Json(AbraxasWorkspaceInitResponse {
+            workspace_path: workspace.to_string(),
+            git_initialized,
+            message: "workspace initialized".to_string(),
+        }))
+    }
+
+    #[tool(
+        name = "abraxas_workspace_diff",
+        description = "Return git porcelain diff lines from a workspace."
+    )]
+    pub async fn abraxas_workspace_diff(
+        &self,
+        Parameters(req): Parameters<AbraxasWorkspaceDiffRequest>,
+    ) -> Result<Json<AbraxasWorkspaceDiffResponse>, McpError> {
+        let workspace = req.workspace_path.trim();
+        if workspace.is_empty() {
+            return Err(McpError::invalid_params(
+                "workspace_path must be non-empty",
+                None,
+            ));
+        }
+        let lines = git_status_porcelain(Path::new(workspace))
+            .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(AbraxasWorkspaceDiffResponse {
+            workspace_path: workspace.to_string(),
+            changed_count: lines.len(),
+            porcelain_lines: lines,
+        }))
+    }
+
+    #[tool(
+        name = "abraxas_workspace_submit",
+        description = "Convert workspace git-diff changes into Abraxas WorkRecords and commit them append-only."
+    )]
+    pub async fn abraxas_workspace_submit(
+        &self,
+        Parameters(req): Parameters<AbraxasWorkspaceSubmitRequest>,
+    ) -> Result<Json<AbraxasWorkspaceSubmitResponse>, McpError> {
+        let workspace = req.workspace_path.trim();
+        if workspace.is_empty() {
+            return Err(McpError::invalid_params(
+                "workspace_path must be non-empty",
+                None,
+            ));
+        }
+        let author_puf = vcs_parse_hash_hex(req.author_puf.trim())
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        let timestamp = req.timestamp.unwrap_or_else(WorkRecordStore::now_unix_secs);
+        let records = work_records_from_workspace(Path::new(workspace), author_puf, timestamp)
+            .map_err(|e| McpError::invalid_params(e, None))?;
+
+        let mut guard = self.state.lock().await;
+        let store = guard.work_record_store.clone();
+        let mut hashes = Vec::with_capacity(records.len());
+        let mut heights = Vec::with_capacity(records.len());
+        for rec in records {
+            let submitted = store
+                .submit_record(&mut guard.db, rec)
+                .map_err(|e| McpError::internal_error(e, None))?;
+            hashes.push(vcs_hash_hex(&submitted.hash));
+            heights.push(submitted.commit_height);
+        }
+        persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(|e| {
+            McpError::internal_error(format!("failed to persist snapshot+wal: {e:?}"), None)
+        })?;
+
+        Ok(Json(AbraxasWorkspaceSubmitResponse {
+            submitted_count: hashes.len(),
+            hashes,
+            commit_heights: heights,
+            message: "workspace diff committed into Abraxas".to_string(),
+        }))
+    }
+
+    #[tool(
         name = "nucleusdb_help",
         description = "Return SQL dialect reference, backend ids, and policy profiles for agent-safe usage."
     )]
@@ -2117,9 +2616,11 @@ impl NucleusDbMcpService {
                     .to_string(),
                 "persist defaults to true in nucleusdb_execute_sql.".to_string(),
                 "prefer_wal defaults to false in nucleusdb_open_database.".to_string(),
-                "Trust tools: nucleusdb_agent_register, nucleusdb_verify_agent, nucleusdb_agent_reattest."
+                "Trust tools: nucleusdb_agent_register, nucleusdb_verify_agent, verify_agent_multichain."
                     .to_string(),
-                "Multichain tools: register_chain, generate_composite_cab, submit_composite_attestation, verify_agent_multichain, query_cross_chain_attestation, list_registered_chains."
+                "Multichain tools: register_chain, submit_composite_attestation."
+                    .to_string(),
+                "Abraxas VCS tools: abraxas_submit_record, abraxas_query_records, abraxas_record_status, abraxas_merge_status, abraxas_resolve_conflict, abraxas_export_git, abraxas_workspace_init, abraxas_workspace_diff, abraxas_workspace_submit."
                     .to_string(),
                 "On-chain submit paths accept keystore_path (+ optional keystore_password_file) or private_key_env."
                     .to_string(),

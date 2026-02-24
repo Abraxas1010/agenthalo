@@ -22,6 +22,7 @@ pub mod transparency;
 pub mod trust;
 pub mod tui;
 pub mod vc;
+pub mod vcs;
 pub mod witness;
 
 pub use multitenant::{
