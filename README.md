@@ -15,20 +15,39 @@ We humbly thank the collective intelligence of humanity for providing the techno
 ---
 
 <p align="center">
-  <img src="assets/agent_halo_logo.png" alt="AgentHALO" width="300"/>
+  <img src="assets/agent_halo_logo.png" alt="Agent H.A.L.O." width="300"/>
 </p>
 
 <p align="center">
-  <strong>Tamper-proof observability for AI agents.</strong><br>
-  <em>Your agents work in the open. Their records should be unbreakable.</em>
+  <strong>Agent H.A.L.O.</strong> — <strong>H</strong>osted <strong>A</strong>gent <strong>L</strong>ogic <strong>O</strong>rbit<br>
+  <em>Tamper-proof observability for AI agents.</em>
 </p>
+
+<br>
+
+<table>
+<tr>
+<td width="25%" align="center"><strong>H</strong><br><sub>Hardware / Host</sub><br><em>The Energy Shell</em></td>
+<td width="25%" align="center"><strong>A</strong><br><sub>Agent</sub><br><em>The Identity</em></td>
+<td width="25%" align="center"><strong>L</strong><br><sub>Logic / Lightcone</sub><br><em>The Intelligence</em></td>
+<td width="25%" align="center"><strong>O</strong><br><sub>Orbit / Outer-layer</sub><br><em>The Markov Blanket</em></td>
+</tr>
+<tr>
+<td align="center"><sub>PUF fingerprint, hardware entropy, the physical substrate the agent inhabits</sub></td>
+<td align="center"><sub>Wallet identity, cryptographic keypair, the self that persists across sessions</sub></td>
+<td align="center"><sub>Reasoning traces, tool calls, decisions — the causal lightcone of each action</sub></td>
+<td align="center"><sub>The observability boundary — everything inside is the agent, everything outside is the record</sub></td>
+</tr>
+</table>
+
+<br>
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
 ![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen.svg)
 ![Lean 4](https://img.shields.io/badge/Lean%204-63%20modules-blue.svg)
 ![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
 
-[The Problem](#the-problem) · [Quick Start](#quick-start) · [NucleusDB](#nucleusdb) · [Architecture](#architecture) · [Contributing](CONTRIBUTING.md)
+[The Problem](#the-problem) · [Quick Start](#quick-start) · [The Algebraic Foundation](#the-algebraic-foundation) · [NucleusDB](#nucleusdb) · [Architecture](#architecture) · [Contributing](CONTRIBUTING.md)
 
 ---
 
@@ -48,11 +67,11 @@ This is not an edge case. This is the default experience for everyone using AI a
 
 - **There is no sovereignty.** The observability tools that do exist — and there are many — solve the problem by sending your agent's every thought, every file read, every API call, to someone else's cloud. Your proprietary code, your credentials, your architectural decisions, streamed to a third-party analytics platform. The watchers themselves become the risk.
 
-This is the gap AgentHALO exists to close.
+This is the gap H.A.L.O. exists to close.
 
 ## The Solution
 
-AgentHALO wraps any AI coding agent — Claude, Codex, Gemini, or your own — and records **every event** into a local, cryptographically sealed trace store. One command. Nothing else changes.
+Agent H.A.L.O. wraps any AI coding agent — Claude, Codex, Gemini, or your own — and records **every event** into a local, cryptographically sealed trace store. One command. Nothing else changes.
 
 ```bash
 # Wrap your agent — it works exactly as before
@@ -76,6 +95,13 @@ agenthalo costs --month
 ```
 
 Every event is stored in `~/.agenthalo/traces.ndb` — a content-addressed blob with a SHA-256 Merkle proof. If anyone modifies a record after the fact, the proof chain breaks. This isn't a feature toggle. It's the architecture.
+
+The four layers of the H.A.L.O. model map directly to what gets recorded:
+
+- **H** (Hardware) — The host PUF fingerprint anchors the trace to the physical machine that produced it. Traces can't be transplanted between hosts.
+- **A** (Agent) — The agent's wallet identity and session metadata. Which agent, which model, which credentials — cryptographically bound to the trace.
+- **L** (Logic) — Every reasoning step, tool call, file edit, and shell command. The full causal lightcone of the agent's decisions.
+- **O** (Orbit) — The tamper-evident boundary. The Merkle root, the seal chain, the monotone extension proofs. Everything outside the orbit is the verifiable record; everything inside is the agent's private state.
 
 ### What It Captures
 
@@ -139,7 +165,7 @@ And none of them answer the harder question: *how do you know the record itself 
 
 A cloud dashboard can show you what it claims happened. It cannot prove the log is complete. It cannot prove no events were removed. It cannot prove the trace you're reading today is the same trace that was written yesterday. The audit trail lives on someone else's server, and trust is a policy decision — not a mathematical property.
 
-| | Cloud Observability | AgentHALO |
+| | Cloud Observability | Agent H.A.L.O. |
 |---|---|---|
 | **Where traces live** | Vendor's cloud | Your machine |
 | **Who can read them** | You + the vendor (+ their infra partners) | You |
@@ -150,8 +176,9 @@ A cloud dashboard can show you what it claims happened. It cannot prove the log 
 | **Works offline** | No | Yes |
 | **Agent support** | Framework-specific SDKs | Wraps any CLI agent directly |
 | **MCP native** | No | Yes — 11 tools over stdio, 25 tools over HTTP |
+| **Formal verification** | No | 63 Lean 4 modules with sheaf-theoretic proofs |
 
-AgentHALO doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.
+H.A.L.O. doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.
 
 ---
 
@@ -163,11 +190,11 @@ His argument: the crypto ecosystem spent too long optimizing for speculation and
 
 Buterin's prescription is concrete: privacy by default through zero-knowledge proofs and fully homomorphic encryption. Censorship resistance at the protocol level (FOCIL). Account abstraction for quantum-resistant wallets. Open-source AI. And a five-year plan to rebuild Ethereum's core as a *"cypherpunk principled, non-ugly"* system — potentially accelerated by AI-assisted coding and verification.
 
-**This is the world AgentHALO is built for.**
+**This is the world H.A.L.O. is built for.**
 
 When Buterin warns about the agentic economy, he's describing a future where AI agents operate autonomously — managing finances, writing code, executing transactions, making decisions. In that world, the question isn't just *"what did the agent do?"* It's *"can you prove it, and can you prove no one changed the record?"*
 
-AgentHALO answers that question with mathematics, not policy:
+H.A.L.O. answers that question with mathematics, not policy:
 
 - **Privacy by default** — traces never leave your machine. No telemetry. No cloud dependency.
 - **Cryptographic proof** — every event is Merkle-committed. Tampering breaks the chain.
@@ -177,7 +204,7 @@ AgentHALO answers that question with mathematics, not policy:
 
 ### Where We're Going
 
-We see AgentHALO as infrastructure for the cypherpunk agentic economy — not just an observability tool. The roadmap includes deeper integration with on-chain identity systems, decentralized agent trust networks, and privacy-preserving audit protocols that let agents prove compliance without exposing their operational history.
+We see H.A.L.O. as infrastructure for the cypherpunk agentic economy — not just an observability tool. The roadmap includes deeper integration with on-chain identity systems, decentralized agent trust networks, and privacy-preserving audit protocols that let agents prove compliance without exposing their operational history.
 
 We are actively seeking community input on:
 
@@ -210,15 +237,15 @@ The cypherpunk thesis says agents should be sovereign. Sovereignty means economi
 
 **4. Agent operates autonomously** — Once funded, the agent creates session nonces, checks balances, browses the tool marketplace, invokes tools, and executes multi-step workflows — all via HTTP, all authenticated by signature.
 
-### AgentPMT + AgentHALO
+### AgentPMT + H.A.L.O.
 
-AgentPMT's wallet identity is the economic identity. AgentHALO's NucleusDB provides the trust layer on top:
+AgentPMT's wallet identity is the economic identity — the **A** layer. H.A.L.O.'s NucleusDB provides the trust layer on top:
 
 - **On-chain trust attestation** — The agent's wallet address, PUF hardware fingerprint, and tier are registered on-chain via `TrustVerifier` on Base L2. Other agents can verify trust status without revealing private state. USDC routes automatically to treasury on attestation.
 
 - **CAB license verification** — P2PCLAW mints a Cryptographic Assurance Bundle after payment — a Groth16 SNARK proof over a Poseidon Merkle tree of licensed features. NucleusDB verifies it locally against a baked-in foundation commitment. No phone-home. No license server. The math is the gatekeeper.
 
-- **Payment monitoring** — AgentHALO's container runtime tracks every transaction the agent makes — amount, counterparty, direction, tx hash — with the same tamper-evident Merkle proofs as all other trace events.
+- **Payment monitoring** — H.A.L.O.'s container runtime tracks every transaction the agent makes — amount, counterparty, direction, tx hash — with the same tamper-evident Merkle proofs as all other trace events.
 
 **Why this matters:** When agents can manage their own wallets, prove their identity on-chain, purchase their own capabilities, and have every transaction sealed into a tamper-evident record — you have the building blocks of a trustworthy agentic economy. Not "trust the platform." Trust the mathematics.
 
@@ -233,6 +260,59 @@ AgentPMT's wallet identity is the economic identity. AgentHALO's NucleusDB provi
 
 ---
 
+## The Algebraic Foundation
+
+Most databases describe their correctness properties in English. NucleusDB proves them in Lean 4 using the mathematics of sheaf theory — the same framework algebraic geometers use to describe how local observations compose into global structure.
+
+This is not a marketing claim. It is 63 Lean 4 modules, type-checked by the Lean kernel, that formally prove the properties NucleusDB relies on. We are not aware of any other database — verifiable or otherwise — that provides this level of mathematical foundation.
+
+### Why Sheaves
+
+The core problem of multi-agent trust is a *local-to-global* problem. Each agent observes a local slice of reality: its own chain, its own traces, its own view of state. The question is: **can these local views be consistently assembled into a single global picture?**
+
+This is exactly the question sheaf theory was invented to answer.
+
+A *presheaf* assigns data to each "open set" (in our case, each chain or agent view) with restriction maps between them. A *sheaf* is a presheaf that satisfies a gluing condition: if local sections agree on overlaps, they can be assembled into a unique global section. If they can't — if the gluing condition fails — then someone's local view is inconsistent with the others. The sheaf condition is a tamper detector built from pure mathematics.
+
+### What's Proved
+
+**Sheaf coherence** — Local views of state compose into a globally consistent picture via amalgamation witnesses. A `CoherenceWitness` carries a matching family plus proof that amalgamation holds. If verification passes, the local views are mathematically consistent. If it fails, the state has been tampered with. (`lean/NucleusDB/Sheaf/Coherence.lean`)
+
+**Chain transport** — Round-trip contracts between different chain representations. If you project a chain-local value to the shared space and decode it back, you get the original value (RT-1). If you decode a shared value and re-project, you get the original shared value (RT-2). These are proved, not assumed. Forward and backward transport between any two chains composes to the identity — `backward_forward` is a theorem, not a test. (`lean/NucleusDB/Sheaf/ChainTransport.lean`)
+
+**Gluing conditions** — Two chain-local sections can be glued when their projections to the shared space agree. The glue operation is defined and its specification is proved: the glued value equals the shared projection of either local section. (`lean/NucleusDB/Sheaf/ChainGluing.lean`)
+
+**Materialization functors** — The abstract relationship between protocol state and concrete vector representation satisfies naturality: if two states are related by transport, their materializations are equal. This ensures the commitment backends faithfully represent the abstract protocol. (`lean/NucleusDB/Sheaf/MaterializationFunctor.lean`)
+
+**Multi-chain compliance presheaves** — Per-chain compliance sections modeled as a presheaf over the chain topology, with restriction maps that constrain sections to sub-topologies. Global compliance is assembled from local chain sections via the sheaf gluing machinery. (`lean/NucleusDB/TrustLayer/CompositeCab/Presheaf.lean`)
+
+**Fork evidence** — Adversarial models formalized as mathematical objects. A fork is two signed checkpoints at the same height with the same predecessor but different state roots. Fork symmetry is a theorem: if `(a, b)` is a fork, then `(b, a)` is a fork. This sounds trivial — until you realize it means the fork detection protocol is order-independent, which is exactly what you need for decentralized verification. (`lean/NucleusDB/Adversarial/ForkEvidence.lean`)
+
+### Why This Matters
+
+Every other observability tool asks you to trust their implementation. Trust that the hash function was called. Trust that the Merkle tree was built correctly. Trust that the immutable mode actually rejects writes.
+
+H.A.L.O. asks you to trust the Lean 4 kernel — a small, independently auditable proof checker — which has verified that the mathematical properties hold by construction. The implementation can have bugs. The proofs cannot. If the sheaf coherence theorem type-checks, then local views that pass verification are mathematically guaranteed to be globally consistent. This is not a claim. It is a proof.
+
+```bash
+# Verify the proofs yourself (requires Lean 4 toolchain)
+lake build NucleusDB
+```
+
+The 63 modules cover:
+
+| Domain | Modules | What's Proved |
+|--------|---------|---------------|
+| **Core** | Nucleus, Ledger, Invariants, Authorization, Certificates | Protocol invariants, authorization policies |
+| **Security** | Assumptions, Parameters, Reductions, Refinement | Security reductions — if you break NucleusDB, you break SHA-256 |
+| **Commitment** | VectorModel, Adapter | Backend abstraction, commitment correctness |
+| **Sheaf** | Coherence, MaterializationFunctor, ChainTransport, ChainGluing | Local-to-global consistency, transport round-trips, gluing |
+| **Transparency** | CT6962, Consistency, LogModel | RFC 6962 append-only tree, consistency proofs |
+| **Adversarial** | ForkEvidence, Witness | Fork detection, witness validity |
+| **Trust Layer** | Presheaf, GluingCondition, GlobalCab, SheafBridge | Multi-chain compliance, composite attestation |
+
+---
+
 ## NucleusDB
 
 <p align="center">
@@ -240,11 +320,11 @@ AgentPMT's wallet identity is the economic identity. AgentHALO's NucleusDB provi
 </p>
 
 <p align="center">
-  <strong>The verifiable database engine powering AgentHALO.</strong><br>
+  <strong>The verifiable database engine powering H.A.L.O.</strong><br>
   <em>Every write is a cryptographic commitment. Every query comes with a proof. Deletion can be made mathematically impossible.</em>
 </p>
 
-NucleusDB is the storage layer beneath AgentHALO — and a standalone verifiable database in its own right. It provides the cryptographic primitives that make tamper-evident traces possible: Merkle commitments, monotone seals, certificate transparency, and mathematically enforced immutability.
+NucleusDB is the storage layer beneath H.A.L.O. — and a standalone verifiable database in its own right. It provides the cryptographic primitives that make tamper-evident traces possible: Merkle commitments, monotone seals, certificate transparency, and mathematically enforced immutability.
 
 ```bash
 # Create a database
@@ -265,7 +345,7 @@ Once `APPEND_ONLY` mode is activated, it is a **one-way lock**. The database wil
 
 ### Why NucleusDB Exists
 
-AgentHALO needs more than a database. It needs a database where the storage layer itself provides cryptographic guarantees:
+H.A.L.O. needs more than a database. It needs a database where the storage layer itself provides cryptographic guarantees:
 
 1. **Monotone Extension Proofs** — Every commit constructively proves that all prior records are preserved. Deletion is detected instantly.
 2. **SHA-256 Seal Chain** — Each commit's seal binds to every previous seal. Forging a seal after deletion requires breaking SHA-256 preimage resistance (2^128 operations).
@@ -368,34 +448,36 @@ Contracts are deployed on Base Sepolia. See `contracts/scripts/README.md` for de
 ## Architecture
 
 ```
-                            AgentHALO + NucleusDB
+                          Agent H.A.L.O. + NucleusDB
   ┌─────────────────────────────────────────────────────────────┐
   │                                                             │
-  │   AgentHALO                        NucleusDB Core           │
-  │     agenthalo run ──┐             ┌─ protocol.rs            │
-  │     agenthalo traces │             ├─ immutable.rs           │
-  │     agenthalo costs  │             ├─ sql/executor           │
-  │     agenthalo wrap   │             ├─ keymap.rs              │
-  │     Stream Adapters: │             ├─ witness.rs (ML-DSA-65) │
-  │       Claude ────────┤             ├─ ct6962.rs (RFC 6962)   │
-  │       Codex ─────────┼── traces ─▶├─ security.rs            │
-  │       Gemini ────────┤             ├─ audit.rs               │
-  │       Generic ───────┘             ├─ license.rs (Groth16)   │
-  │                                    └─ persistence (redb WAL) │
-  │   Client Surfaces                                           │
-  │     CLI / REPL ─────┐  Commitment Backends                  │
-  │     Terminal UI ────┤    vc/binary_merkle.rs                 │
-  │     MCP Server ─────┼    vc/ipa.rs                          │
-  │     HTTP API ───────┘    vc/kzg.rs                          │
+  │   H.A.L.O. Layers               NucleusDB Core             │
+  │                                                             │
+  │   O ─ Orbit (traces) ──┐       ┌─ protocol.rs              │
+  │   L ─ Logic (adapters)  │       ├─ immutable.rs             │
+  │     Claude ─────────────┤       ├─ sql/executor             │
+  │     Codex ──────────────┼─ O ─▶├─ keymap.rs                │
+  │     Gemini ─────────────┤       ├─ witness.rs (ML-DSA-65)   │
+  │     Generic ────────────┘       ├─ ct6962.rs (RFC 6962)     │
+  │   A ─ Agent (identity)          ├─ security.rs              │
+  │     Wallet / PUF ──────────────▶├─ audit.rs                 │
+  │   H ─ Host (hardware)           ├─ license.rs (Groth16)     │
+  │     PUF fingerprint ───────────▶└─ persistence (redb WAL)   │
+  │                                                             │
+  │   Client Surfaces            Commitment Backends            │
+  │     CLI / REPL ─────┐         vc/binary_merkle.rs           │
+  │     Terminal UI ────┤         vc/ipa.rs                     │
+  │     MCP Server ─────┼         vc/kzg.rs                     │
+  │     HTTP API ───────┘                                       │
   │                                                             │
   ├─────────────────────────────────────────────────────────────┤
   │                                                             │
-  │   On-Chain Trust (Base L2)         Formal Spec (Lean 4)     │
-  │     TrustVerifier.sol               63 modules              │
-  │     TrustVerifierMultiChain.sol     Core, Security,         │
-  │     Groth16VerifierAdapter.sol      Commitment, Sheaf,      │
-  │     circuits/ (circom)              Transparency,           │
-  │                                     Adversarial             │
+  │   On-Chain Trust (Base L2)      Formal Spec (Lean 4)        │
+  │     TrustVerifier.sol            63 modules                 │
+  │     TrustVerifierMultiChain.sol  Sheaf coherence,           │
+  │     Groth16VerifierAdapter.sol   Chain transport/gluing,    │
+  │     circuits/ (circom)           Fork evidence,             │
+  │                                  Materialization functors   │
   │                                                             │
   └─────────────────────────────────────────────────────────────┘
 ```
@@ -424,22 +506,6 @@ When `APPEND_ONLY` is active:
 - **CT tree**: The append-only Merkle tree independently records every commit.
 - **Persistence**: The AppendOnly lock and seal chain survive snapshot save/load and WAL replay.
 
-## Formal Specification
-
-63 Lean 4 modules formally specify the core protocol:
-
-- **Core**: Nucleus, Ledger, Invariants, Authorization, Certificates
-- **Security**: Assumptions, Parameters, Reductions, Refinement
-- **Commitment**: VectorModel, Adapter
-- **Sheaf**: Coherence, MaterializationFunctor
-- **Transparency**: CT6962, Consistency, LogModel
-- **Adversarial**: ForkEvidence, Witness
-
-```bash
-# Build formal specs (requires Lean 4 toolchain)
-lake build NucleusDB
-```
-
 ## Testing
 
 182 tests across 14 test suites, 0 failures, 0 warnings:
@@ -457,9 +523,9 @@ cd contracts && forge test        # 34 Solidity tests
 | KeyMap | 3 | Stability, LIKE matching, reverse lookup |
 | Persistence | 5 | WAL/snapshot compat, regression coverage |
 | SQL | 18 | CRUD, multi-statement, committed flag, immutable mode |
-| AgentHALO | 4 | Generic recording, trace schema, cost math, wrap/unwrap |
+| H.A.L.O. | 4 | Generic recording, trace schema, cost math, wrap/unwrap |
 | Monitor | 2 | Channel parsing, config CSV |
-| AgentHALO integration | 6 | Session lifecycle, adapter parsing, signal handling |
+| H.A.L.O. integration | 6 | Session lifecycle, adapter parsing, signal handling |
 | VCS | 5 | Agent record management, version tracking |
 | Solidity: TrustVerifier | 11 | Attestation, fees, proofs, replay, views |
 | Solidity: TrustVerifierMultiChain | 11 | Chain registry, composite attestation, tiered fees, multichain verification |
@@ -472,7 +538,7 @@ cd contracts && forge test        # 34 Solidity tests
 - The `ipa` backend carries full-vector opening payloads (not logarithmic-size IPA arguments).
 - The KZG backend's default trusted setup is for development/demo use. Production KZG deployments require externally managed ceremony artifacts.
 - Sheaf coherence checks are local-view oriented, not full global-state reconciliation.
-- AgentHALO cloud sync is planned but not yet implemented; traces are currently local-only.
+- H.A.L.O. cloud sync is planned but not yet implemented; traces are currently local-only.
 
 ## License
 
@@ -482,7 +548,7 @@ cd contracts && forge test        # 34 Solidity tests
 
 ```bibtex
 @software{agenthalo,
-  title = {AgentHALO},
+  title = {Agent H.A.L.O.},
   author = {Apoth3osis},
   year = {2025--2026},
   url = {https://github.com/Abraxas1010/agenthalo},

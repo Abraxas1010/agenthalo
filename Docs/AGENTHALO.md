@@ -1,10 +1,11 @@
 <p align="center">
-  <img src="../assets/agent_halo_logo.png" alt="AgentHALO" width="240"/>
+  <img src="../assets/agent_halo_logo.png" alt="Agent H.A.L.O." width="240"/>
 </p>
 
-<h1 align="center">AgentHALO Reference Guide</h1>
+<h1 align="center">Agent H.A.L.O. Reference Guide</h1>
 
 <p align="center">
+  <strong>H</strong>osted <strong>A</strong>gent <strong>L</strong>ogic <strong>O</strong>rbit<br>
   <em>Local-first observability for AI coding agents. Tamper-proof session recording backed by NucleusDB.</em>
 </p>
 
