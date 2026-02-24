@@ -341,6 +341,7 @@ Design constraints:
 - Free tier includes first-class wrappers for `claude`, `codex`, `gemini`.
 - Custom/generic agent wrapping is gated behind paid-tier behavior (`AGENTHALO_ALLOW_GENERIC=1`).
 - Cloud sync is planned for paid tier via Cloudflare Workers + Durable Objects.
+- Packaging plan is own Homebrew tap first (`agenthalo/homebrew-tap`), then `homebrew-core`.
 
 ### On-Chain Trust Verification
 
