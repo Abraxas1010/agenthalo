@@ -10,13 +10,18 @@ use nucleusdb::halo::attest::{
 use nucleusdb::halo::audit::{
     audit_contract_file, audit_contract_source, save_audit_result, AuditRequest, AuditSize,
 };
+use nucleusdb::halo::circuit::{
+    load_or_setup_attestation_keys, proof_words_json_array, prove_attestation,
+    public_inputs_json_array, verify_attestation_proof,
+};
 use nucleusdb::halo::config;
+use nucleusdb::halo::onchain::{load_onchain_config_or_default, post_attestation};
 use nucleusdb::halo::pq::{has_wallet, sign_pq_payload};
 use nucleusdb::halo::trace::{list_sessions, now_unix_secs, record_paid_operation_for_halo};
 use nucleusdb::halo::trust::query_trust_score;
+use nucleusdb::halo::util::digest_json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -133,7 +138,7 @@ async fn mcp(
         }),
         "tools/list" => json!({
             "tools": [
-                {"name":"attest","description":"AgentHALO Merkle attestation (paid)"},
+                {"name":"attest","description":"AgentHALO attestation (merkle local or Groth16 onchain with onchain=true)"},
                 {"name":"sign_pq","description":"AgentHALO post-quantum detached signing (paid)"},
                 {"name":"audit_contract","description":"AgentHALO Solidity static audit (paid)"},
                 {"name":"trust_query","description":"AgentHALO trust score query (paid)"},
@@ -223,11 +228,20 @@ fn tool_attest(arguments: Value) -> Result<Value, String> {
         .get("anonymous")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let onchain = arguments
+        .get("onchain")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let requested_session_id = arguments
         .get("session_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let op = if anonymous { "attest_anon" } else { "attest" };
+    let op = match (onchain, anonymous) {
+        (true, true) => "attest_onchain_anon",
+        (true, false) => "attest_onchain",
+        (false, true) => "attest_anon",
+        (false, false) => "attest",
+    };
     let cost = agentpmt::operation_cost(op).unwrap_or(0);
     let deducted = client.deduct(op, 1)?;
     if !deducted.success {
@@ -247,7 +261,25 @@ fn tool_attest(arguments: Value) -> Result<Value, String> {
         },
     );
     match attestation {
-        Ok(result) => {
+        Ok(mut result) => {
+            let mut onchain_payload = None;
+            if onchain {
+                let (pk, vk, _key_info) = load_or_setup_attestation_keys(None)?;
+                let proof_bundle = prove_attestation(&pk, &result)?;
+                if !verify_attestation_proof(&vk, &proof_bundle)? {
+                    return Err("local Groth16 verification failed".to_string());
+                }
+                let cfg = load_onchain_config_or_default();
+                let posted = post_attestation(&cfg, &proof_bundle, anonymous)?;
+                result.proof_type = "groth16-bn254".to_string();
+                result.groth16_proof = Some(proof_words_json_array(&proof_bundle));
+                result.groth16_public_inputs = Some(public_inputs_json_array(&proof_bundle));
+                result.tx_hash = Some(posted.tx_hash.clone());
+                result.contract_address = Some(posted.contract_address.clone());
+                result.block_number = posted.block_number;
+                result.chain = Some(posted.chain.clone());
+                onchain_payload = Some(posted);
+            }
             let saved_path = save_attestation(&session_id, &result)?;
             record_paid_operation_for_halo(
                 op,
@@ -261,7 +293,8 @@ fn tool_attest(arguments: Value) -> Result<Value, String> {
                 "status": "ok",
                 "remaining_credits": deducted.remaining_credits,
                 "attestation_path": saved_path.display().to_string(),
-                "attestation": result
+                "attestation": result,
+                "onchain": onchain_payload
             }))
         }
         Err(e) => {
@@ -686,16 +719,6 @@ fn tool_pq_bridge_transfer(arguments: Value) -> Result<Value, String> {
         "result_digest": digest,
         "transfer": transfer
     }))
-}
-
-fn digest_json(domain: &str, value: &Value) -> Result<String, String> {
-    let canonical = serde_json::to_vec(value).map_err(|e| format!("serialize payload: {e}"))?;
-    let mut hasher = Sha256::new();
-    hasher.update(domain.as_bytes());
-    hasher.update([0u8]);
-    hasher.update(&canonical);
-    let digest = hasher.finalize();
-    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn error_envelope(id: Option<Value>, code: i64, message: &str) -> JsonRpcErrorEnvelope {

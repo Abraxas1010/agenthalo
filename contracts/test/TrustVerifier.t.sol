@@ -72,6 +72,21 @@ contract TrustVerifierHarness {
         sigs[5] = uint256(seq);
     }
 
+    function buildAttestationInputs(
+        uint128 merkleLo,
+        uint128 merkleHi,
+        uint128 digestLo,
+        uint128 digestHi,
+        uint64 eventCount
+    ) internal pure returns (uint256[] memory inputs) {
+        inputs = new uint256[](5);
+        inputs[0] = uint256(merkleLo);
+        inputs[1] = uint256(merkleHi);
+        inputs[2] = uint256(digestLo);
+        inputs[3] = uint256(digestHi);
+        inputs[4] = uint256(eventCount);
+    }
+
     function testAttestAndPayHappyPath() external returns (bool) {
         token.mint(address(this), 100);
         token.approve(address(tv), 10);
@@ -208,5 +223,39 @@ contract TrustVerifierHarness {
         tv.attestAndPay(proof, sigs2);
         (, , , , uint64 replaySeq) = tv.agentStatus(address(this));
         return replaySeq == 12;
+    }
+
+    function testVerifyAndRecordHappyPath() external returns (bool) {
+        token.mint(address(this), 100);
+        token.approve(address(tv), 100);
+        uint256[8] memory proofWords = [uint256(1), 2, 3, 4, 5, 6, 7, 8];
+        uint256[] memory inputs = buildAttestationInputs(11, 12, 21, 22, 2);
+        tv.verifyAndRecord(proofWords, inputs);
+        bytes32 digest = bytes32((uint256(22) << 128) | uint256(21));
+        return tv.isVerified(digest);
+    }
+
+    function testVerifyAndRecordRejectsDuplicate() external returns (bool) {
+        token.mint(address(this), 200);
+        token.approve(address(tv), 200);
+        uint256[8] memory proofWords = [uint256(1), 2, 3, 4, 5, 6, 7, 8];
+        uint256[] memory inputs = buildAttestationInputs(11, 12, 31, 32, 1);
+        tv.verifyAndRecord(proofWords, inputs);
+        try tv.verifyAndRecord(proofWords, inputs) {
+            return false;
+        } catch {
+            return true;
+        }
+    }
+
+    function testVerifyAndRecordAnonymousMasksAttester() external returns (bool) {
+        token.mint(address(this), 100);
+        token.approve(address(tv), 100);
+        uint256[8] memory proofWords = [uint256(1), 2, 3, 4, 5, 6, 7, 8];
+        uint256[] memory inputs = buildAttestationInputs(41, 42, 51, 52, 4);
+        tv.verifyAndRecordAnonymous(proofWords, inputs);
+        bytes32 digest = bytes32((uint256(52) << 128) | uint256(51));
+        TrustVerifier.AttestationRecord memory rec = tv.getAttestation(digest);
+        return rec.verified && rec.eventCount == 4 && rec.attester == address(0);
     }
 }

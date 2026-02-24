@@ -192,6 +192,8 @@ pub fn operation_cost(operation: &str) -> Option<u64> {
     match operation {
         "attest" => Some(10),
         "attest_anon" | "attest_anonymous" => Some(50),
+        "attest_onchain" => Some(25),
+        "attest_onchain_anon" => Some(75),
         "sign_pq" => Some(1),
         "audit_small" => Some(500),
         "audit_medium" => Some(1500),
@@ -231,6 +233,8 @@ mod tests {
     fn operation_costs_are_defined() {
         assert_eq!(operation_cost("attest"), Some(10));
         assert_eq!(operation_cost("attest_anon"), Some(50));
+        assert_eq!(operation_cost("attest_onchain"), Some(25));
+        assert_eq!(operation_cost("attest_onchain_anon"), Some(75));
         assert_eq!(operation_cost("sign_pq"), Some(1));
         assert_eq!(operation_cost("audit_small"), Some(500));
         assert_eq!(operation_cost("audit_medium"), Some(1500));

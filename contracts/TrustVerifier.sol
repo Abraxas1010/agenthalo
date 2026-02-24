@@ -22,6 +22,8 @@ contract TrustVerifier {
     error InvalidDigest();
     error InvalidTier();
     error SequenceRegression();
+    error InvalidPublicInputs();
+    error AttestationAlreadyRecorded();
 
     event AgentCertified(
         address indexed agent,
@@ -31,6 +33,19 @@ contract TrustVerifier {
         uint64 replaySeq,
         uint256 feePaid
     );
+    event AttestationRecorded(
+        bytes32 indexed merkleRoot,
+        bytes32 indexed attestationDigest,
+        uint64 eventCount,
+        address indexed attester,
+        uint256 timestamp
+    );
+    event AnonymousAttestationRecorded(
+        bytes32 indexed merkleRoot,
+        bytes32 indexed attestationDigest,
+        uint64 eventCount,
+        uint256 timestamp
+    );
 
     struct AgentRecord {
         bytes32 pufDigest;
@@ -39,6 +54,14 @@ contract TrustVerifier {
         uint8 tier;
         bool active;
     }
+    struct AttestationRecord {
+        bytes32 merkleRoot;
+        bytes32 attestationDigest;
+        uint64 eventCount;
+        address attester;
+        uint64 blockTimestamp;
+        bool verified;
+    }
 
     IERC20 public immutable usdc;
     ITrustProofVerifier public immutable verifier;
@@ -46,6 +69,9 @@ contract TrustVerifier {
     uint256 public immutable feeWei;
 
     mapping(address => AgentRecord) public registry;
+    mapping(bytes32 => AttestationRecord) public attestations;
+    uint256 public totalAttestations;
+    uint256 public totalVerifiedAttestations;
 
     constructor(
         address verifier_,
@@ -100,6 +126,89 @@ contract TrustVerifier {
         return registry[agent].active;
     }
 
+    /// @notice Verify and record digest-indexed attestation for session proofs.
+    /// @dev publicInputs = [merkleRoot_lo, merkleRoot_hi, digest_lo, digest_hi, eventCount, ...]
+    function verifyAndRecord(
+        uint256[8] calldata proofWords,
+        uint256[] calldata publicInputs
+    ) external {
+        if (publicInputs.length < 5) revert InvalidPublicInputs();
+        bytes memory proofBytes = abi.encode(
+            [proofWords[0], proofWords[1]],
+            [[proofWords[2], proofWords[3]], [proofWords[4], proofWords[5]]],
+            [proofWords[6], proofWords[7]]
+        );
+        if (!verifier.verifyProof(proofBytes, publicInputs)) revert InvalidProof();
+
+        bytes32 merkleRoot = _packBytes32(publicInputs[0], publicInputs[1]);
+        bytes32 attestationDigest = _packBytes32(publicInputs[2], publicInputs[3]);
+        uint64 eventCount = uint64(publicInputs[4]);
+        if (attestationDigest == bytes32(0)) revert InvalidDigest();
+        if (attestations[attestationDigest].blockTimestamp != 0) revert AttestationAlreadyRecorded();
+
+        if (feeWei > 0) {
+            bool ok = usdc.transferFrom(msg.sender, treasury, feeWei);
+            if (!ok) revert TransferFailed();
+        }
+
+        attestations[attestationDigest] = AttestationRecord({
+            merkleRoot: merkleRoot,
+            attestationDigest: attestationDigest,
+            eventCount: eventCount,
+            attester: msg.sender,
+            blockTimestamp: uint64(block.timestamp),
+            verified: true
+        });
+        totalAttestations++;
+        totalVerifiedAttestations++;
+        emit AttestationRecorded(merkleRoot, attestationDigest, eventCount, msg.sender, block.timestamp);
+    }
+
+    /// @notice Anonymous variant; attester identity is masked as zero address.
+    function verifyAndRecordAnonymous(
+        uint256[8] calldata proofWords,
+        uint256[] calldata publicInputs
+    ) external {
+        if (publicInputs.length < 5) revert InvalidPublicInputs();
+        bytes memory proofBytes = abi.encode(
+            [proofWords[0], proofWords[1]],
+            [[proofWords[2], proofWords[3]], [proofWords[4], proofWords[5]]],
+            [proofWords[6], proofWords[7]]
+        );
+        if (!verifier.verifyProof(proofBytes, publicInputs)) revert InvalidProof();
+
+        bytes32 merkleRoot = _packBytes32(publicInputs[0], publicInputs[1]);
+        bytes32 attestationDigest = _packBytes32(publicInputs[2], publicInputs[3]);
+        uint64 eventCount = uint64(publicInputs[4]);
+        if (attestationDigest == bytes32(0)) revert InvalidDigest();
+        if (attestations[attestationDigest].blockTimestamp != 0) revert AttestationAlreadyRecorded();
+
+        if (feeWei > 0) {
+            bool ok = usdc.transferFrom(msg.sender, treasury, feeWei);
+            if (!ok) revert TransferFailed();
+        }
+
+        attestations[attestationDigest] = AttestationRecord({
+            merkleRoot: merkleRoot,
+            attestationDigest: attestationDigest,
+            eventCount: eventCount,
+            attester: address(0),
+            blockTimestamp: uint64(block.timestamp),
+            verified: true
+        });
+        totalAttestations++;
+        totalVerifiedAttestations++;
+        emit AnonymousAttestationRecorded(merkleRoot, attestationDigest, eventCount, block.timestamp);
+    }
+
+    function isVerified(bytes32 attestationDigest) external view returns (bool) {
+        return attestations[attestationDigest].verified;
+    }
+
+    function getAttestation(bytes32 attestationDigest) external view returns (AttestationRecord memory) {
+        return attestations[attestationDigest];
+    }
+
     function agentStatus(
         address agent
     ) external view returns (bool active, bytes32 pufDigest, uint8 tier, uint64 lastAttestation, uint64 lastReplaySeq) {
@@ -118,5 +227,10 @@ contract TrustVerifier {
             (uint256(b) << 64) |
             uint256(a)
         );
+    }
+
+    function _packBytes32(uint256 lo, uint256 hi) internal pure returns (bytes32) {
+        uint256 packed = ((hi & ((uint256(1) << 128) - 1)) << 128) | (lo & ((uint256(1) << 128) - 1));
+        return bytes32(packed);
     }
 }

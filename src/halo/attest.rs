@@ -25,6 +25,18 @@ pub struct AttestationResult {
     pub anonymous: bool,
     pub proof_type: String,
     pub anonymous_membership_proof: Option<AnonymousMembershipProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groth16_proof: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groth16_public_inputs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_number: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -116,6 +128,12 @@ pub fn attest_session(
             "merkle-sha256".to_string()
         },
         anonymous_membership_proof,
+        groth16_proof: None,
+        groth16_public_inputs: None,
+        tx_hash: None,
+        contract_address: None,
+        block_number: None,
+        chain: None,
     })
 }
 

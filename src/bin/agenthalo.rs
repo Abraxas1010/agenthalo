@@ -10,8 +10,16 @@ use nucleusdb::halo::audit::{audit_contract_file, save_audit_result, AuditSize};
 use nucleusdb::halo::auth::{
     is_authenticated, load_credentials, oauth_login, resolve_api_key, save_credentials, Credentials,
 };
+use nucleusdb::halo::circuit::{
+    load_or_setup_attestation_keys, proof_words_json_array, prove_attestation,
+    public_inputs_json_array, verify_attestation_proof,
+};
 use nucleusdb::halo::config;
 use nucleusdb::halo::detect::AgentType;
+use nucleusdb::halo::onchain::{
+    deploy_trust_verifier, load_onchain_config_or_default, onchain_config_path, post_attestation,
+    query_attestation, save_onchain_config,
+};
 use nucleusdb::halo::pq::{has_wallet, keygen_pq, sign_pq_payload};
 use nucleusdb::halo::runner::AgentRunner;
 use nucleusdb::halo::schema::{SessionMetadata, SessionStatus};
@@ -19,8 +27,8 @@ use nucleusdb::halo::trace::{
     list_sessions, now_unix_secs, record_paid_operation_for_halo, TraceWriter,
 };
 use nucleusdb::halo::trust::query_trust_score;
+use nucleusdb::halo::util::digest_json;
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
-use sha2::{Digest, Sha256};
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -53,6 +61,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "trust" => cmd_trust(&args[2..]),
         "vote" => cmd_vote(&args[2..]),
         "sync" => cmd_sync(&args[2..]),
+        "onchain" => cmd_onchain(&args[2..]),
         "protocol" => cmd_protocol(&args[2..]),
         "addon" => cmd_addon(&args[2..]),
         "license" => cmd_license(&args[2..]),
@@ -367,6 +376,7 @@ fn cmd_credits(args: &[String]) -> Result<(), String> {
 fn cmd_attest(args: &[String]) -> Result<(), String> {
     let client = require_agentpmt()?;
     let anonymous = args.iter().any(|a| a == "--anonymous");
+    let onchain = args.iter().any(|a| a == "--onchain");
     let requested_session_id = args
         .iter()
         .position(|a| a == "--session")
@@ -374,7 +384,12 @@ fn cmd_attest(args: &[String]) -> Result<(), String> {
         .cloned();
     let db_path = config::db_path();
     let resolved_session_id = resolve_session_id(&db_path, requested_session_id.as_deref())?;
-    let op = if anonymous { "attest_anon" } else { "attest" };
+    let op = match (onchain, anonymous) {
+        (true, true) => "attest_onchain_anon",
+        (true, false) => "attest_onchain",
+        (false, true) => "attest_anon",
+        (false, false) => "attest",
+    };
     let cost = agentpmt::operation_cost(op).unwrap_or(0);
     println!("Cost: {} credits (${:.2})", cost, cost as f64 * 0.01);
 
@@ -394,7 +409,30 @@ fn cmd_attest(args: &[String]) -> Result<(), String> {
         },
     );
     match attestation {
-        Ok(result) => {
+        Ok(mut result) => {
+            if onchain {
+                let (pk, vk, key_info) = load_or_setup_attestation_keys(None)?;
+                let proof_bundle = prove_attestation(&pk, &result)?;
+                let local_verified = verify_attestation_proof(&vk, &proof_bundle)?;
+                if !local_verified {
+                    return Err("local Groth16 verification failed".to_string());
+                }
+
+                let cfg = load_onchain_config_or_default();
+                let post = post_attestation(&cfg, &proof_bundle, anonymous)?;
+                result.proof_type = "groth16-bn254".to_string();
+                result.groth16_proof = Some(proof_words_json_array(&proof_bundle));
+                result.groth16_public_inputs = Some(public_inputs_json_array(&proof_bundle));
+                result.tx_hash = Some(post.tx_hash.clone());
+                result.contract_address = Some(post.contract_address.clone());
+                result.block_number = post.block_number;
+                result.chain = Some(post.chain);
+                println!(
+                    "On-chain attestation posted. tx_hash={} contract={} (keys: pk={}, vk={})",
+                    post.tx_hash, post.contract_address, key_info.pk_path, key_info.vk_path
+                );
+            }
+
             let save_path = save_attestation(&resolved_session_id, &result)?;
             println!("Attestation successful.");
             println!("Session: {resolved_session_id}");
@@ -767,6 +805,116 @@ fn cmd_sync(args: &[String]) -> Result<(), String> {
     );
     record_paid_operation_for_halo(op, cost, None, Some(result_digest), true, None)?;
     Ok(())
+}
+
+fn cmd_onchain(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "config" => {
+            let mut cfg = load_onchain_config_or_default();
+            if let Some(v) = args
+                .iter()
+                .position(|a| a == "--rpc-url")
+                .and_then(|i| args.get(i + 1))
+            {
+                cfg.rpc_url = v.to_string();
+            }
+            if let Some(v) = args
+                .iter()
+                .position(|a| a == "--chain-id")
+                .and_then(|i| args.get(i + 1))
+            {
+                cfg.chain_id = v
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --chain-id: {e}"))?;
+            }
+            if let Some(v) = args
+                .iter()
+                .position(|a| a == "--contract")
+                .and_then(|i| args.get(i + 1))
+            {
+                cfg.contract_address = v.to_string();
+            }
+            if let Some(v) = args
+                .iter()
+                .position(|a| a == "--private-key-env")
+                .and_then(|i| args.get(i + 1))
+            {
+                cfg.private_key_env = v.to_string();
+            }
+            if let Some(v) = args
+                .iter()
+                .position(|a| a == "--verifier")
+                .and_then(|i| args.get(i + 1))
+            {
+                cfg.verifier_address = v.to_string();
+            }
+            if let Some(v) = args
+                .iter()
+                .position(|a| a == "--usdc")
+                .and_then(|i| args.get(i + 1))
+            {
+                cfg.usdc_address = v.to_string();
+            }
+            if let Some(v) = args
+                .iter()
+                .position(|a| a == "--treasury")
+                .and_then(|i| args.get(i + 1))
+            {
+                cfg.treasury_address = v.to_string();
+            }
+            if let Some(v) = args
+                .iter()
+                .position(|a| a == "--fee-wei")
+                .and_then(|i| args.get(i + 1))
+            {
+                cfg.fee_wei = v
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --fee-wei: {e}"))?;
+            }
+            save_onchain_config(&onchain_config_path(), &cfg)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&cfg)
+                    .map_err(|e| format!("serialize onchain config: {e}"))?
+            );
+            Ok(())
+        }
+        "deploy" => {
+            let mut cfg = load_onchain_config_or_default();
+            let deployed = deploy_trust_verifier(&cfg)?;
+            cfg.contract_address = deployed.clone();
+            save_onchain_config(&onchain_config_path(), &cfg)?;
+            println!("Deployed TrustVerifier at {deployed}");
+            Ok(())
+        }
+        "verify" => {
+            let digest = args.get(1).ok_or_else(|| {
+                "usage: agenthalo onchain verify <attestation-digest>".to_string()
+            })?;
+            let cfg = load_onchain_config_or_default();
+            let status = query_attestation(&cfg, digest)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "config": cfg,
+                    "status": status
+                }))
+                .map_err(|e| format!("serialize onchain verify output: {e}"))?
+            );
+            Ok(())
+        }
+        "status" => {
+            let cfg = load_onchain_config_or_default();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&cfg)
+                    .map_err(|e| format!("serialize onchain status: {e}"))?
+            );
+            Ok(())
+        }
+        _ => Err("usage: agenthalo onchain [config|deploy|verify|status] ...".to_string()),
+    }
 }
 
 fn cmd_protocol(args: &[String]) -> Result<(), String> {
@@ -1193,16 +1341,6 @@ fn read_line_trimmed() -> Result<String, String> {
     Ok(s.trim().to_string())
 }
 
-fn digest_json(domain: &str, value: &serde_json::Value) -> Result<String, String> {
-    let canonical = serde_json::to_vec(value).map_err(|e| format!("serialize payload: {e}"))?;
-    let mut hasher = Sha256::new();
-    hasher.update(domain.as_bytes());
-    hasher.update([0u8]);
-    hasher.update(&canonical);
-    let digest = hasher.finalize();
-    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
-}
-
 fn require_agentpmt() -> Result<AgentPmtClient, String> {
     AgentPmtClient::from_config().ok_or_else(|| {
         "not connected to AgentPMT. Run: agenthalo config set-agentpmt-key <key>".to_string()
@@ -1211,6 +1349,6 @@ fn require_agentpmt() -> Result<AgentPmtClient, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.1.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT API key\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month] [--paid]   Show model costs or paid operation usage\n  credits [balance|add|history]\n                             Check or add AgentPMT credits\n  attest [--session ID] [--anonymous]\n                             Build local Merkle attestation for a session (paid)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit (paid)\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature (paid)\n  trust [query|score] [--session ID]\n                             Query trust score (paid)\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n                             Submit governance vote intent (paid)\n  sync [--target cloudflare|local]\n                             Run sync operation (paid)\n  protocol privacy-pool-create --denomination <u64> [--chain NAME] [--asset SYMBOL]\n                             Create privacy pool request (paid; workflows add-on)\n  protocol privacy-pool-withdraw --pool-id <id> --recipient <addr> [--amount u64]\n                             Submit privacy withdrawal request (paid; workflows add-on)\n  protocol pq-bridge-transfer --from <chain> --to <chain> --asset <symbol> --amount <u64> --recipient <addr>\n                             Submit PQ bridge transfer request (paid; p2pclaw add-on)\n  license [status|buy <tier>]\n                             Manage NucleusDB license\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_AGENTPMT_STUB=1   Enable local stub mode for AgentPMT credits"
+        "agenthalo 0.1.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT API key\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month] [--paid]   Show model costs or paid operation usage\n  credits [balance|add|history]\n                             Check or add AgentPMT credits\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit (paid)\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature (paid)\n  trust [query|score] [--session ID]\n                             Query trust score (paid)\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n                             Submit governance vote intent (paid)\n  sync [--target cloudflare|local]\n                             Run sync operation (paid)\n  onchain [config|deploy|verify|status] ...\n                             Manage and query Base Sepolia attestation contract\n  protocol privacy-pool-create --denomination <u64> [--chain NAME] [--asset SYMBOL]\n                             Create privacy pool request (paid; workflows add-on)\n  protocol privacy-pool-withdraw --pool-id <id> --recipient <addr> [--amount u64]\n                             Submit privacy withdrawal request (paid; workflows add-on)\n  protocol pq-bridge-transfer --from <chain> --to <chain> --asset <symbol> --amount <u64> --recipient <addr>\n                             Submit PQ bridge transfer request (paid; p2pclaw add-on)\n  license [status|buy <tier>]\n                             Manage NucleusDB license\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_AGENTPMT_STUB=1   Enable local stub mode for AgentPMT credits\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
     );
 }

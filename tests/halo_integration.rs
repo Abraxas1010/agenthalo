@@ -1,6 +1,12 @@
 use nucleusdb::halo::attest::{attest_session, AttestationRequest};
 use nucleusdb::halo::audit::{audit_contract_source, AuditRequest, AuditSize};
 use nucleusdb::halo::auth::{save_credentials, Credentials};
+use nucleusdb::halo::circuit::{
+    load_or_setup_attestation_keys, prove_attestation, verify_attestation_proof,
+};
+use nucleusdb::halo::onchain::{
+    load_onchain_config, query_attestation, save_onchain_config, OnchainConfig,
+};
 use nucleusdb::halo::pq::{
     keygen_pq_with_paths, sign_pq_payload_with_paths, verify_detached_signature, PqStoragePaths,
 };
@@ -376,5 +382,132 @@ fn halo_pq_keygen_and_sign_detached_roundtrip() {
         verify_detached_signature(payload, &sig.public_key_hex, &sig.signature_hex)
             .expect("verify")
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn halo_groth16_attestation_proof_roundtrip() {
+    let db_path = temp_db_path("groth16-roundtrip");
+    let mut writer = TraceWriter::new(&db_path).expect("writer");
+    let sid = format!("sess-groth16-{}", now_unix_secs());
+    writer
+        .start_session(SessionMetadata {
+            session_id: sid.clone(),
+            agent: "codex".to_string(),
+            model: Some("gpt-5".to_string()),
+            started_at: now_unix_secs(),
+            ended_at: None,
+            prompt: Some("prove".to_string()),
+            status: SessionStatus::Running,
+            user_id: None,
+            machine_id: None,
+            puf_digest: None,
+        })
+        .expect("start");
+    writer
+        .write_event(TraceEvent {
+            seq: 0,
+            timestamp: now_unix_secs(),
+            event_type: EventType::Assistant,
+            content: serde_json::json!({"text":"phase4"}),
+            input_tokens: Some(3),
+            output_tokens: Some(5),
+            cache_read_tokens: Some(0),
+            tool_name: None,
+            tool_input: None,
+            tool_output: None,
+            file_path: None,
+            content_hash: String::new(),
+        })
+        .expect("event");
+    writer.end_session(SessionStatus::Completed).expect("end");
+
+    let att = attest_session(
+        &db_path,
+        AttestationRequest {
+            session_id: sid,
+            anonymous: false,
+        },
+    )
+    .expect("attest");
+    let (pk, vk, _info) = load_or_setup_attestation_keys(Some(64)).expect("keys");
+    let proof = prove_attestation(&pk, &att).expect("prove");
+    assert!(verify_attestation_proof(&vk, &proof).expect("verify"));
+    assert_eq!(proof.public_inputs.len(), 5);
+}
+
+#[test]
+fn halo_groth16_proof_is_deterministic() {
+    let db_path = temp_db_path("groth16-det");
+    let mut writer = TraceWriter::new(&db_path).expect("writer");
+    let sid = format!("sess-groth16-det-{}", now_unix_secs());
+    writer
+        .start_session(SessionMetadata {
+            session_id: sid.clone(),
+            agent: "codex".to_string(),
+            model: None,
+            started_at: now_unix_secs(),
+            ended_at: None,
+            prompt: None,
+            status: SessionStatus::Running,
+            user_id: None,
+            machine_id: None,
+            puf_digest: None,
+        })
+        .expect("start");
+    writer
+        .write_event(TraceEvent {
+            seq: 0,
+            timestamp: now_unix_secs(),
+            event_type: EventType::Assistant,
+            content: serde_json::json!({"text":"deterministic"}),
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_tokens: None,
+            tool_name: None,
+            tool_input: None,
+            tool_output: None,
+            file_path: None,
+            content_hash: String::new(),
+        })
+        .expect("event");
+    writer.end_session(SessionStatus::Completed).expect("end");
+    let att = attest_session(
+        &db_path,
+        AttestationRequest {
+            session_id: sid,
+            anonymous: false,
+        },
+    )
+    .expect("attest");
+    let (pk, _vk, _info) = load_or_setup_attestation_keys(Some(64)).expect("keys");
+    let a = prove_attestation(&pk, &att).expect("prove a");
+    let b = prove_attestation(&pk, &att).expect("prove b");
+    assert_eq!(a.proof_hex, b.proof_hex);
+    assert_eq!(a.proof_words, b.proof_words);
+}
+
+#[test]
+fn halo_onchain_config_management() {
+    let root = std::env::temp_dir().join(format!(
+        "agenthalo_onchain_cfg_test_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("dir");
+    let path = root.join("onchain.json");
+    let cfg = OnchainConfig {
+        contract_address: "0x1111111111111111111111111111111111111111".to_string(),
+        ..OnchainConfig::default()
+    };
+    save_onchain_config(&path, &cfg).expect("save");
+    let loaded = load_onchain_config(&path).expect("load");
+    assert_eq!(loaded.contract_address, cfg.contract_address);
+
+    std::env::set_var("AGENTHALO_ONCHAIN_STUB", "1");
+    let status = query_attestation(&loaded, &"00".repeat(32)).expect("query");
+    assert!(status.is_some());
+    std::env::remove_var("AGENTHALO_ONCHAIN_STUB");
     let _ = std::fs::remove_dir_all(&root);
 }

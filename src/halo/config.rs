@@ -28,6 +28,22 @@ pub fn addons_path() -> PathBuf {
     halo_dir().join("addons.json")
 }
 
+pub fn onchain_config_path() -> PathBuf {
+    halo_dir().join("onchain.json")
+}
+
+pub fn circuit_dir() -> PathBuf {
+    halo_dir().join("circuit")
+}
+
+pub fn circuit_pk_path() -> PathBuf {
+    circuit_dir().join("pk.bin")
+}
+
+pub fn circuit_vk_path() -> PathBuf {
+    circuit_dir().join("vk.bin")
+}
+
 pub fn attestations_dir() -> PathBuf {
     halo_dir().join("attestations")
 }
@@ -58,4 +74,8 @@ pub fn ensure_audits_dir() -> Result<(), String> {
 
 pub fn ensure_signatures_dir() -> Result<(), String> {
     std::fs::create_dir_all(signatures_dir()).map_err(|e| format!("create signatures dir: {e}"))
+}
+
+pub fn ensure_circuit_dir() -> Result<(), String> {
+    std::fs::create_dir_all(circuit_dir()).map_err(|e| format!("create circuit dir: {e}"))
 }

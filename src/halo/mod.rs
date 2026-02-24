@@ -4,14 +4,17 @@ pub mod agentpmt;
 pub mod attest;
 pub mod audit;
 pub mod auth;
+pub mod circuit;
 pub mod config;
 pub mod detect;
+pub mod onchain;
 pub mod pq;
 pub mod pricing;
 pub mod runner;
 pub mod schema;
 pub mod trace;
 pub mod trust;
+pub mod util;
 pub mod viewer;
 pub mod wrap;
 
