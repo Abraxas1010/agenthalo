@@ -8,7 +8,6 @@ use nucleusdb::halo::schema::{SessionMetadata, SessionStatus};
 use nucleusdb::halo::trace::{now_unix_secs, TraceWriter};
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
 use std::io::{self, Write};
-use std::path::Path;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -163,10 +162,20 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
 
     match args[0].as_str() {
         "set-key" => {
-            let key = args
-                .get(1)
-                .cloned()
-                .ok_or_else(|| "usage: agenthalo config set-key <key>".to_string())?;
+            // Accept key as arg for scripted use, or prompt interactively.
+            // Interactive prompt avoids exposing the key in ps/shell history.
+            let key = if let Some(k) = args.get(1).cloned() {
+                k
+            } else {
+                print!("Enter API key: ");
+                io::stdout()
+                    .flush()
+                    .map_err(|e| format!("flush stdout: {e}"))?;
+                read_line_trimmed()?
+            };
+            if key.trim().is_empty() {
+                return Err("API key cannot be empty".to_string());
+            }
             let mut creds = load_credentials(&creds_path).unwrap_or_default();
             creds.api_key = Some(key);
             creds.created_at = now_unix_secs();
@@ -274,9 +283,4 @@ fn print_usage() {
     println!(
         "agenthalo 0.1.0\n\nCommands:\n  run <agent> [args...]      Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month]            Show cost summaries\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1  Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1   (default behavior: zero telemetry)"
     );
-}
-
-#[allow(dead_code)]
-fn _exists(path: &Path) -> bool {
-    path.exists()
 }

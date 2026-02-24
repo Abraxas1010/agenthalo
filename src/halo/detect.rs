@@ -32,8 +32,9 @@ pub fn detect_agent(command: &str) -> AgentType {
     }
 }
 
-pub fn injection_flags(agent: &AgentType) -> Vec<String> {
-    match agent {
+/// Returns flags to inject for structured output, skipping any the user already passed.
+pub fn injection_flags(agent: &AgentType, user_args: &[String]) -> Vec<String> {
+    let candidate = match agent {
         AgentType::Claude => vec![
             "--output-format".to_string(),
             "stream-json".to_string(),
@@ -42,5 +43,23 @@ pub fn injection_flags(agent: &AgentType) -> Vec<String> {
         AgentType::Codex => vec!["--json".to_string()],
         AgentType::Gemini => vec!["--output-format".to_string(), "stream-json".to_string()],
         AgentType::Generic(_) => vec![],
+    };
+    // Only inject flags the user hasn't already specified.
+    let mut out = Vec::new();
+    let mut skip_next_value = false;
+    for flag in &candidate {
+        if skip_next_value {
+            // This is a value for a flag we already skipped; don't add it.
+            skip_next_value = false;
+            continue;
+        }
+        if flag.starts_with('-') && user_args.iter().any(|a| a == flag) {
+            // User already has this flag — skip it and its value argument.
+            skip_next_value = true;
+            continue;
+        }
+        skip_next_value = false;
+        out.push(flag.clone());
     }
+    out
 }

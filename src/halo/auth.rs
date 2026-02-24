@@ -5,6 +5,9 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Credentials {
     pub api_key: Option<String>,
@@ -32,7 +35,27 @@ pub fn save_credentials(path: &Path, creds: &Credentials) -> Result<(), String> 
     }
     let raw =
         serde_json::to_string_pretty(creds).map_err(|e| format!("serialize credentials: {e}"))?;
-    std::fs::write(path, raw).map_err(|e| format!("write credentials {}: {e}", path.display()))
+
+    // Write with restrictive permissions (owner-only read/write) to protect secrets.
+    #[cfg(unix)]
+    {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true).mode(0o600);
+        let mut f = opts
+            .open(path)
+            .map_err(|e| format!("open credentials {}: {e}", path.display()))?;
+        f.write_all(raw.as_bytes())
+            .map_err(|e| format!("write credentials {}: {e}", path.display()))?;
+        // Enforce owner-only permissions even when rewriting an existing file.
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod credentials {} to 0600: {e}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, raw)
+            .map_err(|e| format!("write credentials {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 pub fn load_credentials(path: &Path) -> Result<Credentials, String> {
@@ -101,10 +124,14 @@ pub fn oauth_login(provider: &str) -> Result<Credentials, String> {
         .map_err(|e| format!("read listener address: {e}"))?
         .port();
 
+    // Generate a random CSRF state parameter to prevent local CSRF attacks.
+    let csrf_state = generate_csrf_state();
+
     let redirect = format!("http://127.0.0.1:{port}/callback");
     let login_url = format!(
-        "https://agenthalo.dev/auth/{provider}?redirect={}",
-        url_encode(&redirect)
+        "https://agenthalo.dev/auth/{provider}?redirect={}&state={}",
+        url_encode(&redirect),
+        url_encode(&csrf_state)
     );
 
     let _ = webbrowser::open(&login_url);
@@ -123,6 +150,20 @@ pub fn oauth_login(provider: &str) -> Result<Credentials, String> {
                 let path = extract_http_path(&req)
                     .ok_or_else(|| "invalid oauth callback request".to_string())?;
                 let params = parse_query_params(&path);
+
+                // Verify CSRF state matches what we sent.
+                let returned_state = params.get("state").cloned().unwrap_or_default();
+                if returned_state != csrf_state {
+                    let body = "OAuth state mismatch. Login rejected.";
+                    let response = format!(
+                        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    return Err("oauth state mismatch (possible CSRF attack)".to_string());
+                }
+
                 let token = params
                     .get("token")
                     .cloned()
@@ -229,6 +270,11 @@ fn url_decode(raw: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).to_string()
+}
+
+fn generate_csrf_state() -> String {
+    // UUID v4 uses OS CSPRNG and gives 128 bits of entropy.
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 fn now_unix() -> u64 {

@@ -8,6 +8,8 @@ use crate::halo::schema::{EventType, TraceEvent};
 use crate::halo::trace::{now_unix_secs, TraceWriter};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 pub struct AgentRunner {
     agent_type: AgentType,
@@ -30,7 +32,7 @@ impl AgentRunner {
     }
 
     pub fn run(&self, trace_writer: &mut TraceWriter) -> Result<i32, String> {
-        let mut full_args = injection_flags(&self.agent_type);
+        let mut full_args = injection_flags(&self.agent_type, &self.args);
         full_args.extend(self.args.clone());
 
         trace_writer.write_event(TraceEvent {
@@ -59,6 +61,10 @@ impl AgentRunner {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("spawn '{} {}': {e}", self.command, full_args.join(" ")))?;
+
+        // Store child PID for signal forwarding.
+        let child_pid = Arc::new(AtomicU32::new(child.id()));
+        install_signal_forwarder(Arc::clone(&child_pid));
 
         let stdout = child
             .stdout
@@ -140,5 +146,34 @@ fn make_adapter(agent: &AgentType) -> Box<dyn StreamAdapter> {
         AgentType::Codex => Box::new(CodexAdapter::new()),
         AgentType::Gemini => Box::new(GeminiAdapter::new()),
         AgentType::Generic(name) => Box::new(GenericAdapter::new(name.clone())),
+    }
+}
+
+/// Install a signal handler that forwards SIGINT/SIGTERM to the child process.
+/// On non-Unix platforms this is a no-op.
+fn install_signal_forwarder(child_pid: Arc<AtomicU32>) {
+    #[cfg(unix)]
+    {
+        use std::thread;
+        thread::spawn(move || {
+            // Block until SIGINT or SIGTERM arrives, then forward to child.
+            let mut signals = signal_hook::iterator::Signals::new([
+                signal_hook::consts::SIGINT,
+                signal_hook::consts::SIGTERM,
+            ])
+            .expect("register signal handlers");
+            for sig in signals.forever() {
+                let pid = child_pid.load(Ordering::Relaxed);
+                if pid != 0 {
+                    unsafe {
+                        libc::kill(pid as libc::pid_t, sig);
+                    }
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child_pid;
     }
 }

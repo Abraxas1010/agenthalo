@@ -1,3 +1,4 @@
+use nucleusdb::halo::auth::{save_credentials, Credentials};
 use nucleusdb::halo::pricing::{calculate_cost, default_pricing};
 use nucleusdb::halo::runner::AgentRunner;
 use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
@@ -123,4 +124,64 @@ fn halo_wrap_unwrap_edits_shell_rc() {
     let unwrapped = std::fs::read_to_string(&path).expect("read unwrapped");
     assert!(!unwrapped.contains("AGENTHALO_WRAP_CLAUDE"));
     assert!(!unwrapped.contains("agenthalo run claude"));
+}
+
+#[test]
+fn halo_eventtype_accepts_legacy_mpc_alias() {
+    let raw = serde_json::json!({
+        "seq": 7,
+        "timestamp": 1771900000u64,
+        "event_type": "mpc_tool_call",
+        "content": {"name": "legacy_call"},
+        "input_tokens": null,
+        "output_tokens": null,
+        "cache_read_tokens": null,
+        "tool_name": "legacy_tool",
+        "tool_input": null,
+        "tool_output": null,
+        "file_path": null,
+        "content_hash": "abc"
+    });
+    let ev: TraceEvent = serde_json::from_value(raw).expect("deserialize legacy alias");
+    assert_eq!(ev.event_type, EventType::McpToolCall);
+    let out = serde_json::to_value(&ev).expect("serialize event");
+    assert_eq!(
+        out.get("event_type").and_then(|v| v.as_str()),
+        Some("mcp_tool_call")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn halo_save_credentials_enforces_0600_on_existing_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!(
+        "agenthalo_creds_perms_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("credentials.json");
+    std::fs::write(&path, "{\"api_key\":\"old\"}").expect("seed credentials");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .expect("seed insecure perms");
+
+    save_credentials(
+        &path,
+        &Credentials {
+            api_key: Some("new-key".to_string()),
+            oauth_token: None,
+            oauth_provider: None,
+            user_id: None,
+            created_at: now_unix_secs(),
+        },
+    )
+    .expect("save credentials");
+
+    let mode = std::fs::metadata(&path)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "credentials mode should be 0600");
 }

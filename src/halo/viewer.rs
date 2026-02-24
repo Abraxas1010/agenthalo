@@ -15,8 +15,13 @@ pub fn print_traces(db_path: &Path, maybe_session_id: Option<&str>) -> Result<()
             meta.model.clone().unwrap_or_else(|| "unknown".to_string())
         );
         println!("Status: {:?}", meta.status);
-        println!("Started: {}", meta.started_at);
-        println!("Ended: {}", meta.ended_at.unwrap_or(0));
+        println!("Started: {}", format_timestamp(meta.started_at));
+        println!(
+            "Ended: {}",
+            meta.ended_at
+                .map(format_timestamp)
+                .unwrap_or_else(|| "in progress".to_string())
+        );
         if let Some(summary) = session_summary(db_path, session_id)? {
             println!(
                 "Tokens in/out: {}/{}",
@@ -185,6 +190,12 @@ fn format_number(v: u64) -> String {
         out.push(ch);
     }
     out.chars().rev().collect()
+}
+
+fn format_timestamp(ts: u64) -> String {
+    chrono::DateTime::from_timestamp(ts as i64, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| ts.to_string())
 }
 
 fn compact_json(v: &serde_json::Value) -> String {

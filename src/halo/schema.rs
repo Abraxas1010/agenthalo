@@ -47,8 +47,10 @@ pub enum EventType {
     Assistant,
     ToolCall,
     ToolResult,
-    MpcToolCall,
-    MpcToolResult,
+    #[serde(alias = "mpc_tool_call")]
+    McpToolCall,
+    #[serde(alias = "mpc_tool_result")]
+    McpToolResult,
     FileChange,
     BashCommand,
     Error,

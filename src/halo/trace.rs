@@ -135,16 +135,22 @@ impl TraceWriter {
 
         match event.event_type {
             EventType::ToolCall => self.summary.tool_calls += 1,
-            EventType::MpcToolCall => self.summary.mcp_tool_calls += 1,
+            EventType::McpToolCall => self.summary.mcp_tool_calls += 1,
             EventType::FileChange => {
-                self.summary.files_modified += 1;
-                if let Some(op) = event.content.get("op").and_then(|v| v.as_str()) {
-                    if op.eq_ignore_ascii_case("create") {
-                        self.summary.files_created += 1;
-                    }
-                    if op.eq_ignore_ascii_case("read") {
-                        self.summary.files_read += 1;
-                    }
+                let op = event
+                    .content
+                    .get("op")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("modify");
+                if op.eq_ignore_ascii_case("create") {
+                    self.summary.files_created += 1;
+                    self.summary.files_modified += 1;
+                } else if op.eq_ignore_ascii_case("read") {
+                    self.summary.files_read += 1;
+                    // Reads are not modifications — don't increment files_modified.
+                } else {
+                    // modify, edit, write, delete, etc.
+                    self.summary.files_modified += 1;
                 }
             }
             EventType::BashCommand => self.summary.bash_commands += 1,

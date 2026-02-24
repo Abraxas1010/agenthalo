@@ -73,3 +73,7 @@ chrono = "0.4"
 tss-esapi = { version = "7", optional = true, default-features = false }
 dirs = "6"
 webbrowser = "1"
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+libc = "0.2"

@@ -30,8 +30,8 @@ impl StreamAdapter for CodexAdapter {
                 "command" | "bash" => base_event(EventType::BashCommand, v.clone()),
                 "tool_call" | "tool_use" => base_event(EventType::ToolCall, v.clone()),
                 "tool_result" => base_event(EventType::ToolResult, v.clone()),
-                "mcp_tool_call" => base_event(EventType::MpcToolCall, v.clone()),
-                "mcp_tool_result" => base_event(EventType::MpcToolResult, v.clone()),
+                "mcp_tool_call" => base_event(EventType::McpToolCall, v.clone()),
+                "mcp_tool_result" => base_event(EventType::McpToolResult, v.clone()),
                 "file_change" => base_event(EventType::FileChange, v.clone()),
                 "subagent_spawn" => base_event(EventType::SubagentSpawn, v.clone()),
                 _ => base_event(EventType::Assistant, v.clone()),
@@ -46,7 +46,7 @@ impl StreamAdapter for CodexAdapter {
             ev.cache_read_tokens = usage.get("cache_read_tokens").and_then(|n| n.as_u64());
         }
 
-        if matches!(ev.event_type, EventType::ToolCall | EventType::MpcToolCall) {
+        if matches!(ev.event_type, EventType::ToolCall | EventType::McpToolCall) {
             ev.tool_name = v
                 .pointer("/item/name")
                 .or_else(|| v.pointer("/tool/name"))
@@ -56,7 +56,7 @@ impl StreamAdapter for CodexAdapter {
         }
         if matches!(
             ev.event_type,
-            EventType::ToolResult | EventType::MpcToolResult
+            EventType::ToolResult | EventType::McpToolResult
         ) {
             ev.tool_output = v.pointer("/item/output").cloned();
         }
