@@ -47,8 +47,12 @@ async fn main() -> Result<(), String> {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(8390);
     let host = std::env::var("AGENTHALO_MCP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let secret = std::env::var("AGENTHALO_MCP_SECRET")
-        .unwrap_or_else(|_| "agenthalo-dev-secret".to_string());
+    let secret = std::env::var("AGENTHALO_MCP_SECRET").unwrap_or_else(|_| {
+        eprintln!(
+            "warning: AGENTHALO_MCP_SECRET not set; using dev default secret (set this in non-local environments)"
+        );
+        "agenthalo-dev-secret".to_string()
+    });
 
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
@@ -120,7 +124,10 @@ async fn mcp(
                 {"name":"audit_contract","description":"AgentHALO contract audit (Phase 0 stub)"},
                 {"name":"trust_query","description":"AgentHALO trust query (Phase 0 stub)"},
                 {"name":"vote","description":"AgentHALO DAO vote (Phase 0 stub)"},
-                {"name":"sync","description":"AgentHALO cloud sync (Phase 0 stub)"}
+                {"name":"sync","description":"AgentHALO cloud sync (Phase 0 stub)"},
+                {"name":"privacy_pool_create","description":"AgentHALO privacy pool create (Phase 0 stub)"},
+                {"name":"privacy_pool_withdraw","description":"AgentHALO privacy pool withdraw (Phase 0 stub)"},
+                {"name":"pq_bridge_transfer","description":"AgentHALO PQ bridge transfer (Phase 0 stub)"}
             ]
         }),
         "tools/call" => {
@@ -187,11 +194,35 @@ fn tool_call_stub(name: &str, arguments: Value) -> Value {
             "status": "stub",
             "message": "Cloud sync not yet implemented (Phase 2)"
         }),
+        "privacy_pool_create" => json!({
+            "status": "stub",
+            "message": "Privacy pool create not yet implemented (Phase 2)"
+        }),
+        "privacy_pool_withdraw" => json!({
+            "status": "stub",
+            "message": "Privacy pool withdraw not yet implemented (Phase 2)"
+        }),
+        "pq_bridge_transfer" => json!({
+            "status": "stub",
+            "message": "PQ bridge transfer not yet implemented (Phase 2)"
+        }),
         other => json!({
             "status": "error",
             "message": format!("unknown tool: {other}")
         }),
     };
+    let is_error = !matches!(
+        name,
+        "attest"
+            | "sign_pq"
+            | "audit_contract"
+            | "trust_query"
+            | "vote"
+            | "sync"
+            | "privacy_pool_create"
+            | "privacy_pool_withdraw"
+            | "pq_bridge_transfer"
+    );
 
     json!({
         "content": [
@@ -200,7 +231,7 @@ fn tool_call_stub(name: &str, arguments: Value) -> Value {
                 "text": payload.to_string()
             }
         ],
-        "isError": name.is_empty()
+        "isError": is_error
     })
 }
 
@@ -237,4 +268,21 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
         acc |= x ^ y;
     }
     acc == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_tool_sets_error_flag() {
+        let out = tool_call_stub("does_not_exist", json!({}));
+        assert_eq!(out.get("isError").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn known_tool_clears_error_flag() {
+        let out = tool_call_stub("attest", json!({}));
+        assert_eq!(out.get("isError").and_then(|v| v.as_bool()), Some(false));
+    }
 }

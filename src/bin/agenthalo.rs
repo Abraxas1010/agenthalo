@@ -1,6 +1,6 @@
 use nucleusdb::halo::agentpmt::{
-    self, agentpmt_config_path, is_agentpmt_configured, save_agentpmt_config, AgentPmtClient,
-    AgentPmtConfig,
+    self, agentpmt_config_path, is_agentpmt_configured, load_agentpmt_config, save_agentpmt_config,
+    AgentPmtClient, AgentPmtConfig,
 };
 use nucleusdb::halo::auth::{
     is_authenticated, load_credentials, oauth_login, resolve_api_key, save_credentials, Credentials,
@@ -252,6 +252,7 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
                 api_key: key,
                 cached_balance: None,
                 balance_refreshed_at: None,
+                history: vec![],
             };
             let path = agentpmt_config_path();
             save_agentpmt_config(&path, &cfg)?;
@@ -304,7 +305,30 @@ fn cmd_credits(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "history" => {
-            println!("Credit history not yet implemented (Phase 1).");
+            let path = agentpmt_config_path();
+            let cfg = load_agentpmt_config(&path).map_err(|_| {
+                "not connected to AgentPMT. Run: agenthalo config set-agentpmt-key <key>"
+                    .to_string()
+            })?;
+            if cfg.history.is_empty() {
+                println!("No local credit history yet.");
+                return Ok(());
+            }
+            println!("Recent credit history (newest first):");
+            for entry in cfg.history.iter().rev().take(20) {
+                println!(
+                    "  ts={} product={} units={} total={} remaining={} tx={}",
+                    entry.timestamp,
+                    entry.product_slug,
+                    entry.units,
+                    entry.total_credits,
+                    entry.remaining_credits,
+                    entry
+                        .transaction_id
+                        .clone()
+                        .unwrap_or_else(|| "none".to_string())
+                );
+            }
             Ok(())
         }
         _ => Err("usage: agenthalo credits [balance|add|history]".to_string()),
@@ -322,11 +346,6 @@ fn cmd_attest(args: &[String]) -> Result<(), String> {
     let op = if anonymous { "attest_anon" } else { "attest" };
     let cost = agentpmt::operation_cost(op).unwrap_or(0);
     println!("Cost: {} credits (${:.2})", cost, cost as f64 * 0.01);
-
-    let can_afford = client.can_afford(cost)?;
-    if !can_afford {
-        return Err("insufficient credits. Run: agenthalo credits add".to_string());
-    }
 
     let result = client.deduct(op, 1)?;
     if !result.success {
@@ -371,10 +390,6 @@ fn cmd_audit(args: &[String]) -> Result<(), String> {
     );
 
     let client = require_agentpmt()?;
-    let can_afford = client.can_afford(cost)?;
-    if !can_afford {
-        return Err("insufficient credits. Run: agenthalo credits add".to_string());
-    }
     let result = client.deduct(op, 1)?;
     if !result.success {
         return Err("insufficient credits. Run: agenthalo credits add".to_string());
@@ -421,8 +436,15 @@ fn cmd_addon(args: &[String]) -> Result<(), String> {
             let name = args
                 .get(1)
                 .ok_or_else(|| "usage: agenthalo addon disable <name>".to_string())?;
-            println!("Disabled {name} add-on.");
-            Ok(())
+            match name.as_str() {
+                "p2pclaw" | "agentpmt-workflows" => {
+                    println!("Disabled {name} add-on.");
+                    Ok(())
+                }
+                _ => Err(format!(
+                    "unknown add-on: {name}. Available: p2pclaw, agentpmt-workflows"
+                )),
+            }
         }
         _ => Err("usage: agenthalo addon [list|enable|disable] [name]".to_string()),
     }
@@ -454,10 +476,6 @@ fn cmd_license(args: &[String]) -> Result<(), String> {
                 cost as f64 * 0.01
             );
 
-            let can_afford = client.can_afford(cost)?;
-            if !can_afford {
-                return Err("insufficient credits. Run: agenthalo credits add".to_string());
-            }
             let result = client.deduct(op, 1)?;
             if !result.success {
                 return Err("insufficient credits. Run: agenthalo credits add".to_string());

@@ -11,6 +11,9 @@
     "trust_query": { "product_id": "PENDING_PHASE_0A", "slug": "agenthalo-trust-query" },
     "dao_vote": { "product_id": "PENDING_PHASE_0A", "slug": "agenthalo-dao-vote" },
     "cloud_sync": { "product_id": "PENDING_PHASE_0A", "slug": "agenthalo-cloud-sync" },
+    "privacy_pool_create": { "product_id": "PENDING_PHASE_0A", "slug": "agenthalo-privacy-pool-create" },
+    "privacy_pool_withdraw": { "product_id": "PENDING_PHASE_0A", "slug": "agenthalo-privacy-pool-withdraw" },
+    "pq_bridge_transfer": { "product_id": "PENDING_PHASE_0A", "slug": "agenthalo-pq-bridge-transfer" },
     "license_starter": { "product_id": "PENDING_PHASE_0A", "slug": "nucleusdb-starter-license" },
     "license_professional": { "product_id": "PENDING_PHASE_0A", "slug": "nucleusdb-professional-license" },
     "license_enterprise": { "product_id": "PENDING_PHASE_0A", "slug": "nucleusdb-enterprise-license" }
