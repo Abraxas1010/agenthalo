@@ -1,18 +1,31 @@
 ## Summary
 
-- what changed
-- why it changed
+- What changed
+- Why it changed
+
+## Component
+
+- [ ] Core (protocol, immutable, persistence)
+- [ ] SQL
+- [ ] MCP server
+- [ ] AgentHALO
+- [ ] Contracts (Solidity)
+- [ ] Formal spec (Lean 4)
+- [ ] Docs / CI
 
 ## Verification
 
-- [ ] `cargo fmt`
+- [ ] `cargo fmt --check`
+- [ ] `cargo clippy --all-targets`
 - [ ] `cargo test`
+- [ ] Contract tests pass (if applicable): `cd contracts && forge test`
 
 ## Safety Checklist
 
-- [ ] fail-closed behavior preserved
-- [ ] persistence/transparency behavior reviewed
-- [ ] docs updated for interface changes
+- [ ] Fail-closed behavior preserved
+- [ ] Persistence/transparency behavior reviewed
+- [ ] No weakening of verification or auth checks
+- [ ] Docs updated for interface changes
 
 ## Notes
 

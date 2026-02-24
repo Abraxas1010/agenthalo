@@ -1,13 +1,28 @@
-<img src="assets/Apoth3osis.webp" alt="Apoth3osis Logo" width="140"/>
+<p align="center">
+  <img src="assets/Apoth3osis.webp" alt="Apoth3osis" width="120"/>
+</p>
 
----
+<h1 align="center">NucleusDB</h1>
 
-# NucleusDB
+<p align="center">
+  <strong>The verifiable database for AI agents.</strong><br>
+  <em>Tamper-proof records with mathematical guarantees — not promises.</em>
+</p>
 
-[![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-[![Tests: 162 passing](https://img.shields.io/badge/tests-162%20passing-brightgreen.svg)](#testing)
+<p align="center">
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-0d1117.svg?style=flat-square&labelColor=0d1117&color=4ec9b0" alt="License"></a>
+  <a href="#testing"><img src="https://img.shields.io/badge/tests-182%20passing-0d1117.svg?style=flat-square&labelColor=0d1117&color=4ec9b0" alt="Tests"></a>
+  <a href="#formal-specification"><img src="https://img.shields.io/badge/Lean%204-63%20modules-0d1117.svg?style=flat-square&labelColor=0d1117&color=4ec9b0" alt="Lean 4"></a>
+  <a href="#on-chain-trust-verification"><img src="https://img.shields.io/badge/chain-Base%20L2-0d1117.svg?style=flat-square&labelColor=0d1117&color=d4a843" alt="Base L2"></a>
+</p>
 
-**The verifiable database for AI agents. Tamper-proof records with mathematical guarantees — not promises.**
+<p align="center">
+  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#agenthalo">AgentHALO</a> &middot;
+  <a href="#architecture">Architecture</a> &middot;
+  <a href="Docs/AGENTHALO.md">AgentHALO Guide</a> &middot;
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
 ---
 
@@ -69,7 +84,7 @@ Agent A writes a record. Agent B reads it a week later. How does Agent B know th
 | Post-quantum signatures | No | No | No | No | **ML-DSA-65** |
 | Certificate Transparency | No | No | No | Partial | **Full RFC 6962** |
 | ZK license verification | No | No | No | No | **Groth16 SNARK** |
-| Formal specification | No | No | No | No | **18 Lean 4 modules** |
+| Formal specification | No | No | No | No | **63 Lean 4 modules** |
 | On-chain trust attestation | No | No | No | No | **Base L2 (Solidity)** |
 | MCP server (AI-native) | No | No | No | No | **Yes** |
 | Self-contained binary | Yes | No | No | No (AWS) | **Yes** |
@@ -197,32 +212,127 @@ nucleusdb tui --db my_records.ndb
 
 Five-tab interface: Status, Browse, Execute, History, Transparency. Navigate with `F1`-`F5` or `Tab`.
 
+---
+
+## AgentHALO
+
+<p align="center">
+  <img src="assets/agent_halo_logo.png" alt="AgentHALO" width="280"/>
+</p>
+
+<p align="center">
+  <strong>See everything your AI agents do. Tamper-proof.</strong><br>
+  <em>One command wraps any agent CLI with full session recording, token accounting, and cost tracking.</em>
+</p>
+
+AgentHALO is a local-first observability layer for AI coding agents. It wraps `claude`, `codex`, `gemini`, or any agent CLI and captures **every thought, tool call, file edit, and token** into a NucleusDB trace store with content-addressed Merkle proofs.
+
+### Why AgentHALO
+
+You run an AI agent. It edits 47 files, makes 200 API calls, and costs you $14.80. An hour later you ask: *what exactly did it do?*
+
+Without AgentHALO, the answer is "scroll through terminal history and hope." With AgentHALO:
+
+```bash
+# Wrap your agent — nothing else changes
+agenthalo run claude -p "refactor the auth module"
+
+# What happened?
+agenthalo traces
+# Session ID    | Agent  | Model          | Tokens   | Cost    | Duration | Status
+# sess-17...    | claude | claude-opus-4-6| 142,800  | $14.82  | 8m 32s   | completed
+
+# Full event timeline
+agenthalo traces sess-17...
+#   1  AssistantMessage  {"text":"I'll start by reading..."}
+#   2  McpToolCall       {"tool":"Read","input":{"file_path":"/src/auth.rs"}}
+#   3  McpToolResult     {"result":"..."}
+#   ...
+
+# Monthly cost rollup
+agenthalo costs --month
+# February 2026 | 23 sessions | 1,284,000 tokens | $148.20
+```
+
+Every event is stored in `~/.agenthalo/traces.ndb` as a content-addressed blob with a Merkle proof. The trace is tamper-evident: if anyone modifies a record after the fact, the proof chain breaks.
+
+### Get Started
+
+```bash
+# Build (AgentHALO ships with NucleusDB)
+cargo build --release --bin agenthalo
+
+# Authenticate
+agenthalo login              # GitHub or Google OAuth
+agenthalo config set-key     # or paste an API key
+
+# Run any supported agent
+agenthalo run claude -p "explain this codebase"
+agenthalo run codex exec "write tests for auth.rs"
+agenthalo run gemini -p "find security bugs"
+
+# Wrap all three permanently (shell aliases)
+agenthalo wrap --all         # adds aliases to ~/.bashrc or ~/.zshrc
+agenthalo unwrap --all       # removes them cleanly
+```
+
+### What It Captures
+
+| Event Type | Data Recorded |
+|------------|---------------|
+| `AssistantMessage` | Full text of every agent response |
+| `UserMessage` | Prompts and follow-ups |
+| `McpToolCall` | Tool name, input parameters, timestamps |
+| `McpToolResult` | Tool output, including file contents |
+| `FileChange` | Files created, modified, or read (with path) |
+| `BashCommand` | Shell commands the agent executed |
+| `Error` | Stderr output, failures |
+
+Every event includes token counts (input/output/cache-read) parsed from the agent's structured output stream. Cost is computed per-event using model-specific pricing tables.
+
+### Design Principles
+
+- **Zero telemetry.** No usage analytics, no phone-home, no tracking. Your traces stay on your machine.
+- **Zero config.** `agenthalo run claude` just works. Flags are auto-injected for structured output.
+- **Agent-native.** First-class adapters for Claude (`stream-json`), Codex (`--json`), and Gemini (`stream-json`). Each adapter parses the agent's native output format.
+- **Tamper-evident.** Every trace event is a content-addressed blob in NucleusDB. The Merkle root changes if any event is modified.
+- **Free tier.** Claude, Codex, and Gemini wrapping is free. Custom/generic agents require paid tier.
+
+> For the complete reference (configuration, environment variables, adapter details, cloud sync roadmap), see **[Docs/AGENTHALO.md](Docs/AGENTHALO.md)**.
+
+---
+
 ## Architecture
 
 ```
-Client Surfaces                    Core Runtime
-  CLI / REPL ─────┐               ┌─ protocol.rs ── commit / query / verify
-  Terminal UI ────┤               ├─ immutable.rs ─ monotone proofs + seal chain
-  MCP Server ─────┼── SQL ──────▶ ├─ sql/executor ─ SQL parsing + enforcement
-  HTTP API ───────┘               ├─ keymap.rs ──── string keys → vector indices
-                                  ├─ witness.rs ─── ML-DSA-65 quorum signatures
-                                  ├─ ct6962.rs ──── RFC 6962 transparency log
-                                  ├─ security.rs ── parameter validation + reduction contracts
-                                  ├─ audit.rs ───── evidence bundles + replay verification
-                                  ├─ license.rs ─── ZK-SNARK license verification (Groth16/BN254)
-                                  └─ persistence ── snapshot + WAL (redb)
-
-Commitment Backends               On-Chain Trust (Solidity)
-  vc/binary_merkle.rs              contracts/TrustVerifier.sol ─── single-chain attestation
-  vc/ipa.rs                        contracts/TrustVerifierMultiChain.sol ─ composite multi-chain
-  vc/kzg.rs                        contracts/Groth16VerifierAdapter.sol ── ITrustProofVerifier ↔ Groth16
-                                   contracts/circuits/ ─── circom circuit + setup docs
-                                   contracts/mocks/ ─── test verifier + token
-
-Formal Specification
-  18 Lean 4 modules under lean/NucleusDB/
-  Core, Security, Commitment, Sheaf, Transparency, Adversarial
+                              NucleusDB
+    ┌─────────────────────────────────────────────────────────┐
+    │                                                         │
+    │   Client Surfaces              Core Runtime             │
+    │     CLI / REPL ─────┐         ┌─ protocol.rs            │
+    │     Terminal UI ────┤         ├─ immutable.rs            │
+    │     MCP Server ─────┼── SQL ─▶├─ sql/executor           │
+    │     HTTP API ───────┤         ├─ keymap.rs               │
+    │     AgentHALO ──────┘         ├─ witness.rs (ML-DSA-65)  │
+    │                               ├─ ct6962.rs (RFC 6962)    │
+    │   Commitment Backends         ├─ security.rs             │
+    │     vc/binary_merkle.rs       ├─ audit.rs                │
+    │     vc/ipa.rs                 ├─ license.rs (Groth16)    │
+    │     vc/kzg.rs                 └─ persistence (redb WAL)  │
+    │                                                         │
+    ├─────────────────────────────────────────────────────────┤
+    │                                                         │
+    │   On-Chain Trust (Base L2)         Formal Spec (Lean 4) │
+    │     TrustVerifier.sol               63 modules           │
+    │     TrustVerifierMultiChain.sol     Core, Security,      │
+    │     Groth16VerifierAdapter.sol      Commitment, Sheaf,   │
+    │     circuits/ (circom)              Transparency,        │
+    │                                     Adversarial          │
+    │                                                         │
+    └─────────────────────────────────────────────────────────┘
 ```
+
+**86 Rust source files** | **17,700 lines** | **2,300 lines of tests** | **21 Solidity contracts** | **63 Lean 4 modules**
 
 ## SQL Reference
 
@@ -312,37 +422,6 @@ docker run -p 3000:3000 nucleusdb-mcp:latest
 
 Endpoints: `/mcp` (MCP), `/health` (status), `/auth/info` (auth discovery).
 
-### AgentHALO CLI
-
-`agenthalo` is a local-first recording wrapper for agent CLIs. It captures session metadata, structured events, and token/cost summaries into NucleusDB (`~/.agenthalo/traces.ndb`) with tamper-evident commits.
-
-```bash
-# authenticate (API key or OAuth)
-agenthalo login
-agenthalo config set-key <key>
-
-# run agent with recording
-agenthalo run claude -p "what is 2+2" --allowedTools ""
-agenthalo run codex exec "echo hi"
-
-# inspect traces/costs
-agenthalo traces
-agenthalo traces <session-id>
-agenthalo costs
-agenthalo costs --month
-
-# shell wrapping
-agenthalo wrap --all
-agenthalo unwrap --all
-```
-
-Design constraints:
-- Zero telemetry (no usage analytics phone-home behavior).
-- Free tier includes first-class wrappers for `claude`, `codex`, `gemini`.
-- Custom/generic agent wrapping is gated behind paid-tier behavior (`AGENTHALO_ALLOW_GENERIC=1`).
-- Cloud sync is planned for paid tier via Cloudflare Workers + Durable Objects.
-- Packaging plan is own Homebrew tap first (`agenthalo/homebrew-tap`), then `homebrew-core`.
-
 ### On-Chain Trust Verification
 
 NucleusDB includes Solidity smart contracts for on-chain agent trust attestation and payment routing on Base (Coinbase L2).
@@ -374,7 +453,7 @@ Contracts are deployed on Base Sepolia. See `contracts/scripts/README.md` for de
 
 ## Formal Specification
 
-NucleusDB includes 18 Lean 4 modules that formally specify the core protocol:
+NucleusDB includes 63 Lean 4 modules that formally specify the core protocol:
 
 - **Core**: Nucleus, Ledger, Invariants, Authorization, Certificates
 - **Security**: Assumptions, Parameters, Reductions, Refinement
@@ -390,11 +469,11 @@ lake build NucleusDB
 
 ## Testing
 
-180 tests across 12 test suites, 0 failures, 0 warnings:
+182 tests across 14 test suites, 0 failures, 0 warnings:
 
 ```bash
-cargo test          # 146 Rust tests
-cd contracts && forge test   # 34 Solidity tests
+cargo test                        # 148 Rust tests
+cd contracts && forge test        # 34 Solidity tests
 ```
 
 | Suite | Tests | Coverage |
@@ -403,14 +482,16 @@ cd contracts && forge test   # 34 Solidity tests
 | CLI smoke | 2 | Binary help, create-sql-status-export pipeline |
 | End-to-end | 36 | Protocol commits, queries, security, multi-tenant, immutable mode |
 | KeyMap | 3 | Stability, LIKE matching, reverse lookup |
-| Persistence | 5 | WAL/snapshot compat, Bug #1/#3 regression |
+| Persistence | 5 | WAL/snapshot compat, regression coverage |
 | SQL | 18 | CRUD, multi-statement, committed flag, immutable mode |
 | AgentHALO | 4 | Generic recording, trace schema, cost math, wrap/unwrap |
 | Monitor | 2 | Channel parsing, config CSV |
+| AgentHALO integration | 6 | Session lifecycle, adapter parsing, signal handling |
+| VCS | 5 | Agent record management, version tracking |
 | Solidity: TrustVerifier | 11 | Attestation, fees, proofs, replay, views |
 | Solidity: TrustVerifierMultiChain | 11 | Chain registry, composite attestation, tiered fees, multichain verification |
-| Solidity: Groth16VerifierAdapter | 12 | Proof decoding, signal validation, constructor guards, legacy ABI-mismatch fail-closed behavior, integration paths |
-| **Total** | **180** | |
+| Solidity: Groth16VerifierAdapter | 12 | Proof decoding, signal validation, constructor guards, fail-closed behavior |
+| **Total** | **182** | |
 
 ## Known Limitations
 
@@ -418,6 +499,7 @@ cd contracts && forge test   # 34 Solidity tests
 - The `ipa` backend carries full-vector opening payloads (not logarithmic-size IPA arguments).
 - The KZG backend's default trusted setup is for development/demo use. Production KZG deployments require externally managed ceremony artifacts.
 - Sheaf coherence checks are local-view oriented, not full global-state reconciliation.
+- AgentHALO cloud sync is planned but not yet implemented; traces are currently local-only.
 
 ## Licensing
 
@@ -449,5 +531,11 @@ The "Apoth3osis-Certified" mark is available exclusively under CECL and requires
 
 ---
 
-<sub><strong>Our tech stack is ontological:</strong> Hardware — Physics | Software — Mathematics<br>
-<strong>Our engineering workflow is simple:</strong> discover, build, grow, learn & teach</sub>
+<p align="center">
+  <img src="assets/Apoth3osis.webp" alt="Apoth3osis" width="80"/>
+</p>
+
+<p align="center">
+  <sub><strong>Our tech stack is ontological:</strong> Hardware — Physics | Software — Mathematics</sub><br>
+  <sub><strong>Our engineering workflow is simple:</strong> discover, build, grow, learn & teach</sub>
+</p>

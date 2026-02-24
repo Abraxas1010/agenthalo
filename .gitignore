@@ -25,6 +25,9 @@
 # WIP / internal development notes
 /WIP/
 
+# Internal ops accounting (not for public release)
+/Docs/ops/
+
 # OS
 .DS_Store
 Thumbs.db
