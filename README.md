@@ -280,6 +280,38 @@ When `APPEND_ONLY` is active:
 
 Multi-tenant REST API via `nucleusdb-server`: tenant registration, commit, query, snapshot, checkpoint. See `src/api.rs` for full route list.
 
+### Remote MCP Server (Agent Interop)
+
+Any MCP-capable agent (Claude, GPT, Gemini, Codex, custom) can connect to NucleusDB over the network using the MCP Streamable HTTP transport:
+
+```bash
+# Start remote MCP server (dev mode, no auth)
+nucleusdb-mcp --transport http --port 3000
+
+# Production mode with dual authentication
+nucleusdb-mcp --transport http --host 0.0.0.0 --port 8443 --auth --jwt-secret $SECRET
+
+# Docker deployment
+docker build -f Dockerfile.mcp -t nucleusdb-mcp:latest .
+docker run -p 3000:3000 nucleusdb-mcp:latest
+```
+
+**Dual authentication** (CAB + OAuth 2.1):
+- **CAB-as-bearer-token**: Hardware-anchored agent identity verified on-chain (`Authorization: Bearer cab:<base64>`)
+- **OAuth 2.1 JWT**: Standard bearer tokens for non-attested agents (`Authorization: Bearer <jwt>`)
+
+**Per-tool scope enforcement** — 25 tools across 5 security tiers:
+
+| Scope | Tools | Auth Required |
+|-------|-------|---------------|
+| `read` | help, status, query, verify, export, history | Basic token |
+| `trust:verify` | verify_agent, verify_agent_multichain, list_chains | Basic token |
+| `write` | execute_sql, create_database, checkpoint, channels | CAB tier 3+ or JWT |
+| `trust:attest` | agent_register, register_chain, submit_attestation | CAB tier 4 or JWT |
+| `container` | container_launch | CAB tier 4 or JWT |
+
+Endpoints: `/mcp` (MCP), `/health` (status), `/auth/info` (auth discovery).
+
 ### On-Chain Trust Verification
 
 NucleusDB includes Solidity smart contracts for on-chain agent trust attestation and payment routing on Base (Coinbase L2).
@@ -327,16 +359,16 @@ lake build NucleusDB
 
 ## Testing
 
-162 tests across 10 test suites, 0 failures, 0 warnings:
+168 tests across 11 test suites, 0 failures, 0 warnings:
 
 ```bash
-cargo test          # 128 Rust tests
+cargo test          # 134 Rust tests
 cd contracts && forge test   # 34 Solidity tests
 ```
 
 | Suite | Tests | Coverage |
 |-------|-------|----------|
-| Unit (lib) | 55 | Immutable proofs, license/SNARK verification, CT proofs, PUF, PCN, on-chain trust |
+| Unit (lib) | 61 | Immutable proofs, license/SNARK, CT, PUF, PCN, on-chain trust, MCP auth/scoping |
 | CLI smoke | 2 | Binary help, create-sql-status-export pipeline |
 | End-to-end | 36 | Protocol commits, queries, security, multi-tenant, immutable mode |
 | KeyMap | 3 | Stability, LIKE matching, reverse lookup |
@@ -346,7 +378,7 @@ cd contracts && forge test   # 34 Solidity tests
 | Solidity: TrustVerifier | 11 | Attestation, fees, proofs, replay, views |
 | Solidity: TrustVerifierMultiChain | 11 | Chain registry, composite attestation, tiered fees, multichain verification |
 | Solidity: Groth16VerifierAdapter | 12 | Proof decoding, signal validation, constructor guards, legacy ABI-mismatch fail-closed behavior, integration paths |
-| **Total** | **162** | |
+| **Total** | **168** | |
 
 ## Known Limitations
 

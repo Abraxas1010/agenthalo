@@ -1,0 +1,55 @@
+# Multi-stage build for NucleusDB MCP server.
+# Produces a minimal image with only the nucleusdb-mcp binary + cast.
+#
+# Build:
+#   docker build -f Dockerfile.mcp -t nucleusdb-mcp:latest .
+#
+# Run (dev, no auth):
+#   docker run -p 3000:3000 nucleusdb-mcp:latest --transport http --host 0.0.0.0
+#
+# Run (production, with auth):
+#   docker run -p 8443:8443 \
+#     -e NUCLEUSDB_JWT_SECRET=<secret> \
+#     -e NUCLEUSDB_AGENT_PRIVATE_KEY=<key> \
+#     nucleusdb-mcp:latest \
+#     --transport http --host 0.0.0.0 --port 8443 --auth --jwt-secret <secret>
+
+FROM rust:1.84-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+
+# Build only the MCP binary in release mode.
+RUN cargo build --release --bin nucleusdb-mcp
+
+# --- Runtime stage ---
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install foundry (cast) for on-chain operations.
+RUN curl -L https://foundry.paradigm.xyz | bash && \
+    /root/.foundry/bin/foundryup && \
+    cp /root/.foundry/bin/cast /usr/local/bin/cast && \
+    rm -rf /root/.foundry
+
+COPY --from=builder /build/target/release/nucleusdb-mcp /usr/local/bin/nucleusdb-mcp
+
+# Default DB path inside container.
+RUN mkdir -p /data
+WORKDIR /data
+
+EXPOSE 3000 8443
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -sf http://localhost:3000/health || exit 1
+
+ENTRYPOINT ["nucleusdb-mcp"]
+CMD ["--transport", "http", "--host", "0.0.0.0", "--port", "3000"]
