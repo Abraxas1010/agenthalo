@@ -639,7 +639,7 @@ pub fn onchain_stub_enabled() -> bool {
         STUB_OVERRIDE_FALSE => return false,
         _ => {}
     }
-    for key in ["AGENTHALO_ONCHAIN_STUB", "AGENTHALO_AGENTPMT_STUB"] {
+    for key in ["AGENTHALO_ONCHAIN_STUB"] {
         if let Ok(v) = std::env::var(key) {
             if matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes") {
                 return true;
