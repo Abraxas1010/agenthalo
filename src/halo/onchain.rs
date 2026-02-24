@@ -1,20 +1,40 @@
 use crate::halo::circuit::AttestationProofBundle;
+use crate::halo::circuit_policy::CircuitPolicy;
 use crate::halo::config;
 use crate::halo::util::{digest_bytes, hex_encode};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::process::Command;
 
 const BASE_SEPOLIA_RPC: &str = "https://sepolia.base.org";
 const BASE_SEPOLIA_CHAIN_ID: u64 = 84532;
+const MAX_VERIFY_GAS: u64 = 500_000;
+const NONCE_RETRY_MAX: usize = 3;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SignerMode {
+    #[default]
+    PrivateKeyEnv,
+    Keystore,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct OnchainConfig {
     pub rpc_url: String,
     pub chain_id: u64,
     pub chain_name: String,
     pub contract_address: String,
     pub private_key_env: String,
+    #[serde(default)]
+    pub signer_mode: SignerMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keystore_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keystore_password_file: Option<String>,
+    #[serde(default)]
+    pub circuit_policy: CircuitPolicy,
     pub verifier_address: String,
     pub usdc_address: String,
     pub treasury_address: String,
@@ -29,6 +49,10 @@ impl Default for OnchainConfig {
             chain_name: "base-sepolia".to_string(),
             contract_address: String::new(),
             private_key_env: "AGENTHALO_ONCHAIN_PRIVATE_KEY".to_string(),
+            signer_mode: SignerMode::PrivateKeyEnv,
+            keystore_path: None,
+            keystore_password_file: None,
+            circuit_policy: CircuitPolicy::DevDeterministic,
             verifier_address: String::new(),
             usdc_address: String::new(),
             treasury_address: String::new(),
@@ -37,7 +61,7 @@ impl Default for OnchainConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct OnchainAttestationResult {
     pub tx_hash: String,
     pub contract_address: String,
@@ -47,7 +71,7 @@ pub struct OnchainAttestationResult {
     pub public_inputs: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct OnchainAttestationStatus {
     pub attestation_digest: String,
     pub verified: bool,
@@ -79,6 +103,14 @@ pub fn save_onchain_config(path: &std::path::Path, cfg: &OnchainConfig) -> Resul
     std::fs::write(path, raw).map_err(|e| format!("write onchain config {}: {e}", path.display()))
 }
 
+pub fn signer_mode_label(cfg: &OnchainConfig) -> &'static str {
+    match select_signer(cfg) {
+        Ok(SignerSelection::Keystore { .. }) => "keystore",
+        Ok(SignerSelection::PrivateKeyEnv { .. }) => "private_key_env",
+        Err(_) => "unconfigured",
+    }
+}
+
 pub fn post_attestation(
     cfg: &OnchainConfig,
     bundle: &AttestationProofBundle,
@@ -91,16 +123,20 @@ pub fn post_attestation(
                 .to_string(),
         );
     }
+    if bundle.public_input_schema_version == 0 {
+        return Err("invalid proof bundle schema version".to_string());
+    }
 
     if onchain_stub_enabled() {
         let digest = digest_bytes(
             "agenthalo.onchain.stub.tx.v1",
             format!(
-                "{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}",
                 cfg.contract_address,
                 anonymous,
                 bundle.proof_hex,
-                bundle.public_inputs.join(",")
+                bundle.public_inputs.join(","),
+                bundle.public_input_schema_version
             )
             .as_bytes(),
         );
@@ -114,29 +150,29 @@ pub fn post_attestation(
         });
     }
 
-    let private_key = std::env::var(&cfg.private_key_env).map_err(|_| {
-        format!(
-            "missing `{}` env var for onchain signing",
-            cfg.private_key_env
-        )
-    })?;
+    let signer = select_signer(cfg)?;
+    let signer_args = signer.cast_signer_args();
+    let signer_address = signer.signer_address()?;
     let fn_sig = if anonymous {
         "verifyAndRecordAnonymous(uint256[8],uint256[])"
     } else {
         "verifyAndRecord(uint256[8],uint256[])"
     };
-    let cast_out = run_cast(&[
+    estimate_verify_gas(cfg, fn_sig, bundle, &signer_address)?;
+
+    let mut args = vec![
         "send".to_string(),
         "--async".to_string(),
         "--rpc-url".to_string(),
         cfg.rpc_url.clone(),
-        "--private-key".to_string(),
-        private_key,
-        cfg.contract_address.clone(),
-        fn_sig.to_string(),
-        format!("[{}]", bundle.proof_words.join(",")),
-        format!("[{}]", bundle.public_inputs.join(",")),
-    ])?;
+    ];
+    args.extend(signer_args.clone());
+    args.push(cfg.contract_address.clone());
+    args.push(fn_sig.to_string());
+    args.push(format!("[{}]", bundle.proof_words.join(",")));
+    args.push(format!("[{}]", bundle.public_inputs.join(",")));
+
+    let cast_out = run_cast_send_with_nonce_retry(cfg, &args, &signer_address)?;
     let tx_hash = extract_hash(&cast_out)
         .ok_or_else(|| format!("failed to parse tx hash from cast output: {cast_out}"))?;
 
@@ -201,13 +237,6 @@ pub fn deploy_trust_verifier(cfg: &OnchainConfig) -> Result<String, String> {
         );
         return Ok(format!("0x{}", hex_encode(&digest[..20])));
     }
-    let private_key = std::env::var(&cfg.private_key_env).map_err(|_| {
-        format!(
-            "missing `{}` env var for deployment signing",
-            cfg.private_key_env
-        )
-    })?;
-
     for (name, value) in [
         ("verifier_address", cfg.verifier_address.trim()),
         ("usdc_address", cfg.usdc_address.trim()),
@@ -218,19 +247,21 @@ pub fn deploy_trust_verifier(cfg: &OnchainConfig) -> Result<String, String> {
         }
     }
 
-    let out = run_cast(&[
+    let signer = select_signer(cfg)?;
+    let mut args = vec![
         "create".to_string(),
         "--rpc-url".to_string(),
         cfg.rpc_url.clone(),
-        "--private-key".to_string(),
-        private_key,
-        "contracts/TrustVerifier.sol:TrustVerifier".to_string(),
-        "--constructor-args".to_string(),
-        cfg.verifier_address.clone(),
-        cfg.usdc_address.clone(),
-        cfg.treasury_address.clone(),
-        cfg.fee_wei.to_string(),
-    ])?;
+    ];
+    args.extend(signer.cast_signer_args());
+    args.push("contracts/TrustVerifier.sol:TrustVerifier".to_string());
+    args.push("--constructor-args".to_string());
+    args.push(cfg.verifier_address.clone());
+    args.push(cfg.usdc_address.clone());
+    args.push(cfg.treasury_address.clone());
+    args.push(cfg.fee_wei.to_string());
+
+    let out = run_cast(&args)?;
     extract_address(&out).ok_or_else(|| format!("failed to parse contract address from `{out}`"))
 }
 
@@ -244,7 +275,7 @@ pub fn fetch_chain_id(rpc_url: &str) -> Result<u64, String> {
     let resp = ureq::post(rpc_url)
         .content_type("application/json")
         .send_json(payload)
-        .map_err(|e| format!("Base Sepolia RPC unreachable: {e}"))?;
+        .map_err(|e| format!("RPC unreachable: {e}"))?;
     let value: serde_json::Value = resp
         .into_body()
         .read_json()
@@ -263,7 +294,7 @@ fn validate_chain(cfg: &OnchainConfig) -> Result<(), String> {
     let chain_id = fetch_chain_id(&cfg.rpc_url)?;
     if chain_id != cfg.chain_id {
         return Err(format!(
-            "chain id mismatch: expected {}, got {}",
+            "chain mismatch: expected {}, got {}",
             cfg.chain_id, chain_id
         ));
     }
@@ -274,6 +305,160 @@ fn validate_chain(cfg: &OnchainConfig) -> Result<(), String> {
 struct TxReceipt {
     block_number: Option<u64>,
     gas_used: Option<u64>,
+}
+
+#[derive(Clone)]
+enum SignerSelection {
+    PrivateKeyEnv { private_key: String },
+    Keystore { path: String, password_file: String },
+}
+
+impl SignerSelection {
+    fn cast_signer_args(&self) -> Vec<String> {
+        match self {
+            Self::PrivateKeyEnv { private_key, .. } => {
+                vec!["--private-key".to_string(), private_key.clone()]
+            }
+            Self::Keystore {
+                path,
+                password_file,
+            } => vec![
+                "--keystore".to_string(),
+                path.clone(),
+                "--password-file".to_string(),
+                password_file.clone(),
+            ],
+        }
+    }
+
+    fn signer_address(&self) -> Result<String, String> {
+        let mut args = vec!["wallet".to_string(), "address".to_string()];
+        args.extend(self.cast_signer_args());
+        let out = run_cast(&args)?;
+        extract_address(&out).ok_or_else(|| format!("failed to parse signer address from `{out}`"))
+    }
+}
+
+fn select_signer(cfg: &OnchainConfig) -> Result<SignerSelection, String> {
+    let keystore_path = cfg.keystore_path.as_deref().map(str::trim).unwrap_or("");
+    let keystore_password = cfg
+        .keystore_password_file
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("");
+    let has_keystore = !keystore_path.is_empty() && !keystore_password.is_empty();
+
+    if has_keystore {
+        return Ok(SignerSelection::Keystore {
+            path: keystore_path.to_string(),
+            password_file: keystore_password.to_string(),
+        });
+    }
+
+    if matches!(cfg.signer_mode, SignerMode::Keystore) {
+        return Err(
+            "signer not configured: keystore mode requires --keystore-path and --keystore-password-file"
+                .to_string(),
+        );
+    }
+
+    let env_var = cfg.private_key_env.trim();
+    if env_var.is_empty() {
+        return Err("signer not configured: private_key_env is empty".to_string());
+    }
+    let private_key = std::env::var(env_var)
+        .map_err(|_| format!("signer not configured: missing `{env_var}` env var"))?;
+    Ok(SignerSelection::PrivateKeyEnv { private_key })
+}
+
+fn estimate_verify_gas(
+    cfg: &OnchainConfig,
+    fn_sig: &str,
+    bundle: &AttestationProofBundle,
+    from: &str,
+) -> Result<u64, String> {
+    let args = vec![
+        "estimate".to_string(),
+        "--rpc-url".to_string(),
+        cfg.rpc_url.clone(),
+        "--from".to_string(),
+        from.to_string(),
+        cfg.contract_address.clone(),
+        fn_sig.to_string(),
+        format!("[{}]", bundle.proof_words.join(",")),
+        format!("[{}]", bundle.public_inputs.join(",")),
+    ];
+    let out = run_cast(&args)?;
+    let gas = parse_first_u64_token(&out)
+        .ok_or_else(|| format!("gas estimate parse failed from `{out}`"))?;
+    enforce_gas_cap(gas)?;
+    Ok(gas)
+}
+
+fn enforce_gas_cap(gas_estimate: u64) -> Result<(), String> {
+    if gas_estimate > MAX_VERIFY_GAS {
+        return Err(format!(
+            "gas estimate above cap: {} > {}",
+            gas_estimate, MAX_VERIFY_GAS
+        ));
+    }
+    Ok(())
+}
+
+fn run_cast_send_with_nonce_retry(
+    cfg: &OnchainConfig,
+    base_args: &[String],
+    signer_address: &str,
+) -> Result<String, String> {
+    let mut last_err = String::new();
+    for attempt in 0..=NONCE_RETRY_MAX {
+        let mut args = base_args.to_vec();
+        if attempt > 0 {
+            let nonce = fetch_pending_nonce(&cfg.rpc_url, signer_address)?;
+            args.push("--nonce".to_string());
+            args.push(nonce.to_string());
+        }
+        match run_cast(&args) {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last_err = e.clone();
+                if attempt == NONCE_RETRY_MAX || !is_retryable_nonce_error(&e) {
+                    return Err(e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(350 * (attempt as u64 + 1)));
+            }
+        }
+    }
+    Err(last_err)
+}
+
+fn fetch_pending_nonce(rpc_url: &str, address: &str) -> Result<u64, String> {
+    let payload = json!({
+        "jsonrpc":"2.0",
+        "id":1,
+        "method":"eth_getTransactionCount",
+        "params":[address, "pending"]
+    });
+    let resp = ureq::post(rpc_url)
+        .content_type("application/json")
+        .send_json(payload)
+        .map_err(|e| format!("nonce RPC failed: {e}"))?;
+    let value: serde_json::Value = resp
+        .into_body()
+        .read_json()
+        .map_err(|e| format!("decode nonce response: {e}"))?;
+    let hex = value
+        .get("result")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("eth_getTransactionCount missing result: {value}"))?;
+    parse_hex_u64(hex)
+}
+
+fn is_retryable_nonce_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("replacement transaction underpriced")
+        || lower.contains("nonce too low")
+        || lower.contains("already known")
 }
 
 fn wait_for_receipt(rpc_url: &str, tx_hash: &str) -> Result<TxReceipt, String> {
@@ -335,6 +520,16 @@ fn parse_hex_u64(raw: &str) -> Result<u64, String> {
     let s = raw.trim();
     let hex = s.strip_prefix("0x").unwrap_or(s);
     u64::from_str_radix(hex, 16).map_err(|e| format!("parse hex u64 `{raw}`: {e}"))
+}
+
+fn parse_first_u64_token(raw: &str) -> Option<u64> {
+    raw.split_whitespace().find_map(|tok| {
+        let trimmed = tok.trim_matches(|c: char| matches!(c, ',' | ';' | '"' | '\''));
+        if let Some(hex) = trimmed.strip_prefix("0x") {
+            return u64::from_str_radix(hex, 16).ok();
+        }
+        trimmed.parse::<u64>().ok()
+    })
 }
 
 fn run_cast(args: &[String]) -> Result<String, String> {
@@ -414,6 +609,7 @@ pub fn onchain_stub_enabled() -> bool {
 mod tests {
     use super::*;
     use crate::halo::circuit::AttestationProofBundle;
+    use crate::halo::public_input_schema::PUBLIC_INPUT_SCHEMA_VERSION;
 
     #[test]
     fn test_abi_encode_verify_and_record() {
@@ -430,6 +626,7 @@ mod tests {
                 "8".to_string(),
             ],
             public_inputs: vec!["10".to_string(), "11".to_string()],
+            public_input_schema_version: PUBLIC_INPUT_SCHEMA_VERSION,
         };
         assert_eq!(
             format!("[{}]", bundle.proof_words.join(",")),
@@ -439,13 +636,13 @@ mod tests {
     }
 
     #[test]
-    fn test_rlp_encode_eip1559_tx() {
-        // Phase 4 uses cast for signing/sending, but we still validate basic hex parser helpers.
+    fn test_parse_hex_u64() {
         assert_eq!(parse_hex_u64("0x14a34").expect("hex"), 84532);
+        assert_eq!(parse_hex_u64("10").expect("decimal"), 16);
     }
 
     #[test]
-    fn test_onchain_config_roundtrip() {
+    fn test_onchain_config_roundtrip_with_signer_fields() {
         let dir = std::env::temp_dir().join(format!(
             "agenthalo_onchain_cfg_{}_{}",
             std::process::id(),
@@ -459,11 +656,16 @@ mod tests {
         let path = dir.join("onchain.json");
         let cfg = OnchainConfig {
             contract_address: "0x1111111111111111111111111111111111111111".to_string(),
+            signer_mode: SignerMode::Keystore,
+            keystore_path: Some("/tmp/test.keystore".to_string()),
+            keystore_password_file: Some("/tmp/test.pass".to_string()),
             ..OnchainConfig::default()
         };
         save_onchain_config(&path, &cfg).expect("save");
         let loaded = load_onchain_config(&path).expect("load");
         assert_eq!(loaded.contract_address, cfg.contract_address);
+        assert_eq!(loaded.signer_mode, SignerMode::Keystore);
+        assert_eq!(loaded.keystore_path, cfg.keystore_path);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -479,5 +681,21 @@ mod tests {
             .expect("some");
         assert!(!status.verified);
         std::env::remove_var("AGENTHALO_ONCHAIN_STUB");
+    }
+
+    #[test]
+    fn test_gas_cap_preflight() {
+        assert!(enforce_gas_cap(MAX_VERIFY_GAS).is_ok());
+        let err = enforce_gas_cap(MAX_VERIFY_GAS + 1).expect_err("cap error");
+        assert!(err.contains("gas estimate above cap"));
+    }
+
+    #[test]
+    fn test_nonce_retry_classifier() {
+        assert!(is_retryable_nonce_error(
+            "replacement transaction underpriced"
+        ));
+        assert!(is_retryable_nonce_error("nonce too low"));
+        assert!(!is_retryable_nonce_error("execution reverted"));
     }
 }

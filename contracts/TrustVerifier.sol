@@ -127,7 +127,13 @@ contract TrustVerifier {
     }
 
     /// @notice Verify and record digest-indexed attestation for session proofs.
-    /// @dev publicInputs = [merkleRoot_lo, merkleRoot_hi, digest_lo, digest_hi, eventCount, ...]
+    /// @dev public input schema v1 (strict ordering):
+    ///  - [0] MERKLE_LO
+    ///  - [1] MERKLE_HI
+    ///  - [2] DIGEST_LO
+    ///  - [3] DIGEST_HI
+    ///  - [4] EVENT_COUNT
+    ///  Additional slots may be appended in future schema versions.
     function verifyAndRecord(
         uint256[8] calldata proofWords,
         uint256[] calldata publicInputs
@@ -165,6 +171,7 @@ contract TrustVerifier {
     }
 
     /// @notice Anonymous variant; attester identity is masked as zero address.
+    /// @dev Uses the same public input schema ordering as verifyAndRecord().
     function verifyAndRecordAnonymous(
         uint256[8] calldata proofWords,
         uint256[] calldata publicInputs

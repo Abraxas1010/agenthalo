@@ -235,6 +235,22 @@ contract TrustVerifierHarness {
         return tv.isVerified(digest);
     }
 
+    function testVerifyAndRecordRejectsMalformedInputLength() external returns (bool) {
+        token.mint(address(this), 100);
+        token.approve(address(tv), 100);
+        uint256[8] memory proofWords = [uint256(1), 2, 3, 4, 5, 6, 7, 8];
+        uint256[] memory malformed = new uint256[](4);
+        malformed[0] = 11;
+        malformed[1] = 12;
+        malformed[2] = 21;
+        malformed[3] = 22;
+        try tv.verifyAndRecord(proofWords, malformed) {
+            return false;
+        } catch {
+            return true;
+        }
+    }
+
     function testVerifyAndRecordRejectsDuplicate() external returns (bool) {
         token.mint(address(this), 200);
         token.approve(address(tv), 200);
@@ -246,6 +262,27 @@ contract TrustVerifierHarness {
         } catch {
             return true;
         }
+    }
+
+    function testVerifyAndRecordOrderingMismatchNegative() external returns (bool) {
+        token.mint(address(this), 200);
+        token.approve(address(tv), 200);
+        uint256[8] memory proofWords = [uint256(1), 2, 3, 4, 5, 6, 7, 8];
+        uint256[] memory canonical = buildAttestationInputs(101, 102, 201, 202, 3);
+        uint256[] memory swapped = new uint256[](5);
+        swapped[0] = canonical[2];
+        swapped[1] = canonical[3];
+        swapped[2] = canonical[0];
+        swapped[3] = canonical[1];
+        swapped[4] = canonical[4];
+
+        tv.verifyAndRecord(proofWords, swapped);
+
+        bytes32 canonicalDigest = bytes32((uint256(canonical[3]) << 128) | uint256(canonical[2]));
+        bytes32 swappedDigest = bytes32((uint256(swapped[3]) << 128) | uint256(swapped[2]));
+        bool canonicalVerified = tv.isVerified(canonicalDigest);
+        bool swappedVerified = tv.isVerified(swappedDigest);
+        return !canonicalVerified && swappedVerified;
     }
 
     function testVerifyAndRecordAnonymousMasksAttester() external returns (bool) {

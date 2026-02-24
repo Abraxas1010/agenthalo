@@ -11,7 +11,7 @@ use nucleusdb::halo::audit::{
     audit_contract_file, audit_contract_source, save_audit_result, AuditRequest, AuditSize,
 };
 use nucleusdb::halo::circuit::{
-    load_or_setup_attestation_keys, proof_words_json_array, prove_attestation,
+    load_or_setup_attestation_keys_with_policy, proof_words_json_array, prove_attestation,
     public_inputs_json_array, verify_attestation_proof,
 };
 use nucleusdb::halo::config;
@@ -98,7 +98,7 @@ async fn health() -> Json<Value> {
     Json(json!({
         "status": "ok",
         "service": "agenthalo-mcp-server",
-        "phase": "3-live"
+        "phase": "5-hardened"
     }))
 }
 
@@ -133,12 +133,12 @@ async fn mcp(
     let result = match req.method.as_str() {
         "initialize" => json!({
             "protocolVersion": "2025-03-26",
-            "serverInfo": {"name": "agenthalo-mcp-server", "version": "0.1.0-phase3"},
+            "serverInfo": {"name": "agenthalo-mcp-server", "version": "0.1.0-phase5"},
             "capabilities": {"tools": {}}
         }),
         "tools/list" => json!({
             "tools": [
-                {"name":"attest","description":"AgentHALO attestation (merkle local or Groth16 onchain with onchain=true)"},
+                {"name":"attest","description":"AgentHALO attestation (merkle local or Groth16 onchain with onchain=true, plus dry_run=true for no-tx proof generation)"},
                 {"name":"sign_pq","description":"AgentHALO post-quantum detached signing (paid)"},
                 {"name":"audit_contract","description":"AgentHALO Solidity static audit (paid)"},
                 {"name":"trust_query","description":"AgentHALO trust score query (paid)"},
@@ -232,6 +232,10 @@ fn tool_attest(arguments: Value) -> Result<Value, String> {
         .get("onchain")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let dry_run = arguments
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let requested_session_id = arguments
         .get("session_id")
         .and_then(|v| v.as_str())
@@ -264,21 +268,36 @@ fn tool_attest(arguments: Value) -> Result<Value, String> {
         Ok(mut result) => {
             let mut onchain_payload = None;
             if onchain {
-                let (pk, vk, _key_info) = load_or_setup_attestation_keys(None)?;
+                let cfg = load_onchain_config_or_default();
+                let (pk, vk, key_info) =
+                    load_or_setup_attestation_keys_with_policy(None, cfg.circuit_policy.clone())?;
                 let proof_bundle = prove_attestation(&pk, &result)?;
                 if !verify_attestation_proof(&vk, &proof_bundle)? {
                     return Err("local Groth16 verification failed".to_string());
                 }
-                let cfg = load_onchain_config_or_default();
-                let posted = post_attestation(&cfg, &proof_bundle, anonymous)?;
                 result.proof_type = "groth16-bn254".to_string();
                 result.groth16_proof = Some(proof_words_json_array(&proof_bundle));
                 result.groth16_public_inputs = Some(public_inputs_json_array(&proof_bundle));
-                result.tx_hash = Some(posted.tx_hash.clone());
-                result.contract_address = Some(posted.contract_address.clone());
-                result.block_number = posted.block_number;
-                result.chain = Some(posted.chain.clone());
-                onchain_payload = Some(posted);
+                if dry_run {
+                    onchain_payload = Some(serde_json::json!({
+                        "dry_run": true,
+                        "policy": key_info.policy.as_str(),
+                        "metadata_path": key_info.metadata_path,
+                        "proof_schema_version": proof_bundle.public_input_schema_version,
+                        "proof_word_count": proof_bundle.proof_words.len(),
+                        "public_input_count": proof_bundle.public_inputs.len()
+                    }));
+                } else {
+                    let posted = post_attestation(&cfg, &proof_bundle, anonymous)?;
+                    result.tx_hash = Some(posted.tx_hash.clone());
+                    result.contract_address = Some(posted.contract_address.clone());
+                    result.block_number = posted.block_number;
+                    result.chain = Some(posted.chain.clone());
+                    onchain_payload = Some(
+                        serde_json::to_value(posted)
+                            .map_err(|e| format!("serialize onchain payload: {e}"))?,
+                    );
+                }
             }
             let saved_path = save_attestation(&session_id, &result)?;
             record_paid_operation_for_halo(
@@ -766,6 +785,8 @@ fn require_agentpmt() -> Result<AgentPmtClient, String> {
 mod tests {
     use super::*;
     use nucleusdb::halo::agentpmt::{agentpmt_config_path, save_agentpmt_config, AgentPmtConfig};
+    use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
+    use nucleusdb::halo::trace::{now_unix_secs, TraceWriter};
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -804,6 +825,84 @@ mod tests {
 
         let out = tool_call_response("sync", json!({}));
         assert_eq!(out.get("isError").and_then(|v| v.as_bool()), Some(false));
+
+        std::env::remove_var("AGENTHALO_AGENTPMT_STUB");
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn attest_dry_run_returns_payload_without_tx_side_effects() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_attest_dry_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+        std::env::set_var("AGENTHALO_AGENTPMT_STUB", "1");
+
+        save_agentpmt_config(
+            &agentpmt_config_path(),
+            &AgentPmtConfig {
+                api_key: "test".to_string(),
+                cached_balance: Some(10_000),
+                balance_refreshed_at: None,
+                history: vec![],
+            },
+        )
+        .expect("seed agentpmt config");
+
+        let db_path = nucleusdb::halo::config::db_path();
+        let mut writer = TraceWriter::new(&db_path).expect("trace writer");
+        let sid = format!("sess-attest-dry-{}", now_unix_secs());
+        writer
+            .start_session(SessionMetadata {
+                session_id: sid.clone(),
+                agent: "codex".to_string(),
+                model: Some("gpt-5".to_string()),
+                started_at: now_unix_secs(),
+                ended_at: None,
+                prompt: Some("test".to_string()),
+                status: SessionStatus::Running,
+                user_id: None,
+                machine_id: None,
+                puf_digest: None,
+            })
+            .expect("start");
+        writer
+            .write_event(TraceEvent {
+                seq: 0,
+                timestamp: now_unix_secs(),
+                event_type: EventType::Assistant,
+                content: json!({"text":"hello"}),
+                input_tokens: Some(1),
+                output_tokens: Some(1),
+                cache_read_tokens: Some(0),
+                tool_name: None,
+                tool_input: None,
+                tool_output: None,
+                file_path: None,
+                content_hash: String::new(),
+            })
+            .expect("event");
+        writer
+            .end_session(SessionStatus::Completed)
+            .expect("end session");
+
+        let payload = tool_attest(json!({
+            "session_id": sid,
+            "onchain": true,
+            "dry_run": true
+        }))
+        .expect("attest dry-run");
+
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["onchain"]["dry_run"], true);
+        assert!(payload["attestation"]["tx_hash"].is_null());
+        assert!(payload["attestation"]["contract_address"].is_null());
 
         std::env::remove_var("AGENTHALO_AGENTPMT_STUB");
         std::env::remove_var("AGENTHALO_HOME");

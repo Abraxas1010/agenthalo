@@ -43,7 +43,7 @@ We humbly thank the collective intelligence of humanity for providing the techno
 <br>
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-237%20passing-brightgreen.svg)
 ![Lean 4](https://img.shields.io/badge/Lean%204-63%20modules-blue.svg)
 ![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
 
@@ -442,6 +442,11 @@ Solidity smart contracts for on-chain agent trust attestation and payment routin
 - **Groth16VerifierAdapter** — production ZK proof bridge adapting snarkjs-generated verifiers to the trust interface
 
 Contracts are deployed on Base Sepolia. See `contracts/scripts/README.md` for deployment docs.
+Phase 5 hardening runbook: `Docs/AGENTHALO_ONCHAIN_PHASE5.md`.
+Phase 5 scripts:
+- `contracts/scripts/deploy_agenthalo_trust_base_sepolia.sh`
+- `contracts/scripts/e2e_agenthalo_attestation_base_sepolia.sh`
+- `contracts/scripts/verify_agenthalo_phase5_artifacts.py`
 
 ---
 
@@ -508,29 +513,18 @@ When `APPEND_ONLY` is active:
 
 ## Testing
 
-182 tests across 14 test suites, 0 failures, 0 warnings:
+237 tests passing (2026-02-24 snapshot), 0 failures:
 
 ```bash
-cargo test                        # 148 Rust tests
-cd contracts && forge test        # 34 Solidity tests
+cargo test                        # 198 Rust tests
+cd contracts && forge test        # 39 Solidity tests
 ```
 
-| Suite | Tests | Coverage |
-|-------|-------|----------|
-| Unit (lib) | 66 | Immutable proofs, license/SNARK, CT, PUF, PCN, on-chain trust, MCP auth/scoping |
-| CLI smoke | 2 | Binary help, create-sql-status-export pipeline |
-| End-to-end | 36 | Protocol commits, queries, security, multi-tenant, immutable mode |
-| KeyMap | 3 | Stability, LIKE matching, reverse lookup |
-| Persistence | 5 | WAL/snapshot compat, regression coverage |
-| SQL | 18 | CRUD, multi-statement, committed flag, immutable mode |
-| H.A.L.O. | 4 | Generic recording, trace schema, cost math, wrap/unwrap |
-| Monitor | 2 | Channel parsing, config CSV |
-| H.A.L.O. integration | 6 | Session lifecycle, adapter parsing, signal handling |
-| VCS | 5 | Agent record management, version tracking |
-| Solidity: TrustVerifier | 11 | Attestation, fees, proofs, replay, views |
-| Solidity: TrustVerifierMultiChain | 11 | Chain registry, composite attestation, tiered fees, multichain verification |
-| Solidity: Groth16VerifierAdapter | 12 | Proof decoding, signal validation, constructor guards, fail-closed behavior |
-| **Total** | **182** | |
+| Suite | Tests |
+|-------|-------|
+| Rust (unit + integration + binary tests) | 198 |
+| Solidity (Foundry) | 39 |
+| **Total** | **237** |
 
 ## Known Limitations
 

@@ -1,5 +1,12 @@
 use crate::halo::attest::AttestationResult;
+use crate::halo::circuit_policy::{
+    key_hash_hex, load_metadata, save_metadata, CircuitArtifactMetadata, CircuitPolicy,
+    CIRCUIT_METADATA_SCHEMA_VERSION,
+};
 use crate::halo::config;
+use crate::halo::public_input_schema::{
+    build_public_inputs, PUBLIC_INPUT_SCHEMA_VERSION, REQUIRED_PUBLIC_INPUTS,
+};
 use crate::halo::util::{digest_bytes, hex_decode_32, hex_encode};
 use ark_bn254::{Bn254, Fq, Fr};
 use ark_ff::{BigInteger, PrimeField};
@@ -116,13 +123,24 @@ pub struct AttestationProofBundle {
     pub proof_hex: String,
     pub proof_words: [String; 8],
     pub public_inputs: Vec<String>,
+    #[serde(default = "default_public_input_schema_version")]
+    pub public_input_schema_version: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CircuitKeyInfo {
     pub pk_path: String,
     pub vk_path: String,
+    pub metadata_path: String,
     pub max_events: usize,
+    pub policy: CircuitPolicy,
+    pub public_input_schema_version: u32,
+    pub pk_sha256: String,
+    pub vk_sha256: String,
+}
+
+fn default_public_input_schema_version() -> u32 {
+    PUBLIC_INPUT_SCHEMA_VERSION
 }
 
 pub fn setup_attestation_circuit(
@@ -140,45 +158,120 @@ pub fn setup_attestation_circuit(
 pub fn load_or_setup_attestation_keys(
     max_events: Option<usize>,
 ) -> Result<(ProvingKey<Bn254>, VerifyingKey<Bn254>, CircuitKeyInfo), String> {
+    load_or_setup_attestation_keys_with_policy(max_events, CircuitPolicy::DevDeterministic)
+}
+
+pub fn load_or_setup_attestation_keys_with_policy(
+    max_events: Option<usize>,
+    policy: CircuitPolicy,
+) -> Result<(ProvingKey<Bn254>, VerifyingKey<Bn254>, CircuitKeyInfo), String> {
     config::ensure_halo_dir()?;
     config::ensure_circuit_dir()?;
     let max_events = max_events.unwrap_or(MAX_EVENTS_DEFAULT);
     let pk_path = config::circuit_pk_path();
     let vk_path = config::circuit_vk_path();
+    let metadata_path = config::circuit_metadata_path();
+    load_or_setup_attestation_keys_from_paths(
+        max_events,
+        policy,
+        &pk_path,
+        &vk_path,
+        &metadata_path,
+    )
+}
 
-    if pk_path.exists() && vk_path.exists() {
-        let pk_raw = std::fs::read(&pk_path)
-            .map_err(|e| format!("read proving key {}: {e}", pk_path.display()))?;
-        let vk_raw = std::fs::read(&vk_path)
-            .map_err(|e| format!("read verifying key {}: {e}", vk_path.display()))?;
-        let mut pk_slice = pk_raw.as_slice();
-        let mut vk_slice = vk_raw.as_slice();
-        let pk = ProvingKey::<Bn254>::deserialize_compressed(&mut pk_slice)
-            .map_err(|e| format!("decode proving key: {e}"))?;
-        let vk = VerifyingKey::<Bn254>::deserialize_compressed(&mut vk_slice)
-            .map_err(|e| format!("decode verifying key: {e}"))?;
-        return Ok((
-            pk,
-            vk,
-            CircuitKeyInfo {
-                pk_path: pk_path.display().to_string(),
-                vk_path: vk_path.display().to_string(),
-                max_events,
-            },
+fn load_or_setup_attestation_keys_from_paths(
+    requested_max_events: usize,
+    policy: CircuitPolicy,
+    pk_path: &std::path::Path,
+    vk_path: &std::path::Path,
+    metadata_path: &std::path::Path,
+) -> Result<(ProvingKey<Bn254>, VerifyingKey<Bn254>, CircuitKeyInfo), String> {
+    let has_pk = pk_path.exists();
+    let has_vk = vk_path.exists();
+    let keys_exist = has_pk && has_vk;
+    if has_pk ^ has_vk {
+        return Err(format!(
+            "partial circuit artifacts detected (pk exists: {}, vk exists: {}); remove both or regenerate",
+            has_pk, has_vk
         ));
     }
 
-    let (pk, vk) = setup_attestation_circuit(max_events)?;
-    let mut pk_raw = Vec::new();
-    let mut vk_raw = Vec::new();
-    pk.serialize_compressed(&mut pk_raw)
-        .map_err(|e| format!("encode proving key: {e}"))?;
-    vk.serialize_compressed(&mut vk_raw)
-        .map_err(|e| format!("encode verifying key: {e}"))?;
-    std::fs::write(&pk_path, pk_raw)
-        .map_err(|e| format!("write proving key {}: {e}", pk_path.display()))?;
-    std::fs::write(&vk_path, vk_raw)
-        .map_err(|e| format!("write verifying key {}: {e}", vk_path.display()))?;
+    if !keys_exist {
+        if matches!(policy, CircuitPolicy::ProductionRequired) {
+            return Err(format!(
+                "production circuit policy requires existing CRS artifacts: missing `{}` and/or `{}`",
+                pk_path.display(),
+                vk_path.display()
+            ));
+        }
+        return create_and_persist_keys(requested_max_events, pk_path, vk_path, metadata_path);
+    }
+
+    let pk_raw = std::fs::read(pk_path)
+        .map_err(|e| format!("read proving key {}: {e}", pk_path.display()))?;
+    let vk_raw = std::fs::read(vk_path)
+        .map_err(|e| format!("read verifying key {}: {e}", vk_path.display()))?;
+    let pk_sha256 = key_hash_hex(&pk_raw);
+    let vk_sha256 = key_hash_hex(&vk_raw);
+
+    let mut pk_slice = pk_raw.as_slice();
+    let mut vk_slice = vk_raw.as_slice();
+    let pk = ProvingKey::<Bn254>::deserialize_compressed(&mut pk_slice)
+        .map_err(|e| format!("decode proving key: {e}"))?;
+    let vk = VerifyingKey::<Bn254>::deserialize_compressed(&mut vk_slice)
+        .map_err(|e| format!("decode verifying key: {e}"))?;
+
+    let mut metadata = if metadata_path.exists() {
+        load_metadata(metadata_path)?
+    } else if matches!(policy, CircuitPolicy::ProductionRequired) {
+        return Err(format!(
+            "production circuit policy requires metadata artifact `{}`",
+            metadata_path.display()
+        ));
+    } else {
+        let new_meta = CircuitArtifactMetadata {
+            schema_version: CIRCUIT_METADATA_SCHEMA_VERSION,
+            setup_mode: CircuitPolicy::DevDeterministic,
+            created_at: now_unix_secs(),
+            max_events: requested_max_events,
+            public_input_schema_version: PUBLIC_INPUT_SCHEMA_VERSION,
+            pk_sha256: pk_sha256.clone(),
+            vk_sha256: vk_sha256.clone(),
+        };
+        save_metadata(metadata_path, &new_meta)?;
+        new_meta
+    };
+
+    if metadata.schema_version != CIRCUIT_METADATA_SCHEMA_VERSION {
+        return Err(format!(
+            "circuit metadata schema mismatch: expected {}, got {}",
+            CIRCUIT_METADATA_SCHEMA_VERSION, metadata.schema_version
+        ));
+    }
+    if metadata.public_input_schema_version != PUBLIC_INPUT_SCHEMA_VERSION {
+        return Err(format!(
+            "public input schema mismatch: expected {}, got {}",
+            PUBLIC_INPUT_SCHEMA_VERSION, metadata.public_input_schema_version
+        ));
+    }
+    if metadata.pk_sha256 != pk_sha256 || metadata.vk_sha256 != vk_sha256 {
+        return Err("circuit artifact hash mismatch; pk/vk do not match metadata".to_string());
+    }
+    if matches!(policy, CircuitPolicy::ProductionRequired)
+        && metadata.max_events != requested_max_events
+    {
+        return Err(format!(
+            "production circuit metadata max_events mismatch: expected {}, got {}",
+            requested_max_events, metadata.max_events
+        ));
+    }
+
+    if matches!(policy, CircuitPolicy::DevDeterministic)
+        && metadata.max_events != requested_max_events
+    {
+        metadata.max_events = requested_max_events;
+    }
 
     Ok((
         pk,
@@ -186,7 +279,59 @@ pub fn load_or_setup_attestation_keys(
         CircuitKeyInfo {
             pk_path: pk_path.display().to_string(),
             vk_path: vk_path.display().to_string(),
+            metadata_path: metadata_path.display().to_string(),
+            max_events: metadata.max_events,
+            policy,
+            public_input_schema_version: metadata.public_input_schema_version,
+            pk_sha256,
+            vk_sha256,
+        },
+    ))
+}
+
+fn create_and_persist_keys(
+    max_events: usize,
+    pk_path: &std::path::Path,
+    vk_path: &std::path::Path,
+    metadata_path: &std::path::Path,
+) -> Result<(ProvingKey<Bn254>, VerifyingKey<Bn254>, CircuitKeyInfo), String> {
+    let (pk, vk) = setup_attestation_circuit(max_events)?;
+    let mut pk_raw = Vec::new();
+    let mut vk_raw = Vec::new();
+    pk.serialize_compressed(&mut pk_raw)
+        .map_err(|e| format!("encode proving key: {e}"))?;
+    vk.serialize_compressed(&mut vk_raw)
+        .map_err(|e| format!("encode verifying key: {e}"))?;
+    std::fs::write(pk_path, &pk_raw)
+        .map_err(|e| format!("write proving key {}: {e}", pk_path.display()))?;
+    std::fs::write(vk_path, &vk_raw)
+        .map_err(|e| format!("write verifying key {}: {e}", vk_path.display()))?;
+
+    let pk_sha256 = key_hash_hex(&pk_raw);
+    let vk_sha256 = key_hash_hex(&vk_raw);
+    let metadata = CircuitArtifactMetadata {
+        schema_version: CIRCUIT_METADATA_SCHEMA_VERSION,
+        setup_mode: CircuitPolicy::DevDeterministic,
+        created_at: now_unix_secs(),
+        max_events,
+        public_input_schema_version: PUBLIC_INPUT_SCHEMA_VERSION,
+        pk_sha256: pk_sha256.clone(),
+        vk_sha256: vk_sha256.clone(),
+    };
+    save_metadata(metadata_path, &metadata)?;
+
+    Ok((
+        pk,
+        vk,
+        CircuitKeyInfo {
+            pk_path: pk_path.display().to_string(),
+            vk_path: vk_path.display().to_string(),
+            metadata_path: metadata_path.display().to_string(),
             max_events,
+            policy: CircuitPolicy::DevDeterministic,
+            public_input_schema_version: PUBLIC_INPUT_SCHEMA_VERSION,
+            pk_sha256,
+            vk_sha256,
         },
     ))
 }
@@ -220,14 +365,8 @@ pub fn prove_attestation(
     let proof =
         Groth16::<Bn254>::prove(pk, circuit, &mut rng).map_err(|e| format!("prove failed: {e}"))?;
     let proof_words = proof_to_words(&proof)?;
-    let public_inputs = vec![
-        Fr::from(merkle_lo),
-        Fr::from(merkle_hi),
-        Fr::from(digest_lo),
-        Fr::from(digest_hi),
-        Fr::from(event_count),
-    ];
-    let public_inputs_dec = public_inputs.iter().map(fr_to_decimal).collect::<Vec<_>>();
+    let public_inputs_dec =
+        build_public_inputs(merkle_lo, merkle_hi, digest_lo, digest_hi, event_count);
 
     let mut proof_raw = Vec::new();
     proof
@@ -237,6 +376,7 @@ pub fn prove_attestation(
         proof_hex: hex_encode(&proof_raw),
         proof_words,
         public_inputs: public_inputs_dec,
+        public_input_schema_version: PUBLIC_INPUT_SCHEMA_VERSION,
     })
 }
 
@@ -244,6 +384,19 @@ pub fn verify_attestation_proof(
     vk: &VerifyingKey<Bn254>,
     bundle: &AttestationProofBundle,
 ) -> Result<bool, String> {
+    if bundle.public_input_schema_version != PUBLIC_INPUT_SCHEMA_VERSION {
+        return Err(format!(
+            "public input schema mismatch: expected {}, got {}",
+            PUBLIC_INPUT_SCHEMA_VERSION, bundle.public_input_schema_version
+        ));
+    }
+    if bundle.public_inputs.len() < REQUIRED_PUBLIC_INPUTS {
+        return Err(format!(
+            "public input count too small: expected at least {}, got {}",
+            REQUIRED_PUBLIC_INPUTS,
+            bundle.public_inputs.len()
+        ));
+    }
     let proof_raw = hex_decode_bytes(&bundle.proof_hex)?;
     let mut proof_slice = proof_raw.as_slice();
     let proof = Proof::<Bn254>::deserialize_compressed(&mut proof_slice)
@@ -260,6 +413,13 @@ pub fn verify_attestation_proof(
     let pvk = prepare_verifying_key(vk);
     Groth16::<Bn254>::verify_with_processed_vk(&pvk, &public_inputs, &proof)
         .map_err(|e| format!("verify failed: {e}"))
+}
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 pub fn proof_words_json_array(bundle: &AttestationProofBundle) -> String {
@@ -289,10 +449,6 @@ fn proof_to_words(proof: &Proof<Bn254>) -> Result<[String; 8], String> {
     let cx = fq_to_decimal(&proof.c.x);
     let cy = fq_to_decimal(&proof.c.y);
     Ok([ax, ay, bx0, bx1, by0, by1, cx, cy])
-}
-
-fn fr_to_decimal(fr: &Fr) -> String {
-    bigint_to_decimal(fr.into_bigint().to_bytes_le())
 }
 
 fn fq_to_decimal(fq: &Fq) -> String {
@@ -456,5 +612,58 @@ mod tests {
         let att = sample_attestation();
         let bundle = prove_attestation(&pk, &att).expect("prove");
         assert!(verify_attestation_proof(&vk, &bundle).expect("verify"));
+    }
+
+    #[test]
+    fn test_production_policy_fails_without_crs() {
+        let dir = std::env::temp_dir().join(format!(
+            "agenthalo_circuit_prod_fail_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let pk = dir.join("pk.bin");
+        let vk = dir.join("vk.bin");
+        let metadata = dir.join("metadata.json");
+        let err = load_or_setup_attestation_keys_from_paths(
+            64,
+            CircuitPolicy::ProductionRequired,
+            &pk,
+            &vk,
+            &metadata,
+        )
+        .expect_err("expected production fail-closed");
+        assert!(err.contains("production circuit policy requires existing CRS artifacts"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dev_policy_generates_metadata() {
+        let dir = std::env::temp_dir().join(format!(
+            "agenthalo_circuit_dev_meta_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let pk = dir.join("pk.bin");
+        let vk = dir.join("vk.bin");
+        let metadata = dir.join("metadata.json");
+        let (_, _, info) = load_or_setup_attestation_keys_from_paths(
+            64,
+            CircuitPolicy::DevDeterministic,
+            &pk,
+            &vk,
+            &metadata,
+        )
+        .expect("dev setup");
+        assert!(std::path::Path::new(&info.metadata_path).exists());
+        let loaded = load_metadata(std::path::Path::new(&info.metadata_path)).expect("load meta");
+        assert_eq!(
+            loaded.public_input_schema_version,
+            PUBLIC_INPUT_SCHEMA_VERSION
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

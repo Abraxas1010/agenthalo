@@ -2,6 +2,33 @@
 
 This directory contains release and attestation scripts for NucleusDB trust contracts.
 
+## AgentHALO Phase 5 Scripts
+
+### `deploy_agenthalo_trust_base_sepolia.sh`
+
+Deploys `TrustVerifier` for AgentHALO on Base Sepolia with:
+- chain-id preflight (`84532`)
+- signer selection (keystore preferred, private key fallback)
+- optional Basescan verification (`BASESCAN_API_KEY`)
+- JSON deployment artifact output including `script_sha256`
+
+### `e2e_agenthalo_attestation_base_sepolia.sh`
+
+Runs an end-to-end AgentHALO attestation flow:
+- configures AgentHALO onchain settings
+- creates a local test session
+- submits non-anonymous and anonymous `agenthalo attest --onchain`
+- checks `isVerified` and `getAttestation`
+- emits JSON evidence with deployment artifact hash linkage
+
+### `verify_agenthalo_phase5_artifacts.py`
+
+Validates deploy + e2e artifact invariants:
+- schema and chain checks
+- contract/tx/digest format checks
+- script hash checks
+- optional strict live checks (`--require-live`)
+
 ## Multi-chain Base Sepolia Scripts
 
 ### `deploy_multichain_base_sepolia.sh`
@@ -39,6 +66,22 @@ Runs a full one-command mock-backed E2E validation on Base Sepolia:
 | `DEPLOYMENT_OUT` | yes | yes | no | Deploy writes JSON evidence; E2E uses file hash if path exists. |
 | `EVIDENCE_OUT` | no | yes | no | E2E JSON evidence output path. |
 | `USDC_BASE_SEPOLIA` | yes | yes | no | Deploy default is Base Sepolia USDC; E2E reads from contract if unset. |
+
+## AgentHALO Phase 5 Environment Variables
+
+| Variable | Deploy | E2E | Required | Notes |
+|---|---|---|---|---|
+| `RPC_URL_BASE_SEPOLIA` | yes | yes | yes | Must resolve to chain id `84532`. |
+| `TRUST_VERIFIER_GROTH16_VERIFIER` | yes | no | deploy only | Constructor verifier address for `TrustVerifier`. |
+| `TRUST_TREASURY` | yes | no | deploy only | Constructor treasury address. |
+| `TRUST_VERIFIER_ADDRESS` | no | yes | e2e only | Deployed `TrustVerifier` address under test. |
+| `AGENTHALO_BIN` | no | yes | no | Defaults to `target/debug/agenthalo` then `target/release/agenthalo`. |
+| `AGENTHALO_ONCHAIN_STUB` | no | yes | no | Defaults to `1` for local/no-key smoke runs. |
+| `ETH_KEYSTORE` + `ETH_PASSWORD_FILE` | yes | yes | signer | Preferred signer mode. |
+| `PRIVATE_KEY` / `AGENTHALO_ONCHAIN_PRIVATE_KEY` | yes | yes | signer fallback | Used only when keystore is not configured. |
+| `BASESCAN_API_KEY` | yes | no | no | Enables `forge create --verify`. |
+| `DEPLOYMENT_OUT` | yes | yes | no | Deployment artifact path and hash-link source. |
+| `EVIDENCE_OUT` | no | yes | no | E2E evidence output path. |
 
 ## Mock E2E Environment Variables (`deploy_mock_e2e_base_sepolia.sh`)
 

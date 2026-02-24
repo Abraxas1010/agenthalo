@@ -44,6 +44,10 @@ pub fn circuit_vk_path() -> PathBuf {
     circuit_dir().join("vk.bin")
 }
 
+pub fn circuit_metadata_path() -> PathBuf {
+    circuit_dir().join("metadata.json")
+}
+
 pub fn attestations_dir() -> PathBuf {
     halo_dir().join("attestations")
 }
