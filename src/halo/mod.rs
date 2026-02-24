@@ -1,0 +1,17 @@
+pub mod adapters;
+pub mod auth;
+pub mod config;
+pub mod detect;
+pub mod pricing;
+pub mod runner;
+pub mod schema;
+pub mod trace;
+pub mod viewer;
+pub mod wrap;
+
+pub fn generic_agents_allowed() -> bool {
+    std::env::var("AGENTHALO_ALLOW_GENERIC")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}

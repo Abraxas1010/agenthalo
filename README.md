@@ -312,6 +312,36 @@ docker run -p 3000:3000 nucleusdb-mcp:latest
 
 Endpoints: `/mcp` (MCP), `/health` (status), `/auth/info` (auth discovery).
 
+### AgentHALO CLI
+
+`agenthalo` is a local-first recording wrapper for agent CLIs. It captures session metadata, structured events, and token/cost summaries into NucleusDB (`~/.agenthalo/traces.ndb`) with tamper-evident commits.
+
+```bash
+# authenticate (API key or OAuth)
+agenthalo login
+agenthalo config set-key <key>
+
+# run agent with recording
+agenthalo run claude -p "what is 2+2" --allowedTools ""
+agenthalo run codex exec "echo hi"
+
+# inspect traces/costs
+agenthalo traces
+agenthalo traces <session-id>
+agenthalo costs
+agenthalo costs --month
+
+# shell wrapping
+agenthalo wrap --all
+agenthalo unwrap --all
+```
+
+Design constraints:
+- Zero telemetry (no usage analytics phone-home behavior).
+- Free tier includes first-class wrappers for `claude`, `codex`, `gemini`.
+- Custom/generic agent wrapping is gated behind paid-tier behavior (`AGENTHALO_ALLOW_GENERIC=1`).
+- Cloud sync is planned for paid tier via Cloudflare Workers + Durable Objects.
+
 ### On-Chain Trust Verification
 
 NucleusDB includes Solidity smart contracts for on-chain agent trust attestation and payment routing on Base (Coinbase L2).
@@ -359,26 +389,27 @@ lake build NucleusDB
 
 ## Testing
 
-168 tests across 11 test suites, 0 failures, 0 warnings:
+180 tests across 12 test suites, 0 failures, 0 warnings:
 
 ```bash
-cargo test          # 134 Rust tests
+cargo test          # 146 Rust tests
 cd contracts && forge test   # 34 Solidity tests
 ```
 
 | Suite | Tests | Coverage |
 |-------|-------|----------|
-| Unit (lib) | 61 | Immutable proofs, license/SNARK, CT, PUF, PCN, on-chain trust, MCP auth/scoping |
+| Unit (lib) | 66 | Immutable proofs, license/SNARK, CT, PUF, PCN, on-chain trust, MCP auth/scoping |
 | CLI smoke | 2 | Binary help, create-sql-status-export pipeline |
 | End-to-end | 36 | Protocol commits, queries, security, multi-tenant, immutable mode |
 | KeyMap | 3 | Stability, LIKE matching, reverse lookup |
 | Persistence | 5 | WAL/snapshot compat, Bug #1/#3 regression |
 | SQL | 18 | CRUD, multi-statement, committed flag, immutable mode |
+| AgentHALO | 4 | Generic recording, trace schema, cost math, wrap/unwrap |
 | Monitor | 2 | Channel parsing, config CSV |
 | Solidity: TrustVerifier | 11 | Attestation, fees, proofs, replay, views |
 | Solidity: TrustVerifierMultiChain | 11 | Chain registry, composite attestation, tiered fees, multichain verification |
 | Solidity: Groth16VerifierAdapter | 12 | Proof decoding, signal validation, constructor guards, legacy ABI-mismatch fail-closed behavior, integration paths |
-| **Total** | **168** | |
+| **Total** | **180** | |
 
 ## Known Limitations
 

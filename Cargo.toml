@@ -26,6 +26,10 @@ path = "src/bin/nucleusdb_tui.rs"
 name = "nucleusdb-mcp"
 path = "src/bin/nucleusdb_mcp.rs"
 
+[[bin]]
+name = "agenthalo"
+path = "src/bin/agenthalo.rs"
+
 [features]
 default = ["puf-server"]
 puf-server = []
@@ -67,3 +71,5 @@ jsonwebtoken = "9"
 schemars = "1"
 chrono = "0.4"
 tss-esapi = { version = "7", optional = true, default-features = false }
+dirs = "6"
+webbrowser = "1"

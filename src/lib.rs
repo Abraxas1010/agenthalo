@@ -3,6 +3,7 @@ pub mod audit;
 pub mod cli;
 pub mod commitment;
 pub mod container;
+pub mod halo;
 pub mod immutable;
 pub mod keymap;
 pub mod license;
