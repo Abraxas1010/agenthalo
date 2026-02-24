@@ -30,6 +30,10 @@ path = "src/bin/nucleusdb_mcp.rs"
 name = "agenthalo"
 path = "src/bin/agenthalo.rs"
 
+[[bin]]
+name = "agenthalo-mcp-server"
+path = "src/bin/agenthalo_mcp_server.rs"
+
 [features]
 default = ["puf-server"]
 puf-server = []
@@ -73,6 +77,7 @@ chrono = "0.4"
 tss-esapi = { version = "7", optional = true, default-features = false }
 dirs = "6"
 webbrowser = "1"
+ureq = { version = "3", features = ["json"] }
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"

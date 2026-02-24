@@ -84,10 +84,7 @@ fn parse_json_event(v: &serde_json::Value) -> TraceEvent {
     }
 
     // Extract tool name/input/output for tool call events.
-    if matches!(
-        ev.event_type,
-        EventType::ToolCall | EventType::McpToolCall
-    ) {
+    if matches!(ev.event_type, EventType::ToolCall | EventType::McpToolCall) {
         ev.tool_name = v
             .get("tool")
             .or_else(|| v.get("tool_name"))
