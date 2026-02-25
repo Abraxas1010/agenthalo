@@ -6,8 +6,6 @@
    Effects: CRT scanlines, vignette, text glow (all toggleable)
    ================================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
-
 :root {
   /* === Fallout Pip-Boy Palette === */
   --bg: #080c05;
@@ -34,6 +32,7 @@
 
   --radius: 2px;
   --sidebar-w: 220px;
+  /* Keep Share Tech Mono first if installed locally, but avoid external fetches. */
   --font: 'Share Tech Mono', 'Courier New', 'Lucida Console', Monaco, monospace;
   --font-mono: 'Share Tech Mono', 'Courier New', 'Lucida Console', Monaco, monospace;
 

@@ -1893,7 +1893,7 @@ async function ndbRenderConfig() {
           <div class="ndb-prefix-list">
             ${prefixes.map(p => `
               <div class="ndb-prefix-item">
-                <span class="ndb-prefix-name clickable" onclick="ndb.prefix='${esc(p.prefix)}';ndb.page=0;ndbSwitchTab('browse')">${esc(p.prefix)}</span>
+                <span class="ndb-prefix-name clickable" data-prefix="${esc(p.prefix)}">${esc(p.prefix)}</span>
                 <div class="ndb-prefix-bar-wrap">
                   <div class="ndb-prefix-bar" style="width:${Math.max(4, (p.count / (prefixes[0]?.count || 1)) * 100)}%"></div>
                 </div>
@@ -1926,6 +1926,14 @@ async function ndbRenderConfig() {
         <div style="color:var(--text-dim);font-size:11px">${esc((window._ndbStatus || {}).db_path || 'unknown')}</div>
       </div>
     `;
+
+    $$('.ndb-prefix-name.clickable', el).forEach((node) => {
+      node.addEventListener('click', () => {
+        ndb.prefix = node.dataset.prefix || '';
+        ndb.page = 0;
+        ndbSwitchTab('browse');
+      });
+    });
   } catch (e) {
     el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
   }
