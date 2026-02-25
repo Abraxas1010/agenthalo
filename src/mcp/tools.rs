@@ -25,6 +25,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -36,6 +37,12 @@ struct ServiceState {
     db_path: PathBuf,
     wal_path: PathBuf,
     work_record_store: WorkRecordStore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExportFormat {
+    LegacyV1,
+    TypedV2,
 }
 
 #[derive(Clone, Debug)]
@@ -233,6 +240,14 @@ pub struct AbraxasWorkspaceSubmitResponse {
 pub struct HistoryRequest {
     /// Optional max number of entries (newest first).
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct ExportRequest {
+    /// Export format.
+    /// - `legacy_v1` (default): JSON object map of `key -> raw_u64_cell`.
+    /// - `typed_v2`: JSON array of `{key, value, type}` decoded entries.
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -591,7 +606,15 @@ pub struct SqlExecutionResponse {
 pub struct QueryResultRow {
     pub key: String,
     pub index: usize,
+    /// Raw u64 cell value (content hash for blob types).
     pub value: u64,
+    /// Human-readable typed value (decoded from blob store when applicable).
+    pub typed_value: serde_json::Value,
+    /// Display string for the typed value.
+    pub display: String,
+    /// Type tag: null, integer, float, bool, text, json, bytes, vector.
+    #[serde(rename = "type")]
+    pub type_tag: String,
     pub verified: bool,
     pub proof_kind: String,
     pub state_root: String,
@@ -644,6 +667,10 @@ pub struct HistoryResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExportResponse {
     pub key_count: usize,
+    /// Selected format: `legacy_v1` or `typed_v2`.
+    pub format: String,
+    /// Schema/version tag for the selected format.
+    pub format_version: String,
     pub json: String,
 }
 
@@ -969,15 +996,76 @@ impl NucleusDbMcpService {
         })
     }
 
+    fn parse_export_format(raw: Option<&str>) -> Result<ExportFormat, McpError> {
+        let normalized = raw
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("legacy_v1")
+            .to_ascii_lowercase();
+        match normalized.as_str() {
+            "legacy_v1" | "legacy" | "v1" | "map" => Ok(ExportFormat::LegacyV1),
+            "typed_v2" | "typed" | "v2" => Ok(ExportFormat::TypedV2),
+            other => Err(McpError::invalid_params(
+                format!("invalid export format '{other}'. expected one of: legacy_v1, typed_v2"),
+                None,
+            )),
+        }
+    }
+
+    fn decode_typed_value(
+        db: &NucleusDb,
+        key: &str,
+        cell: u64,
+    ) -> Result<crate::typed_value::TypedValue, String> {
+        let tag = db.type_map.get(key);
+        let blob = db.blob_store.get(key);
+        crate::typed_value::TypedValue::decode(tag, cell, blob)
+            .map_err(|e| format!("typed decode failed for key '{key}': {e}"))
+    }
+
+    fn export_legacy_map(db: &NucleusDb) -> BTreeMap<String, u64> {
+        let mut payload = BTreeMap::<String, u64>::new();
+        for (key, idx) in db.keymap.all_keys() {
+            let cell = db.state.values.get(idx).copied().unwrap_or(0);
+            payload.insert(key.to_string(), cell);
+        }
+        payload
+    }
+
+    fn export_typed_entries(db: &NucleusDb) -> Result<Vec<serde_json::Value>, String> {
+        let mut entries = Vec::new();
+        for (key, idx) in db.keymap.all_keys() {
+            let cell = db.state.values.get(idx).copied().unwrap_or(0);
+            let tag = db.type_map.get(&key);
+            let typed = Self::decode_typed_value(db, key, cell)?;
+            entries.push(serde_json::json!({
+                "key": key,
+                "value": typed.to_json_value(),
+                "type": tag.as_str(),
+            }));
+        }
+        Ok(entries)
+    }
+
     fn query_row(db: &NucleusDb, key: &str, idx: usize) -> Result<QueryResultRow, String> {
         let Some((value, proof, root)) = db.query(idx) else {
             return Err(format!("no value for key '{key}'"));
         };
         let verified = db.verify_query(idx, value, &proof, root);
+
+        // Decode typed value for human-readable output.
+        let tag = db.type_map.get(key);
+        let typed = Self::decode_typed_value(db, key, value)?;
+        let typed_value = typed.to_json_value();
+        let display = typed.display_string();
+
         Ok(QueryResultRow {
             key: key.to_string(),
             index: idx,
             value,
+            typed_value,
+            display,
+            type_tag: tag.as_str().to_string(),
             verified,
             proof_kind: Self::proof_kind_name(&proof).to_string(),
             state_root: hex_encode(&root),
@@ -1116,7 +1204,7 @@ impl NucleusDbMcpService {
                 McpError::invalid_params(format!("unknown key '{}'", req.key), None)
             })?;
         let row = Self::query_row(&guard.db, &req.key, idx)
-            .map_err(|e| McpError::invalid_params(e, None))?;
+            .map_err(|e| McpError::internal_error(e, None))?;
         Ok(Json(row))
     }
 
@@ -1131,9 +1219,10 @@ impl NucleusDbMcpService {
         let guard = self.state.lock().await;
         let mut rows = Vec::new();
         for (key, idx) in guard.db.keymap.keys_matching(&req.pattern) {
-            if let Ok(row) = Self::query_row(&guard.db, &key, idx) {
-                rows.push(row);
-            }
+            let row = Self::query_row(&guard.db, &key, idx).map_err(|e| {
+                McpError::internal_error(format!("query_range failed for key '{key}': {e}"), None)
+            })?;
+            rows.push(row);
         }
         Ok(Json(QueryRangeResponse {
             pattern: req.pattern,
@@ -1248,20 +1337,50 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_export",
-        description = "Export current key/value state as pretty JSON payload."
+        description = "Export current key/value state. Default format is legacy_v1 key->u64 map. Set format='typed_v2' for decoded typed entries."
     )]
-    pub async fn export(&self) -> Result<Json<ExportResponse>, McpError> {
+    pub async fn export(
+        &self,
+        Parameters(req): Parameters<ExportRequest>,
+    ) -> Result<Json<ExportResponse>, McpError> {
         let guard = self.state.lock().await;
-        let mut payload = std::collections::BTreeMap::<String, u64>::new();
-        for (key, idx) in guard.db.keymap.all_keys() {
-            let value = guard.db.state.values.get(idx).copied().unwrap_or(0);
-            payload.insert(key.to_string(), value);
-        }
-        let json = serde_json::to_string_pretty(&payload).map_err(|e| {
-            McpError::internal_error(format!("failed to encode export JSON: {e}"), None)
-        })?;
+        let format = Self::parse_export_format(req.format.as_deref())?;
+        let key_count = guard.db.keymap.len();
+        let (format_name, format_version, json) = match format {
+            ExportFormat::LegacyV1 => {
+                let payload = Self::export_legacy_map(&guard.db);
+                let json = serde_json::to_string_pretty(&payload).map_err(|e| {
+                    McpError::internal_error(
+                        format!("failed to encode legacy export JSON: {e}"),
+                        None,
+                    )
+                })?;
+                (
+                    "legacy_v1".to_string(),
+                    "nucleusdb_export/legacy_v1".to_string(),
+                    json,
+                )
+            }
+            ExportFormat::TypedV2 => {
+                let entries = Self::export_typed_entries(&guard.db)
+                    .map_err(|e| McpError::internal_error(e, None))?;
+                let json = serde_json::to_string_pretty(&entries).map_err(|e| {
+                    McpError::internal_error(
+                        format!("failed to encode typed export JSON: {e}"),
+                        None,
+                    )
+                })?;
+                (
+                    "typed_v2".to_string(),
+                    "nucleusdb_export/typed_v2".to_string(),
+                    json,
+                )
+            }
+        };
         Ok(Json(ExportResponse {
-            key_count: payload.len(),
+            key_count,
+            format: format_name,
+            format_version,
             json,
         }))
     }
@@ -2626,5 +2745,223 @@ impl NucleusDbMcpService {
                     .to_string(),
             ],
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::typed_value::{TypeTag, TypedValue};
+    use serde_json::json;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(tag: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        p.push(format!(
+            "nucleusdb_mcp_tools_{tag}_{}_{}.ndb",
+            std::process::id(),
+            nanos
+        ));
+        p
+    }
+
+    fn write_typed(db: &mut NucleusDb, key: &str, value: TypedValue) -> (usize, u64) {
+        let (idx, cell) = db.put_typed(key, value).expect("put_typed");
+        if idx >= db.state.values.len() {
+            db.state.values.resize(idx + 1, 0);
+        }
+        db.state.values[idx] = cell;
+        (idx, cell)
+    }
+
+    fn cleanup_db_files(db_path: &Path) {
+        let _ = std::fs::remove_file(db_path);
+        let wal_path = NucleusDbMcpService::default_wal_path(db_path);
+        let _ = std::fs::remove_file(wal_path);
+    }
+
+    #[test]
+    fn parse_export_format_defaults_and_aliases() {
+        assert_eq!(
+            NucleusDbMcpService::parse_export_format(None).expect("default"),
+            ExportFormat::LegacyV1
+        );
+        assert_eq!(
+            NucleusDbMcpService::parse_export_format(Some("typed")).expect("typed alias"),
+            ExportFormat::TypedV2
+        );
+        assert_eq!(
+            NucleusDbMcpService::parse_export_format(Some("v2")).expect("v2 alias"),
+            ExportFormat::TypedV2
+        );
+        assert_eq!(
+            NucleusDbMcpService::parse_export_format(Some(" map ")).expect("map alias"),
+            ExportFormat::LegacyV1
+        );
+    }
+
+    #[tokio::test]
+    async fn query_returns_typed_fields_and_fails_closed_on_decode_error() {
+        let db_path = temp_db_path("query_contract");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        {
+            let mut guard = service.state.lock().await;
+            write_typed(
+                &mut guard.db,
+                "good:text",
+                TypedValue::Text("hello".to_string()),
+            );
+            let (_, bad_cell) = write_typed(&mut guard.db, "bad:text", TypedValue::Integer(7));
+            guard.db.type_map.set("bad:text", TypeTag::Text);
+            assert_eq!(
+                guard.db.state.values[guard.db.keymap.get("bad:text").unwrap()],
+                bad_cell
+            );
+        }
+
+        let Json(good_row) = service
+            .query(Parameters(QueryRequest {
+                key: "good:text".to_string(),
+            }))
+            .await
+            .expect("good query");
+        assert_eq!(good_row.type_tag, "text");
+        assert_eq!(good_row.typed_value, json!("hello"));
+        assert_eq!(good_row.display, "hello");
+
+        let bad_err = service
+            .query(Parameters(QueryRequest {
+                key: "bad:text".to_string(),
+            }))
+            .await
+            .err()
+            .expect("decode mismatch must fail closed");
+        let err_dbg = format!("{bad_err:?}");
+        assert!(err_dbg.contains("typed decode failed for key 'bad:text'"));
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn query_range_fails_closed_when_any_match_has_decode_error() {
+        let db_path = temp_db_path("query_range_contract");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        {
+            let mut guard = service.state.lock().await;
+            write_typed(
+                &mut guard.db,
+                "pref:ok",
+                TypedValue::Text("value".to_string()),
+            );
+            write_typed(&mut guard.db, "pref:bad", TypedValue::Integer(11));
+            guard.db.type_map.set("pref:bad", TypeTag::Json);
+        }
+
+        let err = service
+            .query_range(Parameters(QueryRangeRequest {
+                pattern: "pref:%".to_string(),
+            }))
+            .await
+            .err()
+            .expect("query_range must fail on decode error");
+        let err_dbg = format!("{err:?}");
+        assert!(err_dbg.contains("query_range failed for key 'pref:bad'"));
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn export_defaults_to_legacy_v1_and_supports_typed_v2() {
+        let db_path = temp_db_path("export_contract");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        {
+            let mut guard = service.state.lock().await;
+            write_typed(&mut guard.db, "alpha", TypedValue::Integer(7));
+            write_typed(&mut guard.db, "beta", TypedValue::Text("hello".to_string()));
+        }
+
+        let Json(legacy) = service
+            .export(Parameters(ExportRequest::default()))
+            .await
+            .expect("legacy export");
+        assert_eq!(legacy.format, "legacy_v1");
+        assert_eq!(legacy.format_version, "nucleusdb_export/legacy_v1");
+        assert_eq!(legacy.key_count, 2);
+        let legacy_json: serde_json::Value =
+            serde_json::from_str(&legacy.json).expect("legacy json parse");
+        assert!(legacy_json.is_object());
+        assert_eq!(legacy_json["alpha"], json!(7u64));
+        assert!(legacy_json["beta"].is_u64());
+
+        let Json(typed) = service
+            .export(Parameters(ExportRequest {
+                format: Some("typed_v2".to_string()),
+            }))
+            .await
+            .expect("typed export");
+        assert_eq!(typed.format, "typed_v2");
+        assert_eq!(typed.format_version, "nucleusdb_export/typed_v2");
+        assert_eq!(typed.key_count, 2);
+        let typed_json: serde_json::Value =
+            serde_json::from_str(&typed.json).expect("typed json parse");
+        let typed_entries = typed_json.as_array().expect("typed array");
+        let beta = typed_entries
+            .iter()
+            .find(|row| row.get("key") == Some(&json!("beta")))
+            .expect("beta entry");
+        assert_eq!(beta["type"], json!("text"));
+        assert_eq!(beta["value"], json!("hello"));
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn export_rejects_invalid_format() {
+        let db_path = temp_db_path("export_invalid_format");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let err = service
+            .export(Parameters(ExportRequest {
+                format: Some("yaml".to_string()),
+            }))
+            .await
+            .err()
+            .expect("invalid format must fail");
+        let err_dbg = format!("{err:?}");
+        assert!(err_dbg.contains("invalid export format"));
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn export_typed_v2_fails_closed_on_decode_error() {
+        let db_path = temp_db_path("export_typed_decode_error");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        {
+            let mut guard = service.state.lock().await;
+            write_typed(&mut guard.db, "bad:export", TypedValue::Integer(42));
+            guard.db.type_map.set("bad:export", TypeTag::Json);
+        }
+
+        let err = service
+            .export(Parameters(ExportRequest {
+                format: Some("typed_v2".to_string()),
+            }))
+            .await
+            .err()
+            .expect("typed export must fail on decode mismatch");
+        let err_dbg = format!("{err:?}");
+        assert!(err_dbg.contains("typed decode failed for key 'bad:export'"));
+
+        cleanup_db_files(&db_path);
     }
 }

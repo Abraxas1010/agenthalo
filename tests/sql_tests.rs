@@ -394,7 +394,10 @@ fn sql_insert_text_value() {
     expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('name', 'Alice'); COMMIT"));
 
     let (cols, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'name'"));
-    assert!(cols.contains(&"type".to_string()), "SELECT * should include type column");
+    assert!(
+        cols.contains(&"type".to_string()),
+        "SELECT * should include type column"
+    );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0][0], "name");
     assert_eq!(rows[0][1], "Alice");
@@ -410,13 +413,14 @@ fn sql_insert_json_value() {
         r#"INSERT INTO data (key, value) VALUES ('user:alice', '{"name":"Alice","age":30}'); COMMIT"#,
     ));
 
-    let (cols, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'user:alice'"));
+    let (_cols, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'user:alice'"));
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0][0], "user:alice");
     // JSON should be detected and parsed
     assert_eq!(rows[0][2], "json");
     // Value should be valid JSON
-    let parsed: serde_json::Value = serde_json::from_str(&rows[0][1]).expect("should be valid JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&rows[0][1]).expect("should be valid JSON");
     assert_eq!(parsed["name"], "Alice");
     assert_eq!(parsed["age"], 30);
 }
@@ -430,11 +434,15 @@ fn sql_insert_vector_value() {
         "INSERT INTO data (key, value) VALUES ('doc:embedding', VECTOR(0.1, 0.2, 0.3)); COMMIT",
     ));
 
-    let (cols, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'doc:embedding'"));
+    let (_cols, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'doc:embedding'"));
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0][0], "doc:embedding");
     assert_eq!(rows[0][2], "vector");
-    assert!(rows[0][1].starts_with('['), "vector should display as array: {}", rows[0][1]);
+    assert!(
+        rows[0][1].starts_with('['),
+        "vector should display as array: {}",
+        rows[0][1]
+    );
 }
 
 #[test]
@@ -442,21 +450,24 @@ fn sql_vector_search() {
     let mut db = mk_db();
     let mut exec = SqlExecutor::new(&mut db);
 
-    expect_ok(exec.execute(
-        "INSERT INTO data (key, value) VALUES ('v1', VECTOR(1.0, 0.0, 0.0)); COMMIT",
-    ));
-    expect_ok(exec.execute(
-        "INSERT INTO data (key, value) VALUES ('v2', VECTOR(0.0, 1.0, 0.0)); COMMIT",
-    ));
-    expect_ok(exec.execute(
-        "INSERT INTO data (key, value) VALUES ('v3', VECTOR(0.9, 0.1, 0.0)); COMMIT",
-    ));
+    expect_ok(
+        exec.execute("INSERT INTO data (key, value) VALUES ('v1', VECTOR(1.0, 0.0, 0.0)); COMMIT"),
+    );
+    expect_ok(
+        exec.execute("INSERT INTO data (key, value) VALUES ('v2', VECTOR(0.0, 1.0, 0.0)); COMMIT"),
+    );
+    expect_ok(
+        exec.execute("INSERT INTO data (key, value) VALUES ('v3', VECTOR(0.9, 0.1, 0.0)); COMMIT"),
+    );
 
     let result = exec.execute(
         "SELECT * FROM data WHERE VECTOR_SEARCH(value, VECTOR(1.0, 0.0, 0.0), 2, 'cosine')",
     );
     let (cols, rows) = expect_rows(result);
-    assert!(cols.contains(&"_distance".to_string()), "should have _distance column");
+    assert!(
+        cols.contains(&"_distance".to_string()),
+        "should have _distance column"
+    );
     assert_eq!(rows.len(), 2);
     // v1 should be first (identical vector, distance ~0)
     assert_eq!(rows[0][0], "v1");
@@ -471,9 +482,7 @@ fn sql_show_types_command() {
 
     expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('k1', 42); COMMIT"));
     expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('k2', 'hello'); COMMIT"));
-    expect_ok(exec.execute(
-        r#"INSERT INTO data (key, value) VALUES ('k3', '{"a":1}'); COMMIT"#,
-    ));
+    expect_ok(exec.execute(r#"INSERT INTO data (key, value) VALUES ('k3', '{"a":1}'); COMMIT"#));
 
     let (cols, rows) = expect_rows(exec.execute("SHOW TYPES"));
     assert_eq!(cols, vec!["type", "count"]);
@@ -500,7 +509,8 @@ fn sql_integer_backward_compat() {
     expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('counter', 42); COMMIT"));
 
     // SELECT should return 42 (not some offset-encoded number)
-    let (_cols, rows) = expect_rows(exec.execute("SELECT key, value FROM data WHERE key = 'counter'"));
+    let (_cols, rows) =
+        expect_rows(exec.execute("SELECT key, value FROM data WHERE key = 'counter'"));
     assert_eq!(rows[0][1], "42");
 }
 
@@ -514,4 +524,52 @@ fn sql_boolean_insert() {
     let (_cols, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'flag'"));
     assert_eq!(rows[0][2], "bool");
     assert_eq!(rows[0][1], "true");
+}
+
+#[test]
+fn sql_update_typed_value_clears_blob_and_type() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('name', 'Alice'); COMMIT"));
+    expect_ok(exec.execute("UPDATE data SET value = 999 WHERE key = 'name'; COMMIT"));
+
+    let (_cols, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'name'"));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][1], "999");
+    assert_eq!(rows[0][2], "integer");
+}
+
+#[test]
+fn sql_delete_typed_value_clears_blob_and_type() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(exec.execute("INSERT INTO data (key, value) VALUES ('doc', '{\"a\":1}'); COMMIT"));
+    expect_ok(exec.execute("DELETE FROM data WHERE key = 'doc'; COMMIT"));
+
+    let (_cols, rows) = expect_rows(exec.execute("SELECT * FROM data WHERE key = 'doc'"));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][1], "0");
+    assert_eq!(rows[0][2], "integer");
+}
+
+#[test]
+fn sql_vector_dimension_mismatch_is_error() {
+    let mut db = mk_db();
+    let mut exec = SqlExecutor::new(&mut db);
+
+    expect_ok(
+        exec.execute("INSERT INTO data (key, value) VALUES ('v1', VECTOR(1.0, 0.0, 0.0)); COMMIT"),
+    );
+    let res = exec.execute("INSERT INTO data (key, value) VALUES ('v2', VECTOR(0.0, 1.0));");
+    match res {
+        SqlResult::Error { message } => {
+            assert!(
+                message.contains("dimension mismatch"),
+                "unexpected error: {message}"
+            );
+        }
+        other => panic!("expected error for dimension mismatch, got: {other:?}"),
+    }
 }

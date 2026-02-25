@@ -136,6 +136,7 @@ body { display: flex; }
   padding: 24px 32px;
   min-height: 100vh;
   max-width: 1200px;
+  overflow: hidden;
 }
 
 /* Cards */
@@ -151,6 +152,8 @@ body { display: flex; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 20px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .card-label {
@@ -159,18 +162,28 @@ body { display: flex; }
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-value {
   font-size: 28px;
   font-weight: 700;
   font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .card-sub {
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Status badges */
@@ -546,6 +559,14 @@ tr.clickable { cursor: pointer; }
   align-items: center;
   gap: 12px;
   padding: 4px 0;
+  min-width: 0;
+}
+
+.ndb-verify-row > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .ndb-verify-label {
@@ -686,6 +707,13 @@ tr.clickable { cursor: pointer; }
 .ndb-value-display.val-json { color: var(--yellow); cursor: pointer; }
 .ndb-value-display.val-vector { color: var(--orange); }
 .ndb-value-display.val-bytes { color: var(--text-muted); }
+.ndb-json-toggle {
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+}
 
 /* JSON/value expanded view */
 .ndb-json-expanded {
@@ -723,6 +751,13 @@ tr.clickable { cursor: pointer; }
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
+  min-width: 0;
+}
+
+.ndb-vector-result-item > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ndb-vector-result-item:last-child { border-bottom: none; }

@@ -28,10 +28,7 @@ impl TypeMap {
     /// Get the type tag for a key.
     /// Returns `TypeTag::Integer` for untagged keys (backward compatibility).
     pub fn get(&self, key: &str) -> TypeTag {
-        self.types
-            .get(key)
-            .copied()
-            .unwrap_or(TypeTag::Integer)
+        self.types.get(key).copied().unwrap_or(TypeTag::Integer)
     }
 
     /// Get the type tag for a key, returning None if untagged.

@@ -82,9 +82,15 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/nucleusdb/history", get(api_nucleusdb_history))
         .route("/nucleusdb/edit", post(api_nucleusdb_edit))
         .route("/nucleusdb/verify/{key}", get(api_nucleusdb_verify))
-        .route("/nucleusdb/key-history/{key}", get(api_nucleusdb_key_history))
+        .route(
+            "/nucleusdb/key-history/{key}",
+            get(api_nucleusdb_key_history),
+        )
         .route("/nucleusdb/export", get(api_nucleusdb_export))
-        .route("/nucleusdb/vector-search", post(api_nucleusdb_vector_search))
+        .route(
+            "/nucleusdb/vector-search",
+            post(api_nucleusdb_vector_search),
+        )
         // Capabilities
         .route("/capabilities", get(api_capabilities))
         // x402
@@ -144,6 +150,8 @@ pub struct BrowseQuery {
 #[derive(Deserialize)]
 pub struct EditRequest {
     key: String,
+    #[serde(default, rename = "type")]
+    value_type: Option<String>,
     /// Value can be a number (u64 legacy), string, JSON object, array, bool, or null.
     value: serde_json::Value,
 }
@@ -155,6 +163,9 @@ pub struct VectorSearchRequest {
     k: usize,
     #[serde(default = "default_metric")]
     metric: String,
+    /// Optional key prefix filter (e.g., "memory:strategy:" to search only within a namespace).
+    #[serde(default)]
+    prefix: Option<String>,
 }
 
 fn default_k() -> usize {
@@ -671,9 +682,7 @@ async fn api_attestation_verify(
             let membership_ok = stored
                 .anonymous_membership_proof
                 .as_ref()
-                .map(|p| {
-                    crate::halo::attest::verify_anonymous_membership_proof(p).unwrap_or(false)
-                })
+                .map(|p| crate::halo::attest::verify_anonymous_membership_proof(p).unwrap_or(false))
                 .unwrap_or(false);
             return Ok(Json(json!({
                 "digest": req.digest,
@@ -777,10 +786,16 @@ async fn api_nucleusdb_browse(
         let tag = db.type_map.get(key);
         let blob = db.blob_store.get(key);
         let typed = crate::typed_value::TypedValue::decode(tag, cell, blob)
-            .unwrap_or(crate::typed_value::TypedValue::Integer(cell as i64));
+            .map_err(|e| internal_err(format!("typed decode failed for key '{key}': {e}")))?;
         let display = typed.display_string();
         let json_val = typed.to_json_value();
-        items.push((key.to_string(), json_val, idx, tag.as_str().to_string(), display));
+        items.push((
+            key.to_string(),
+            json_val,
+            idx,
+            tag.as_str().to_string(),
+            display,
+        ));
     }
 
     let total = items.len();
@@ -812,7 +827,11 @@ async fn api_nucleusdb_browse(
         })
         .collect();
 
-    let total_pages = if total == 0 { 1 } else { (total + page_size - 1) / page_size };
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total + page_size - 1) / page_size
+    };
 
     Ok(Json(json!({
         "rows": page_items,
@@ -831,18 +850,31 @@ async fn api_nucleusdb_stats(AxumState(state): AxumState<DashboardState>) -> Api
     let commit_count = db.entries.len();
     let write_mode = format!("{:?}", db.write_mode());
 
-    // Value statistics
-    let mut min_val: Option<u64> = None;
-    let mut max_val: Option<u64> = None;
-    let mut sum: u64 = 0;
-    for (_, idx) in db.keymap.all_keys() {
-        let value = db.state.values.get(idx).copied().unwrap_or(0);
-        sum = sum.saturating_add(value);
-        min_val = Some(min_val.map_or(value, |m: u64| m.min(value)));
-        max_val = Some(max_val.map_or(value, |m: u64| m.max(value)));
+    // Value statistics — only over Integer and Float typed keys (blob-type content
+    // hashes are meaningless for min/max/avg/sum).
+    let mut min_val: Option<f64> = None;
+    let mut max_val: Option<f64> = None;
+    let mut sum: f64 = 0.0;
+    let mut numeric_count: usize = 0;
+    for (key, idx) in db.keymap.all_keys() {
+        let tag = db.type_map.get(&key);
+        let cell = db.state.values.get(idx).copied().unwrap_or(0);
+        let numeric = match tag {
+            crate::typed_value::TypeTag::Integer => Some(cell as i64 as f64),
+            crate::typed_value::TypeTag::Float => Some(f64::from_bits(cell)),
+            _ => None,
+        };
+        if let Some(v) = numeric {
+            if v.is_finite() {
+                sum += v;
+                min_val = Some(min_val.map_or(v, |m: f64| m.min(v)));
+                max_val = Some(max_val.map_or(v, |m: f64| m.max(v)));
+                numeric_count += 1;
+            }
+        }
     }
-    let avg_val = if key_count > 0 {
-        sum as f64 / key_count as f64
+    let avg_val = if numeric_count > 0 {
+        sum / numeric_count as f64
     } else {
         0.0
     };
@@ -922,9 +954,23 @@ async fn api_nucleusdb_edit(
     let _guard = state.db_lock.lock().await;
     let mut db = load_halo_db(db_path)?;
 
-    // Convert JSON value to TypedValue
-    let typed = json_to_typed_value(&req.value);
-    let (idx, cell) = db.put_typed(&req.key, typed.clone());
+    // Convert JSON value to TypedValue, honoring explicit type when provided.
+    let typed = match req.value_type.as_deref() {
+        Some(tag) => {
+            let tag = crate::typed_value::TypeTag::from_str_tag(tag).ok_or_else(|| {
+                api_err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid type; expected one of: null, integer, float, bool, text, json, bytes, vector",
+                )
+            })?;
+            json_to_typed_value_for_tag(&req.value, tag)
+                .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?
+        }
+        None => json_to_typed_value(&req.value),
+    };
+    let (idx, cell) = db
+        .put_typed(&req.key, typed.clone())
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &format!("typed edit failed: {e}")))?;
 
     // Build delta and commit
     let delta = crate::state::Delta::new(vec![(idx, cell)]);
@@ -989,6 +1035,89 @@ fn json_to_typed_value(v: &serde_json::Value) -> crate::typed_value::TypedValue 
     }
 }
 
+fn json_to_typed_value_for_tag(
+    v: &serde_json::Value,
+    tag: crate::typed_value::TypeTag,
+) -> Result<crate::typed_value::TypedValue, String> {
+    use crate::typed_value::{TypeTag, TypedValue};
+    match tag {
+        TypeTag::Null => {
+            if v.is_null() {
+                Ok(TypedValue::Null)
+            } else {
+                Err("type null requires JSON null value".to_string())
+            }
+        }
+        TypeTag::Integer => {
+            let i = match v {
+                serde_json::Value::Number(n) => n
+                    .as_i64()
+                    .ok_or_else(|| "type integer requires signed 64-bit integer".to_string())?,
+                _ => return Err("type integer requires numeric value".to_string()),
+            };
+            Ok(TypedValue::Integer(i))
+        }
+        TypeTag::Float => {
+            let f = match v {
+                serde_json::Value::Number(n) => n
+                    .as_f64()
+                    .ok_or_else(|| "type float requires finite numeric value".to_string())?,
+                _ => return Err("type float requires numeric value".to_string()),
+            };
+            Ok(TypedValue::Float(f))
+        }
+        TypeTag::Bool => match v {
+            serde_json::Value::Bool(b) => Ok(TypedValue::Bool(*b)),
+            _ => Err("type bool requires boolean value".to_string()),
+        },
+        TypeTag::Text => match v {
+            serde_json::Value::String(s) => Ok(TypedValue::Text(s.clone())),
+            _ => Err("type text requires string value".to_string()),
+        },
+        TypeTag::Json => Ok(TypedValue::Json(v.clone())),
+        TypeTag::Bytes => {
+            let s = match v {
+                serde_json::Value::String(s) => s,
+                _ => return Err("type bytes requires hex string value".to_string()),
+            };
+            let s = s.strip_prefix("0x").unwrap_or(s);
+            if s.len() % 2 != 0 {
+                return Err("type bytes requires even-length hex string".to_string());
+            }
+            let mut out = Vec::with_capacity(s.len() / 2);
+            let bytes = s.as_bytes();
+            let mut i = 0usize;
+            while i < bytes.len() {
+                let hi = bytes[i] as char;
+                let lo = bytes[i + 1] as char;
+                let pair = format!("{hi}{lo}");
+                let b = u8::from_str_radix(&pair, 16)
+                    .map_err(|_| format!("invalid hex byte '{pair}' in bytes value"))?;
+                out.push(b);
+                i += 2;
+            }
+            Ok(TypedValue::Bytes(out))
+        }
+        TypeTag::Vector => {
+            let arr = match v {
+                serde_json::Value::Array(arr) => arr,
+                _ => return Err("type vector requires array of numbers".to_string()),
+            };
+            if arr.is_empty() {
+                return Err("type vector requires at least one dimension".to_string());
+            }
+            let mut dims = Vec::with_capacity(arr.len());
+            for item in arr {
+                let f = item
+                    .as_f64()
+                    .ok_or_else(|| "type vector requires numeric elements".to_string())?;
+                dims.push(f);
+            }
+            Ok(TypedValue::Vector(dims))
+        }
+    }
+}
+
 async fn api_nucleusdb_verify(
     AxumState(state): AxumState<DashboardState>,
     Path(key): Path<String>,
@@ -1021,7 +1150,7 @@ async fn api_nucleusdb_verify(
     let tag = db.type_map.get(&key);
     let blob = db.blob_store.get(&key);
     let typed = crate::typed_value::TypedValue::decode(tag, value, blob)
-        .unwrap_or(crate::typed_value::TypedValue::Integer(value as i64));
+        .map_err(|e| internal_err(format!("typed decode failed for key '{key}': {e}")))?;
 
     // For blob types, verify content hash binding
     let blob_verified = if tag.is_blob() {
@@ -1105,8 +1234,12 @@ async fn api_nucleusdb_export(
         let tag = db.type_map.get(key);
         let blob = db.blob_store.get(key);
         let typed = crate::typed_value::TypedValue::decode(tag, cell, blob)
-            .unwrap_or(crate::typed_value::TypedValue::Integer(cell as i64));
-        entries.push((key.to_string(), typed.to_json_value(), tag.as_str().to_string()));
+            .map_err(|e| internal_err(format!("typed decode failed for key '{key}': {e}")))?;
+        entries.push((
+            key.to_string(),
+            typed.to_json_value(),
+            tag.as_str().to_string(),
+        ));
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -1161,13 +1294,26 @@ async fn api_nucleusdb_vector_search(
     let metric = crate::vector_index::DistanceMetric::from_str_tag(&req.metric)
         .unwrap_or(crate::vector_index::DistanceMetric::Cosine);
 
+    // When a prefix filter is specified, over-fetch so we can return up to k
+    // results after filtering.  With small indices this is fine.
+    let fetch_k = if req.prefix.is_some() {
+        db.vector_index.len()
+    } else {
+        req.k
+    };
     let results = db
         .vector_index
-        .search(&req.query, req.k, metric)
+        .search(&req.query, fetch_k, metric)
         .map_err(|e| internal_err(format!("vector search: {e}")))?;
 
     let items: Vec<Value> = results
         .iter()
+        .filter(|r| {
+            req.prefix
+                .as_ref()
+                .map_or(true, |pfx| r.key.starts_with(pfx))
+        })
+        .take(req.k)
         .map(|r| {
             let typed = db.get_typed(&r.key);
             let tag = db.type_map.get(&r.key);
@@ -1186,6 +1332,7 @@ async fn api_nucleusdb_vector_search(
         "k": req.k,
         "metric": req.metric,
         "total_vectors": db.vector_index.len(),
+        "vector_count": db.vector_index.len(),
     })))
 }
 

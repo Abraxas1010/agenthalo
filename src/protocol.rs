@@ -508,28 +508,37 @@ impl NucleusDb {
     /// This writes the encoded u64 cell into pending_writes (returned as a
     /// Delta write), stores any blob data, updates the type map and vector
     /// index.  The caller is responsible for committing the delta.
-    pub fn put_typed(&mut self, key: &str, value: TypedValue) -> (usize, u64) {
+    pub fn put_typed(&mut self, key: &str, value: TypedValue) -> Result<(usize, u64), String> {
         let tag = value.tag();
         let (cell, blob) = value.encode(key);
 
-        // Store blob if present
-        if let Some(blob_data) = blob {
-            // Update vector index for Vector type
-            if tag == TypeTag::Vector {
-                if let Ok(dims) = crate::typed_value::bytes_to_vector(&blob_data) {
-                    let _ = self.vector_index.upsert(key, dims);
+        // Validate/update vector index first so vector writes fail closed.
+        if tag == TypeTag::Vector {
+            let dims = match &value {
+                TypedValue::Vector(dims) => dims.clone(),
+                _ => {
+                    return Err(
+                        "internal typed-value mismatch: expected vector payload".to_string()
+                    );
                 }
-            }
+            };
+            self.vector_index.upsert(key, dims)?;
+        } else {
+            // Non-vector values must not leave stale vector entries behind.
+            self.vector_index.remove(key);
+        }
+
+        // Store blob if present.
+        if let Some(blob_data) = blob {
             self.blob_store.put(key, blob_data);
         } else {
-            // Remove any stale blob/vector index entry
+            // Remove any stale blob entry.
             self.blob_store.remove(key);
-            self.vector_index.remove(key);
         }
 
         self.type_map.set(key, tag);
         let idx = self.keymap.get_or_create(key);
-        (idx, cell)
+        Ok((idx, cell))
     }
 
     /// Read a typed value for a key.

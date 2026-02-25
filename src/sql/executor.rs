@@ -374,8 +374,14 @@ impl<'a> SqlExecutor<'a> {
                 .unwrap_or_else(|| self.db.state.values.get(idx).copied().unwrap_or(0));
             let tag = self.db.type_map.get(k);
             let blob = self.db.blob_store.get(k);
-            let typed = TypedValue::decode(tag, cell, blob)
-                .unwrap_or(TypedValue::Integer(cell as i64));
+            let typed = match TypedValue::decode(tag, cell, blob) {
+                Ok(v) => v,
+                Err(e) => {
+                    return SqlResult::Error {
+                        message: format!("typed decode failed for key '{k}': {e}"),
+                    };
+                }
+            };
             payload.insert(k.to_string(), typed.to_json_value());
         }
         match serde_json::to_string_pretty(&payload) {
@@ -423,7 +429,14 @@ impl<'a> SqlExecutor<'a> {
         // Try typed insert first, fall back to legacy u64
         match extract_insert_typed(source, &ins.columns) {
             Ok(TypedInsert::Typed(key, typed_val)) => {
-                let (idx, cell) = self.db.put_typed(&key, typed_val.clone());
+                let (idx, cell) = match self.db.put_typed(&key, typed_val.clone()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return SqlResult::Error {
+                            message: format!("typed insert failed for '{key}': {e}"),
+                        };
+                    }
+                };
                 self.pending_writes.push((idx, cell));
                 SqlResult::Ok {
                     message: format!(
@@ -489,8 +502,14 @@ impl<'a> SqlExecutor<'a> {
             // Resolve typed value
             let tag = self.db.type_map.get(key);
             let blob = self.db.blob_store.get(key);
-            let typed = TypedValue::decode(tag, cell, blob)
-                .unwrap_or(TypedValue::Integer(cell as i64));
+            let typed = match TypedValue::decode(tag, cell, blob) {
+                Ok(v) => v,
+                Err(e) => {
+                    return SqlResult::Error {
+                        message: format!("typed decode failed for key '{key}': {e}"),
+                    };
+                }
+            };
             rows.push(render_projection_row(&projection, key, &typed, tag));
         }
 
@@ -505,11 +524,11 @@ impl<'a> SqlExecutor<'a> {
         projection: &[ProjectionField],
         vs: &VectorSearchParams,
     ) -> SqlResult {
-        let results = match self.db.vector_index.search(
-            &vs.query_vector,
-            vs.k,
-            vs.metric,
-        ) {
+        let results = match self
+            .db
+            .vector_index
+            .search(&vs.query_vector, vs.k, vs.metric)
+        {
             Ok(r) => r,
             Err(e) => return SqlResult::Error { message: e },
         };
@@ -557,14 +576,30 @@ impl<'a> SqlExecutor<'a> {
             Err(e) => return SqlResult::Error { message: e },
         };
 
+        let keys: Vec<(String, usize)> = self
+            .db
+            .keymap
+            .all_keys()
+            .map(|(k, idx)| (k.to_string(), idx))
+            .collect();
         let mut touched = 0usize;
-        for (key, idx) in self.db.keymap.all_keys() {
-            let visible = match selection_matches_key(selection, key) {
+        for (key, idx) in keys {
+            let visible = match selection_matches_key(selection, &key) {
                 Ok(v) => v,
                 Err(e) => return SqlResult::Error { message: e },
             };
             if visible {
-                self.pending_writes.push((idx, value));
+                let (typed_idx, typed_cell) =
+                    match self.db.put_typed(&key, TypedValue::Integer(value as i64)) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return SqlResult::Error {
+                                message: format!("typed update failed for '{key}': {e}"),
+                            };
+                        }
+                    };
+                debug_assert_eq!(typed_idx, idx);
+                self.pending_writes.push((typed_idx, typed_cell));
                 touched += 1;
             }
         }
@@ -586,14 +621,30 @@ impl<'a> SqlExecutor<'a> {
                 message: format!("Only virtual table '{TABLE_NAME}' is supported"),
             };
         }
+        let keys: Vec<(String, usize)> = self
+            .db
+            .keymap
+            .all_keys()
+            .map(|(k, idx)| (k.to_string(), idx))
+            .collect();
         let mut touched = 0usize;
-        for (key, idx) in self.db.keymap.all_keys() {
-            let visible = match selection_matches_key(del.selection.as_ref(), key) {
+        for (key, idx) in keys {
+            let visible = match selection_matches_key(del.selection.as_ref(), &key) {
                 Ok(v) => v,
                 Err(e) => return SqlResult::Error { message: e },
             };
             if visible {
-                self.pending_writes.push((idx, 0));
+                let (typed_idx, typed_cell) = match self.db.put_typed(&key, TypedValue::Integer(0))
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return SqlResult::Error {
+                            message: format!("typed delete failed for '{key}': {e}"),
+                        };
+                    }
+                };
+                debug_assert_eq!(typed_idx, idx);
+                self.pending_writes.push((typed_idx, typed_cell));
                 touched += 1;
             }
         }
@@ -632,7 +683,7 @@ fn normalize_command(sql: &str) -> String {
     sql.trim().trim_end_matches(';').trim().to_ascii_uppercase()
 }
 
-fn split_sql_statements(sql: &str) -> Vec<String> {
+pub(crate) fn split_sql_statements(sql: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut in_single_quote = false;
@@ -786,7 +837,6 @@ fn render_projection_row(
         })
         .collect()
 }
-
 
 /// Result of parsing a typed INSERT.
 enum TypedInsert {
@@ -952,9 +1002,7 @@ fn extract_vector_search(expr: &Expr) -> Option<VectorSearchParams> {
             // arg[2] = k (optional, default 10)
             let k = if args.len() > 2 {
                 match &args[2] {
-                    FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
-                        expr_as_u64(e).ok()? as usize
-                    }
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => expr_as_u64(e).ok()? as usize,
                     _ => 10,
                 }
             } else {
@@ -983,7 +1031,6 @@ fn extract_vector_search(expr: &Expr) -> Option<VectorSearchParams> {
     }
     None
 }
-
 
 fn extract_update_value(assignments: &[Assignment]) -> Result<u64, String> {
     if assignments.len() != 1 {

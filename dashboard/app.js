@@ -83,7 +83,7 @@ function renderTypedValue(row) {
       return `<span class="ndb-value-display val-text">"${esc(truncate(display, 60))}"</span>`;
     case 'json': {
       const preview = typeof val === 'object' ? JSON.stringify(val) : display;
-      return `<span class="ndb-value-display val-json" title="Click to expand" onclick="ndbExpandJson(this, '${esc(row.key)}')">${esc(truncate(preview, 60))}</span>`;
+      return `<button type="button" class="ndb-value-display val-json ndb-json-toggle" title="Click to expand" data-key="${esc(row.key)}">${esc(truncate(preview, 60))}</button>`;
     }
     case 'vector': {
       const dims = Array.isArray(val) ? val : [];
@@ -863,13 +863,13 @@ async function ndbRenderBrowse() {
               <tr data-key="${esc(row.key)}">
                 <td class="ndb-key">${esc(row.key)}</td>
                 <td>${typeBadge(row.type)}</td>
-                <td class="ndb-value" ondblclick="ndbStartEditTyped('${esc(row.key)}')">${renderTypedValue(row)}</td>
+                <td class="ndb-value ndb-value-cell" data-key="${esc(row.key)}">${renderTypedValue(row)}</td>
                 <td style="color:var(--text-muted);font-size:12px">${row.index}</td>
                 <td class="ndb-actions">
-                  <button class="btn-icon" onclick="ndbVerifyKey('${esc(row.key)}')" title="Verify Merkle proof">&#128737;</button>
-                  <button class="btn-icon" onclick="ndbKeyHistory('${esc(row.key)}')" title="Key history">&#128339;</button>
-                  <button class="btn-icon" onclick="ndbStartEditTyped('${esc(row.key)}')" title="Edit value">&#9998;</button>
-                  <button class="btn-icon btn-icon-danger" onclick="ndbDeleteKey('${esc(row.key)}')" title="Delete">&#128465;</button>
+                  <button class="btn-icon" data-ndb-action="verify" data-key="${esc(row.key)}" title="Verify Merkle proof">&#128737;</button>
+                  <button class="btn-icon" data-ndb-action="history" data-key="${esc(row.key)}" title="Key history">&#128339;</button>
+                  <button class="btn-icon" data-ndb-action="edit" data-key="${esc(row.key)}" title="Edit value">&#9998;</button>
+                  <button class="btn-icon btn-icon-danger" data-ndb-action="delete" data-key="${esc(row.key)}" title="Delete">&#128465;</button>
                 </td>
               </tr>
             `).join('')}
@@ -909,6 +909,32 @@ async function ndbRenderBrowse() {
         if (e.key === 'Enter') ndbSearch();
       });
     }
+
+    const table = el.querySelector('.ndb-table');
+    if (table) {
+      table.addEventListener('dblclick', (e) => {
+        const cell = e.target.closest('.ndb-value-cell');
+        if (!cell) return;
+        const key = cell.dataset.key || '';
+        if (key) ndbStartEditTyped(key);
+      });
+      table.addEventListener('click', (e) => {
+        const jsonToggle = e.target.closest('.ndb-json-toggle');
+        if (jsonToggle) {
+          ndbExpandJson(jsonToggle);
+          return;
+        }
+        const btn = e.target.closest('[data-ndb-action]');
+        if (!btn) return;
+        const key = btn.dataset.key || '';
+        if (!key) return;
+        const action = btn.dataset.ndbAction;
+        if (action === 'verify') ndbVerifyKey(key);
+        else if (action === 'history') ndbKeyHistory(key);
+        else if (action === 'edit') ndbStartEditTyped(key);
+        else if (action === 'delete') ndbDeleteKey(key);
+      });
+    }
   } catch (e) {
     el.innerHTML = `<div style="color:var(--red)">Error loading data: ${esc(e.message)}</div>`;
   }
@@ -916,9 +942,11 @@ async function ndbRenderBrowse() {
 
 // JSON expand handler for browse table
 window.ndbExpandJson = function(el, key) {
+  const effectiveKey = key || el?.dataset?.key || '';
+  if (!effectiveKey) return;
   const existing = el.parentElement.querySelector('.ndb-json-expanded');
   if (existing) { existing.remove(); return; }
-  const row = (window._ndbRows || []).find(r => r.key === key);
+  const row = (window._ndbRows || []).find(r => r.key === effectiveKey);
   if (!row) return;
   const div = document.createElement('div');
   div.className = 'ndb-json-expanded';
@@ -1017,12 +1045,18 @@ window.ndbStartEditTyped = function(key) {
         <div>${valueInput}</div>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-primary btn-sm" onclick="ndbSaveEditTyped('${esc(key)}', '${esc(type)}')">Save &amp; Commit</button>
+        <button class="btn btn-primary btn-sm" id="ndb-save-edit-btn" data-key="${esc(key)}" data-type="${esc(type)}">Save &amp; Commit</button>
         <button class="btn btn-sm" onclick="$('#ndb-detail-panel').innerHTML=''">Cancel</button>
       </div>
       <div id="ndb-edit-result" style="margin-top:8px"></div>
     </div>
   `;
+  const saveBtn = $('#ndb-save-edit-btn');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      ndbSaveEditTyped(saveBtn.dataset.key || '', saveBtn.dataset.type || 'integer');
+    });
+  }
   const inp = $('#ndb-edit-value');
   if (inp && inp.focus) { inp.focus(); if (inp.select) inp.select(); }
 };
@@ -1052,7 +1086,7 @@ window.ndbSaveEditTyped = async function(key, type) {
     return;
   }
   try {
-    const res = await apiPost('/nucleusdb/edit', { key, value });
+    const res = await apiPost('/nucleusdb/edit', { key, type, value });
     if (res.error) {
       $('#ndb-edit-result').innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
     } else {
@@ -1171,7 +1205,7 @@ window.ndbInsertNew = async function() {
   }
 
   try {
-    const res = await apiPost('/nucleusdb/edit', { key, value });
+    const res = await apiPost('/nucleusdb/edit', { key, type, value });
     if (res.error) {
       $('#ndb-new-result').innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
     } else {
@@ -1187,7 +1221,7 @@ window.ndbInsertNew = async function() {
 window.ndbDeleteKey = async function(key) {
   if (!confirm(`Delete key '${key}'? This queues a tombstone (value=0) and commits.`)) return;
   try {
-    const res = await apiPost('/nucleusdb/edit', { key, value: 0 });
+    const res = await apiPost('/nucleusdb/edit', { key, type: 'integer', value: 0 });
     if (res.error) {
       alert('Delete failed: ' + res.error);
     } else {
@@ -1457,8 +1491,9 @@ window.ndbVectorSearch = async function() {
       return;
     }
     const results = res.results || [];
+    const totalVectors = res.total_vectors ?? res.vector_count ?? 0;
     if (results.length === 0) {
-      el.innerHTML = `<div style="color:var(--text-muted)">No results found. ${res.vector_count === 0 ? 'Index is empty.' : ''}</div>`;
+      el.innerHTML = `<div style="color:var(--text-muted)">No results found. ${totalVectors === 0 ? 'Index is empty.' : ''}</div>`;
       return;
     }
     el.innerHTML = `
@@ -1469,11 +1504,17 @@ window.ndbVectorSearch = async function() {
             <span class="ndb-vector-rank">#${i + 1}</span>
             <span class="ndb-key" style="flex:1">${esc(r.key)}</span>
             <span class="ndb-vector-dist">${typeof r.distance === 'number' ? r.distance.toFixed(6) : r.distance}</span>
-            <button class="btn-icon" onclick="ndbVerifyKey('${esc(r.key)}')" title="Verify">&#128737;</button>
+            <button class="btn-icon ndb-vec-verify-btn" data-key="${esc(r.key)}" title="Verify">&#128737;</button>
           </div>
         `).join('')}
       </div>
     `;
+    $$('.ndb-vec-verify-btn', el).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.key || '';
+        if (key) ndbVerifyKey(key);
+      });
+    });
   } catch (e) {
     el.innerHTML = `<div style="color:var(--red)">Search error: ${esc(e.message)}</div>`;
   }
@@ -1489,7 +1530,7 @@ window.ndbVectorInsert = async function() {
   if (nums.length === 0) { el.innerHTML = '<div style="color:var(--red)">Enter at least one dimension</div>'; return; }
 
   try {
-    const res = await apiPost('/nucleusdb/edit', { key, value: nums });
+    const res = await apiPost('/nucleusdb/edit', { key, type: 'vector', value: nums });
     if (res.error) {
       el.innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
     } else {
@@ -1601,19 +1642,19 @@ async function ndbRenderSchema() {
           <div class="card-grid">
             <div class="card">
               <div class="card-label">Min</div>
-              <div class="card-value">${stats.value_min != null ? stats.value_min : 'n/a'}</div>
+              <div class="card-value" title="${stats.value_min != null ? stats.value_min : 'n/a'}">${stats.value_min != null ? stats.value_min.toLocaleString() : 'n/a'}</div>
             </div>
             <div class="card">
               <div class="card-label">Max</div>
-              <div class="card-value">${stats.value_max != null ? stats.value_max : 'n/a'}</div>
+              <div class="card-value" title="${stats.value_max != null ? stats.value_max : 'n/a'}">${stats.value_max != null ? stats.value_max.toLocaleString() : 'n/a'}</div>
             </div>
             <div class="card">
               <div class="card-label">Average</div>
-              <div class="card-value" style="font-size:16px">${stats.value_avg != null ? stats.value_avg.toFixed(2) : 'n/a'}</div>
+              <div class="card-value" style="font-size:16px" title="${stats.value_avg != null ? stats.value_avg : 'n/a'}">${stats.value_avg != null ? stats.value_avg.toFixed(2) : 'n/a'}</div>
             </div>
             <div class="card">
               <div class="card-label">Sum</div>
-              <div class="card-value" style="font-size:16px">${stats.value_sum != null ? stats.value_sum.toLocaleString() : 'n/a'}</div>
+              <div class="card-value" style="font-size:16px" title="${stats.value_sum != null ? stats.value_sum : 'n/a'}">${stats.value_sum != null ? stats.value_sum.toLocaleString() : 'n/a'}</div>
             </div>
           </div>
         ` : ''}

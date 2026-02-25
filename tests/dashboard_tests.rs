@@ -326,7 +326,10 @@ async fn nucleusdb_browse_paginated_has_metadata() {
     assert!(val.get("rows").is_some(), "should have rows: {val}");
     assert!(val.get("total").is_some(), "should have total: {val}");
     assert!(val.get("page").is_some(), "should have page: {val}");
-    assert!(val.get("page_size").is_some(), "should have page_size: {val}");
+    assert!(
+        val.get("page_size").is_some(),
+        "should have page_size: {val}"
+    );
     assert!(
         val.get("total_pages").is_some(),
         "should have total_pages: {val}"
@@ -346,7 +349,10 @@ async fn nucleusdb_stats_returns_counts() {
 
     let (status, val) = api_get(state, "/nucleusdb/stats").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(val.get("key_count").is_some(), "should have key_count: {val}");
+    assert!(
+        val.get("key_count").is_some(),
+        "should have key_count: {val}"
+    );
     assert!(
         val.get("commit_count").is_some(),
         "should have commit_count: {val}"
@@ -425,6 +431,50 @@ async fn nucleusdb_edit_json_value() {
     assert_eq!(status, StatusCode::OK, "edit json: {val}");
     assert_eq!(val["ok"], true);
     assert_eq!(val["type"], "json");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn nucleusdb_edit_respects_explicit_text_type() {
+    let (state, db_path) = test_state("ndb_edit_explicit_text");
+    seed_session(&db_path, "edit-explicit-text-test");
+
+    let (status, val) = api_post(
+        state.clone(),
+        "/nucleusdb/edit",
+        json!({"key": "payload:text", "type": "text", "value": "{\"name\":\"Alice\"}"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "edit explicit text: {val}");
+    assert_eq!(val["ok"], true);
+    assert_eq!(val["type"], "text");
+
+    let (s2, v2) = api_get(state, "/nucleusdb/browse?prefix=payload:text").await;
+    assert_eq!(s2, StatusCode::OK);
+    let rows = v2["rows"].as_array().expect("should have rows");
+    assert_eq!(rows[0]["type"], "text");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn nucleusdb_edit_rejects_explicit_type_mismatch() {
+    let (state, db_path) = test_state("ndb_edit_type_mismatch");
+    seed_session(&db_path, "edit-type-mismatch-test");
+
+    let (status, val) = api_post(
+        state,
+        "/nucleusdb/edit",
+        json!({"key": "bad:int", "type": "integer", "value": "not-a-number"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "type mismatch should be 400: {val}"
+    );
+    assert!(val.get("error").is_some(), "should include error: {val}");
 
     let _ = std::fs::remove_file(&db_path);
 }
