@@ -453,8 +453,14 @@ fn tool_agentpmt_proxy(tool_name: &str, _arguments: Value) -> Result<Value, Stri
     }
 
     // Record the attempted call for observability.
-    let _ =
-        record_paid_operation_for_halo(&format!("agentpmt/{tool_name}"), 0, None, None, false, Some("proxy_not_implemented".to_string()));
+    let _ = record_paid_operation_for_halo(
+        &format!("agentpmt/{tool_name}"),
+        0,
+        None,
+        None,
+        false,
+        Some("proxy_not_implemented".to_string()),
+    );
 
     Err(format!(
         "AgentPMT tool proxy is not yet implemented: '{}' was recognized but the call was NOT \
@@ -842,7 +848,10 @@ fn tool_privacy_pool_withdraw(arguments: Value) -> Result<Value, String> {
 
 fn tool_pq_bridge_transfer(arguments: Value) -> Result<Value, String> {
     if !addons::is_enabled("p2pclaw")? {
-        return Err("p2pclaw add-on is required. Enable it via the halo_capabilities tool or CLI.".to_string());
+        return Err(
+            "p2pclaw add-on is required. Enable it via the halo_capabilities tool or CLI."
+                .to_string(),
+        );
     }
     let from_chain = arguments
         .get("from_chain")
@@ -953,14 +962,7 @@ fn tool_x402_pay(arguments: Value) -> Result<Value, String> {
         Ok(result) => {
             // Record with nonce tag + tx_hash so duplicate detection works.
             let digest = format!("{}|{}", nonce_tag, result.transaction_hash);
-            record_paid_operation_for_halo(
-                op,
-                result.amount,
-                None,
-                Some(digest),
-                true,
-                None,
-            )?;
+            record_paid_operation_for_halo(op, result.amount, None, Some(digest), true, None)?;
             // Build submission instructions for the agent to re-access the resource.
             let submit_instructions = json!({
                 "method": result.proof.x402version.clone(),
@@ -1161,7 +1163,10 @@ fn tool_x402_summary(_arguments: Value) -> Result<Value, String> {
 
     // Gather x402 paid operations.
     let ops = nucleusdb::halo::trace::paid_operations(&db_path).unwrap_or_default();
-    let x402_ops: Vec<_> = ops.iter().filter(|o| o.operation_type == "x402_pay" && o.success).collect();
+    let x402_ops: Vec<_> = ops
+        .iter()
+        .filter(|o| o.operation_type == "x402_pay" && o.success)
+        .collect();
     let total_spent: u64 = x402_ops.iter().map(|o| o.credits_spent).sum();
     let total_spent_usd: f64 = x402_ops.iter().map(|o| o.usd_equivalent).sum();
     let payment_count = x402_ops.len();

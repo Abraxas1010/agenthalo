@@ -1695,7 +1695,11 @@ fn cmd_doctor(_args: &[String]) -> Result<(), String> {
     } else {
         println!(
             "  On-chain:           CONFIGURED  ({}, contract {}...)",
-            if onchain_cfg.chain_name.is_empty() { "unknown chain" } else { &onchain_cfg.chain_name },
+            if onchain_cfg.chain_name.is_empty() {
+                "unknown chain"
+            } else {
+                &onchain_cfg.chain_name
+            },
             &onchain_cfg.contract_address[..std::cmp::min(10, onchain_cfg.contract_address.len())]
         );
     }

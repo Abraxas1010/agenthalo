@@ -10,7 +10,6 @@ use axum::routing::get;
 use axum::Router;
 use std::net::SocketAddr;
 
-
 /// Shared state for all dashboard API handlers.
 #[derive(Clone)]
 pub struct DashboardState {

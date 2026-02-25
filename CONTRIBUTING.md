@@ -16,7 +16,7 @@ Thank you for your interest in contributing. NucleusDB prioritizes correctness, 
 # Build everything
 cargo build
 
-# Run all Rust tests (202 tests)
+# Run all Rust tests (212 tests)
 cargo test
 
 # Run Solidity tests (34 tests, requires Foundry)

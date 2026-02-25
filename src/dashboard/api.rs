@@ -5,9 +5,12 @@
 //! and scripting/automation.
 
 use super::DashboardState;
+use crate::cli::default_witness_cfg;
 use crate::halo::addons;
 use crate::halo::agentpmt;
-use crate::halo::attest::{attest_session, resolve_session_id, save_attestation, AttestationRequest};
+use crate::halo::attest::{
+    attest_session, resolve_session_id, save_attestation, AttestationRequest,
+};
 use crate::halo::auth::{is_authenticated, resolve_api_key};
 use crate::halo::config;
 use crate::halo::onchain::load_onchain_config_or_default;
@@ -20,6 +23,12 @@ use crate::halo::trust::query_trust_score;
 use crate::halo::viewer::export_session_json;
 use crate::halo::wrap;
 use crate::halo::x402;
+use crate::persistence::{default_wal_path, load_snapshot, persist_snapshot_and_sync_wal};
+use crate::protocol::NucleusDb;
+use crate::sql::executor::{SqlExecutor, SqlResult};
+use crate::state::State;
+use crate::witness::WitnessSignatureAlgorithm;
+use crate::VcBackend;
 
 use axum::extract::{Path, Query, State as AxumState};
 use axum::http::StatusCode;
@@ -182,13 +191,17 @@ async fn api_sessions(
     AxumState(state): AxumState<DashboardState>,
     Query(params): Query<SessionsQuery>,
 ) -> ApiResult {
-    let sessions = list_sessions(&state.db_path).map_err(|e| internal_err(e))?;
+    let sessions = list_sessions(&state.db_path).map_err(internal_err)?;
 
     let mut items: Vec<Value> = Vec::new();
     for s in &sessions {
         // Apply filters
         if let Some(ref agent_filter) = params.agent {
-            if !s.agent.to_lowercase().contains(&agent_filter.to_lowercase()) {
+            if !s
+                .agent
+                .to_lowercase()
+                .contains(&agent_filter.to_lowercase())
+            {
                 continue;
             }
         }
@@ -221,13 +234,13 @@ async fn api_session_detail(
     AxumState(state): AxumState<DashboardState>,
     Path(id): Path<String>,
 ) -> ApiResult {
-    let sessions = list_sessions(&state.db_path).map_err(|e| internal_err(e))?;
+    let sessions = list_sessions(&state.db_path).map_err(internal_err)?;
     let meta = sessions
         .into_iter()
         .find(|s| s.session_id == id)
         .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "session not found"))?;
-    let summary = session_summary(&state.db_path, &id).map_err(|e| internal_err(e))?;
-    let events = session_events(&state.db_path, &id).map_err(|e| internal_err(e))?;
+    let summary = session_summary(&state.db_path, &id).map_err(internal_err)?;
+    let events = session_events(&state.db_path, &id).map_err(internal_err)?;
 
     Ok(Json(json!({
         "session": meta,
@@ -240,7 +253,7 @@ async fn api_session_events(
     AxumState(state): AxumState<DashboardState>,
     Path(id): Path<String>,
 ) -> ApiResult {
-    let events = session_events(&state.db_path, &id).map_err(|e| internal_err(e))?;
+    let events = session_events(&state.db_path, &id).map_err(internal_err)?;
     Ok(Json(json!({"events": events})))
 }
 
@@ -248,7 +261,7 @@ async fn api_session_export(
     AxumState(state): AxumState<DashboardState>,
     Path(id): Path<String>,
 ) -> ApiResult {
-    let export = export_session_json(&state.db_path, &id).map_err(|e| internal_err(e))?;
+    let export = export_session_json(&state.db_path, &id).map_err(internal_err)?;
     Ok(Json(export))
 }
 
@@ -256,7 +269,7 @@ async fn api_session_attest(
     AxumState(state): AxumState<DashboardState>,
     Path(id): Path<String>,
 ) -> ApiResult {
-    let resolved = resolve_session_id(&state.db_path, Some(&id)).map_err(|e| internal_err(e))?;
+    let resolved = resolve_session_id(&state.db_path, Some(&id)).map_err(internal_err)?;
     let result = attest_session(
         &state.db_path,
         AttestationRequest {
@@ -264,9 +277,9 @@ async fn api_session_attest(
             anonymous: false,
         },
     )
-    .map_err(|e| internal_err(e))?;
+    .map_err(internal_err)?;
 
-    let save_path = save_attestation(&resolved, &result).map_err(|e| internal_err(e))?;
+    let save_path = save_attestation(&resolved, &result).map_err(internal_err)?;
     let _ = record_paid_operation_for_halo(
         "attest",
         0,
@@ -291,7 +304,7 @@ async fn api_costs(
     Query(params): Query<CostsQuery>,
 ) -> ApiResult {
     let monthly = params.monthly.unwrap_or(false);
-    let rows = cost_buckets(&state.db_path, monthly).map_err(|e| internal_err(e))?;
+    let rows = cost_buckets(&state.db_path, monthly).map_err(internal_err)?;
 
     let total_cost: f64 = rows.iter().map(|r| r.cost_usd).sum();
     let total_tokens: u64 = rows.iter().map(|r| r.input_tokens + r.output_tokens).sum();
@@ -321,7 +334,7 @@ async fn api_costs(
 }
 
 async fn api_costs_daily(AxumState(state): AxumState<DashboardState>) -> ApiResult {
-    let rows = cost_buckets(&state.db_path, false).map_err(|e| internal_err(e))?;
+    let rows = cost_buckets(&state.db_path, false).map_err(internal_err)?;
     let items: Vec<Value> = rows
         .iter()
         .map(|r| {
@@ -337,7 +350,7 @@ async fn api_costs_daily(AxumState(state): AxumState<DashboardState>) -> ApiResu
 }
 
 async fn api_costs_by_agent(AxumState(state): AxumState<DashboardState>) -> ApiResult {
-    let sessions = list_sessions(&state.db_path).map_err(|e| internal_err(e))?;
+    let sessions = list_sessions(&state.db_path).map_err(internal_err)?;
     let mut by_agent: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for s in &sessions {
         if let Ok(Some(summary)) = session_summary(&state.db_path, &s.session_id) {
@@ -352,7 +365,7 @@ async fn api_costs_by_agent(AxumState(state): AxumState<DashboardState>) -> ApiR
 }
 
 async fn api_costs_by_model(AxumState(state): AxumState<DashboardState>) -> ApiResult {
-    let sessions = list_sessions(&state.db_path).map_err(|e| internal_err(e))?;
+    let sessions = list_sessions(&state.db_path).map_err(internal_err)?;
     let mut by_model: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for s in &sessions {
         if let Ok(Some(summary)) = session_summary(&state.db_path, &s.session_id) {
@@ -459,15 +472,24 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     })))
 }
 
+/// Allowed agent names for shell wrapping — prevents shell RC injection.
+const ALLOWED_WRAP_AGENTS: &[&str] = &["claude", "codex", "gemini"];
+
 async fn api_config_wrap(
     AxumState(_state): AxumState<DashboardState>,
     Json(req): Json<WrapRequest>,
 ) -> ApiResult {
+    if !ALLOWED_WRAP_AGENTS.contains(&req.agent.as_str()) {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "agent must be one of: claude, codex, gemini",
+        ));
+    }
     let rc = wrap::detect_shell_rc();
     if req.enable {
-        wrap::wrap_agent(&req.agent, &rc).map_err(|e| internal_err(e))?;
+        wrap::wrap_agent(&req.agent, &rc).map_err(internal_err)?;
     } else {
-        wrap::unwrap_agent(&req.agent, &rc).map_err(|e| internal_err(e))?;
+        wrap::unwrap_agent(&req.agent, &rc).map_err(internal_err)?;
     }
     Ok(Json(json!({
         "ok": true,
@@ -496,7 +518,7 @@ async fn api_config_x402(
     if let Some(max) = req.max_auto_approve {
         cfg.max_auto_approve = max;
     }
-    x402::save_x402_config(&cfg).map_err(|e| internal_err(e))?;
+    x402::save_x402_config(&cfg).map_err(internal_err)?;
     Ok(Json(json!({"ok": true, "config": {
         "enabled": cfg.enabled,
         "network": cfg.preferred_network,
@@ -513,7 +535,7 @@ async fn api_trust(
     Path(session_id): Path<String>,
 ) -> ApiResult {
     let score =
-        query_trust_score(&state.db_path, Some(&session_id)).map_err(|e| internal_err(e))?;
+        query_trust_score(&state.db_path, Some(&session_id)).map_err(internal_err)?;
     Ok(Json(json!({"trust": score})))
 }
 
@@ -523,7 +545,12 @@ async fn api_attestations(AxumState(_state): AxumState<DashboardState>) -> ApiRe
     if attest_dir.exists() {
         if let Ok(entries) = std::fs::read_dir(&attest_dir) {
             for entry in entries.flatten() {
-                if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+                if entry
+                    .path()
+                    .extension()
+                    .map(|e| e == "json")
+                    .unwrap_or(false)
+                {
                     if let Ok(raw) = std::fs::read_to_string(entry.path()) {
                         if let Ok(val) = serde_json::from_str::<Value>(&raw) {
                             attestations.push(val);
@@ -533,30 +560,27 @@ async fn api_attestations(AxumState(_state): AxumState<DashboardState>) -> ApiRe
             }
         }
     }
-    Ok(Json(json!({"attestations": attestations, "count": attestations.len()})))
+    Ok(Json(
+        json!({"attestations": attestations, "count": attestations.len()}),
+    ))
 }
 
 async fn api_attestation_verify(
-    AxumState(_state): AxumState<DashboardState>,
+    AxumState(state): AxumState<DashboardState>,
     Json(req): Json<VerifyRequest>,
 ) -> ApiResult {
-    // Check if we have a local attestation with this digest
+    use crate::halo::attest::AttestationResult;
+
+    // 1. Find the stored attestation by digest
     let attest_dir = config::attestations_dir();
-    let mut found = false;
-    let mut attestation: Option<Value> = None;
+    let mut stored: Option<AttestationResult> = None;
     if attest_dir.exists() {
         if let Ok(entries) = std::fs::read_dir(&attest_dir) {
             for entry in entries.flatten() {
                 if let Ok(raw) = std::fs::read_to_string(entry.path()) {
-                    if let Ok(val) = serde_json::from_str::<Value>(&raw) {
-                        if val
-                            .get("attestation_digest")
-                            .and_then(|d| d.as_str())
-                            .map(|d| d == req.digest)
-                            .unwrap_or(false)
-                        {
-                            found = true;
-                            attestation = Some(val);
+                    if let Ok(val) = serde_json::from_str::<AttestationResult>(&raw) {
+                        if val.attestation_digest == req.digest {
+                            stored = Some(val);
                             break;
                         }
                     }
@@ -565,11 +589,82 @@ async fn api_attestation_verify(
         }
     }
 
-    Ok(Json(json!({
-        "digest": req.digest,
-        "found": found,
-        "attestation": attestation,
-    })))
+    let stored = match stored {
+        Some(s) => s,
+        None => {
+            return Ok(Json(json!({
+                "digest": req.digest,
+                "found": false,
+                "verified": false,
+                "reason": "no attestation with this digest in local store",
+            })));
+        }
+    };
+
+    // 2. Cryptographic verification: re-attest the session and compare
+    let session_id = match &stored.session_id {
+        Some(id) => id.clone(),
+        None => {
+            // Anonymous attestation — verify membership proof if present
+            let membership_ok = stored
+                .anonymous_membership_proof
+                .as_ref()
+                .map(|p| crate::halo::attest::verify_anonymous_membership_proof(p).unwrap_or(false))
+                .unwrap_or(false);
+            return Ok(Json(json!({
+                "digest": req.digest,
+                "found": true,
+                "verified": membership_ok,
+                "proof_type": stored.proof_type,
+                "event_count": stored.event_count,
+                "reason": if membership_ok {
+                    "anonymous attestation: membership proof verified"
+                } else {
+                    "anonymous attestation: cannot re-derive (session id blinded)"
+                },
+            })));
+        }
+    };
+
+    // Re-compute attestation from the live session events
+    let recomputed = attest_session(
+        &state.db_path,
+        AttestationRequest {
+            session_id: session_id.clone(),
+            anonymous: false,
+        },
+    );
+
+    match recomputed {
+        Ok(fresh) => {
+            let digest_match = fresh.attestation_digest == stored.attestation_digest;
+            let root_match = fresh.merkle_root == stored.merkle_root;
+            let count_match = fresh.event_count == stored.event_count;
+            let verified = digest_match && root_match && count_match;
+
+            Ok(Json(json!({
+                "digest": req.digest,
+                "found": true,
+                "verified": verified,
+                "checks": {
+                    "digest_match": digest_match,
+                    "merkle_root_match": root_match,
+                    "event_count_match": count_match,
+                },
+                "stored_merkle_root": stored.merkle_root,
+                "recomputed_merkle_root": fresh.merkle_root,
+                "event_count": stored.event_count,
+                "proof_type": stored.proof_type,
+            })))
+        }
+        Err(e) => Ok(Json(json!({
+            "digest": req.digest,
+            "found": true,
+            "verified": false,
+            "reason": format!("re-attestation failed: {e}"),
+            "note": "session events may have been modified or deleted since attestation",
+        }))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -593,30 +688,75 @@ async fn api_nucleusdb_status(AxumState(state): AxumState<DashboardState>) -> Ap
 }
 
 async fn api_nucleusdb_browse(AxumState(state): AxumState<DashboardState>) -> ApiResult {
-    // Return a summary of stored keys by prefix
-    let sessions = list_sessions(&state.db_path).unwrap_or_default();
-    Ok(Json(json!({
-        "sessions": sessions.len(),
-        "note": "Browse the full key-value store via the NucleusDB TUI or SQL interface",
-    })))
+    let mut db = load_halo_db(&state.db_path)?;
+    let mut executor = SqlExecutor::new(&mut db);
+    let result = executor.execute("SELECT key, value FROM data");
+    match result {
+        SqlResult::Rows { columns, rows } => Ok(Json(json!({
+            "columns": columns,
+            "rows": rows,
+            "total": rows.len(),
+        }))),
+        SqlResult::Error { message } => Err(internal_err(message)),
+        SqlResult::Ok { message } => Ok(Json(json!({ "message": message, "total": 0 }))),
+    }
 }
 
 async fn api_nucleusdb_sql(
-    AxumState(_state): AxumState<DashboardState>,
+    AxumState(state): AxumState<DashboardState>,
     Json(req): Json<SqlRequest>,
 ) -> ApiResult {
-    // SQL execution against the trace store is complex and requires the full
-    // NucleusDb protocol. For now, return a helpful message.
-    Ok(Json(json!({
-        "query": req.query,
-        "note": "SQL execution available via `nucleusdb sql` CLI or `nucleusdb tui`",
-        "status": "not_implemented_in_dashboard",
-    })))
+    let db_path = &state.db_path;
+    let mut db = load_halo_db(db_path)?;
+    let (result, committed) = {
+        let mut executor = SqlExecutor::new(&mut db);
+        let out = executor.execute(req.query.trim());
+        (out, executor.committed())
+    };
+    if committed {
+        let wal_path = default_wal_path(db_path);
+        persist_snapshot_and_sync_wal(db_path, &wal_path, &db)
+            .map_err(|e| internal_err(format!("persist after commit: {e:?}")))?;
+    }
+    match result {
+        SqlResult::Rows { columns, rows } => Ok(Json(json!({
+            "columns": columns,
+            "rows": rows,
+        }))),
+        SqlResult::Ok { message } => Ok(Json(json!({ "message": message }))),
+        SqlResult::Error { message } => Ok(Json(json!({ "error": message }))),
+    }
+}
+
+/// Load the H.A.L.O. trace store as a NucleusDb instance.
+fn load_halo_db(db_path: &std::path::Path) -> Result<NucleusDb, (StatusCode, Json<Value>)> {
+    if !db_path.exists() {
+        let mut cfg = default_witness_cfg();
+        cfg.signing_algorithm = WitnessSignatureAlgorithm::MlDsa65;
+        return Ok(NucleusDb::new(
+            State::new(vec![]),
+            VcBackend::BinaryMerkle,
+            cfg,
+        ));
+    }
+    let mut cfg = default_witness_cfg();
+    cfg.signing_algorithm = WitnessSignatureAlgorithm::MlDsa65;
+    load_snapshot(db_path, cfg).map_err(|e| internal_err(format!("load NucleusDB: {e:?}")))
 }
 
 async fn api_nucleusdb_history(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    // NucleusDB commit history via SHOW HISTORY
+    let mut db = load_halo_db(&state.db_path)?;
+    let mut executor = SqlExecutor::new(&mut db);
+    let result = executor.execute("SHOW HISTORY");
+    let commit_history = match result {
+        SqlResult::Rows { columns, rows } => json!({ "columns": columns, "rows": rows }),
+        _ => json!({ "columns": [], "rows": [] }),
+    };
+
+    // Session-level history
     let sessions = list_sessions(&state.db_path).unwrap_or_default();
-    let items: Vec<Value> = sessions
+    let session_items: Vec<Value> = sessions
         .iter()
         .take(50)
         .map(|s| {
@@ -629,7 +769,11 @@ async fn api_nucleusdb_history(AxumState(state): AxumState<DashboardState>) -> A
             })
         })
         .collect();
-    Ok(Json(json!({"history": items})))
+
+    Ok(Json(json!({
+        "commits": commit_history,
+        "sessions": session_items,
+    })))
 }
 
 // ---------------------------------------------------------------------------
@@ -669,8 +813,10 @@ async fn api_x402_summary(AxumState(state): AxumState<DashboardState>) -> ApiRes
     let cfg = x402::load_x402_config();
     let paid = paid_breakdown_by_operation_type(&state.db_path).unwrap_or_default();
 
-    let x402_payments: Vec<&(String, u64, u64, f64)> =
-        paid.iter().filter(|(op, _, _, _)| op == "x402_pay").collect();
+    let x402_payments: Vec<&(String, u64, u64, f64)> = paid
+        .iter()
+        .filter(|(op, _, _, _)| op == "x402_pay")
+        .collect();
     let total_x402_count: u64 = x402_payments.iter().map(|(_, c, _, _)| c).sum();
     let total_x402_usd: f64 = x402_payments.iter().map(|(_, _, _, u)| u).sum();
 
@@ -698,9 +844,12 @@ async fn api_x402_summary(AxumState(state): AxumState<DashboardState>) -> ApiRes
 async fn api_x402_balance(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let cfg = x402::load_x402_config();
     if !cfg.enabled {
-        return Err(api_err(StatusCode::BAD_REQUEST, "x402 payments are disabled"));
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "x402 payments are disabled",
+        ));
     }
-    let (address, balance) = x402::check_usdc_balance(&cfg).map_err(|e| internal_err(e))?;
+    let (address, balance) = x402::check_usdc_balance(&cfg).map_err(internal_err)?;
     Ok(Json(json!({
         "address": address,
         "balance_usdc": balance as f64 / 1_000_000.0,
@@ -717,17 +866,13 @@ pub async fn sse_handler(
     AxumState(state): AxumState<DashboardState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     let db_path = state.db_path.clone();
-    let mut last_count = list_sessions(&db_path)
-        .map(|s| s.len())
-        .unwrap_or(0);
+    let mut last_count = list_sessions(&db_path).map(|s| s.len()).unwrap_or(0);
 
     let stream = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
         Duration::from_millis(2000),
     ))
     .map(move |_| {
-        let current_count = list_sessions(&db_path)
-            .map(|s| s.len())
-            .unwrap_or(0);
+        let current_count = list_sessions(&db_path).map(|s| s.len()).unwrap_or(0);
 
         if current_count != last_count {
             last_count = current_count;

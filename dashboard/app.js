@@ -43,6 +43,12 @@ async function apiPost(path, body) {
   return res.json();
 }
 
+// -- HTML escaping (XSS prevention) -------------------------------------------
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 // -- Format helpers -----------------------------------------------------------
 function fmtCost(v) { return '$' + (v || 0).toFixed(2); }
 function fmtTokens(v) { return (v || 0).toLocaleString(); }
@@ -61,14 +67,14 @@ function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '...' : s; 
 function statusBadge(status) {
   const cls = status === 'completed' ? 'badge-ok' : status === 'failed' ? 'badge-err' :
     status === 'running' ? 'badge-info' : 'badge-muted';
-  return `<span class="badge ${cls}">${status}</span>`;
+  return `<span class="badge ${cls}">${esc(status)}</span>`;
 }
 function eventTypeBadge(type) {
   const colors = { assistant: '#58a6ff', tool_call: '#bc8cff', tool_result: '#bc8cff',
     mcp_tool_call: '#d29922', file_change: '#3fb950', bash_command: '#db6d28',
     error: '#f85149', thinking: '#8b949e' };
   const c = colors[type] || '#8b949e';
-  return `<span class="event-type" style="background:${c}22;color:${c}">${type}</span>`;
+  return `<span class="event-type" style="background:${c}22;color:${c}">${esc(type)}</span>`;
 }
 
 // -- SSE live updates ---------------------------------------------------------
@@ -141,10 +147,10 @@ async function renderOverview() {
             ${recentSessions.map(item => {
               const ss = item.session, sm = item.summary || {};
               const tokens = (sm.total_input_tokens || 0) + (sm.total_output_tokens || 0);
-              return `<tr class="clickable" onclick="location.hash='#/sessions/${ss.session_id}'">
-                <td style="font-family:var(--font-mono);font-size:12px">${truncate(ss.session_id, 24)}</td>
-                <td>${ss.agent}</td>
-                <td>${truncate(ss.model || 'unknown', 20)}</td>
+              return `<tr class="clickable" onclick="location.hash='#/sessions/${encodeURIComponent(ss.session_id)}'">
+                <td style="font-family:var(--font-mono);font-size:12px">${esc(truncate(ss.session_id, 24))}</td>
+                <td>${esc(ss.agent)}</td>
+                <td>${esc(truncate(ss.model || 'unknown', 20))}</td>
                 <td>${fmtTokens(tokens)}</td>
                 <td>${fmtCost(sm.estimated_cost_usd)}</td>
                 <td>${fmtDuration(sm.duration_secs)}</td>
@@ -185,7 +191,7 @@ async function renderOverview() {
       }
     }
   } catch (e) {
-    content.innerHTML = `<div class="loading">Error loading dashboard: ${e.message}</div>`;
+    content.innerHTML = `<div class="loading">Error loading dashboard: ${esc(e.message)}</div>`;
   }
 }
 
@@ -217,18 +223,18 @@ async function renderSessions(sessionId) {
 
     window._sessionItems = items;
   } catch (e) {
-    content.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+    content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
 }
 
 function sessionRow(item) {
   const ss = item.session, sm = item.summary || {};
   const tokens = (sm.total_input_tokens || 0) + (sm.total_output_tokens || 0);
-  return `<tr class="clickable session-row" data-agent="${ss.agent}" data-model="${ss.model || ''}"
-    onclick="location.hash='#/sessions/${ss.session_id}'">
-    <td style="font-family:var(--font-mono);font-size:12px">${truncate(ss.session_id, 28)}</td>
-    <td>${ss.agent}</td>
-    <td>${truncate(ss.model || 'unknown', 22)}</td>
+  return `<tr class="clickable session-row" data-agent="${esc(ss.agent)}" data-model="${esc(ss.model || '')}"
+    onclick="location.hash='#/sessions/${encodeURIComponent(ss.session_id)}'">
+    <td style="font-family:var(--font-mono);font-size:12px">${esc(truncate(ss.session_id, 28))}</td>
+    <td>${esc(ss.agent)}</td>
+    <td>${esc(truncate(ss.model || 'unknown', 22))}</td>
     <td>${fmtTokens(tokens)}</td>
     <td>${fmtCost(sm.estimated_cost_usd)}</td>
     <td>${fmtDuration(sm.duration_secs)}</td>
@@ -260,13 +266,13 @@ async function renderSessionDetail(id) {
 
     content.innerHTML = `
       <a href="#/sessions" class="back-link">&larr; Back to Sessions</a>
-      <div class="page-title">${truncate(ss.session_id, 32)} ${statusBadge(ss.status)}</div>
+      <div class="page-title">${esc(truncate(ss.session_id, 32))} ${statusBadge(ss.status)}</div>
 
       <div class="card-grid">
         <div class="card">
           <div class="card-label">Agent</div>
-          <div class="card-value" style="font-size:18px">${ss.agent}</div>
-          <div class="card-sub">${ss.model || 'unknown'}</div>
+          <div class="card-value" style="font-size:18px">${esc(ss.agent)}</div>
+          <div class="card-sub">${esc(ss.model || 'unknown')}</div>
         </div>
         <div class="card">
           <div class="card-label">Tokens</div>
@@ -288,8 +294,8 @@ async function renderSessionDetail(id) {
       </div>
 
       <div style="margin-bottom:12px;display:flex;gap:8px">
-        <button class="btn" onclick="exportSession('${ss.session_id}')">Export JSON</button>
-        <button class="btn btn-primary" onclick="attestSession('${ss.session_id}')">Attest</button>
+        <button class="btn" onclick="exportSession('${esc(ss.session_id)}')">Export JSON</button>
+        <button class="btn btn-primary" onclick="attestSession('${esc(ss.session_id)}')">Attest</button>
       </div>
 
       <div class="section-header">Event Timeline (${events.length} events)</div>
@@ -298,14 +304,14 @@ async function renderSessionDetail(id) {
           <div class="event-item">
             <span class="event-seq">#${ev.seq}</span>
             ${eventTypeBadge(ev.event_type)}
-            <span class="event-content">${truncate(JSON.stringify(ev.content), 100)}</span>
+            <span class="event-content">${esc(truncate(JSON.stringify(ev.content), 100))}</span>
             ${ev.input_tokens ? `<span style="color:var(--text-muted);font-size:11px;margin-left:8px">in:${ev.input_tokens} out:${ev.output_tokens || 0}</span>` : ''}
           </div>
         `).join('')}
       </div>
     `;
   } catch (e) {
-    content.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+    content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
 }
 
@@ -381,7 +387,7 @@ async function renderCosts() {
           <thead><tr><th>Operation</th><th>Count</th><th>Credits</th><th>USD</th></tr></thead>
           <tbody>
             ${(paid.by_type || []).map(op => `
-              <tr><td>${op.operation}</td><td>${op.count}</td><td>${fmtTokens(op.credits_spent)}</td><td>${fmtCost(op.usd_spent)}</td></tr>
+              <tr><td>${esc(op.operation)}</td><td>${op.count}</td><td>${fmtTokens(op.credits_spent)}</td><td>${fmtCost(op.usd_spent)}</td></tr>
             `).join('')}
           </tbody>
         </table></div>
@@ -451,7 +457,7 @@ async function renderCosts() {
       });
     }
   } catch (e) {
-    content.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+    content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
 }
 
@@ -492,7 +498,7 @@ async function renderConfig() {
           </div>
         `).join('')}
         <div class="config-row">
-          <div class="config-desc">Shell RC: ${cfg.wrapping.shell_rc}</div>
+          <div class="config-desc">Shell RC: ${esc(cfg.wrapping.shell_rc)}</div>
         </div>
       </div>
 
@@ -534,7 +540,7 @@ async function renderConfig() {
         <div class="config-row">
           <div>
             <div class="config-label">Budget Tag</div>
-            <div class="config-desc">${cfg.agentpmt.budget_tag || '(none)'}</div>
+            <div class="config-desc">${esc(cfg.agentpmt.budget_tag || '(none)')}</div>
           </div>
         </div>
       </div>
@@ -544,13 +550,13 @@ async function renderConfig() {
         <div class="config-row">
           <div>
             <div class="config-label">Chain</div>
-            <div class="config-desc">${cfg.onchain.chain_name || 'Not configured'} (ID: ${cfg.onchain.chain_id})</div>
+            <div class="config-desc">${esc(cfg.onchain.chain_name || 'Not configured')} (ID: ${esc(cfg.onchain.chain_id)})</div>
           </div>
         </div>
         <div class="config-row">
           <div>
             <div class="config-label">Contract</div>
-            <div class="config-desc" style="font-family:var(--font-mono);font-size:11px">${cfg.onchain.contract_address || '(not deployed)'}</div>
+            <div class="config-desc" style="font-family:var(--font-mono);font-size:11px">${esc(cfg.onchain.contract_address || '(not deployed)')}</div>
           </div>
         </div>
       </div>
@@ -577,13 +583,13 @@ async function renderConfig() {
 
       <div class="section-header">Paths</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
-        <div class="config-row"><div><div class="config-label">Home</div><div class="config-desc" style="font-family:var(--font-mono);font-size:11px">${cfg.paths.home}</div></div></div>
-        <div class="config-row"><div><div class="config-label">Database</div><div class="config-desc" style="font-family:var(--font-mono);font-size:11px">${cfg.paths.db}</div></div></div>
+        <div class="config-row"><div><div class="config-label">Home</div><div class="config-desc" style="font-family:var(--font-mono);font-size:11px">${esc(cfg.paths.home)}</div></div></div>
+        <div class="config-row"><div><div class="config-label">Database</div><div class="config-desc" style="font-family:var(--font-mono);font-size:11px">${esc(cfg.paths.db)}</div></div></div>
         <div class="config-row"><div><div class="config-label">PQ Wallet</div><div class="config-desc">${cfg.pq_wallet ? 'Present (ML-DSA-65)' : 'Not created'}</div></div></div>
       </div>
     `;
   } catch (e) {
-    content.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+    content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
 }
 
@@ -640,10 +646,10 @@ async function renderTrust() {
           <tbody>
             ${attestations.map(a => `
               <tr>
-                <td style="font-family:var(--font-mono);font-size:11px">${truncate(a.attestation_digest || '', 32)}</td>
-                <td><span class="badge badge-info">${a.proof_type || 'merkle'}</span></td>
-                <td style="font-family:var(--font-mono);font-size:11px">${truncate(a.session_id || '', 24)}</td>
-                <td style="font-family:var(--font-mono);font-size:11px">${a.tx_hash ? truncate(a.tx_hash, 24) : '-'}</td>
+                <td style="font-family:var(--font-mono);font-size:11px">${esc(truncate(a.attestation_digest || '', 32))}</td>
+                <td><span class="badge badge-info">${esc(a.proof_type || 'merkle')}</span></td>
+                <td style="font-family:var(--font-mono);font-size:11px">${esc(truncate(a.session_id || '', 24))}</td>
+                <td style="font-family:var(--font-mono);font-size:11px">${a.tx_hash ? esc(truncate(a.tx_hash, 24)) : '-'}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -651,7 +657,7 @@ async function renderTrust() {
       ` : '<div style="color:var(--text-muted)">No attestations created yet.</div>'}
     `;
   } catch (e) {
-    content.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+    content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
 }
 
@@ -662,13 +668,28 @@ window.verifyDigest = async function() {
   el.innerHTML = '<div style="color:var(--text-muted)">Checking...</div>';
   try {
     const data = await apiPost('/attestations/verify', { digest });
-    if (data.found) {
-      el.innerHTML = '<div class="card" style="border-color:var(--green)"><div class="card-label" style="color:var(--green)">VERIFIED</div><div class="card-sub">Attestation found in local store</div></div>';
+    if (data.verified) {
+      el.innerHTML = `<div class="card" style="border-color:var(--green)">
+        <div class="card-label" style="color:var(--green)">CRYPTOGRAPHICALLY VERIFIED</div>
+        <div class="card-sub">Merkle root recomputed from session events matches stored attestation.
+          ${data.checks ? `<br>Digest: ${data.checks.digest_match ? 'OK' : 'MISMATCH'} |
+          Root: ${data.checks.merkle_root_match ? 'OK' : 'MISMATCH'} |
+          Events: ${data.checks.event_count_match ? 'OK' : 'MISMATCH'}` : ''}
+          ${data.event_count ? `<br>${data.event_count} events verified` : ''}
+        </div></div>`;
+    } else if (data.found) {
+      el.innerHTML = `<div class="card" style="border-color:var(--red)">
+        <div class="card-label" style="color:var(--red)">VERIFICATION FAILED</div>
+        <div class="card-sub">${esc(data.reason || 'Recomputed attestation does not match stored digest — possible tampering.')}
+          ${data.checks ? `<br>Digest: ${data.checks.digest_match ? 'OK' : 'MISMATCH'} |
+          Root: ${data.checks.merkle_root_match ? 'OK' : 'MISMATCH'} |
+          Events: ${data.checks.event_count_match ? 'OK' : 'MISMATCH'}` : ''}
+        </div></div>`;
     } else {
       el.innerHTML = '<div class="card" style="border-color:var(--yellow)"><div class="card-label" style="color:var(--yellow)">NOT FOUND</div><div class="card-sub">No attestation with this digest in local store</div></div>';
     }
   } catch (e) {
-    el.innerHTML = `<div style="color:var(--red)">Verification failed: ${e.message}</div>`;
+    el.innerHTML = `<div style="color:var(--red)">Verification failed: ${esc(e.message)}</div>`;
   }
 };
 
@@ -700,7 +721,7 @@ async function renderNucleusDB() {
           <div class="card-value" style="font-size:14px">
             ${status.exists ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-warn">Not Created</span>'}
           </div>
-          <div class="card-sub" style="font-family:var(--font-mono);font-size:10px">${status.db_path}</div>
+          <div class="card-sub" style="font-family:var(--font-mono);font-size:10px">${esc(status.db_path)}</div>
         </div>
       </div>
 
@@ -710,30 +731,42 @@ async function renderNucleusDB() {
           <input type="text" id="sql-input" placeholder="Enter SQL query (e.g. SELECT * FROM kv)" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
           <button class="btn btn-primary" onclick="runSQL()">Execute</button>
         </div>
-        <div class="config-desc">Full SQL execution available via <code>nucleusdb sql</code> CLI or <code>nucleusdb tui</code></div>
+        <div class="config-desc">INSERT, SELECT, UPDATE, DELETE, COMMIT, VERIFY, SHOW STATUS/HISTORY/MODE, SET MODE APPEND_ONLY</div>
         <div id="sql-result" style="margin-top:8px"></div>
       </div>
 
-      <div class="section-header">Recent History</div>
-      ${(history.history || []).length > 0 ? `
+      <div class="section-header">Commit History</div>
+      ${history.commits && history.commits.rows && history.commits.rows.length > 0 ? `
+        <div class="table-wrap"><table>
+          <thead><tr>${(history.commits.columns || []).map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>
+          <tbody>
+            ${history.commits.rows.map(row =>
+              `<tr>${row.map(cell => `<td style="font-family:var(--font-mono);font-size:12px">${esc(cell)}</td>`).join('')}</tr>`
+            ).join('')}
+          </tbody>
+        </table></div>
+      ` : '<div style="color:var(--text-muted)">No commit history.</div>'}
+
+      <div class="section-header">Recent Sessions</div>
+      ${(history.sessions || []).length > 0 ? `
         <div class="table-wrap"><table>
           <thead><tr><th>Session ID</th><th>Agent</th><th>Model</th><th>Started</th><th>Status</th></tr></thead>
           <tbody>
-            ${(history.history || []).map(h => `
-              <tr class="clickable" onclick="location.hash='#/sessions/${h.session_id}'">
-                <td style="font-family:var(--font-mono);font-size:12px">${truncate(h.session_id, 28)}</td>
-                <td>${h.agent}</td>
-                <td>${truncate(h.model || 'unknown', 20)}</td>
+            ${(history.sessions || []).map(h => `
+              <tr class="clickable" onclick="location.hash='#/sessions/${encodeURIComponent(h.session_id)}'">
+                <td style="font-family:var(--font-mono);font-size:12px">${esc(truncate(h.session_id, 28))}</td>
+                <td>${esc(h.agent)}</td>
+                <td>${esc(truncate(h.model || 'unknown', 20))}</td>
                 <td style="font-size:12px">${fmtTime(h.started_at)}</td>
                 <td>${statusBadge(h.status)}</td>
               </tr>
             `).join('')}
           </tbody>
         </table></div>
-      ` : '<div style="color:var(--text-muted)">No history entries.</div>'}
+      ` : '<div style="color:var(--text-muted)">No sessions recorded.</div>'}
     `;
   } catch (e) {
-    content.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+    content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
 }
 
@@ -744,8 +777,26 @@ window.runSQL = async function() {
   el.innerHTML = '<div style="color:var(--text-muted)">Executing...</div>';
   try {
     const data = await apiPost('/nucleusdb/sql', { query });
-    el.innerHTML = `<pre style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:var(--font-mono);font-size:12px;overflow-x:auto">${JSON.stringify(data, null, 2)}</pre>`;
+    if (data.error) {
+      el.innerHTML = `<div style="color:var(--red)">Error: ${esc(data.error)}</div>`;
+    } else if (data.columns && data.rows) {
+      if (data.rows.length === 0) {
+        el.innerHTML = `<div style="color:var(--text-muted)">No rows returned.</div>`;
+      } else {
+        el.innerHTML = `<div class="table-wrap"><table>
+          <thead><tr>${data.columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>
+          <tbody>${data.rows.map(row =>
+            `<tr>${row.map(cell => `<td style="font-family:var(--font-mono);font-size:12px">${esc(cell)}</td>`).join('')}</tr>`
+          ).join('')}</tbody>
+        </table></div>
+        <div style="color:var(--text-muted);font-size:12px;margin-top:4px">${data.rows.length} row(s)</div>`;
+      }
+    } else if (data.message) {
+      el.innerHTML = `<div style="color:var(--green)">${esc(data.message)}</div>`;
+    } else {
+      el.innerHTML = `<pre style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:var(--font-mono);font-size:12px;overflow-x:auto">${esc(JSON.stringify(data, null, 2))}</pre>`;
+    }
   } catch (e) {
-    el.innerHTML = `<div style="color:var(--red)">Error: ${e.message}</div>`;
+    el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
   }
 };

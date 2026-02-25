@@ -14,8 +14,7 @@ pub async fn static_handler(req: Request) -> Response {
     let path = req.uri().path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
 
-    serve_embedded(path)
-        .unwrap_or_else(|| serve_embedded("index.html").unwrap_or_else(not_found))
+    serve_embedded(path).unwrap_or_else(|| serve_embedded("index.html").unwrap_or_else(not_found))
 }
 
 fn serve_embedded(path: &str) -> Option<Response> {
