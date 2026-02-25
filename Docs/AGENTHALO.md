@@ -335,6 +335,69 @@ On first run, `pricing.json` is written with default rates. Edit it to add or up
 
 Pricing is per million tokens. Cache-read pricing is optional (`null` if the model doesn't support prompt caching).
 
+## Observability Commands (v0.2.1)
+
+### Status Overview
+
+```bash
+# Text summary
+agenthalo status
+
+# JSON output
+agenthalo status --json
+```
+
+Shows session count, total tokens, total cost, database path, and latest session info.
+
+### JSON Output
+
+The `traces` and `costs` commands accept a `--json` flag for machine-readable output:
+
+```bash
+# Session list as JSON
+agenthalo traces --json
+
+# Session detail as JSON
+agenthalo traces --json sess-17...
+
+# Cost buckets as JSON
+agenthalo costs --json
+agenthalo costs --month --json
+```
+
+### Session Export
+
+```bash
+# Export to file
+agenthalo export sess-17... --output session_export.json
+
+# Export to stdout
+agenthalo export sess-17...
+```
+
+Produces a complete `agenthalo-export-v1` JSON document with session metadata, summary, and full event timeline.
+
+### MCP Observability Tools
+
+The MCP server exposes 4 observability tools (14 native tools total):
+
+| Tool | Description |
+|------|-------------|
+| `halo_traces` | List sessions or get session detail (with `limit` and `session_id` params) |
+| `halo_costs` | Cost buckets by day or month (with `monthly` param) |
+| `halo_status` | Auth state, session count, total cost, latest session |
+| `halo_export` | Full session export as JSON |
+
+### Model Auto-Detection
+
+AgentHALO now automatically detects the model name from each agent's structured output stream:
+
+- **Claude**: extracted from `message.model` or `event.model` in `stream-json`
+- **Codex**: extracted from `model` or `response.model` in JSON output
+- **Gemini**: extracted from `model` or `response.model` in `stream-json`
+
+If `--model` is not explicitly provided, the detected model is used for cost calculation and display. The `--model` flag still takes precedence when specified.
+
 ## Additional Commands (v0.2.0)
 
 ### Attestation
@@ -601,12 +664,12 @@ src/halo/
   pq.rs                — ML-DSA-65 keygen and signing
   pricing.rs           — model pricing table, cost calculation
   public_input_schema.rs — Groth16 public input layout versioning
-  runner.rs            — subprocess management, signal forwarding, adapter dispatch
+  runner.rs            — subprocess management, signal forwarding, adapter dispatch, model detection
   schema.rs            — SessionMetadata, TraceEvent, EventType, SessionSummary
   trace.rs             — TraceWriter (NucleusDB writes), read-side queries, blob encoding
   trust.rs             — trust score computation
   util.rs              — SHA-256 digest helpers, hex encode/decode
-  viewer.rs            — CLI output formatting (tables, timestamps, costs)
+  viewer.rs            — CLI output formatting (tables, timestamps, costs, JSON, status, export)
   wrap.rs              — shell alias management (.bashrc/.zshrc)
   x402.rs              — x402direct protocol types, CAIP-10 parsing, validation, config
   adapters/
@@ -618,7 +681,7 @@ src/halo/
 
 src/bin/
   agenthalo.rs             — CLI binary (run, attest, audit, sign, trust, onchain, ...)
-  agenthalo_mcp_server.rs  — HTTP MCP server (9 native + proxied tools)
+  agenthalo_mcp_server.rs  — HTTP MCP server (14 native + proxied tools)
   nucleusdb.rs             — NucleusDB CLI binary
   nucleusdb_mcp.rs         — NucleusDB MCP server (stdio + HTTP transport)
   nucleusdb_server.rs      — NucleusDB multi-tenant HTTP server

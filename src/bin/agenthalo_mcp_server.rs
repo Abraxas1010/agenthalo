@@ -17,9 +17,12 @@ use nucleusdb::halo::circuit::{
 use nucleusdb::halo::config;
 use nucleusdb::halo::onchain::{load_onchain_config_or_default, post_attestation};
 use nucleusdb::halo::pq::{has_wallet, sign_pq_payload};
-use nucleusdb::halo::trace::{list_sessions, now_unix_secs, record_paid_operation_for_halo};
+use nucleusdb::halo::trace::{
+    list_sessions, now_unix_secs, record_paid_operation_for_halo, session_summary,
+};
 use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::util::digest_json;
+use nucleusdb::halo::viewer;
 use nucleusdb::halo::x402;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -149,6 +152,10 @@ async fn mcp(
                 json!({"name":"privacy_pool_withdraw","description":"AgentHALO privacy pool withdraw operation (workflows add-on)"}),
                 json!({"name":"pq_bridge_transfer","description":"AgentHALO PQ bridge transfer operation (p2pclaw add-on)"}),
                 json!({"name":"x402_check","description":"Parse and validate an x402direct payment request (402 response body). Returns structured validation with chain/token verification and warnings."}),
+                json!({"name":"halo_traces","description":"List recorded agent sessions or get detail for a specific session. Params: session_id (optional), limit (optional, default 20)."}),
+                json!({"name":"halo_costs","description":"Show agent cost summary. Params: monthly (bool, default false), paid (bool, default false)."}),
+                json!({"name":"halo_status","description":"Show AgentHALO recording status: session count, total cost, latest session, auth state."}),
+                json!({"name":"halo_export","description":"Export a full session as standalone JSON with metadata, events, and summary. Params: session_id (required)."}),
             ];
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
@@ -229,6 +236,10 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "privacy_pool_withdraw" => tool_privacy_pool_withdraw(arguments),
         "pq_bridge_transfer" => tool_pq_bridge_transfer(arguments),
         "x402_check" => tool_x402_check(arguments),
+        "halo_traces" => tool_halo_traces(arguments),
+        "halo_costs" => tool_halo_costs(arguments),
+        "halo_status" => tool_halo_status(arguments),
+        "halo_export" => tool_halo_export(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -731,6 +742,114 @@ fn tool_x402_check(arguments: Value) -> Result<Value, String> {
             {"name": "base-sepolia", "caip2": "eip155:84532", "usdc": x402::BASE_SEPOLIA.usdc_address}
         ]
     }))
+}
+
+fn tool_halo_traces(arguments: Value) -> Result<Value, String> {
+    let db_path = config::db_path();
+    let session_id = arguments
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let limit = arguments
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20) as usize;
+
+    if let Some(sid) = session_id {
+        let export = viewer::export_session_json(&db_path, &sid)?;
+        Ok(export)
+    } else {
+        let sessions = list_sessions(&db_path)?;
+        let items: Vec<Value> = sessions
+            .into_iter()
+            .take(limit)
+            .map(|s| {
+                let summary = session_summary(&db_path, &s.session_id).ok().flatten();
+                json!({
+                    "session": s,
+                    "summary": summary,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "sessions": items,
+            "count": items.len(),
+        }))
+    }
+}
+
+fn tool_halo_costs(arguments: Value) -> Result<Value, String> {
+    let monthly = arguments
+        .get("monthly")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let db_path = config::db_path();
+
+    let rows = nucleusdb::halo::trace::cost_buckets(&db_path, monthly)?;
+    let total_cost: f64 = rows.iter().map(|r| r.cost_usd).sum();
+    let total_tokens: u64 = rows.iter().map(|r| r.input_tokens + r.output_tokens).sum();
+    let total_sessions: u64 = rows.iter().map(|r| r.sessions).sum();
+
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "label": r.label,
+                "sessions": r.sessions,
+                "input_tokens": r.input_tokens,
+                "output_tokens": r.output_tokens,
+                "cache_tokens": r.cache_tokens,
+                "cost_usd": r.cost_usd,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "buckets": items,
+        "total_sessions": total_sessions,
+        "total_tokens": total_tokens,
+        "total_cost_usd": total_cost,
+        "granularity": if monthly { "monthly" } else { "daily" },
+    }))
+}
+
+fn tool_halo_status(_arguments: Value) -> Result<Value, String> {
+    let db_path = config::db_path();
+    let creds_path = config::credentials_path();
+    let has_auth = nucleusdb::halo::auth::is_authenticated(&creds_path)
+        || nucleusdb::halo::auth::resolve_api_key(&creds_path).is_some();
+    let pmt_cfg = agentpmt::load_or_default();
+
+    let sessions = list_sessions(&db_path).unwrap_or_default();
+    let session_count = sessions.len();
+    let latest = sessions.first().cloned();
+    let mut total_cost = 0.0f64;
+    let mut total_tokens = 0u64;
+    for s in &sessions {
+        if let Ok(Some(summary)) = session_summary(&db_path, &s.session_id) {
+            total_cost += summary.estimated_cost_usd;
+            total_tokens += summary.total_input_tokens + summary.total_output_tokens;
+        }
+    }
+    Ok(json!({
+        "authenticated": has_auth,
+        "tool_proxy_enabled": pmt_cfg.enabled,
+        "session_count": session_count,
+        "total_cost_usd": total_cost,
+        "total_tokens": total_tokens,
+        "latest_session": latest,
+        "db_path": db_path.to_string_lossy(),
+        "version": "0.2.0",
+    }))
+}
+
+fn tool_halo_export(arguments: Value) -> Result<Value, String> {
+    let session_id = arguments
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "halo_export requires session_id".to_string())?;
+    let db_path = config::db_path();
+    viewer::export_session_json(&db_path, session_id)
 }
 
 fn error_envelope(id: Option<Value>, code: i64, message: &str) -> JsonRpcErrorEnvelope {

@@ -2,17 +2,29 @@ use crate::halo::adapters::{base_event, StreamAdapter};
 use crate::halo::schema::{EventType, TraceEvent};
 
 #[derive(Default)]
-pub struct GeminiAdapter;
+pub struct GeminiAdapter {
+    model: Option<String>,
+}
 
 impl GeminiAdapter {
     pub fn new() -> Self {
-        Self
+        Self { model: None }
     }
 }
 
 impl StreamAdapter for GeminiAdapter {
     fn parse_line(&mut self, line: &str) -> Option<TraceEvent> {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
+
+        // Extract model name from response metadata.
+        if self.model.is_none() {
+            self.model = v
+                .get("model")
+                .or_else(|| v.pointer("/response/model"))
+                .and_then(|m| m.as_str())
+                .map(|s| s.to_string());
+        }
+
         let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("raw");
 
         let mut ev = match kind {
@@ -55,5 +67,9 @@ impl StreamAdapter for GeminiAdapter {
 
     fn agent_name(&self) -> &str {
         "gemini"
+    }
+
+    fn detected_model(&self) -> Option<&str> {
+        self.model.as_deref()
     }
 }

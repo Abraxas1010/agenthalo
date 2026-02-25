@@ -9,6 +9,11 @@ pub trait StreamAdapter: Send {
     fn parse_line(&mut self, line: &str) -> Option<TraceEvent>;
     fn finalize(&mut self) -> Vec<TraceEvent>;
     fn agent_name(&self) -> &str;
+
+    /// Return the model name detected from stream events, if any.
+    fn detected_model(&self) -> Option<&str> {
+        None
+    }
 }
 
 pub fn base_event(

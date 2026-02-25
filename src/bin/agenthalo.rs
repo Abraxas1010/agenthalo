@@ -51,8 +51,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "run" => cmd_run(&args[2..]),
         "login" => cmd_login(&args[2..]),
         "config" => cmd_config(&args[2..]),
+        "status" => cmd_status(&args[2..]),
         "traces" => cmd_traces(&args[2..]),
         "costs" => cmd_costs(&args[2..]),
+        "export" => cmd_export(&args[2..]),
         "attest" => cmd_attest(&args[2..]),
         "audit" => cmd_audit(&args[2..]),
         "keygen" => cmd_keygen(&args[2..]),
@@ -153,7 +155,7 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
     let meta = SessionMetadata {
         session_id: session_id.clone(),
         agent: runner.agent_type().as_str().to_string(),
-        model,
+        model: model.clone(),
         started_at: now,
         ended_at: None,
         prompt: infer_prompt(cmd_args),
@@ -164,7 +166,13 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
     };
 
     writer.start_session(meta)?;
-    let exit_code = runner.run(&mut writer)?;
+    let (exit_code, detected_model) = runner.run(&mut writer)?;
+    // If the adapter detected a model from the stream, update the session.
+    if let Some(ref dm) = detected_model {
+        if model.is_none() {
+            writer.update_session_model(dm);
+        }
+    }
     let status = if exit_code == 0 {
         SessionStatus::Completed
     } else {
@@ -342,20 +350,102 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_traces(args: &[String]) -> Result<(), String> {
+    let json_mode = args.iter().any(|a| a == "--json");
     let db_path = config::db_path();
-    let session = args.first().map(|s| s.as_str());
-    viewer::print_traces(&db_path, session)
+    let session = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .map(|s| s.as_str());
+    if json_mode {
+        viewer::print_traces_json(&db_path, session)
+    } else {
+        viewer::print_traces(&db_path, session)
+    }
 }
 
 fn cmd_costs(args: &[String]) -> Result<(), String> {
     let monthly = args.iter().any(|a| a == "--month");
     let paid = args.iter().any(|a| a == "--paid");
+    let json_mode = args.iter().any(|a| a == "--json");
     let db_path = config::db_path();
-    if paid {
+    if json_mode && !paid {
+        viewer::print_costs_json(&db_path, monthly)
+    } else if paid {
         viewer::print_paid_costs(&db_path, monthly)
     } else {
         viewer::print_costs(&db_path, monthly)
     }
+}
+
+fn cmd_status(_args: &[String]) -> Result<(), String> {
+    let db_path = config::db_path();
+    let creds_path = config::credentials_path();
+    let json_mode = _args.iter().any(|a| a == "--json");
+
+    if json_mode {
+        let has_auth = is_authenticated(&creds_path) || resolve_api_key(&creds_path).is_some();
+        let pmt_cfg = agentpmt::load_or_default();
+
+        // Build a combined status JSON with auth + trace overview.
+        let sessions = list_sessions(&db_path).unwrap_or_default();
+        let session_count = sessions.len();
+        let latest = sessions.first().cloned();
+        let mut total_cost = 0.0f64;
+        let mut total_tokens = 0u64;
+        for s in &sessions {
+            if let Ok(Some(summary)) =
+                nucleusdb::halo::trace::session_summary(&db_path, &s.session_id)
+            {
+                total_cost += summary.estimated_cost_usd;
+                total_tokens += summary.total_input_tokens + summary.total_output_tokens;
+            }
+        }
+        let out = serde_json::json!({
+            "authenticated": has_auth,
+            "tool_proxy_enabled": pmt_cfg.enabled,
+            "session_count": session_count,
+            "total_cost_usd": total_cost,
+            "total_tokens": total_tokens,
+            "latest_session": latest,
+            "db_path": db_path.to_string_lossy(),
+            "version": "0.2.0",
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| format!("serialize status json: {e}"))?
+        );
+    } else {
+        let has_auth = is_authenticated(&creds_path) || resolve_api_key(&creds_path).is_some();
+        println!("AgentHALO v0.2.0");
+        println!("  Authenticated: {has_auth}");
+        viewer::print_status(&db_path, false)?;
+    }
+    Ok(())
+}
+
+fn cmd_export(args: &[String]) -> Result<(), String> {
+    let session_id = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| "usage: agenthalo export <session-id> [--out <path>]".to_string())?;
+    let out_path = args
+        .iter()
+        .position(|a| a == "--out")
+        .and_then(|i| args.get(i + 1));
+
+    let db_path = config::db_path();
+    let export = viewer::export_session_json(&db_path, session_id)?;
+    let json_str =
+        serde_json::to_string_pretty(&export).map_err(|e| format!("serialize export: {e}"))?;
+
+    if let Some(path) = out_path {
+        std::fs::write(path, &json_str).map_err(|e| format!("write export to {path}: {e}"))?;
+        println!("Exported session {session_id} to {path}");
+    } else {
+        println!("{json_str}");
+    }
+    Ok(())
 }
 
 fn cmd_attest(args: &[String]) -> Result<(), String> {
@@ -1374,6 +1464,6 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.2.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config tool-proxy [enable|disable|status|refresh]\n                             Manage AgentPMT tool proxy integration\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month] [--paid]   Show model costs or operation usage\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n                             Submit governance vote intent\n  sync [--target cloudflare|local]\n                             Run sync operation\n  onchain [config|deploy|verify|status] ...\n                             Config fields: --signer-mode private_key_env|keystore --keystore-path --keystore-password-file --circuit-policy dev|production\n  protocol privacy-pool-create --denomination <u64> [--chain NAME] [--asset SYMBOL]\n                             Create privacy pool request (workflows add-on)\n  protocol privacy-pool-withdraw --pool-id <id> --recipient <addr> [--amount u64]\n                             Submit privacy withdrawal request (workflows add-on)\n  protocol pq-bridge-transfer --from <chain> --to <chain> --asset <symbol> --amount <u64> --recipient <addr>\n                             Submit PQ bridge transfer request (p2pclaw add-on)\n  license [status|verify <certificate.json>]\n                             Check or verify CAB license certificate\n  x402 [status|enable|disable|config|check]\n                             x402direct stablecoin payment integration\n                             config flags: --upc-contract <addr> --network <base|base-sepolia> --max-auto-approve <units>\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons (p2pclaw, agentpmt-workflows, tool-proxy)\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
+        "agenthalo 0.2.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config tool-proxy [enable|disable|status|refresh]\n                             Manage AgentPMT tool proxy integration\n  config show                Show effective config\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n                             Submit governance vote intent\n  sync [--target cloudflare|local]\n                             Run sync operation\n  onchain [config|deploy|verify|status] ...\n                             Config fields: --signer-mode private_key_env|keystore --keystore-path --keystore-password-file --circuit-policy dev|production\n  protocol privacy-pool-create --denomination <u64> [--chain NAME] [--asset SYMBOL]\n                             Create privacy pool request (workflows add-on)\n  protocol privacy-pool-withdraw --pool-id <id> --recipient <addr> [--amount u64]\n                             Submit privacy withdrawal request (workflows add-on)\n  protocol pq-bridge-transfer --from <chain> --to <chain> --asset <symbol> --amount <u64> --recipient <addr>\n                             Submit PQ bridge transfer request (p2pclaw add-on)\n  license [status|verify <certificate.json>]\n                             Check or verify CAB license certificate\n  x402 [status|enable|disable|config|check]\n                             x402direct stablecoin payment integration\n                             config flags: --upc-contract <addr> --network <base|base-sepolia> --max-auto-approve <units>\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons (p2pclaw, agentpmt-workflows, tool-proxy)\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
     );
 }

@@ -37,7 +37,8 @@ impl AgentRunner {
         &self.agent_type
     }
 
-    pub fn run(&self, trace_writer: &mut TraceWriter) -> Result<i32, String> {
+    /// Run the agent subprocess, recording all events. Returns (exit_code, detected_model).
+    pub fn run(&self, trace_writer: &mut TraceWriter) -> Result<(i32, Option<String>), String> {
         let mut full_args = injection_flags(&self.agent_type, &self.args);
         full_args.extend(self.args.clone());
 
@@ -82,7 +83,7 @@ impl AgentRunner {
             .ok_or_else(|| "failed to capture child stderr".to_string())?;
 
         let agent = self.agent_type.clone();
-        let out_handle = std::thread::spawn(move || -> Vec<TraceEvent> {
+        let out_handle = std::thread::spawn(move || -> (Vec<TraceEvent>, Option<String>) {
             let mut events = Vec::new();
             let mut adapter = make_adapter(&agent);
             let rdr = BufReader::new(stdout);
@@ -96,7 +97,8 @@ impl AgentRunner {
                 }
             }
             events.extend(adapter.finalize());
-            events
+            let model = adapter.detected_model().map(|s| s.to_string());
+            (events, model)
         });
 
         let err_handle = std::thread::spawn(move || -> Vec<TraceEvent> {
@@ -128,7 +130,7 @@ impl AgentRunner {
         let status = child
             .wait()
             .map_err(|e| format!("wait child process: {e}"))?;
-        let mut events = out_handle
+        let (mut events, detected_model) = out_handle
             .join()
             .map_err(|_| "join stdout reader thread".to_string())?;
         events.extend(
@@ -142,7 +144,7 @@ impl AgentRunner {
             trace_writer.write_event(ev)?;
         }
 
-        Ok(status.code().unwrap_or(1))
+        Ok((status.code().unwrap_or(1), detected_model))
     }
 }
 

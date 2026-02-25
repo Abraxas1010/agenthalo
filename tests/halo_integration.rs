@@ -47,7 +47,7 @@ fn halo_generic_recording_roundtrip() {
     writer.start_session(meta).expect("start session");
 
     let runner = AgentRunner::new("echo".to_string(), vec!["hello".to_string()]);
-    let code = runner.run(&mut writer).expect("run echo");
+    let (code, _detected_model) = runner.run(&mut writer).expect("run echo");
     assert_eq!(code, 0);
 
     let summary = writer

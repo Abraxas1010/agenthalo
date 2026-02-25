@@ -2,6 +2,7 @@ use crate::halo::trace::{
     cost_buckets, list_sessions, paid_breakdown_by_operation_type, paid_cost_buckets,
     session_events, session_summary,
 };
+use serde_json::json;
 use std::path::Path;
 
 pub fn print_traces(db_path: &Path, maybe_session_id: Option<&str>) -> Result<(), String> {
@@ -178,6 +179,145 @@ pub fn print_paid_costs(db_path: &Path, monthly: bool) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+pub fn print_traces_json(db_path: &Path, maybe_session_id: Option<&str>) -> Result<(), String> {
+    if let Some(session_id) = maybe_session_id {
+        let sessions = list_sessions(db_path)?;
+        let meta = sessions
+            .into_iter()
+            .find(|s| s.session_id == session_id)
+            .ok_or_else(|| format!("session not found: {session_id}"))?;
+        let summary = session_summary(db_path, session_id)?;
+        let events = session_events(db_path, session_id)?;
+        let out = json!({
+            "session": meta,
+            "summary": summary,
+            "events": events,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| format!("serialize traces json: {e}"))?
+        );
+        return Ok(());
+    }
+
+    let sessions = list_sessions(db_path)?;
+    let mut items = Vec::new();
+    for s in sessions {
+        let summary = session_summary(db_path, &s.session_id)?;
+        items.push(json!({
+            "session": s,
+            "summary": summary,
+        }));
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&items).map_err(|e| format!("serialize traces json: {e}"))?
+    );
+    Ok(())
+}
+
+pub fn print_costs_json(db_path: &Path, monthly: bool) -> Result<(), String> {
+    let rows = cost_buckets(db_path, monthly)?;
+    let total_cost: f64 = rows.iter().map(|r| r.cost_usd).sum();
+    let total_tokens: u64 = rows.iter().map(|r| r.input_tokens + r.output_tokens).sum();
+    let total_sessions: u64 = rows.iter().map(|r| r.sessions).sum();
+
+    let items: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "label": r.label,
+                "sessions": r.sessions,
+                "input_tokens": r.input_tokens,
+                "output_tokens": r.output_tokens,
+                "cache_tokens": r.cache_tokens,
+                "cost_usd": r.cost_usd,
+            })
+        })
+        .collect();
+
+    let out = json!({
+        "buckets": items,
+        "total_sessions": total_sessions,
+        "total_tokens": total_tokens,
+        "total_cost_usd": total_cost,
+        "granularity": if monthly { "monthly" } else { "daily" },
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&out).map_err(|e| format!("serialize costs json: {e}"))?
+    );
+    Ok(())
+}
+
+pub fn print_status(db_path: &Path, json_mode: bool) -> Result<(), String> {
+    let sessions = list_sessions(db_path)?;
+    let session_count = sessions.len();
+    let latest = sessions.first().cloned();
+
+    let mut total_cost = 0.0f64;
+    let mut total_tokens = 0u64;
+    for s in &sessions {
+        if let Ok(Some(summary)) = session_summary(db_path, &s.session_id) {
+            total_cost += summary.estimated_cost_usd;
+            total_tokens += summary.total_input_tokens + summary.total_output_tokens;
+        }
+    }
+
+    if json_mode {
+        let out = json!({
+            "session_count": session_count,
+            "total_cost_usd": total_cost,
+            "total_tokens": total_tokens,
+            "latest_session": latest,
+            "db_path": db_path.to_string_lossy(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| format!("serialize status json: {e}"))?
+        );
+    } else {
+        println!("AgentHALO Status");
+        println!("  Sessions recorded: {session_count}");
+        println!("  Total tokens:      {}", format_number(total_tokens));
+        println!("  Total cost:        ${total_cost:.4}");
+        println!("  Database:          {}", db_path.display());
+        if let Some(latest) = latest {
+            println!();
+            println!("Latest session:");
+            println!("  ID:    {}", latest.session_id);
+            println!("  Agent: {}", latest.agent);
+            println!(
+                "  Model: {}",
+                latest.model.unwrap_or_else(|| "unknown".to_string())
+            );
+            println!("  Time:  {}", format_timestamp(latest.started_at));
+            println!("  Status: {:?}", latest.status);
+        }
+    }
+
+    Ok(())
+}
+
+pub fn export_session_json(db_path: &Path, session_id: &str) -> Result<serde_json::Value, String> {
+    let sessions = list_sessions(db_path)?;
+    let meta = sessions
+        .into_iter()
+        .find(|s| s.session_id == session_id)
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+    let summary = session_summary(db_path, session_id)?;
+    let events = session_events(db_path, session_id)?;
+    Ok(json!({
+        "version": "agenthalo-export-v1",
+        "session": meta,
+        "summary": summary,
+        "events": events,
+        "event_count": events.len(),
+    }))
 }
 
 fn print_table(columns: &[&str], rows: &[Vec<String>]) {

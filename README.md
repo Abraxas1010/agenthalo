@@ -175,7 +175,7 @@ A cloud dashboard can show you what it claims happened. It cannot prove the log 
 | **Cryptographic seals** | None | Hash chain — each commit binds to all prior commits |
 | **Works offline** | No | Yes |
 | **Agent support** | Framework-specific SDKs | Wraps any CLI agent directly |
-| **MCP native** | No | Yes — 10 native + proxied tools over HTTP, 11 tools over stdio |
+| **MCP native** | No | Yes — 14 native + proxied tools over HTTP, 11 tools over stdio |
 | **Formal verification** | No | 63 Lean 4 modules with sheaf-theoretic proofs |
 
 H.A.L.O. doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.

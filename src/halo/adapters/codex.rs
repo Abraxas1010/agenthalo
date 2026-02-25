@@ -2,17 +2,30 @@ use crate::halo::adapters::{base_event, StreamAdapter};
 use crate::halo::schema::{EventType, TraceEvent};
 
 #[derive(Default)]
-pub struct CodexAdapter;
+pub struct CodexAdapter {
+    model: Option<String>,
+}
 
 impl CodexAdapter {
     pub fn new() -> Self {
-        Self
+        Self { model: None }
     }
 }
 
 impl StreamAdapter for CodexAdapter {
     fn parse_line(&mut self, line: &str) -> Option<TraceEvent> {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
+
+        // Extract model from turn metadata or response.
+        if self.model.is_none() {
+            self.model = v
+                .get("model")
+                .or_else(|| v.pointer("/response/model"))
+                .or_else(|| v.pointer("/item/model"))
+                .and_then(|m| m.as_str())
+                .map(|s| s.to_string());
+        }
+
         let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("raw");
 
         let mut ev = if kind.contains("error") || kind.ends_with("failed") {
@@ -77,5 +90,9 @@ impl StreamAdapter for CodexAdapter {
 
     fn agent_name(&self) -> &str {
         "codex"
+    }
+
+    fn detected_model(&self) -> Option<&str> {
+        self.model.as_deref()
     }
 }

@@ -122,6 +122,14 @@ impl TraceWriter {
         Ok(())
     }
 
+    /// Update the model name for the current session (e.g., from adapter auto-detection).
+    pub fn update_session_model(&mut self, model: &str) {
+        if let Some(ref mut meta) = self.session_meta {
+            meta.model = Some(model.to_string());
+        }
+        self.summary.model = Some(model.to_string());
+    }
+
     pub fn write_event(&mut self, mut event: TraceEvent) -> Result<(), String> {
         if self.session_meta.is_none() {
             return Err("session not started".to_string());
