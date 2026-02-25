@@ -306,6 +306,7 @@ The `GenericAdapter` captures every stdout line as a `RawOutput` event. No struc
 | Pricing table | `~/.agenthalo/pricing.json` | Model cost table (auto-generated) |
 | AgentPMT config | `~/.agenthalo/agentpmt.json` | Tool proxy enabled/disabled, budget tag |
 | AgentPMT catalog | `~/.agenthalo/agentpmt_tools.json` | Cached tool catalog from AgentPMT |
+| x402 config | `~/.agenthalo/x402.json` | x402direct integration settings (UPC contract, network, auto-approve limit) |
 | Add-ons config | `~/.agenthalo/addons.json` | p2pclaw, agentpmt-workflows toggles |
 | On-chain config | `~/.agenthalo/onchain.json` | RPC URL, contract address, signer mode |
 | PQ wallet | `~/.agenthalo/pq_wallet.json` | ML-DSA-65 keypair (mode 0600) |
@@ -408,6 +409,28 @@ agenthalo config tool-proxy status
 ```
 
 When enabled, AgentPMT tools appear alongside native tools in the MCP `tools/list` response with an `agentpmt/` prefix. Budget controls and credentials are managed on the AgentPMT side.
+
+### x402direct Payments
+
+```bash
+# Enable x402 integration
+agenthalo x402 enable
+
+# Configure UPC contract and network
+agenthalo x402 config --network base-sepolia --upc-contract 0x...
+
+# Set max auto-approve (in base units, default 5 USDC = 5000000)
+agenthalo x402 config --max-auto-approve 10000000
+
+# Check status
+agenthalo x402 status
+
+# Validate a 402 response body
+echo '{"x402version":"direct.1.0.0",...}' | agenthalo x402 check
+# or: agenthalo x402 check --body '{"x402version":"direct.1.0.0",...}'
+```
+
+Supported networks: Base mainnet (`eip155:8453`) and Base Sepolia (`eip155:84532`). Protocol reference: [x402direct.org](https://www.x402direct.org).
 
 ### Add-ons
 
@@ -585,6 +608,7 @@ src/halo/
   util.rs              — SHA-256 digest helpers, hex encode/decode
   viewer.rs            — CLI output formatting (tables, timestamps, costs)
   wrap.rs              — shell alias management (.bashrc/.zshrc)
+  x402.rs              — x402direct protocol types, CAIP-10 parsing, validation, config
   adapters/
     mod.rs             — StreamAdapter trait
     claude.rs          — Claude Code stream-json parser

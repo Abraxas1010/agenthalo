@@ -137,6 +137,16 @@ pub fn default_tool_catalog() -> ToolCatalog {
                 description: "Post a message to Slack".to_string(),
                 category: Some("messaging".to_string()),
             },
+            ProxiedTool {
+                name: "x402_pay".to_string(),
+                description: "Pay for an x402direct-protected resource (auto-detect 402, execute UPC payment, submit proof)".to_string(),
+                category: Some("payments".to_string()),
+            },
+            ProxiedTool {
+                name: "x402_verify".to_string(),
+                description: "Verify an x402direct payment transaction on-chain".to_string(),
+                category: Some("payments".to_string()),
+            },
         ],
         refreshed_at: Some(chrono::Utc::now().to_rfc3339()),
     }
@@ -367,6 +377,8 @@ mod tests {
         let catalog = default_tool_catalog();
         assert!(catalog.has_tool("gmail_send"));
         assert!(catalog.has_tool("stripe_charge"));
+        assert!(catalog.has_tool("x402_pay"));
+        assert!(catalog.has_tool("x402_verify"));
         assert!(catalog.refreshed_at.is_some());
     }
 }

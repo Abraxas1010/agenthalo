@@ -19,6 +19,7 @@ pub mod trust;
 pub mod util;
 pub mod viewer;
 pub mod wrap;
+pub mod x402;
 
 pub fn generic_agents_allowed() -> bool {
     std::env::var("AGENTHALO_ALLOW_GENERIC")

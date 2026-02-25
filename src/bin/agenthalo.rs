@@ -26,6 +26,7 @@ use nucleusdb::halo::trace::{
 };
 use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::util::digest_json;
+use nucleusdb::halo::x402;
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
 use nucleusdb::license;
 use std::io::{self, Write};
@@ -63,6 +64,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "protocol" => cmd_protocol(&args[2..]),
         "addon" => cmd_addon(&args[2..]),
         "license" => cmd_license(&args[2..]),
+        "x402" => cmd_x402(&args[2..]),
         "wrap" => cmd_wrap(&args[2..]),
         "unwrap" => cmd_unwrap(&args[2..]),
         "version" | "--version" | "-V" => {
@@ -1204,6 +1206,102 @@ fn cmd_license(args: &[String]) -> Result<(), String> {
     }
 }
 
+fn cmd_x402(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "status" => {
+            let cfg = x402::load_x402_config();
+            println!("x402direct integration");
+            println!("  enabled:          {}", cfg.enabled);
+            println!("  preferred network: {}", cfg.preferred_network);
+            println!("  max auto-approve:  {} USDC", cfg.max_auto_approve as f64 / 1_000_000.0);
+            if let Some(upc) = &cfg.upc_contract_address {
+                println!("  UPC contract:      {upc}");
+            } else {
+                println!("  UPC contract:      (not configured)");
+            }
+            println!("\nSupported networks:");
+            println!("  Base mainnet  (eip155:8453)  USDC: {}", x402::BASE_MAINNET.usdc_address);
+            println!("  Base Sepolia  (eip155:84532) USDC: {}", x402::BASE_SEPOLIA.usdc_address);
+            Ok(())
+        }
+        "enable" => {
+            let mut cfg = x402::load_x402_config();
+            cfg.enabled = true;
+            x402::save_x402_config(&cfg)?;
+            println!("x402direct integration enabled.");
+            Ok(())
+        }
+        "disable" => {
+            let mut cfg = x402::load_x402_config();
+            cfg.enabled = false;
+            x402::save_x402_config(&cfg)?;
+            println!("x402direct integration disabled.");
+            Ok(())
+        }
+        "config" => {
+            // Parse --upc-contract, --network, --max-auto-approve flags.
+            let mut cfg = x402::load_x402_config();
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--upc-contract" => {
+                        i += 1;
+                        cfg.upc_contract_address =
+                            Some(args.get(i).ok_or("--upc-contract requires value")?.clone());
+                    }
+                    "--network" => {
+                        i += 1;
+                        let net = args.get(i).ok_or("--network requires value")?;
+                        if !matches!(net.as_str(), "base" | "base-sepolia") {
+                            return Err(format!("unknown network: {net} (expected base or base-sepolia)"));
+                        }
+                        cfg.preferred_network = net.clone();
+                    }
+                    "--max-auto-approve" => {
+                        i += 1;
+                        let v: u64 = args
+                            .get(i)
+                            .ok_or("--max-auto-approve requires value")?
+                            .parse()
+                            .map_err(|_| "--max-auto-approve must be integer (base units)")?;
+                        cfg.max_auto_approve = v;
+                    }
+                    other => return Err(format!("unknown x402 config flag: {other}")),
+                }
+                i += 1;
+            }
+            x402::save_x402_config(&cfg)?;
+            println!("x402 config saved.");
+            Ok(())
+        }
+        "check" => {
+            // Read JSON from stdin or --body argument.
+            let body = if let Some(pos) = args.iter().position(|a| a == "--body") {
+                args.get(pos + 1)
+                    .ok_or("--body requires value")?
+                    .clone()
+            } else {
+                let mut buf = String::new();
+                io::stdin()
+                    .read_line(&mut buf)
+                    .map_err(|e| format!("read stdin: {e}"))?;
+                buf
+            };
+            let req = x402::parse_x402_response(&body)?;
+            let result = x402::validate_payment_request(&req);
+            let out = serde_json::to_string_pretty(&result)
+                .map_err(|e| format!("serialize result: {e}"))?;
+            println!("{out}");
+            Ok(())
+        }
+        _ => Err(
+            "usage: agenthalo x402 [status|enable|disable|config|check]\n  config flags: --upc-contract <addr> --network <base|base-sepolia> --max-auto-approve <units>"
+                .to_string(),
+        ),
+    }
+}
+
 fn cmd_wrap(args: &[String]) -> Result<(), String> {
     let rc = wrap::detect_shell_rc();
     if args.first().map(|s| s.as_str()) == Some("--all") {
@@ -1276,6 +1374,6 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.2.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config tool-proxy [enable|disable|status|refresh]\n                             Manage AgentPMT tool proxy integration\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month] [--paid]   Show model costs or operation usage\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n                             Submit governance vote intent\n  sync [--target cloudflare|local]\n                             Run sync operation\n  onchain [config|deploy|verify|status] ...\n                             Config fields: --signer-mode private_key_env|keystore --keystore-path --keystore-password-file --circuit-policy dev|production\n  protocol privacy-pool-create --denomination <u64> [--chain NAME] [--asset SYMBOL]\n                             Create privacy pool request (workflows add-on)\n  protocol privacy-pool-withdraw --pool-id <id> --recipient <addr> [--amount u64]\n                             Submit privacy withdrawal request (workflows add-on)\n  protocol pq-bridge-transfer --from <chain> --to <chain> --asset <symbol> --amount <u64> --recipient <addr>\n                             Submit PQ bridge transfer request (p2pclaw add-on)\n  license [status|verify <certificate.json>]\n                             Check or verify CAB license certificate\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons (p2pclaw, agentpmt-workflows, tool-proxy)\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
+        "agenthalo 0.2.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config tool-proxy [enable|disable|status|refresh]\n                             Manage AgentPMT tool proxy integration\n  config show                Show effective config\n  traces [session-id]        List sessions or show session detail\n  costs [--month] [--paid]   Show model costs or operation usage\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n                             Submit governance vote intent\n  sync [--target cloudflare|local]\n                             Run sync operation\n  onchain [config|deploy|verify|status] ...\n                             Config fields: --signer-mode private_key_env|keystore --keystore-path --keystore-password-file --circuit-policy dev|production\n  protocol privacy-pool-create --denomination <u64> [--chain NAME] [--asset SYMBOL]\n                             Create privacy pool request (workflows add-on)\n  protocol privacy-pool-withdraw --pool-id <id> --recipient <addr> [--amount u64]\n                             Submit privacy withdrawal request (workflows add-on)\n  protocol pq-bridge-transfer --from <chain> --to <chain> --asset <symbol> --amount <u64> --recipient <addr>\n                             Submit PQ bridge transfer request (p2pclaw add-on)\n  license [status|verify <certificate.json>]\n                             Check or verify CAB license certificate\n  x402 [status|enable|disable|config|check]\n                             x402direct stablecoin payment integration\n                             config flags: --upc-contract <addr> --network <base|base-sepolia> --max-auto-approve <units>\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons (p2pclaw, agentpmt-workflows, tool-proxy)\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
     );
 }

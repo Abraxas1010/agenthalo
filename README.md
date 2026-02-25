@@ -43,7 +43,7 @@ We humbly thank the collective intelligence of humanity for providing the techno
 <br>
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-![Tests](https://img.shields.io/badge/tests-248%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-262%20passing-brightgreen.svg)
 ![Lean 4](https://img.shields.io/badge/Lean%204-63%20modules-blue.svg)
 ![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
 
@@ -175,7 +175,7 @@ A cloud dashboard can show you what it claims happened. It cannot prove the log 
 | **Cryptographic seals** | None | Hash chain — each commit binds to all prior commits |
 | **Works offline** | No | Yes |
 | **Agent support** | Framework-specific SDKs | Wraps any CLI agent directly |
-| **MCP native** | No | Yes — 9 native + proxied tools over HTTP, 11 tools over stdio |
+| **MCP native** | No | Yes — 10 native + proxied tools over HTTP, 11 tools over stdio |
 | **Formal verification** | No | 63 Lean 4 modules with sheaf-theoretic proofs |
 
 H.A.L.O. doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.
@@ -256,6 +256,65 @@ H.A.L.O.'s own features (attest, audit, trust, sign) are gated by the **CAB lice
 | **Starter** | $49/month | + MCP server, TUI, custom agent wrapping |
 | **Professional** | $149/month | + IPA backend, HTTP multi-tenant API |
 | **Enterprise** | $499/month | + KZG backend, container runtime, on-chain attestation |
+
+---
+
+## x402direct — Stablecoin Payments for Agents
+
+<p align="center">
+  <a href="https://www.x402direct.org"><strong>x402direct.org</strong></a>
+</p>
+
+[x402direct](https://www.x402direct.org) is a peer-to-peer stablecoin payment protocol that uses HTTP 402 responses and UPC (Unified Payment Contract) smart contracts on Base. When an agent encounters a 402 Payment Required response, H.A.L.O. can handle the payment flow automatically.
+
+### Integration
+
+H.A.L.O. integrates x402direct at two levels:
+
+**1. Via AgentPMT (recommended)** — The `agentpmt/x402_pay` tool handles the full payment lifecycle: detect 402 response, select payment option, check balance, execute UPC payment, submit proof, access resource. Zero agent-side code needed.
+
+**2. Native validation** — The `x402_check` MCP tool parses and validates x402 payment requests locally. It checks protocol version, CAIP-10 addressing, known networks (Base mainnet and Base Sepolia), and token contract addresses — all without sending a transaction.
+
+```bash
+# Enable x402 integration
+agenthalo x402 enable
+
+# Configure UPC contract and network
+agenthalo x402 config --network base-sepolia --upc-contract 0x...
+
+# Check status
+agenthalo x402 status
+
+# Validate a 402 response body
+echo '{"x402version":"direct.1.0.0","nonce":42,...}' | agenthalo x402 check
+```
+
+### Supported Networks
+
+| Network | Chain ID | USDC Address |
+|---------|----------|-------------|
+| Base Mainnet | `eip155:8453` | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
+| Base Sepolia | `eip155:84532` | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
+
+### How x402 Works with H.A.L.O.
+
+```
+Agent requests protected resource
+        ↓
+Server returns 402 Payment Required (x402direct JSON)
+        ↓
+H.A.L.O. validates the payment request (x402_check)
+        ↓
+AgentPMT executes payment via UPC smart contract (x402_pay)
+        ↓
+H.A.L.O. records the payment in its tamper-evident trace
+        ↓
+Agent submits tx hash + nonce as proof → server grants access
+```
+
+Every x402 payment flows through H.A.L.O.'s trace, giving you a complete audit trail of autonomous agent spending — cryptographically sealed.
+
+> **Protocol reference:** [x402direct-public](https://github.com/Apoth3osis-ai/x402direct-public) on GitHub.
 
 ---
 
@@ -512,18 +571,18 @@ When `APPEND_ONLY` is active:
 
 ## Testing
 
-248 tests passing (2026-02-24 snapshot), 0 failures, 0 warnings:
+262 tests passing (2026-02-24 snapshot), 0 failures, 0 warnings:
 
 ```bash
-cargo test                        # 209 Rust tests
+cargo test                        # 223 Rust tests
 cd contracts && forge test        # 39 Solidity tests
 ```
 
 | Suite | Tests |
 |-------|-------|
-| Rust (unit + integration + binary tests) | 209 |
+| Rust (unit + integration + binary tests) | 223 |
 | Solidity (Foundry) | 39 |
-| **Total** | **248** |
+| **Total** | **262** |
 
 ## Known Limitations
 

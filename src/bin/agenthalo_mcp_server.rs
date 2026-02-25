@@ -20,6 +20,7 @@ use nucleusdb::halo::pq::{has_wallet, sign_pq_payload};
 use nucleusdb::halo::trace::{list_sessions, now_unix_secs, record_paid_operation_for_halo};
 use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::util::digest_json;
+use nucleusdb::halo::x402;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -147,6 +148,7 @@ async fn mcp(
                 json!({"name":"privacy_pool_create","description":"AgentHALO privacy pool create operation (workflows add-on)"}),
                 json!({"name":"privacy_pool_withdraw","description":"AgentHALO privacy pool withdraw operation (workflows add-on)"}),
                 json!({"name":"pq_bridge_transfer","description":"AgentHALO PQ bridge transfer operation (p2pclaw add-on)"}),
+                json!({"name":"x402_check","description":"Parse and validate an x402direct payment request (402 response body). Returns structured validation with chain/token verification and warnings."}),
             ];
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
@@ -226,6 +228,7 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "privacy_pool_create" => tool_privacy_pool_create(arguments),
         "privacy_pool_withdraw" => tool_privacy_pool_withdraw(arguments),
         "pq_bridge_transfer" => tool_pq_bridge_transfer(arguments),
+        "x402_check" => tool_x402_check(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -705,6 +708,28 @@ fn tool_pq_bridge_transfer(arguments: Value) -> Result<Value, String> {
         "status": "ok",
         "result_digest": digest,
         "transfer": transfer
+    }))
+}
+
+fn tool_x402_check(arguments: Value) -> Result<Value, String> {
+    let body = arguments
+        .get("body")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            "x402_check requires 'body' (the JSON body of an HTTP 402 response)".to_string()
+        })?;
+    let req = x402::parse_x402_response(body)?;
+    let validation = x402::validate_payment_request(&req);
+    let cfg = x402::load_x402_config();
+    Ok(json!({
+        "status": if validation.valid { "ok" } else { "invalid" },
+        "validation": validation,
+        "x402_enabled": cfg.enabled,
+        "preferred_network": cfg.preferred_network,
+        "supported_networks": [
+            {"name": "base", "caip2": "eip155:8453", "usdc": x402::BASE_MAINNET.usdc_address},
+            {"name": "base-sepolia", "caip2": "eip155:84532", "usdc": x402::BASE_SEPOLIA.usdc_address}
+        ]
     }))
 }
 
