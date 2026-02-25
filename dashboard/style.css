@@ -380,8 +380,231 @@ tr.clickable { cursor: pointer; }
 }
 
 .btn:hover { background: var(--bg-hover); border-color: var(--accent); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn:disabled:hover { background: var(--bg-card); border-color: var(--border); }
 .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .btn-primary:hover { background: var(--accent-hover); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-xs { padding: 2px 8px; font-size: 11px; border-radius: 4px; }
+
+/* Icon buttons (NucleusDB actions) */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+.btn-icon:hover { background: var(--bg-hover); border-color: var(--border); color: var(--text); }
+.btn-icon-danger:hover { background: #f8514922; color: var(--red); border-color: var(--red); }
+
+/* NucleusDB sub-tabs */
+.ndb-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--border);
+  margin-bottom: 0;
+}
+
+.ndb-tab {
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.ndb-tab:hover { color: var(--text); }
+.ndb-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* NucleusDB toolbar */
+.ndb-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ndb-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  background: var(--bg-card);
+  border-radius: 4px;
+}
+
+/* NucleusDB data table */
+.ndb-table { width: 100%; }
+.ndb-table th { user-select: none; }
+.ndb-sortable { cursor: pointer; }
+.ndb-sortable:hover { color: var(--accent); }
+
+.ndb-key {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.ndb-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ndb-value:hover { background: var(--bg-card); border-radius: 4px; }
+
+.ndb-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: center;
+}
+
+.ndb-mono { font-family: var(--font-mono); font-size: 12px; }
+
+.ndb-hash {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  vertical-align: bottom;
+}
+
+/* NucleusDB pagination */
+.ndb-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.ndb-page-info {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 0 8px;
+}
+
+.ndb-page-size {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 12px;
+  margin-left: 8px;
+}
+
+/* NucleusDB empty state */
+.ndb-empty {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--text);
+}
+
+/* NucleusDB edit panel */
+.ndb-edit-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-top: 12px;
+}
+
+/* NucleusDB verify panel */
+.ndb-verify-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-top: 12px;
+}
+
+.ndb-verify-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.ndb-verify-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.ndb-verify-label {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  min-width: 100px;
+}
+
+/* NucleusDB SQL presets */
+.ndb-sql-presets {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+/* NucleusDB prefix distribution */
+.ndb-prefix-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ndb-prefix-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.ndb-prefix-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  min-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ndb-prefix-name.clickable { cursor: pointer; color: var(--accent); }
+.ndb-prefix-name.clickable:hover { text-decoration: underline; }
+
+.ndb-prefix-bar-wrap {
+  flex: 1;
+  height: 16px;
+  background: var(--bg-card);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.ndb-prefix-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  opacity: 0.6;
+  transition: width 0.3s;
+}
 
 /* Filter bar */
 .filter-bar {

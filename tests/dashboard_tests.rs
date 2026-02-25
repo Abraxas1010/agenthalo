@@ -313,6 +313,76 @@ async fn nucleusdb_browse_returns_data() {
 }
 
 // ---------------------------------------------------------------------------
+// NucleusDB browse returns paginated data with metadata
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn nucleusdb_browse_paginated_has_metadata() {
+    let (state, db_path) = test_state("ndb_browse_pag");
+    seed_session(&db_path, "browse-pag-test");
+
+    let (status, val) = api_get(state, "/nucleusdb/browse?page=0&page_size=10").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(val.get("rows").is_some(), "should have rows: {val}");
+    assert!(val.get("total").is_some(), "should have total: {val}");
+    assert!(val.get("page").is_some(), "should have page: {val}");
+    assert!(val.get("page_size").is_some(), "should have page_size: {val}");
+    assert!(
+        val.get("total_pages").is_some(),
+        "should have total_pages: {val}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+// ---------------------------------------------------------------------------
+// NucleusDB stats returns key count and prefixes
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn nucleusdb_stats_returns_counts() {
+    let (state, db_path) = test_state("ndb_stats");
+    seed_session(&db_path, "stats-test");
+
+    let (status, val) = api_get(state, "/nucleusdb/stats").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(val.get("key_count").is_some(), "should have key_count: {val}");
+    assert!(
+        val.get("commit_count").is_some(),
+        "should have commit_count: {val}"
+    );
+    assert!(
+        val.get("top_prefixes").is_some(),
+        "should have top_prefixes: {val}"
+    );
+    assert!(
+        val.get("db_size_bytes").is_some(),
+        "should have db_size_bytes: {val}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+// ---------------------------------------------------------------------------
+// NucleusDB export returns JSON content
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn nucleusdb_export_returns_json() {
+    let (state, db_path) = test_state("ndb_export");
+    seed_session(&db_path, "export-test");
+
+    let (status, val) = api_get(state, "/nucleusdb/export?format=json").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(val.get("format").is_some(), "should have format: {val}");
+    assert!(val.get("content").is_some(), "should have content: {val}");
+    assert!(val.get("count").is_some(), "should have count: {val}");
+    assert_eq!(val["format"], "json");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+// ---------------------------------------------------------------------------
 // NucleusDB history returns commit history
 // ---------------------------------------------------------------------------
 

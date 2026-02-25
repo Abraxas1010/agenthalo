@@ -714,22 +714,33 @@ window.verifyDigest = async function() {
 };
 
 // =============================================================================
-// PAGE: NucleusDB
+// PAGE: NucleusDB — Full Database Browser
 // =============================================================================
-async function renderNucleusDB() {
-  content.innerHTML = '<div class="loading">Loading NucleusDB status...</div>';
+
+// NucleusDB sub-tab state
+const ndb = {
+  tab: 'browse',
+  page: 0,
+  pageSize: 50,
+  prefix: '',
+  sort: 'key',
+  order: 'asc',
+  editingKey: null,
+};
+
+async function renderNucleusDB(subtab) {
+  ndb.tab = subtab || ndb.tab || 'browse';
+  content.innerHTML = '<div class="loading">Loading NucleusDB...</div>';
+
   try {
-    const [status, history] = await Promise.all([
-      api('/nucleusdb/status'), api('/nucleusdb/history')
-    ]);
+    const status = await api('/nucleusdb/status');
 
     content.innerHTML = `
       <div class="page-title">NucleusDB</div>
-
-      <div class="card-grid">
+      <div class="card-grid" style="margin-bottom:16px">
         <div class="card">
           <div class="card-label">Backend</div>
-          <div class="card-value" style="font-size:16px">${status.backend}</div>
+          <div class="card-value" style="font-size:16px">${esc(status.backend)}</div>
           <div class="card-sub">SHA-256 Merkle tree</div>
         </div>
         <div class="card">
@@ -745,50 +756,388 @@ async function renderNucleusDB() {
         </div>
       </div>
 
-      <div class="section-header">SQL Console</div>
-      <div style="margin-bottom:24px">
-        <div style="display:flex;gap:8px;margin-bottom:8px">
-          <input type="text" id="sql-input" placeholder="Enter SQL query (e.g. SELECT * FROM kv)" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
-          <button class="btn btn-primary" onclick="runSQL()">Execute</button>
-        </div>
-        <div class="config-desc">INSERT, SELECT, UPDATE, DELETE, COMMIT, VERIFY, SHOW STATUS/HISTORY/MODE, SET MODE APPEND_ONLY</div>
-        <div id="sql-result" style="margin-top:8px"></div>
+      <div class="ndb-tabs">
+        <button class="ndb-tab ${ndb.tab === 'browse' ? 'active' : ''}" onclick="ndbSwitchTab('browse')">Browse</button>
+        <button class="ndb-tab ${ndb.tab === 'sql' ? 'active' : ''}" onclick="ndbSwitchTab('sql')">SQL</button>
+        <button class="ndb-tab ${ndb.tab === 'commits' ? 'active' : ''}" onclick="ndbSwitchTab('commits')">Commits</button>
+        <button class="ndb-tab ${ndb.tab === 'schema' ? 'active' : ''}" onclick="ndbSwitchTab('schema')">Schema</button>
+        <button class="ndb-tab ${ndb.tab === 'settings' ? 'active' : ''}" onclick="ndbSwitchTab('settings')">Settings</button>
       </div>
-
-      <div class="section-header">Commit History</div>
-      ${history.commits && history.commits.rows && history.commits.rows.length > 0 ? `
-        <div class="table-wrap"><table>
-          <thead><tr>${(history.commits.columns || []).map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${history.commits.rows.map(row =>
-              `<tr>${row.map(cell => `<td style="font-family:var(--font-mono);font-size:12px">${esc(cell)}</td>`).join('')}</tr>`
-            ).join('')}
-          </tbody>
-        </table></div>
-      ` : '<div style="color:var(--text-muted)">No commit history.</div>'}
-
-      <div class="section-header">Recent Sessions</div>
-      ${(history.sessions || []).length > 0 ? `
-        <div class="table-wrap"><table>
-          <thead><tr><th>Session ID</th><th>Agent</th><th>Model</th><th>Started</th><th>Status</th></tr></thead>
-          <tbody>
-            ${(history.sessions || []).map(h => `
-              <tr class="clickable" onclick="location.hash='#/sessions/${encodeURIComponent(h.session_id)}'">
-                <td style="font-family:var(--font-mono);font-size:12px">${esc(truncate(h.session_id, 28))}</td>
-                <td>${esc(h.agent)}</td>
-                <td>${esc(truncate(h.model || 'unknown', 20))}</td>
-                <td style="font-size:12px">${fmtTime(h.started_at)}</td>
-                <td>${statusBadge(h.status)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table></div>
-      ` : '<div style="color:var(--text-muted)">No sessions recorded.</div>'}
+      <div id="ndb-content"></div>
     `;
+
+    // Render active sub-tab
+    switch (ndb.tab) {
+      case 'browse': await ndbRenderBrowse(); break;
+      case 'sql': ndbRenderSQL(); break;
+      case 'commits': await ndbRenderCommits(); break;
+      case 'schema': await ndbRenderSchema(); break;
+      case 'settings': await ndbRenderSettings(); break;
+    }
   } catch (e) {
     content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
 }
+
+window.ndbSwitchTab = function(tab) {
+  ndb.tab = tab;
+  renderNucleusDB(tab);
+};
+
+// -- Browse Sub-Tab -----------------------------------------------------------
+async function ndbRenderBrowse() {
+  const el = $('#ndb-content');
+  el.innerHTML = '<div style="color:var(--text-muted)">Loading data...</div>';
+
+  try {
+    const data = await api(`/nucleusdb/browse?page=${ndb.page}&page_size=${ndb.pageSize}&prefix=${encodeURIComponent(ndb.prefix)}&sort=${ndb.sort}&order=${ndb.order}`);
+    const rows = data.rows || [];
+    const total = data.total || 0;
+    const totalPages = data.total_pages || 1;
+
+    const sortIcon = (field) => {
+      if (ndb.sort !== field) return '<span style="opacity:0.3">&#8597;</span>';
+      return ndb.order === 'asc' ? '&#9650;' : '&#9660;';
+    };
+
+    el.innerHTML = `
+      <div class="ndb-toolbar">
+        <div style="display:flex;gap:8px;align-items:center;flex:1">
+          <input type="text" id="ndb-search" placeholder="Filter by key prefix..." value="${esc(ndb.prefix)}"
+            style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
+          <button class="btn btn-sm" onclick="ndbSearch()">Filter</button>
+          ${ndb.prefix ? `<button class="btn btn-sm" onclick="ndbClearSearch()">Clear</button>` : ''}
+          <span class="ndb-count">${total} key${total !== 1 ? 's' : ''}</span>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-sm btn-primary" onclick="ndbNewKey()">+ New Key</button>
+          <button class="btn btn-sm" onclick="ndbExport('json')">Export JSON</button>
+          <button class="btn btn-sm" onclick="ndbExport('csv')">Export CSV</button>
+        </div>
+      </div>
+
+      ${rows.length > 0 ? `
+        <div class="table-wrap"><table class="ndb-table">
+          <thead><tr>
+            <th class="ndb-sortable" onclick="ndbSort('key')">Key ${sortIcon('key')}</th>
+            <th class="ndb-sortable" onclick="ndbSort('value')" style="width:140px">Value ${sortIcon('value')}</th>
+            <th style="width:70px">Index</th>
+            <th style="width:180px;text-align:center">Actions</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(row => `
+              <tr data-key="${esc(row.key)}">
+                <td class="ndb-key">${esc(row.key)}</td>
+                <td class="ndb-value" ondblclick="ndbStartEdit(this, '${esc(row.key)}', ${row.value})">${row.value}</td>
+                <td style="color:var(--text-muted);font-size:12px">${row.index}</td>
+                <td class="ndb-actions">
+                  <button class="btn-icon" onclick="ndbVerifyKey('${esc(row.key)}')" title="Verify Merkle proof">&#128737;</button>
+                  <button class="btn-icon" onclick="ndbKeyHistory('${esc(row.key)}')" title="Key history">&#128339;</button>
+                  <button class="btn-icon" onclick="ndbStartEdit(null, '${esc(row.key)}', ${row.value})" title="Edit value">&#9998;</button>
+                  <button class="btn-icon btn-icon-danger" onclick="ndbDeleteKey('${esc(row.key)}')" title="Delete">&#128465;</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table></div>
+
+        <div class="ndb-pagination">
+          <button class="btn btn-sm" onclick="ndbPageNav(0)" ${ndb.page === 0 ? 'disabled' : ''}>&#171; First</button>
+          <button class="btn btn-sm" onclick="ndbPageNav(${ndb.page - 1})" ${ndb.page === 0 ? 'disabled' : ''}>&#8249; Prev</button>
+          <span class="ndb-page-info">Page ${ndb.page + 1} of ${totalPages}</span>
+          <button class="btn btn-sm" onclick="ndbPageNav(${ndb.page + 1})" ${ndb.page >= totalPages - 1 ? 'disabled' : ''}>Next &#8250;</button>
+          <button class="btn btn-sm" onclick="ndbPageNav(${totalPages - 1})" ${ndb.page >= totalPages - 1 ? 'disabled' : ''}>Last &#187;</button>
+          <select class="ndb-page-size" onchange="ndbChangePageSize(this.value)">
+            ${[25, 50, 100, 200].map(n => `<option value="${n}" ${ndb.pageSize === n ? 'selected' : ''}>${n} / page</option>`).join('')}
+          </select>
+        </div>
+      ` : `
+        <div class="ndb-empty">
+          <div style="font-size:48px;margin-bottom:12px">&#9683;</div>
+          <div style="font-size:16px;margin-bottom:8px">No data stored yet</div>
+          <div style="color:var(--text-muted);margin-bottom:16px">Insert your first key-value pair to get started.</div>
+          <button class="btn btn-primary" onclick="ndbNewKey()">+ Insert First Key</button>
+          <button class="btn btn-sm" style="margin-left:8px" onclick="ndbSwitchTab('sql')">Open SQL Console</button>
+        </div>
+      `}
+
+      <div id="ndb-detail-panel"></div>
+    `;
+
+    // Bind Enter key on search input
+    const searchInput = $('#ndb-search');
+    if (searchInput) {
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') ndbSearch();
+      });
+    }
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red)">Error loading data: ${esc(e.message)}</div>`;
+  }
+}
+
+window.ndbSearch = function() {
+  ndb.prefix = ($('#ndb-search')?.value || '').trim();
+  ndb.page = 0;
+  ndbRenderBrowse();
+};
+
+window.ndbClearSearch = function() {
+  ndb.prefix = '';
+  ndb.page = 0;
+  ndbRenderBrowse();
+};
+
+window.ndbSort = function(field) {
+  if (ndb.sort === field) {
+    ndb.order = ndb.order === 'asc' ? 'desc' : 'asc';
+  } else {
+    ndb.sort = field;
+    ndb.order = 'asc';
+  }
+  ndb.page = 0;
+  ndbRenderBrowse();
+};
+
+window.ndbPageNav = function(page) {
+  ndb.page = Math.max(0, page);
+  ndbRenderBrowse();
+};
+
+window.ndbChangePageSize = function(size) {
+  ndb.pageSize = parseInt(size) || 50;
+  ndb.page = 0;
+  ndbRenderBrowse();
+};
+
+window.ndbStartEdit = function(cell, key, currentValue) {
+  const panel = $('#ndb-detail-panel');
+  panel.innerHTML = `
+    <div class="ndb-edit-panel">
+      <div class="section-header">Edit Key</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <label style="font-weight:600;min-width:50px">Key:</label>
+        <span style="font-family:var(--font-mono)">${esc(key)}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+        <label style="font-weight:600;min-width:50px">Value:</label>
+        <input type="number" id="ndb-edit-value" value="${currentValue}"
+          style="width:200px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="ndbSaveEdit('${esc(key)}')">Save &amp; Commit</button>
+        <button class="btn btn-sm" onclick="$('#ndb-detail-panel').innerHTML=''">Cancel</button>
+      </div>
+      <div id="ndb-edit-result" style="margin-top:8px"></div>
+    </div>
+  `;
+  $('#ndb-edit-value').focus();
+  $('#ndb-edit-value').select();
+};
+
+window.ndbSaveEdit = async function(key) {
+  const value = parseInt($('#ndb-edit-value')?.value);
+  if (isNaN(value)) {
+    $('#ndb-edit-result').innerHTML = '<div style="color:var(--red)">Value must be an integer</div>';
+    return;
+  }
+  try {
+    const res = await apiPost('/nucleusdb/edit', { key, value });
+    if (res.error) {
+      $('#ndb-edit-result').innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
+    } else {
+      $('#ndb-detail-panel').innerHTML = `<div style="color:var(--green);padding:8px">Saved ${esc(key)} = ${value} and committed.</div>`;
+      setTimeout(() => ndbRenderBrowse(), 800);
+    }
+  } catch (e) {
+    $('#ndb-edit-result').innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
+  }
+};
+
+window.ndbNewKey = function() {
+  const panel = $('#ndb-detail-panel');
+  panel.innerHTML = `
+    <div class="ndb-edit-panel">
+      <div class="section-header">New Key-Value Pair</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <label style="font-weight:600;min-width:50px">Key:</label>
+        <input type="text" id="ndb-new-key" placeholder="my_key"
+          style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+        <label style="font-weight:600;min-width:50px">Value:</label>
+        <input type="number" id="ndb-new-value" value="0"
+          style="width:200px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="ndbInsertNew()">Insert &amp; Commit</button>
+        <button class="btn btn-sm" onclick="$('#ndb-detail-panel').innerHTML=''">Cancel</button>
+      </div>
+      <div id="ndb-new-result" style="margin-top:8px"></div>
+    </div>
+  `;
+  $('#ndb-new-key').focus();
+};
+
+window.ndbInsertNew = async function() {
+  const key = ($('#ndb-new-key')?.value || '').trim();
+  const value = parseInt($('#ndb-new-value')?.value);
+  if (!key) {
+    $('#ndb-new-result').innerHTML = '<div style="color:var(--red)">Key cannot be empty</div>';
+    return;
+  }
+  if (isNaN(value)) {
+    $('#ndb-new-result').innerHTML = '<div style="color:var(--red)">Value must be an integer</div>';
+    return;
+  }
+  try {
+    const res = await apiPost('/nucleusdb/edit', { key, value });
+    if (res.error) {
+      $('#ndb-new-result').innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
+    } else {
+      $('#ndb-detail-panel').innerHTML = `<div style="color:var(--green);padding:8px">Inserted ${esc(key)} = ${value} and committed.</div>`;
+      setTimeout(() => ndbRenderBrowse(), 800);
+    }
+  } catch (e) {
+    $('#ndb-new-result').innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
+  }
+};
+
+window.ndbDeleteKey = async function(key) {
+  if (!confirm(`Delete key '${key}'? This queues a tombstone (value=0) and commits.`)) return;
+  try {
+    const res = await apiPost('/nucleusdb/edit', { key, value: 0 });
+    if (res.error) {
+      alert('Delete failed: ' + res.error);
+    } else {
+      ndbRenderBrowse();
+    }
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+};
+
+window.ndbVerifyKey = async function(key) {
+  const panel = $('#ndb-detail-panel');
+  panel.innerHTML = '<div style="color:var(--text-muted);padding:8px">Verifying Merkle proof...</div>';
+  try {
+    const res = await api(`/nucleusdb/verify/${encodeURIComponent(key)}`);
+    if (!res.found) {
+      panel.innerHTML = `<div class="ndb-verify-panel"><span class="badge badge-err">Key not found</span></div>`;
+      return;
+    }
+    panel.innerHTML = `
+      <div class="ndb-verify-panel">
+        <div class="section-header">Merkle Proof Verification</div>
+        <div class="ndb-verify-grid">
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Key</span><span class="ndb-mono">${esc(res.key)}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Value</span><span class="ndb-mono">${res.value}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Index</span><span class="ndb-mono">${res.index}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Backend</span><span class="ndb-mono">${esc(res.backend)}</span></div>
+          <div class="ndb-verify-row">
+            <span class="ndb-verify-label">Verified</span>
+            <span>${res.verified
+              ? '<span class="badge badge-ok" style="font-size:14px">&#10003; VERIFIED</span>'
+              : '<span class="badge badge-err" style="font-size:14px">&#10007; FAILED</span>'
+            }</span>
+          </div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Root Hash</span><span class="ndb-mono ndb-hash">${esc(res.root_hash)}</span></div>
+        </div>
+        <button class="btn btn-sm" style="margin-top:8px" onclick="$('#ndb-detail-panel').innerHTML=''">Close</button>
+      </div>
+    `;
+  } catch (e) {
+    panel.innerHTML = `<div style="color:var(--red);padding:8px">Verify error: ${esc(e.message)}</div>`;
+  }
+};
+
+window.ndbKeyHistory = async function(key) {
+  const panel = $('#ndb-detail-panel');
+  panel.innerHTML = '<div style="color:var(--text-muted);padding:8px">Loading history...</div>';
+  try {
+    const res = await api(`/nucleusdb/key-history/${encodeURIComponent(key)}`);
+    if (!res.found) {
+      panel.innerHTML = `<div class="ndb-verify-panel"><span class="badge badge-err">Key not found</span></div>`;
+      return;
+    }
+    panel.innerHTML = `
+      <div class="ndb-verify-panel">
+        <div class="section-header">Key History: ${esc(key)}</div>
+        <div class="ndb-verify-grid" style="margin-bottom:12px">
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Current Value</span><span class="ndb-mono">${res.current_value}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Index</span><span class="ndb-mono">${res.index}</span></div>
+        </div>
+        ${res.commits && res.commits.length > 0 ? `
+          <div style="font-size:13px;font-weight:600;margin-bottom:6px">Commits (${res.commits.length})</div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Height</th><th>State Root</th><th>Timestamp</th></tr></thead>
+            <tbody>${res.commits.map(c => `
+              <tr>
+                <td>${c.height}</td>
+                <td class="ndb-mono ndb-hash">${esc(c.state_root)}</td>
+                <td style="font-size:12px">${c.timestamp_unix ? fmtTime(c.timestamp_unix) : 'n/a'}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table></div>
+          ${res.note ? `<div style="color:var(--text-muted);font-size:12px;margin-top:4px">${esc(res.note)}</div>` : ''}
+        ` : '<div style="color:var(--text-muted)">No commits yet.</div>'}
+        <button class="btn btn-sm" style="margin-top:8px" onclick="$('#ndb-detail-panel').innerHTML=''">Close</button>
+      </div>
+    `;
+  } catch (e) {
+    panel.innerHTML = `<div style="color:var(--red);padding:8px">History error: ${esc(e.message)}</div>`;
+  }
+};
+
+window.ndbExport = async function(fmt) {
+  try {
+    const res = await api(`/nucleusdb/export?format=${fmt}`);
+    const text = fmt === 'csv' ? res.content : JSON.stringify(res.content, null, 2);
+    const blob = new Blob([text], { type: fmt === 'csv' ? 'text/csv' : 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nucleusdb_export.${fmt}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  }
+};
+
+// -- SQL Sub-Tab --------------------------------------------------------------
+function ndbRenderSQL() {
+  const el = $('#ndb-content');
+  el.innerHTML = `
+    <div style="margin:16px 0">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input type="text" id="sql-input" placeholder="Enter SQL (e.g. SELECT * FROM data)"
+          style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
+        <button class="btn btn-primary" onclick="runSQL()">Execute</button>
+      </div>
+      <div class="config-desc" style="margin-bottom:4px">
+        <strong>Supported:</strong> SELECT, INSERT, UPDATE, DELETE, COMMIT, VERIFY 'key', SHOW STATUS/HISTORY/MODE, SET MODE APPEND_ONLY, EXPORT
+      </div>
+      <div class="ndb-sql-presets">
+        <span style="color:var(--text-muted);font-size:12px">Quick:</span>
+        <button class="btn btn-xs" onclick="ndbSQLPreset('SELECT * FROM data')">All Data</button>
+        <button class="btn btn-xs" onclick="ndbSQLPreset('SHOW STATUS')">Status</button>
+        <button class="btn btn-xs" onclick="ndbSQLPreset('SHOW HISTORY')">History</button>
+        <button class="btn btn-xs" onclick="ndbSQLPreset('SHOW MODE')">Mode</button>
+        <button class="btn btn-xs" onclick="ndbSQLPreset('EXPORT')">Export</button>
+      </div>
+      <div id="sql-result" style="margin-top:12px"></div>
+    </div>
+  `;
+  // Bind Enter key
+  const inp = $('#sql-input');
+  if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSQL(); });
+}
+
+window.ndbSQLPreset = function(sql) {
+  const inp = $('#sql-input');
+  if (inp) { inp.value = sql; runSQL(); }
+};
 
 window.runSQL = async function() {
   const query = ($('#sql-input')?.value || '').trim();
@@ -818,5 +1167,195 @@ window.runSQL = async function() {
     }
   } catch (e) {
     el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
+  }
+};
+
+// -- Commits Sub-Tab ----------------------------------------------------------
+async function ndbRenderCommits() {
+  const el = $('#ndb-content');
+  el.innerHTML = '<div style="color:var(--text-muted)">Loading commits...</div>';
+  try {
+    const history = await api('/nucleusdb/history');
+    el.innerHTML = `
+      <div style="margin:16px 0">
+        <div class="section-header">Commit Ledger</div>
+        ${history.commits && history.commits.rows && history.commits.rows.length > 0 ? `
+          <div class="table-wrap"><table>
+            <thead><tr>${(history.commits.columns || []).map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>
+            <tbody>
+              ${history.commits.rows.map(row =>
+                `<tr>${row.map((cell, i) => `<td class="ndb-mono" style="font-size:12px">${i === 1 ? `<span class="ndb-hash">${esc(cell)}</span>` : esc(cell)}</td>`).join('')}</tr>`
+              ).join('')}
+            </tbody>
+          </table></div>
+          <div style="color:var(--text-muted);font-size:12px;margin-top:4px">${history.commits.rows.length} commit(s)</div>
+        ` : '<div style="color:var(--text-muted)">No commits yet. Insert data and COMMIT to create the first entry.</div>'}
+
+        <div class="section-header" style="margin-top:24px">Recent Sessions</div>
+        ${(history.sessions || []).length > 0 ? `
+          <div class="table-wrap"><table>
+            <thead><tr><th>Session ID</th><th>Agent</th><th>Model</th><th>Started</th><th>Status</th></tr></thead>
+            <tbody>
+              ${(history.sessions || []).map(h => `
+                <tr class="clickable" onclick="location.hash='#/sessions/${encodeURIComponent(h.session_id)}'">
+                  <td class="ndb-mono" style="font-size:12px">${esc(truncate(h.session_id, 28))}</td>
+                  <td>${esc(h.agent)}</td>
+                  <td>${esc(truncate(h.model || 'unknown', 20))}</td>
+                  <td style="font-size:12px">${fmtTime(h.started_at)}</td>
+                  <td>${statusBadge(h.status)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table></div>
+        ` : '<div style="color:var(--text-muted)">No sessions recorded.</div>'}
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// -- Schema Sub-Tab -----------------------------------------------------------
+async function ndbRenderSchema() {
+  const el = $('#ndb-content');
+  el.innerHTML = '<div style="color:var(--text-muted)">Loading schema...</div>';
+  try {
+    const stats = await api('/nucleusdb/stats');
+    const prefixes = stats.top_prefixes || [];
+
+    el.innerHTML = `
+      <div style="margin:16px 0">
+        <div class="section-header">Database Statistics</div>
+        <div class="card-grid">
+          <div class="card">
+            <div class="card-label">Total Keys</div>
+            <div class="card-value">${stats.key_count}</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Commits</div>
+            <div class="card-value">${stats.commit_count}</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Write Mode</div>
+            <div class="card-value" style="font-size:14px">${esc(stats.write_mode)}</div>
+          </div>
+          <div class="card">
+            <div class="card-label">DB Size</div>
+            <div class="card-value" style="font-size:16px">${formatBytes(stats.db_size_bytes)}</div>
+          </div>
+        </div>
+
+        ${stats.key_count > 0 ? `
+          <div class="section-header" style="margin-top:16px">Value Statistics</div>
+          <div class="card-grid">
+            <div class="card">
+              <div class="card-label">Min</div>
+              <div class="card-value">${stats.value_min != null ? stats.value_min : 'n/a'}</div>
+            </div>
+            <div class="card">
+              <div class="card-label">Max</div>
+              <div class="card-value">${stats.value_max != null ? stats.value_max : 'n/a'}</div>
+            </div>
+            <div class="card">
+              <div class="card-label">Average</div>
+              <div class="card-value" style="font-size:16px">${stats.value_avg != null ? stats.value_avg.toFixed(2) : 'n/a'}</div>
+            </div>
+            <div class="card">
+              <div class="card-label">Sum</div>
+              <div class="card-value" style="font-size:16px">${stats.value_sum != null ? stats.value_sum.toLocaleString() : 'n/a'}</div>
+            </div>
+          </div>
+        ` : ''}
+
+        ${prefixes.length > 0 ? `
+          <div class="section-header" style="margin-top:16px">Key Prefix Distribution</div>
+          <div class="ndb-prefix-list">
+            ${prefixes.map(p => `
+              <div class="ndb-prefix-item">
+                <span class="ndb-prefix-name clickable" onclick="ndb.prefix='${esc(p.prefix)}';ndb.page=0;ndbSwitchTab('browse')">${esc(p.prefix)}</span>
+                <div class="ndb-prefix-bar-wrap">
+                  <div class="ndb-prefix-bar" style="width:${Math.max(4, (p.count / (prefixes[0]?.count || 1)) * 100)}%"></div>
+                </div>
+                <span class="ndb-prefix-count">${p.count}</span>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+
+        ${stats.sth ? `
+          <div class="section-header" style="margin-top:16px">Signed Tree Head</div>
+          <div class="ndb-verify-grid">
+            <div class="ndb-verify-row"><span class="ndb-verify-label">Tree Size</span><span class="ndb-mono">${stats.sth.tree_size}</span></div>
+            <div class="ndb-verify-row"><span class="ndb-verify-label">Root Hash</span><span class="ndb-mono ndb-hash">${esc(stats.sth.root_hash)}</span></div>
+            <div class="ndb-verify-row"><span class="ndb-verify-label">Timestamp</span><span>${fmtTime(stats.sth.timestamp_unix)}</span></div>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let val = bytes;
+  while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
+  return val.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+// -- Settings Sub-Tab ---------------------------------------------------------
+async function ndbRenderSettings() {
+  const el = $('#ndb-content');
+  el.innerHTML = '<div style="color:var(--text-muted)">Loading settings...</div>';
+  try {
+    const stats = await api('/nucleusdb/stats');
+    el.innerHTML = `
+      <div style="margin:16px 0">
+        <div class="section-header">Write Mode</div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <span class="badge ${stats.write_mode === 'AppendOnly' ? 'badge-warn' : 'badge-ok'}" style="font-size:14px">
+            ${esc(stats.write_mode)}
+          </span>
+          ${stats.write_mode !== 'AppendOnly' ? `
+            <button class="btn btn-sm" onclick="ndbSetAppendOnly()">Lock to Append-Only</button>
+            <span style="color:var(--text-muted);font-size:12px">INSERT only. UPDATE/DELETE disabled. Irreversible.</span>
+          ` : `
+            <span style="color:var(--text-muted);font-size:12px">Database is locked. INSERT only. UPDATE/DELETE are disabled.</span>
+          `}
+        </div>
+
+        <div class="section-header">Export</div>
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <button class="btn btn-sm" onclick="ndbExport('json')">Export JSON</button>
+          <button class="btn btn-sm" onclick="ndbExport('csv')">Export CSV</button>
+        </div>
+
+        <div class="section-header">Database Info</div>
+        <div class="ndb-verify-grid">
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Keys</span><span>${stats.key_count}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Commits</span><span>${stats.commit_count}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">DB Size</span><span>${formatBytes(stats.db_size_bytes)}</span></div>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+window.ndbSetAppendOnly = async function() {
+  if (!confirm('Lock database to AppendOnly mode? This is IRREVERSIBLE. UPDATE and DELETE will be permanently disabled.')) return;
+  try {
+    const res = await apiPost('/nucleusdb/sql', { query: 'SET MODE APPEND_ONLY' });
+    if (res.error) {
+      alert('Failed: ' + res.error);
+    } else {
+      ndbRenderSettings();
+    }
+  } catch (e) {
+    alert('Failed: ' + e.message);
   }
 };
