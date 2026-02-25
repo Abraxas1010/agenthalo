@@ -379,7 +379,7 @@ Produces a complete `agenthalo-export-v1` JSON document with session metadata, s
 
 ### MCP Observability Tools
 
-The MCP server exposes 4 observability tools (14 native tools total):
+The MCP server exposes 4 observability tools (16 native tools total):
 
 | Tool | Description |
 |------|-------------|
@@ -491,7 +491,37 @@ agenthalo x402 status
 # Validate a 402 response body
 echo '{"x402version":"direct.1.0.0",...}' | agenthalo x402 check
 # or: agenthalo x402 check --body '{"x402version":"direct.1.0.0",...}'
+
+# Check wallet balance
+agenthalo x402 balance
+
+# Execute payment (reads 402 body from stdin or --body flag)
+agenthalo x402 pay --body '{"x402version":"direct.1.0.0",...}'
+# or: echo '<402-json>' | agenthalo x402 pay
+# Optionally select a specific payment option: --option po_base_usdc
 ```
+
+#### Payment Execution Flow
+
+When an agent encounters an HTTP 402 response:
+
+1. **Validate**: Parse and validate the x402direct payment request
+2. **Select option**: Auto-select a known network/token option, or use `--option` to pick one
+3. **Budget check**: Enforce `max_auto_approve` limit (default 5 USDC)
+4. **Balance check**: Verify sufficient USDC on the target network
+5. **Execute**: ERC-20 `transfer(address,uint256)` via `cast send` with nonce retry
+6. **Receipt**: Wait for on-chain receipt (block number, gas used)
+7. **Proof**: Return `X402PaymentProof` for submission back to the vendor
+
+The wallet private key is read from the `AGENTHALO_X402_PRIVATE_KEY` environment variable. This is separate from `AGENTHALO_ONCHAIN_PRIVATE_KEY` used for attestation posting, allowing independent key management.
+
+#### MCP Payment Tools
+
+| Tool | Description |
+|------|-------------|
+| `x402_check` | Parse and validate a 402 response body (no on-chain interaction) |
+| `x402_pay` | Execute payment: validate, check balance, transfer USDC, return proof |
+| `x402_balance` | Check wallet USDC balance on the configured network |
 
 Supported networks: Base mainnet (`eip155:8453`) and Base Sepolia (`eip155:84532`). Protocol reference: [x402direct.org](https://www.x402direct.org).
 
@@ -522,6 +552,7 @@ CAB certificate verification is fully offline — no phone-home.
 | `AGENTHALO_API_KEY` | (none) | API key (takes precedence over saved credentials) |
 | `AGENTHALO_ALLOW_GENERIC` | `0` | Set to `1`, `true`, or `yes` to enable custom agent wrapping |
 | `AGENTHALO_NO_TELEMETRY` | `1` | Always 1. Documented for transparency. |
+| `AGENTHALO_X402_PRIVATE_KEY` | (none) | Private key for x402 USDC payments (separate from attestation key) |
 | `AGENTHALO_ONCHAIN_STUB` | `0` | Set to `1` to disable real RPC posting (returns deterministic stub tx hashes) |
 
 ## Pricing Tables
@@ -671,7 +702,7 @@ src/halo/
   util.rs              — SHA-256 digest helpers, hex encode/decode
   viewer.rs            — CLI output formatting (tables, timestamps, costs, JSON, status, export)
   wrap.rs              — shell alias management (.bashrc/.zshrc)
-  x402.rs              — x402direct protocol types, CAIP-10 parsing, validation, config
+  x402.rs              — x402direct protocol types, CAIP-10 parsing, validation, payment execution, config
   adapters/
     mod.rs             — StreamAdapter trait
     claude.rs          — Claude Code stream-json parser
@@ -681,7 +712,7 @@ src/halo/
 
 src/bin/
   agenthalo.rs             — CLI binary (run, attest, audit, sign, trust, onchain, ...)
-  agenthalo_mcp_server.rs  — HTTP MCP server (14 native + proxied tools)
+  agenthalo_mcp_server.rs  — HTTP MCP server (16 native + proxied tools)
   nucleusdb.rs             — NucleusDB CLI binary
   nucleusdb_mcp.rs         — NucleusDB MCP server (stdio + HTTP transport)
   nucleusdb_server.rs      — NucleusDB multi-tenant HTTP server

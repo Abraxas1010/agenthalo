@@ -329,9 +329,9 @@ fn validate_chain(cfg: &OnchainConfig) -> Result<(), String> {
 }
 
 #[derive(Default)]
-struct TxReceipt {
-    block_number: Option<u64>,
-    gas_used: Option<u64>,
+pub(crate) struct TxReceipt {
+    pub(crate) block_number: Option<u64>,
+    pub(crate) gas_used: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -467,7 +467,7 @@ fn run_cast_send_with_nonce_retry(
     Err(last_err)
 }
 
-fn fetch_pending_nonce(rpc_url: &str, address: &str) -> Result<u64, String> {
+pub(crate) fn fetch_pending_nonce(rpc_url: &str, address: &str) -> Result<u64, String> {
     let payload = json!({
         "jsonrpc":"2.0",
         "id":1,
@@ -489,14 +489,14 @@ fn fetch_pending_nonce(rpc_url: &str, address: &str) -> Result<u64, String> {
     parse_hex_u64(hex)
 }
 
-fn is_retryable_nonce_error(err: &str) -> bool {
+pub(crate) fn is_retryable_nonce_error(err: &str) -> bool {
     let lower = err.to_ascii_lowercase();
     lower.contains("replacement transaction underpriced")
         || lower.contains("nonce too low")
         || lower.contains("already known")
 }
 
-fn wait_for_receipt(rpc_url: &str, tx_hash: &str) -> Result<TxReceipt, String> {
+pub(crate) fn wait_for_receipt(rpc_url: &str, tx_hash: &str) -> Result<TxReceipt, String> {
     let delays = [1u64, 2, 4, 8, 16, 29];
     for delay in delays {
         let payload = json!({
@@ -551,7 +551,7 @@ fn normalize_digest(digest: &str) -> Result<String, String> {
     Ok(format!("0x{d}"))
 }
 
-fn parse_hex_u64(raw: &str) -> Result<u64, String> {
+pub(crate) fn parse_hex_u64(raw: &str) -> Result<u64, String> {
     let s = raw.trim();
     let hex = s.strip_prefix("0x").unwrap_or(s);
     u64::from_str_radix(hex, 16).map_err(|e| format!("parse hex u64 `{raw}`: {e}"))
@@ -567,7 +567,7 @@ fn parse_first_u64_token(raw: &str) -> Option<u64> {
     })
 }
 
-fn run_cast(args: &[String], env: &[(String, String)]) -> Result<String, String> {
+pub(crate) fn run_cast(args: &[String], env: &[(String, String)]) -> Result<String, String> {
     let out = Command::new("cast")
         .args(args)
         .envs(env.iter().cloned())
@@ -596,7 +596,7 @@ fn run_cast(args: &[String], env: &[(String, String)]) -> Result<String, String>
     })
 }
 
-fn extract_hash(raw: &str) -> Option<String> {
+pub(crate) fn extract_hash(raw: &str) -> Option<String> {
     raw.split(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | '(' | ')' | '"' | '\'' | ';'))
         .find(|tok| {
             tok.len() == 66
@@ -606,7 +606,7 @@ fn extract_hash(raw: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn extract_address(raw: &str) -> Option<String> {
+pub(crate) fn extract_address(raw: &str) -> Option<String> {
     raw.split(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | '(' | ')' | '"' | '\'' | ';'))
         .find(|tok| {
             tok.len() == 42

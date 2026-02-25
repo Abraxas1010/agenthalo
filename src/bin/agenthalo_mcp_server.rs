@@ -152,6 +152,8 @@ async fn mcp(
                 json!({"name":"privacy_pool_withdraw","description":"AgentHALO privacy pool withdraw operation (workflows add-on)"}),
                 json!({"name":"pq_bridge_transfer","description":"AgentHALO PQ bridge transfer operation (p2pclaw add-on)"}),
                 json!({"name":"x402_check","description":"Parse and validate an x402direct payment request (402 response body). Returns structured validation with chain/token verification and warnings."}),
+                json!({"name":"x402_pay","description":"Execute an x402direct payment: validate request, check USDC balance, transfer on-chain, return payment proof. Params: body (required, 402 JSON), payment_option_id (optional)."}),
+                json!({"name":"x402_balance","description":"Check USDC wallet balance for x402 payments. Returns wallet address and balance on configured network."}),
                 json!({"name":"halo_traces","description":"List recorded agent sessions or get detail for a specific session. Params: session_id (optional), limit (optional, default 20)."}),
                 json!({"name":"halo_costs","description":"Show agent cost summary. Params: monthly (bool, default false), paid (bool, default false)."}),
                 json!({"name":"halo_status","description":"Show AgentHALO recording status: session count, total cost, latest session, auth state."}),
@@ -236,6 +238,8 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "privacy_pool_withdraw" => tool_privacy_pool_withdraw(arguments),
         "pq_bridge_transfer" => tool_pq_bridge_transfer(arguments),
         "x402_check" => tool_x402_check(arguments),
+        "x402_pay" => tool_x402_pay(arguments),
+        "x402_balance" => tool_x402_balance(arguments),
         "halo_traces" => tool_halo_traces(arguments),
         "halo_costs" => tool_halo_costs(arguments),
         "halo_status" => tool_halo_status(arguments),
@@ -741,6 +745,57 @@ fn tool_x402_check(arguments: Value) -> Result<Value, String> {
             {"name": "base", "caip2": "eip155:8453", "usdc": x402::BASE_MAINNET.usdc_address},
             {"name": "base-sepolia", "caip2": "eip155:84532", "usdc": x402::BASE_SEPOLIA.usdc_address}
         ]
+    }))
+}
+
+fn tool_x402_pay(arguments: Value) -> Result<Value, String> {
+    let body_str = arguments
+        .get("body")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            "x402_pay requires 'body' (the JSON body of an HTTP 402 response)".to_string()
+        })?;
+    let option_id = arguments.get("payment_option_id").and_then(|v| v.as_str());
+
+    let req = x402::parse_x402_response(body_str)?;
+    let cfg = x402::load_x402_config();
+    let op = "x402_pay";
+
+    match x402::execute_payment(&cfg, &req, option_id) {
+        Ok(result) => {
+            record_paid_operation_for_halo(
+                op,
+                result.amount,
+                None,
+                Some(result.transaction_hash.clone()),
+                true,
+                None,
+            )?;
+            Ok(json!({
+                "status": "ok",
+                "payment": result,
+            }))
+        }
+        Err(e) => {
+            let _ = record_paid_operation_for_halo(op, 0, None, None, false, Some(e.clone()));
+            Err(e)
+        }
+    }
+}
+
+fn tool_x402_balance(_arguments: Value) -> Result<Value, String> {
+    let cfg = x402::load_x402_config();
+    if !cfg.enabled {
+        return Err("x402 payments are disabled. Run: agenthalo x402 enable".to_string());
+    }
+    let (address, balance) = x402::check_usdc_balance(&cfg)?;
+    let balance_human = format!("{:.6}", balance as f64 / 1_000_000.0);
+    Ok(json!({
+        "status": "ok",
+        "wallet_address": address,
+        "balance_base_units": balance,
+        "balance_usdc": balance_human,
+        "network": cfg.preferred_network,
     }))
 }
 

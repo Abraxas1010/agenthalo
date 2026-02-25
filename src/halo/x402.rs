@@ -344,6 +344,9 @@ pub struct X402Config {
     /// Maximum amount (in base units) to auto-approve without confirmation.
     #[serde(default = "default_max_auto_approve")]
     pub max_auto_approve: u64,
+    /// Environment variable holding the private key for x402 payments.
+    #[serde(default = "default_wallet_private_key_env")]
+    pub wallet_private_key_env: String,
 }
 
 fn default_preferred_network() -> String {
@@ -354,6 +357,10 @@ fn default_max_auto_approve() -> u64 {
     5_000_000 // 5 USDC
 }
 
+fn default_wallet_private_key_env() -> String {
+    "AGENTHALO_X402_PRIVATE_KEY".to_string()
+}
+
 impl Default for X402Config {
     fn default() -> Self {
         Self {
@@ -361,6 +368,7 @@ impl Default for X402Config {
             upc_contract_address: None,
             preferred_network: default_preferred_network(),
             max_auto_approve: default_max_auto_approve(),
+            wallet_private_key_env: default_wallet_private_key_env(),
         }
     }
 }
@@ -385,6 +393,268 @@ pub fn save_x402_config(cfg: &X402Config) -> Result<(), String> {
     let raw =
         serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize x402 config: {e}"))?;
     std::fs::write(&path, raw).map_err(|e| format!("write x402 config {}: {e}", path.display()))
+}
+
+// ---------------------------------------------------------------------------
+// Payment execution
+// ---------------------------------------------------------------------------
+
+/// Result of an executed x402 payment.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct X402PaymentResult {
+    pub success: bool,
+    pub transaction_hash: String,
+    pub payment_option_id: String,
+    pub amount: u64,
+    pub amount_human: String,
+    pub recipient: String,
+    pub network: String,
+    pub block_number: Option<u64>,
+    pub gas_used: Option<u64>,
+    pub proof: X402PaymentProof,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Resolve the wallet address from the configured private key.
+pub fn get_wallet_address(cfg: &X402Config) -> Result<String, String> {
+    let private_key = std::env::var(&cfg.wallet_private_key_env).map_err(|_| {
+        format!(
+            "x402 wallet not configured: set {} environment variable",
+            cfg.wallet_private_key_env
+        )
+    })?;
+    let env = vec![("ETH_PRIVATE_KEY".to_string(), private_key)];
+    let args = vec!["wallet".to_string(), "address".to_string()];
+    let out = crate::halo::onchain::run_cast(&args, &env)?;
+    crate::halo::onchain::extract_address(&out)
+        .ok_or_else(|| format!("failed to parse wallet address from cast output: {out}"))
+}
+
+/// Check the USDC balance on the specified network.
+pub fn check_usdc_balance(cfg: &X402Config) -> Result<(String, u64), String> {
+    let address = get_wallet_address(cfg)?;
+    let network = resolve_network(&cfg.preferred_network)?;
+    let args = vec![
+        "call".to_string(),
+        "--rpc-url".to_string(),
+        network.rpc_url.to_string(),
+        network.usdc_address.to_string(),
+        "balanceOf(address)(uint256)".to_string(),
+        address.clone(),
+    ];
+    let out = crate::halo::onchain::run_cast(&args, &[])?;
+    let balance = parse_balance_output(&out)?;
+    Ok((address, balance))
+}
+
+/// Execute an x402 payment: validate, check balance, transfer USDC, wait for receipt.
+pub fn execute_payment(
+    cfg: &X402Config,
+    req: &X402PaymentRequest,
+    option_id: Option<&str>,
+) -> Result<X402PaymentResult, String> {
+    if !cfg.enabled {
+        return Err("x402 payments are disabled. Run: agenthalo x402 enable".to_string());
+    }
+
+    // Validate the payment request.
+    let validation = validate_payment_request(req);
+    if !validation.valid {
+        return Err(format!(
+            "invalid x402 payment request: {}",
+            validation.error.unwrap_or_else(|| "unknown".to_string())
+        ));
+    }
+
+    // Select payment option.
+    let option = if let Some(id) = option_id {
+        req.payment_options
+            .iter()
+            .find(|o| o.id == id)
+            .ok_or_else(|| format!("payment option '{id}' not found in request"))?
+    } else {
+        // Pick the first option on a known network with known USDC token.
+        req.payment_options
+            .iter()
+            .find(|o| {
+                parse_caip10(&o.pay_to_address)
+                    .ok()
+                    .and_then(|a| network_for_caip2(&a.caip2()))
+                    .map(|net| net.usdc_address.eq_ignore_ascii_case(&o.asset_address))
+                    .unwrap_or(false)
+            })
+            .or_else(|| req.payment_options.first())
+            .ok_or_else(|| "no payment options available".to_string())?
+    };
+
+    // Resolve the network from the payment option's CAIP-10 address.
+    let caip = parse_caip10(&option.pay_to_address)?;
+    let network = network_for_caip2(&caip.caip2())
+        .ok_or_else(|| format!("unsupported network: {}", caip.caip2()))?;
+
+    // Enforce auto-approve budget limit.
+    if option.amount_required > cfg.max_auto_approve {
+        return Err(format!(
+            "payment amount {} exceeds auto-approve limit {} (configure with: agenthalo x402 config --max-auto-approve <units>)",
+            option.amount_required, cfg.max_auto_approve
+        ));
+    }
+
+    // Get wallet and check balance.
+    let private_key = std::env::var(&cfg.wallet_private_key_env).map_err(|_| {
+        format!(
+            "x402 wallet not configured: set {} environment variable",
+            cfg.wallet_private_key_env
+        )
+    })?;
+    let signer_env = vec![("ETH_PRIVATE_KEY".to_string(), private_key)];
+
+    let wallet_address = {
+        let args = vec!["wallet".to_string(), "address".to_string()];
+        let out = crate::halo::onchain::run_cast(&args, &signer_env)?;
+        crate::halo::onchain::extract_address(&out)
+            .ok_or_else(|| format!("failed to parse wallet address: {out}"))?
+    };
+
+    // Check USDC balance.
+    let balance = {
+        let args = vec![
+            "call".to_string(),
+            "--rpc-url".to_string(),
+            network.rpc_url.to_string(),
+            network.usdc_address.to_string(),
+            "balanceOf(address)(uint256)".to_string(),
+            wallet_address.clone(),
+        ];
+        let out = crate::halo::onchain::run_cast(&args, &[])?;
+        parse_balance_output(&out)?
+    };
+
+    if balance < option.amount_required {
+        return Err(format!(
+            "insufficient USDC balance: have {} ({:.6} USDC), need {} ({:.6} USDC)",
+            balance,
+            balance as f64 / 1_000_000.0,
+            option.amount_required,
+            option.amount_required as f64 / 1_000_000.0
+        ));
+    }
+
+    // Execute ERC-20 transfer: transfer(address,uint256)
+    let recipient = &caip.address;
+    let tx_hash = send_erc20_transfer(
+        network.rpc_url,
+        network.usdc_address,
+        recipient,
+        option.amount_required,
+        &signer_env,
+        &wallet_address,
+    )?;
+
+    // Wait for receipt.
+    let receipt = crate::halo::onchain::wait_for_receipt(network.rpc_url, &tx_hash)?;
+
+    let amount_human = format!("{:.6}", option.amount_required as f64 / 1_000_000.0);
+
+    let proof = X402PaymentProof {
+        x402version: req.x402version.clone(),
+        nonce: req.nonce,
+        payment_option_id: option.id.clone(),
+        transaction_hash: tx_hash.clone(),
+        authentication_contract: option.asset_address.clone(),
+        additional_fields: match &req.additional_required {
+            serde_json::Value::Object(m) => m.clone(),
+            _ => serde_json::Map::new(),
+        },
+    };
+
+    Ok(X402PaymentResult {
+        success: true,
+        transaction_hash: tx_hash,
+        payment_option_id: option.id.clone(),
+        amount: option.amount_required,
+        amount_human,
+        recipient: recipient.clone(),
+        network: network.name.to_string(),
+        block_number: receipt.block_number,
+        gas_used: receipt.gas_used,
+        proof,
+        error: None,
+    })
+}
+
+fn send_erc20_transfer(
+    rpc_url: &str,
+    token_address: &str,
+    to: &str,
+    amount: u64,
+    signer_env: &[(String, String)],
+    signer_address: &str,
+) -> Result<String, String> {
+    let nonce_retry_max = 3;
+    let mut last_err = String::new();
+
+    for attempt in 0..=nonce_retry_max {
+        let mut args = vec![
+            "send".to_string(),
+            "--async".to_string(),
+            "--rpc-url".to_string(),
+            rpc_url.to_string(),
+            token_address.to_string(),
+            "transfer(address,uint256)(bool)".to_string(),
+            to.to_string(),
+            amount.to_string(),
+        ];
+        if attempt > 0 {
+            let nonce = crate::halo::onchain::fetch_pending_nonce(rpc_url, signer_address)?;
+            args.push("--nonce".to_string());
+            args.push(nonce.to_string());
+        }
+        match crate::halo::onchain::run_cast(&args, signer_env) {
+            Ok(out) => {
+                return crate::halo::onchain::extract_hash(&out)
+                    .ok_or_else(|| format!("failed to parse tx hash from cast output: {out}"));
+            }
+            Err(e) => {
+                last_err = e.clone();
+                if attempt == nonce_retry_max || !crate::halo::onchain::is_retryable_nonce_error(&e)
+                {
+                    return Err(e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(350 * (attempt as u64 + 1)));
+            }
+        }
+    }
+    Err(last_err)
+}
+
+fn resolve_network(name: &str) -> Result<&'static X402Network, String> {
+    match name {
+        "base" => Ok(&BASE_MAINNET),
+        "base-sepolia" => Ok(&BASE_SEPOLIA),
+        _ => Err(format!(
+            "unknown network: {name} (expected 'base' or 'base-sepolia')"
+        )),
+    }
+}
+
+fn parse_balance_output(raw: &str) -> Result<u64, String> {
+    let trimmed = raw.trim();
+    // cast returns decimal or hex depending on version.
+    if let Some(hex) = trimmed.strip_prefix("0x") {
+        return u64::from_str_radix(hex, 16)
+            .map_err(|e| format!("parse hex balance '{trimmed}': {e}"));
+    }
+    // Try decimal parse (cast may return "1000000\n" or similar).
+    let first_token = trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or(trimmed)
+        .trim_matches(|c: char| !c.is_ascii_digit());
+    first_token
+        .parse::<u64>()
+        .map_err(|e| format!("parse balance '{trimmed}': {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +873,7 @@ mod tests {
         assert!(!cfg.enabled);
         assert_eq!(cfg.preferred_network, "base-sepolia");
         assert_eq!(cfg.max_auto_approve, 5_000_000);
+        assert_eq!(cfg.wallet_private_key_env, "AGENTHALO_X402_PRIVATE_KEY");
     }
 
     #[test]
@@ -612,11 +883,107 @@ mod tests {
             upc_contract_address: Some("0xabc".to_string()),
             preferred_network: "base".to_string(),
             max_auto_approve: 10_000_000,
+            wallet_private_key_env: "MY_KEY".to_string(),
         };
         let json = serde_json::to_string_pretty(&cfg).expect("serialize");
         let loaded: X402Config = serde_json::from_str(&json).expect("deserialize");
         assert!(loaded.enabled);
         assert_eq!(loaded.upc_contract_address.as_deref(), Some("0xabc"));
         assert_eq!(loaded.preferred_network, "base");
+        assert_eq!(loaded.wallet_private_key_env, "MY_KEY");
+    }
+
+    #[test]
+    fn config_legacy_without_wallet_key_deserializes() {
+        let json = r#"{"enabled":true,"preferred_network":"base","max_auto_approve":5000000}"#;
+        let loaded: X402Config = serde_json::from_str(json).expect("deserialize legacy");
+        assert!(loaded.enabled);
+        assert_eq!(loaded.wallet_private_key_env, "AGENTHALO_X402_PRIVATE_KEY");
+    }
+
+    #[test]
+    fn resolve_network_known() {
+        assert!(resolve_network("base").is_ok());
+        assert!(resolve_network("base-sepolia").is_ok());
+        assert!(resolve_network("polygon").is_err());
+    }
+
+    #[test]
+    fn parse_balance_decimal() {
+        assert_eq!(parse_balance_output("1000000").unwrap(), 1_000_000);
+        assert_eq!(parse_balance_output("1000000\n").unwrap(), 1_000_000);
+        assert_eq!(parse_balance_output("  42  ").unwrap(), 42);
+    }
+
+    #[test]
+    fn parse_balance_hex() {
+        assert_eq!(parse_balance_output("0xF4240").unwrap(), 1_000_000);
+    }
+
+    #[test]
+    fn execute_payment_rejects_disabled() {
+        let cfg = X402Config::default(); // disabled
+        let req = X402PaymentRequest {
+            x402version: "direct.1.0.0".to_string(),
+            nonce: 1,
+            description: "test".to_string(),
+            resource: "/test".to_string(),
+            access_method: "GET".to_string(),
+            additional_required: serde_json::json!({}),
+            payment_options: vec![X402PaymentOption {
+                id: "po_base_usdc".to_string(),
+                pay_to_address: "eip155:8453:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb".to_string(),
+                asset_address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".to_string(),
+                amount_required: 1_000_000,
+                description: None,
+            }],
+        };
+        let err = execute_payment(&cfg, &req, None).expect_err("should fail when disabled");
+        assert!(err.contains("disabled"));
+    }
+
+    #[test]
+    fn execute_payment_rejects_over_budget() {
+        let cfg = X402Config {
+            enabled: true,
+            max_auto_approve: 500_000, // 0.5 USDC
+            ..X402Config::default()
+        };
+        let req = X402PaymentRequest {
+            x402version: "direct.1.0.0".to_string(),
+            nonce: 1,
+            description: "test".to_string(),
+            resource: "/test".to_string(),
+            access_method: "GET".to_string(),
+            additional_required: serde_json::json!({}),
+            payment_options: vec![X402PaymentOption {
+                id: "po_base_usdc".to_string(),
+                pay_to_address: "eip155:8453:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb".to_string(),
+                asset_address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".to_string(),
+                amount_required: 1_000_000, // 1 USDC > 0.5 limit
+                description: None,
+            }],
+        };
+        let err = execute_payment(&cfg, &req, None).expect_err("should exceed budget");
+        assert!(err.contains("exceeds auto-approve limit"));
+    }
+
+    #[test]
+    fn execute_payment_rejects_invalid_request() {
+        let cfg = X402Config {
+            enabled: true,
+            ..X402Config::default()
+        };
+        let req = X402PaymentRequest {
+            x402version: "bad.version".to_string(),
+            nonce: 1,
+            description: "test".to_string(),
+            resource: "/test".to_string(),
+            access_method: "GET".to_string(),
+            additional_required: serde_json::json!({}),
+            payment_options: vec![],
+        };
+        let err = execute_payment(&cfg, &req, None).expect_err("should reject invalid");
+        assert!(err.contains("invalid x402"));
     }
 }
