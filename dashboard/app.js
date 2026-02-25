@@ -1282,13 +1282,31 @@ window.ndbKeyHistory = async function(key) {
       panel.innerHTML = `<div class="ndb-verify-panel"><span class="badge badge-err">Key not found</span></div>`;
       return;
     }
+    const typeTag = res.type || 'integer';
+    const currentDisplay = res.current_display != null
+      ? String(res.current_display)
+      : String(res.current_value ?? '');
+    const typedValue = res.current_typed_value !== undefined
+      ? res.current_typed_value
+      : res.current_value;
+    const typedJson = JSON.stringify(typedValue, null, 2);
+
     panel.innerHTML = `
       <div class="ndb-verify-panel">
         <div class="section-header">Key History: ${esc(key)}</div>
         <div class="ndb-verify-grid" style="margin-bottom:12px">
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Current Value</span><span class="ndb-mono">${res.current_value}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Type</span>${typeBadge(typeTag)}</div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Display</span><span class="ndb-mono">${esc(currentDisplay)}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Typed Value</span><span class="ndb-mono">${esc(truncate(typedJson, 120))}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Current Value (raw)</span><span class="ndb-mono">${res.current_value}</span></div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Index</span><span class="ndb-mono">${res.index}</span></div>
         </div>
+        ${typedJson.length > 120 ? `
+          <details style="margin-bottom:10px">
+            <summary style="cursor:pointer;color:var(--text-muted)">Show full typed value JSON</summary>
+            <pre style="margin-top:6px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;word-break:break-word">${esc(typedJson)}</pre>
+          </details>
+        ` : ''}
         ${res.commits && res.commits.length > 0 ? `
           <div style="font-size:13px;font-weight:600;margin-bottom:6px">Commits (${res.commits.length})</div>
           <div class="table-wrap"><table>
