@@ -137,16 +137,8 @@ pub fn default_tool_catalog() -> ToolCatalog {
                 description: "Post a message to Slack".to_string(),
                 category: Some("messaging".to_string()),
             },
-            ProxiedTool {
-                name: "x402_pay".to_string(),
-                description: "Pay for an x402direct-protected resource (auto-detect 402, execute UPC payment, submit proof)".to_string(),
-                category: Some("payments".to_string()),
-            },
-            ProxiedTool {
-                name: "x402_verify".to_string(),
-                description: "Verify an x402direct payment transaction on-chain".to_string(),
-                category: Some("payments".to_string()),
-            },
+            // x402_pay and x402_verify are now native AgentHALO tools
+            // (x402_pay, x402_check, x402_balance). Do not duplicate here.
         ],
         refreshed_at: Some(chrono::Utc::now().to_rfc3339()),
     }
@@ -224,7 +216,15 @@ pub fn save_tool_catalog(catalog: &ToolCatalog) -> Result<(), String> {
     std::fs::write(&path, raw).map_err(|e| format!("write tool catalog {}: {e}", path.display()))
 }
 
+/// Refresh the tool catalog.
+///
+/// NOTE: HTTP fetch from AgentPMT is not yet implemented. This
+/// currently returns the built-in default catalog. When the
+/// AgentPMT MCP client transport is implemented, this will
+/// query the remote catalog endpoint.
 pub fn refresh_tool_catalog() -> Result<ToolCatalog, String> {
+    // TODO: implement HTTP fetch from AgentPMT catalog endpoint.
+    // For now, save the built-in defaults.
     let catalog = default_tool_catalog();
     save_tool_catalog(&catalog)?;
     Ok(catalog)
@@ -377,8 +377,9 @@ mod tests {
         let catalog = default_tool_catalog();
         assert!(catalog.has_tool("gmail_send"));
         assert!(catalog.has_tool("stripe_charge"));
-        assert!(catalog.has_tool("x402_pay"));
-        assert!(catalog.has_tool("x402_verify"));
+        // x402_pay and x402_verify are now native AgentHALO tools, not in AgentPMT catalog.
+        assert!(!catalog.has_tool("x402_pay"));
+        assert!(!catalog.has_tool("x402_verify"));
         assert!(catalog.refreshed_at.is_some());
     }
 }

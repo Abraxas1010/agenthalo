@@ -379,14 +379,28 @@ Produces a complete `agenthalo-export-v1` JSON document with session metadata, s
 
 ### MCP Observability Tools
 
-The MCP server exposes 4 observability tools (16 native tools total):
+The MCP server exposes 18 native tools (all with `inputSchema` for parameter discovery):
 
 | Tool | Description |
 |------|-------------|
-| `halo_traces` | List sessions or get session detail (with `limit` and `session_id` params) |
-| `halo_costs` | Cost buckets by day or month (with `monthly` param) |
+| `attest` | Tamper-evident session attestation (Merkle local or Groth16 on-chain) |
+| `sign_pq` | Post-quantum detached signing (ML-DSA / Dilithium) |
+| `audit_contract` | Solidity static analysis (small/medium/large tiers) |
+| `trust_query` | Computed trust score for a session |
+| `vote` | Record governance vote intent locally |
+| `sync` | Record cloud sync intent locally |
+| `privacy_pool_create` | Record privacy pool creation intent (agentpmt-workflows add-on) |
+| `privacy_pool_withdraw` | Record privacy pool withdrawal intent (agentpmt-workflows add-on) |
+| `pq_bridge_transfer` | Record PQ bridge cross-chain transfer intent (p2pclaw add-on) |
+| `x402_check` | Parse and validate an x402direct payment request |
+| `x402_pay` | Execute an x402direct USDC payment on Base (with idempotency protection) |
+| `x402_balance` | Check USDC wallet balance |
+| `x402_summary` | Unified x402 spending dashboard: budget, spent, remaining |
+| `halo_traces` | List sessions with filters (agent, model) or get session detail |
+| `halo_costs` | Cost buckets by day/month, optionally including paid operations |
 | `halo_status` | Auth state, session count, total cost, latest session |
 | `halo_export` | Full session export as JSON |
+| `halo_capabilities` | Discover enabled features, add-ons, and configuration status |
 
 ### Model Auto-Detection
 
@@ -712,7 +726,7 @@ src/halo/
 
 src/bin/
   agenthalo.rs             — CLI binary (run, attest, audit, sign, trust, onchain, ...)
-  agenthalo_mcp_server.rs  — HTTP MCP server (16 native + proxied tools)
+  agenthalo_mcp_server.rs  — HTTP MCP server (18 native + proxied tools)
   nucleusdb.rs             — NucleusDB CLI binary
   nucleusdb_mcp.rs         — NucleusDB MCP server (stdio + HTTP transport)
   nucleusdb_server.rs      — NucleusDB multi-tenant HTTP server
