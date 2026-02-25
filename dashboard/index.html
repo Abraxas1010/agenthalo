@@ -8,6 +8,7 @@
   <script src="chart.min.js"></script>
 </head>
 <body>
+  <div id="crt-overlay"></div>
   <nav id="sidebar">
     <div class="sidebar-header">
       <div class="logo">H.A.L.O.</div>
@@ -25,15 +26,15 @@
       <li><a href="#/trust" class="nav-link" data-page="trust">
         <span class="nav-icon">&#10003;</span> Trust</a></li>
       <li><a href="#/nucleusdb" class="nav-link" data-page="nucleusdb">
-        <span class="nav-icon">&#9683;</span> NucleusDB</a></li>
+        <span class="nav-icon">&#9762;</span> NucleusDB</a></li>
     </ul>
     <div class="sidebar-footer">
       <div class="version" id="version-label">v0.3.0</div>
-      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">&#9788;</button>
+      <button class="theme-toggle" onclick="toggleCRT()" title="Toggle CRT effects" id="crt-toggle">CRT</button>
     </div>
   </nav>
   <main id="content">
-    <div id="page-loading" class="loading">Loading...</div>
+    <div id="page-loading" class="loading">Initializing terminal...</div>
   </main>
   <script src="app.js"></script>
 </body>

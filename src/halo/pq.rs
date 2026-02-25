@@ -100,7 +100,7 @@ pub fn keygen_pq_with_paths(paths: &PqStoragePaths, force: bool) -> Result<PqKey
         secret_seed_hex: hex_encode(&seed_bytes),
         created_at,
     };
-    save_wallet(&wallet_path, &wallet)?;
+    save_wallet(wallet_path, &wallet)?;
 
     Ok(PqKeygenResult {
         algorithm: wallet.algorithm,
@@ -286,7 +286,7 @@ fn hex_nibble(b: u8) -> Option<u8> {
 
 fn hex_decode_dynamic(input: &str) -> Result<Vec<u8>, String> {
     let bytes = input.as_bytes();
-    if bytes.is_empty() || bytes.len() % 2 != 0 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(2) {
         return Err("hex string must have even length".to_string());
     }
     let mut out = Vec::with_capacity(bytes.len() / 2);

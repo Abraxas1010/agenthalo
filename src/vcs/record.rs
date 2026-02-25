@@ -391,7 +391,7 @@ impl WorkRecordStore {
     fn all_record_hashes(&self, db: &NucleusDb) -> Vec<[u8; 32]> {
         let mut set: BTreeSet<[u8; 32]> = BTreeSet::new();
         for (k, _) in db.keymap.all_keys() {
-            if let Some(hash) = parse_record_len_key(&k) {
+            if let Some(hash) = parse_record_len_key(k) {
                 set.insert(hash);
             }
         }

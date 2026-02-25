@@ -39,7 +39,8 @@ pub enum VcBackend {
     BinaryMerkle,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "backend", rename_all = "snake_case")]
 pub enum QueryProof {
     Ipa(IpaProof),
     Kzg(KzgProof),

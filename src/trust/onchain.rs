@@ -336,11 +336,7 @@ struct ParsedAgentStatus {
 
 fn parse_agent_status_output(raw: &str) -> ParsedAgentStatus {
     let mut parsed = ParsedAgentStatus::default();
-    let normalized = raw
-        .replace('(', " ")
-        .replace(')', " ")
-        .replace(',', " ")
-        .replace('\n', " ");
+    let normalized = raw.replace(['(', ')', ',', '\n'], " ");
     let mut nums = Vec::new();
     for tok in normalized.split_whitespace() {
         let lower = tok.to_ascii_lowercase();

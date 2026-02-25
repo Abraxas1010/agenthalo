@@ -110,20 +110,18 @@ pub fn save_onchain_config(path: &std::path::Path, cfg: &OnchainConfig) -> Resul
 }
 
 pub fn signer_mode_label(cfg: &OnchainConfig) -> &'static str {
-    let has_ks = cfg
+    let has_ks = !cfg
         .keystore_path
         .as_deref()
         .map(str::trim)
         .unwrap_or("")
         .is_empty()
-        == false
-        && cfg
+        && !cfg
             .keystore_password_file
             .as_deref()
             .map(str::trim)
             .unwrap_or("")
-            .is_empty()
-            == false;
+            .is_empty();
     if has_ks {
         return "keystore";
     }

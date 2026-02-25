@@ -49,10 +49,7 @@ pub async fn run_remote_mcp_server(config: RemoteServerConfig) -> Result<(), Str
     // per MCP session. Each session gets its own NucleusDbMcpService sharing
     // the same DB path (state is file-backed, not in-memory per session).
     let mcp_service = StreamableHttpService::new(
-        move || {
-            NucleusDbMcpService::new(&db_path)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-        },
+        move || NucleusDbMcpService::new(&db_path).map_err(std::io::Error::other),
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default(),
     );

@@ -9,7 +9,7 @@ pub struct Commitment {
     pub len: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Proof {
     pub index: usize,
     pub value: FieldElem,

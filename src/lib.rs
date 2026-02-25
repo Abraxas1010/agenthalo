@@ -14,6 +14,7 @@ pub mod mcp;
 pub mod multitenant;
 pub mod pcn;
 pub mod persistence;
+pub mod pod;
 pub mod protocol;
 pub mod puf;
 pub mod security;

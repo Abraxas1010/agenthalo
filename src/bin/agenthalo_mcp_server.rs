@@ -1208,7 +1208,7 @@ fn tool_halo_capabilities(_arguments: Value) -> Result<Value, String> {
     let x402_cfg = x402::load_x402_config();
     let has_pq = nucleusdb::halo::pq::has_wallet();
 
-    let addons_available = vec!["agentpmt-workflows", "p2pclaw"];
+    let addons_available = ["agentpmt-workflows", "p2pclaw"];
     let addons_status: Vec<Value> = addons_available
         .iter()
         .map(|name| {

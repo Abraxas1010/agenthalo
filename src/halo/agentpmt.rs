@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 /// Budget controls and credentials live on the AgentPMT side —
 /// configured by the human via the AgentPMT dashboard.  AgentHALO
 /// simply records tool calls in the trace for cost tracking.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AgentPmtConfig {
     /// Whether tool proxy is enabled (agents can use AgentPMT tools).
     pub enabled: bool,
@@ -45,17 +45,6 @@ pub struct AgentPmtConfig {
     /// Updated-at epoch seconds.
     #[serde(default)]
     pub updated_at: u64,
-}
-
-impl Default for AgentPmtConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            budget_tag: None,
-            mcp_endpoint: None,
-            updated_at: 0,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

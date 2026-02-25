@@ -50,7 +50,7 @@ impl ToolScope {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_scope(s: &str) -> Option<Self> {
         match s {
             "read" => Some(Self::Read),
             "trust:verify" => Some(Self::TrustVerify),
@@ -97,6 +97,14 @@ impl ToolScope {
             // Unknown tools default to most restrictive
             _ => Self::TrustAttest,
         }
+    }
+}
+
+impl std::str::FromStr for ToolScope {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_scope(s).ok_or(())
     }
 }
 
@@ -335,14 +343,14 @@ fn authenticate_cab(
         ));
     }
 
-    if cab.nonce.as_ref().map_or(true, |n| n.trim().is_empty()) {
+    if cab.nonce.as_ref().is_none_or(|n| n.trim().is_empty()) {
         return Err((
             StatusCode::BAD_REQUEST,
             "cab token requires non-empty 'nonce' field for replay protection".to_string(),
         ));
     }
 
-    if cab.signature.as_ref().map_or(true, |s| s.trim().is_empty()) {
+    if cab.signature.as_ref().is_none_or(|s| s.trim().is_empty()) {
         return Err((
             StatusCode::BAD_REQUEST,
             "cab token requires non-empty 'signature' field".to_string(),

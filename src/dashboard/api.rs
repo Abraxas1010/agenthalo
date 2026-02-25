@@ -830,7 +830,7 @@ async fn api_nucleusdb_browse(
     let total_pages = if total == 0 {
         1
     } else {
-        (total + page_size - 1) / page_size
+        total.div_ceil(page_size)
     };
 
     Ok(Json(json!({
@@ -857,7 +857,7 @@ async fn api_nucleusdb_stats(AxumState(state): AxumState<DashboardState>) -> Api
     let mut sum: f64 = 0.0;
     let mut numeric_count: usize = 0;
     for (key, idx) in db.keymap.all_keys() {
-        let tag = db.type_map.get(&key);
+        let tag = db.type_map.get(key);
         let cell = db.state.values.get(idx).copied().unwrap_or(0);
         let numeric = match tag {
             crate::typed_value::TypeTag::Integer => Some(cell as i64 as f64),
@@ -1315,11 +1315,7 @@ async fn api_nucleusdb_vector_search(
 
     let items: Vec<Value> = results
         .iter()
-        .filter(|r| {
-            req.prefix
-                .as_ref()
-                .map_or(true, |pfx| r.key.starts_with(pfx))
-        })
+        .filter(|r| req.prefix.as_ref().is_none_or(|pfx| r.key.starts_with(pfx)))
         .take(req.k)
         .map(|r| {
             let typed = db.get_typed(&r.key);

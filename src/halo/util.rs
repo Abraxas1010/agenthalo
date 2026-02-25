@@ -42,7 +42,7 @@ pub fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
 
 pub fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
     let s = hex.strip_prefix("0x").unwrap_or(hex);
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("hex input must have even length".to_string());
     }
     let mut out = Vec::with_capacity(s.len() / 2);

@@ -1037,7 +1037,7 @@ impl NucleusDbMcpService {
         let mut entries = Vec::new();
         for (key, idx) in db.keymap.all_keys() {
             let cell = db.state.values.get(idx).copied().unwrap_or(0);
-            let tag = db.type_map.get(&key);
+            let tag = db.type_map.get(key);
             let typed = Self::decode_typed_value(db, key, cell)?;
             entries.push(serde_json::json!({
                 "key": key,

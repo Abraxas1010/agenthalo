@@ -1,4 +1,4 @@
-/* Agent H.A.L.O. Dashboard — Embedded SPA */
+/* Agent H.A.L.O. Dashboard — Fallout Terminal Theme */
 'use strict';
 
 const $ = (sel, ctx) => (ctx || document).querySelector(sel);
@@ -21,12 +21,22 @@ function route() {
 window.addEventListener('hashchange', route);
 window.addEventListener('DOMContentLoaded', route);
 
-// -- Theme --------------------------------------------------------------------
-function toggleTheme() {
-  document.body.classList.toggle('light');
-  localStorage.setItem('theme', document.body.classList.contains('light') ? 'light' : 'dark');
+// -- CRT Effects Toggle -------------------------------------------------------
+function toggleCRT() {
+  document.body.classList.toggle('no-crt');
+  const on = !document.body.classList.contains('no-crt');
+  localStorage.setItem('crt', on ? 'on' : 'off');
+  const btn = $('#crt-toggle');
+  if (btn) btn.textContent = on ? 'CRT' : 'CRT:OFF';
 }
-if (localStorage.getItem('theme') === 'light') document.body.classList.add('light');
+window.toggleCRT = toggleCRT;
+
+// Restore CRT preference
+if (localStorage.getItem('crt') === 'off') {
+  document.body.classList.add('no-crt');
+  const btn = document.getElementById('crt-toggle');
+  if (btn) btn.textContent = 'CRT:OFF';
+}
 
 // -- API helpers --------------------------------------------------------------
 async function api(path) {
@@ -101,12 +111,36 @@ function statusBadge(status) {
   return `<span class="badge ${cls}">${esc(status)}</span>`;
 }
 function eventTypeBadge(type) {
-  const colors = { assistant: '#58a6ff', tool_call: '#bc8cff', tool_result: '#bc8cff',
-    mcp_tool_call: '#d29922', file_change: '#3fb950', bash_command: '#db6d28',
-    error: '#f85149', thinking: '#8b949e' };
-  const c = colors[type] || '#8b949e';
-  return `<span class="event-type" style="background:${c}22;color:${c}">${esc(type)}</span>`;
+  const colors = { assistant: '#00ee00', tool_call: '#c49bff', tool_result: '#c49bff',
+    mcp_tool_call: '#ffb830', file_change: '#00ff41', bash_command: '#ff8c00',
+    error: '#ff3030', thinking: '#3a7a2a' };
+  const c = colors[type] || '#3a7a2a';
+  return `<span class="event-type" style="background:${c}18;color:${c}">${esc(type)}</span>`;
 }
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let val = bytes;
+  while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
+  return val.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+// -- Fallout chart palette ----------------------------------------------------
+const chartGreen = '#00ee00';
+const chartAmber = '#ffb830';
+const chartGreenBg = 'rgba(0, 238, 0, 0.15)';
+const chartAmberBg = 'rgba(255, 184, 48, 0.3)';
+const chartGridColor = 'rgba(26, 51, 18, 0.6)';
+const chartPalette = ['#00ee00', '#ffb830', '#ff8c00', '#c49bff', '#ff3030', '#00ff41'];
+
+function falloutChartDefaults() {
+  if (typeof Chart === 'undefined') return;
+  Chart.defaults.color = '#3a7a2a';
+  Chart.defaults.borderColor = 'rgba(26, 51, 18, 0.4)';
+  Chart.defaults.font.family = "'Share Tech Mono', 'Courier New', monospace";
+}
+falloutChartDefaults();
 
 // -- SSE live updates ---------------------------------------------------------
 let evtSource;
@@ -139,7 +173,7 @@ async function renderOverview() {
       <div class="card-grid">
         <div class="card">
           <div class="card-label">Status</div>
-          <div class="card-value">${s.authenticated ? '<span class="badge badge-ok">Authenticated</span>' : '<span class="badge badge-warn">Not Auth</span>'}</div>
+          <div class="card-value" style="font-size:14px">${s.authenticated ? '<span class="badge badge-ok">Authenticated</span>' : '<span class="badge badge-warn">Not Auth</span>'}</div>
           <div class="card-sub">x402: ${s.x402_enabled ? 'Enabled' : 'Disabled'} | Proxy: ${s.tool_proxy_enabled ? 'On' : 'Off'}</div>
         </div>
         <div class="card">
@@ -154,7 +188,7 @@ async function renderOverview() {
         </div>
         <div class="card">
           <div class="card-label">Agent Wrapping</div>
-          <div class="card-value" style="font-size:14px">
+          <div class="card-value" style="font-size:12px">
             Claude: ${s.wrapping?.claude ? '<span class="badge badge-ok">ON</span>' : '<span class="badge badge-muted">OFF</span>'}
             Codex: ${s.wrapping?.codex ? '<span class="badge badge-ok">ON</span>' : '<span class="badge badge-muted">OFF</span>'}
             Gemini: ${s.wrapping?.gemini ? '<span class="badge badge-ok">ON</span>' : '<span class="badge badge-muted">OFF</span>'}
@@ -179,7 +213,7 @@ async function renderOverview() {
               const ss = item.session, sm = item.summary || {};
               const tokens = (sm.total_input_tokens || 0) + (sm.total_output_tokens || 0);
               return `<tr class="clickable" onclick="location.hash='#/sessions/${encodeURIComponent(ss.session_id)}'">
-                <td style="font-family:var(--font-mono);font-size:12px">${esc(truncate(ss.session_id, 24))}</td>
+                <td style="font-size:11px">${esc(truncate(ss.session_id, 24))}</td>
                 <td>${esc(ss.agent)}</td>
                 <td>${esc(truncate(ss.model || 'unknown', 20))}</td>
                 <td>${fmtTokens(tokens)}</td>
@@ -190,7 +224,7 @@ async function renderOverview() {
             }).join('')}
           </tbody>
         </table></div>
-      ` : '<div style="color:var(--text-muted)">No sessions recorded yet. Run <code>agenthalo run claude ...</code> to start.</div>'}
+      ` : '<div style="color:var(--text-muted)">No sessions recorded yet. Run <code style="color:var(--accent)">agenthalo run claude ...</code> to start.</div>'}
     `;
 
     // Render cost chart
@@ -204,8 +238,8 @@ async function renderOverview() {
             datasets: [{
               label: 'Cost (USD)',
               data: costs.buckets.map(b => b.cost_usd),
-              backgroundColor: 'rgba(88, 166, 255, 0.5)',
-              borderColor: '#58a6ff',
+              backgroundColor: chartAmberBg,
+              borderColor: chartAmber,
               borderWidth: 1,
             }]
           },
@@ -214,7 +248,7 @@ async function renderOverview() {
             plugins: { legend: { display: false } },
             scales: {
               y: { beginAtZero: true, ticks: { callback: v => '$' + v.toFixed(2) },
-                grid: { color: 'rgba(139,148,158,0.1)' } },
+                grid: { color: chartGridColor } },
               x: { grid: { display: false } }
             }
           }
@@ -242,7 +276,7 @@ async function renderSessions(sessionId) {
       <div class="filter-bar">
         <input type="text" id="filter-agent" placeholder="Filter by agent..." oninput="filterSessions()">
         <input type="text" id="filter-model" placeholder="Filter by model..." oninput="filterSessions()">
-        <span style="color:var(--text-muted);font-size:13px">${items.length} sessions</span>
+        <span style="color:var(--text-muted);font-size:12px">${items.length} sessions</span>
       </div>
       <div class="table-wrap"><table>
         <thead><tr><th>Session ID</th><th>Agent</th><th>Model</th><th>Tokens</th><th>Cost</th><th>Duration</th><th>Started</th><th>Status</th></tr></thead>
@@ -263,13 +297,13 @@ function sessionRow(item) {
   const tokens = (sm.total_input_tokens || 0) + (sm.total_output_tokens || 0);
   return `<tr class="clickable session-row" data-agent="${esc(ss.agent)}" data-model="${esc(ss.model || '')}"
     onclick="location.hash='#/sessions/${encodeURIComponent(ss.session_id)}'">
-    <td style="font-family:var(--font-mono);font-size:12px">${esc(truncate(ss.session_id, 28))}</td>
+    <td style="font-size:11px">${esc(truncate(ss.session_id, 28))}</td>
     <td>${esc(ss.agent)}</td>
     <td>${esc(truncate(ss.model || 'unknown', 22))}</td>
     <td>${fmtTokens(tokens)}</td>
     <td>${fmtCost(sm.estimated_cost_usd)}</td>
     <td>${fmtDuration(sm.duration_secs)}</td>
-    <td style="font-size:12px">${fmtTime(ss.started_at)}</td>
+    <td style="font-size:11px">${fmtTime(ss.started_at)}</td>
     <td>${statusBadge(ss.status)}</td>
   </tr>`;
 }
@@ -302,22 +336,22 @@ async function renderSessionDetail(id) {
       <div class="card-grid">
         <div class="card">
           <div class="card-label">Agent</div>
-          <div class="card-value" style="font-size:18px">${esc(ss.agent)}</div>
+          <div class="card-value" style="font-size:16px">${esc(ss.agent)}</div>
           <div class="card-sub">${esc(ss.model || 'unknown')}</div>
         </div>
         <div class="card">
           <div class="card-label">Tokens</div>
-          <div class="card-value" style="font-size:18px">${fmtTokens(tokens)}</div>
+          <div class="card-value" style="font-size:16px">${fmtTokens(tokens)}</div>
           <div class="card-sub">In: ${fmtTokens(sm.total_input_tokens)} / Out: ${fmtTokens(sm.total_output_tokens)}</div>
         </div>
         <div class="card">
           <div class="card-label">Cost</div>
-          <div class="card-value" style="font-size:18px">${fmtCost(sm.estimated_cost_usd)}</div>
+          <div class="card-value" style="font-size:16px">${fmtCost(sm.estimated_cost_usd)}</div>
           <div class="card-sub">${fmtDuration(sm.duration_secs)}</div>
         </div>
         <div class="card">
           <div class="card-label">Activity</div>
-          <div class="card-value" style="font-size:14px">
+          <div class="card-value" style="font-size:12px">
             ${sm.tool_calls || 0} tools | ${sm.bash_commands || 0} cmds | ${sm.files_modified || 0} files
           </div>
           <div class="card-sub">MCP: ${sm.mcp_tool_calls || 0} | Errors: ${sm.errors || 0}</div>
@@ -336,7 +370,7 @@ async function renderSessionDetail(id) {
             <span class="event-seq">#${ev.seq}</span>
             ${eventTypeBadge(ev.event_type)}
             <span class="event-content">${esc(truncate(JSON.stringify(ev.content), 100))}</span>
-            ${ev.input_tokens ? `<span style="color:var(--text-muted);font-size:11px;margin-left:8px">in:${ev.input_tokens} out:${ev.output_tokens || 0}</span>` : ''}
+            ${ev.input_tokens ? `<span style="color:var(--text-dim);font-size:10px;margin-left:8px">in:${ev.input_tokens} out:${ev.output_tokens || 0}</span>` : ''}
           </div>
         `).join('')}
       </div>
@@ -399,7 +433,7 @@ async function renderCosts() {
     const totalCost = dailyItems.reduce((sum, d) => sum + d.cost_usd, 0);
 
     content.innerHTML = `
-      <div class="page-title">Costs & Analytics</div>
+      <div class="page-title">Costs &amp; Analytics</div>
 
       <div class="card-grid">
         <div class="card">
@@ -456,7 +490,7 @@ async function renderCosts() {
           datasets: [{
             label: 'Cost (USD)',
             data: dailyItems.map(d => d.cost_usd),
-            borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.1)',
+            borderColor: chartGreen, backgroundColor: chartGreenBg,
             fill: true, tension: 0.3, pointRadius: 3,
           }]
         },
@@ -465,7 +499,7 @@ async function renderCosts() {
           plugins: { legend: { display: false } },
           scales: {
             y: { beginAtZero: true, ticks: { callback: v => '$' + v.toFixed(2) },
-              grid: { color: 'rgba(139,148,158,0.1)' } },
+              grid: { color: chartGridColor } },
             x: { grid: { display: false } }
           }
         }
@@ -479,8 +513,7 @@ async function renderCosts() {
         type: 'doughnut',
         data: {
           labels: agents.map(a => a.agent),
-          datasets: [{ data: agents.map(a => a.cost_usd),
-            backgroundColor: ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#db6d28'] }]
+          datasets: [{ data: agents.map(a => a.cost_usd), backgroundColor: chartPalette }]
         },
         options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
       });
@@ -494,14 +527,14 @@ async function renderCosts() {
         data: {
           labels: models.map(m => m.model),
           datasets: [{ label: 'Cost (USD)', data: models.map(m => m.cost_usd),
-            backgroundColor: 'rgba(188,140,255,0.5)', borderColor: '#bc8cff', borderWidth: 1 }]
+            backgroundColor: chartAmberBg, borderColor: chartAmber, borderWidth: 1 }]
         },
         options: {
           responsive: true, indexAxis: 'y',
           plugins: { legend: { display: false } },
           scales: {
             x: { beginAtZero: true, ticks: { callback: v => '$' + v.toFixed(2) },
-              grid: { color: 'rgba(139,148,158,0.1)' } },
+              grid: { color: chartGridColor } },
             y: { grid: { display: false } }
           }
         }
@@ -607,7 +640,7 @@ async function renderConfig() {
         <div class="config-row">
           <div>
             <div class="config-label">Contract</div>
-            <div class="config-desc" style="font-family:var(--font-mono);font-size:11px">${esc(cfg.onchain.contract_address || '(not deployed)')}</div>
+            <div class="config-desc" style="font-size:10px">${esc(cfg.onchain.contract_address || '(not deployed)')}</div>
           </div>
         </div>
       </div>
@@ -634,8 +667,8 @@ async function renderConfig() {
 
       <div class="section-header">Paths</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
-        <div class="config-row"><div><div class="config-label">Home</div><div class="config-desc" style="font-family:var(--font-mono);font-size:11px">${esc(cfg.paths.home)}</div></div></div>
-        <div class="config-row"><div><div class="config-label">Database</div><div class="config-desc" style="font-family:var(--font-mono);font-size:11px">${esc(cfg.paths.db)}</div></div></div>
+        <div class="config-row"><div><div class="config-label">Home</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.home)}</div></div></div>
+        <div class="config-row"><div><div class="config-label">Database</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.db)}</div></div></div>
         <div class="config-row"><div><div class="config-label">PQ Wallet</div><div class="config-desc">${cfg.pq_wallet ? 'Present (ML-DSA-65)' : 'Not created'}</div></div></div>
       </div>
     `;
@@ -668,7 +701,7 @@ async function renderTrust() {
     const attestations = data.attestations || [];
 
     content.innerHTML = `
-      <div class="page-title">Trust & Attestations</div>
+      <div class="page-title">Trust &amp; Attestations</div>
 
       <div class="card-grid">
         <div class="card">
@@ -684,8 +717,8 @@ async function renderTrust() {
       </div>
 
       <div class="section-header">Verify Attestation</div>
-      <div style="display:flex;gap:8px;margin-bottom:24px">
-        <input type="text" id="verify-digest" placeholder="Paste attestation digest..." style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
+      <div style="display:flex;gap:8px;margin-bottom:20px">
+        <input type="text" id="verify-digest" placeholder="Paste attestation digest..." style="flex:1;padding:8px 12px;font-size:12px">
         <button class="btn btn-primary" onclick="verifyDigest()">Verify</button>
       </div>
       <div id="verify-result"></div>
@@ -697,10 +730,10 @@ async function renderTrust() {
           <tbody>
             ${attestations.map(a => `
               <tr>
-                <td style="font-family:var(--font-mono);font-size:11px">${esc(truncate(a.attestation_digest || '', 32))}</td>
+                <td style="font-size:10px">${esc(truncate(a.attestation_digest || '', 32))}</td>
                 <td><span class="badge badge-info">${esc(a.proof_type || 'merkle')}</span></td>
-                <td style="font-family:var(--font-mono);font-size:11px">${esc(truncate(a.session_id || '', 24))}</td>
-                <td style="font-family:var(--font-mono);font-size:11px">${a.tx_hash ? esc(truncate(a.tx_hash, 24)) : '-'}</td>
+                <td style="font-size:10px">${esc(truncate(a.session_id || '', 24))}</td>
+                <td style="font-size:10px">${a.tx_hash ? esc(truncate(a.tx_hash, 24)) : '-'}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -731,7 +764,7 @@ window.verifyDigest = async function() {
     } else if (data.found) {
       el.innerHTML = `<div class="card" style="border-color:var(--red)">
         <div class="card-label" style="color:var(--red)">VERIFICATION FAILED</div>
-        <div class="card-sub">${esc(data.reason || 'Recomputed attestation does not match stored digest — possible tampering.')}
+        <div class="card-sub">${esc(data.reason || 'Recomputed attestation does not match stored digest.')}
           ${data.checks ? `<br>Digest: ${data.checks.digest_match ? 'OK' : 'MISMATCH'} |
           Root: ${data.checks.merkle_root_match ? 'OK' : 'MISMATCH'} |
           Events: ${data.checks.event_count_match ? 'OK' : 'MISMATCH'}` : ''}
@@ -745,7 +778,7 @@ window.verifyDigest = async function() {
 };
 
 // =============================================================================
-// PAGE: NucleusDB — Full Database Browser
+// PAGE: NucleusDB — Full Database Browser (Redesigned)
 // =============================================================================
 
 // NucleusDB sub-tab state
@@ -759,44 +792,77 @@ const ndb = {
   editingKey: null,
 };
 
+// Backend description map
+const backendInfo = {
+  binary_merkle: { name: 'BinaryMerkle', algo: 'SHA-256', type: 'Post-Quantum', proof: 'O(log n)', setup: 'None' },
+  ipa: { name: 'IPA', algo: 'Pedersen', type: 'Binding', proof: 'O(n)', setup: 'None' },
+  kzg: { name: 'KZG', algo: 'BLS12-381', type: 'Pairing', proof: 'O(1)', setup: 'Trusted' },
+};
+
 async function renderNucleusDB(subtab) {
   ndb.tab = subtab || ndb.tab || 'browse';
-  content.innerHTML = '<div class="loading">Loading NucleusDB...</div>';
+  content.innerHTML = '<div class="loading">Initializing NucleusDB...</div>';
 
   try {
-    const status = await api('/nucleusdb/status');
+    const [status, stats] = await Promise.all([
+      api('/nucleusdb/status'),
+      api('/nucleusdb/stats').catch(() => null)
+    ]);
+
+    const keyCount = stats?.key_count || 0;
+    const commitCount = stats?.commit_count || 0;
+    const dbSize = stats?.db_size_bytes || 0;
+    const backend = status.backend || 'binary_merkle';
+    const bi = backendInfo[backend] || backendInfo.binary_merkle;
+    const chainOk = status.exists && commitCount > 0;
 
     content.innerHTML = `
-      <div class="page-title">NucleusDB</div>
-      <div class="card-grid" style="margin-bottom:16px">
+      <div class="ndb-hero">
+        <img src="img/nucleus_db_logo.png" alt="NucleusDB" onerror="this.style.display='none'">
+        <div class="ndb-hero-title">NucleusDB</div>
+        <div class="ndb-hero-subtitle">Proof-Carrying Algebraic Database</div>
+      </div>
+
+      <div class="card-grid" style="margin-bottom:14px">
+        <div class="card">
+          <div class="card-label">Keys</div>
+          <div class="card-value">${keyCount.toLocaleString()}</div>
+          <div class="card-sub">${stats?.type_distribution ? Object.keys(stats.type_distribution).length + ' types' : 'No data'}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Commits</div>
+          <div class="card-value">${commitCount.toLocaleString()}</div>
+          <div class="card-sub">${formatBytes(dbSize)}</div>
+        </div>
         <div class="card">
           <div class="card-label">Backend</div>
-          <div class="card-value" style="font-size:16px">${esc(status.backend)}</div>
-          <div class="card-sub">SHA-256 Merkle tree</div>
+          <div class="card-value" style="font-size:14px">${esc(bi.name)}</div>
+          <div class="card-sub">${esc(bi.algo)} | ${esc(bi.type)}</div>
         </div>
         <div class="card">
-          <div class="card-label">Sessions</div>
-          <div class="card-value">${status.session_count}</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Database</div>
-          <div class="card-value" style="font-size:14px">
-            ${status.exists ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-warn">Not Created</span>'}
-          </div>
-          <div class="card-sub" style="font-family:var(--font-mono);font-size:10px">${esc(status.db_path)}</div>
+          <div class="card-label">Chain</div>
+          <div class="card-value" style="font-size:14px">${chainOk
+            ? '<span class="badge badge-ok">HEALTHY</span>'
+            : status.exists ? '<span class="badge badge-warn">EMPTY</span>' : '<span class="badge badge-muted">NO DB</span>'}</div>
+          <div class="card-sub">${chainOk ? 'Seal #' + commitCount : status.exists ? 'No commits yet' : 'Create database first'}</div>
         </div>
       </div>
 
       <div class="ndb-tabs">
-        <button class="ndb-tab ${ndb.tab === 'browse' ? 'active' : ''}" onclick="ndbSwitchTab('browse')">Browse</button>
-        <button class="ndb-tab ${ndb.tab === 'sql' ? 'active' : ''}" onclick="ndbSwitchTab('sql')">SQL</button>
-        <button class="ndb-tab ${ndb.tab === 'vectors' ? 'active' : ''}" onclick="ndbSwitchTab('vectors')">Vectors</button>
-        <button class="ndb-tab ${ndb.tab === 'commits' ? 'active' : ''}" onclick="ndbSwitchTab('commits')">Commits</button>
-        <button class="ndb-tab ${ndb.tab === 'schema' ? 'active' : ''}" onclick="ndbSwitchTab('schema')">Schema</button>
-        <button class="ndb-tab ${ndb.tab === 'settings' ? 'active' : ''}" onclick="ndbSwitchTab('settings')">Settings</button>
+        <button class="ndb-tab ${ndb.tab === 'browse' ? 'active' : ''}" onclick="ndbSwitchTab('browse')">F1:DATA</button>
+        <button class="ndb-tab ${ndb.tab === 'sql' ? 'active' : ''}" onclick="ndbSwitchTab('sql')">F2:SQL</button>
+        <button class="ndb-tab ${ndb.tab === 'vectors' ? 'active' : ''}" onclick="ndbSwitchTab('vectors')">F3:VEC</button>
+        <button class="ndb-tab ${ndb.tab === 'commits' ? 'active' : ''}" onclick="ndbSwitchTab('commits')">F4:CHAIN</button>
+        <button class="ndb-tab ${ndb.tab === 'proofs' ? 'active' : ''}" onclick="ndbSwitchTab('proofs')">F5:PROOF</button>
+        <button class="ndb-tab ${ndb.tab === 'sharing' ? 'active' : ''}" onclick="ndbSwitchTab('sharing')">F6:SHARE</button>
+        <button class="ndb-tab ${ndb.tab === 'config' ? 'active' : ''}" onclick="ndbSwitchTab('config')">F7:CFG</button>
       </div>
       <div id="ndb-content"></div>
     `;
+
+    // Store stats for sub-tabs
+    window._ndbStats = stats;
+    window._ndbStatus = status;
 
     // Render active sub-tab
     switch (ndb.tab) {
@@ -804,8 +870,9 @@ async function renderNucleusDB(subtab) {
       case 'sql': ndbRenderSQL(); break;
       case 'vectors': await ndbRenderVectors(); break;
       case 'commits': await ndbRenderCommits(); break;
-      case 'schema': await ndbRenderSchema(); break;
-      case 'settings': await ndbRenderSettings(); break;
+      case 'proofs': ndbRenderProofs(); break;
+      case 'sharing': ndbRenderSharing(); break;
+      case 'config': await ndbRenderConfig(); break;
     }
   } catch (e) {
     content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
@@ -837,7 +904,7 @@ async function ndbRenderBrowse() {
       <div class="ndb-toolbar">
         <div style="display:flex;gap:8px;align-items:center;flex:1">
           <input type="text" id="ndb-search" placeholder="Filter by key prefix..." value="${esc(ndb.prefix)}"
-            style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
+            style="width:260px;padding:6px 10px;font-size:12px">
           <button class="btn btn-sm" onclick="ndbSearch()">Filter</button>
           ${ndb.prefix ? `<button class="btn btn-sm" onclick="ndbClearSearch()">Clear</button>` : ''}
           <span class="ndb-count">${total} key${total !== 1 ? 's' : ''}</span>
@@ -855,8 +922,8 @@ async function ndbRenderBrowse() {
             <th class="ndb-sortable" onclick="ndbSort('key')">Key ${sortIcon('key')}</th>
             <th style="width:70px">Type</th>
             <th class="ndb-sortable" onclick="ndbSort('value')">Value ${sortIcon('value')}</th>
-            <th style="width:60px">Index</th>
-            <th style="width:160px;text-align:center">Actions</th>
+            <th style="width:50px">Idx</th>
+            <th style="width:140px;text-align:center">Actions</th>
           </tr></thead>
           <tbody>
             ${rows.map(row => `
@@ -864,7 +931,7 @@ async function ndbRenderBrowse() {
                 <td class="ndb-key">${esc(row.key)}</td>
                 <td>${typeBadge(row.type)}</td>
                 <td class="ndb-value ndb-value-cell" data-key="${esc(row.key)}">${renderTypedValue(row)}</td>
-                <td style="color:var(--text-muted);font-size:12px">${row.index}</td>
+                <td style="color:var(--text-dim);font-size:11px">${row.index}</td>
                 <td class="ndb-actions">
                   <button class="btn-icon" data-ndb-action="verify" data-key="${esc(row.key)}" title="Verify Merkle proof">&#128737;</button>
                   <button class="btn-icon" data-ndb-action="history" data-key="${esc(row.key)}" title="Key history">&#128339;</button>
@@ -888,9 +955,9 @@ async function ndbRenderBrowse() {
         </div>
       ` : `
         <div class="ndb-empty">
-          <div style="font-size:48px;margin-bottom:12px">&#9683;</div>
-          <div style="font-size:16px;margin-bottom:8px">No data stored yet</div>
-          <div style="color:var(--text-muted);margin-bottom:16px">Insert your first key-value pair to get started.</div>
+          <div style="font-size:36px;margin-bottom:12px;color:var(--accent)">&#9762;</div>
+          <div style="font-size:14px;margin-bottom:8px;color:var(--accent)">No data stored yet</div>
+          <div style="color:var(--text-muted);margin-bottom:16px;font-size:12px">Insert your first key-value pair to get started.</div>
           <button class="btn btn-primary" onclick="ndbNewKey()">+ Insert First Key</button>
           <button class="btn btn-sm" style="margin-left:8px" onclick="ndbSwitchTab('sql')">Open SQL Console</button>
         </div>
@@ -940,7 +1007,7 @@ async function ndbRenderBrowse() {
   }
 }
 
-// JSON expand handler for browse table
+// JSON expand handler
 window.ndbExpandJson = function(el, key) {
   const effectiveKey = key || el?.dataset?.key || '';
   if (!effectiveKey) return;
@@ -988,7 +1055,7 @@ window.ndbChangePageSize = function(size) {
   ndbRenderBrowse();
 };
 
-// Typed edit — look up the row from cached data
+// Typed edit
 window.ndbStartEditTyped = function(key) {
   const row = (window._ndbRows || []).find(r => r.key === key);
   const type = row?.type || 'integer';
@@ -1000,7 +1067,7 @@ window.ndbStartEditTyped = function(key) {
     case 'integer':
     case 'float':
       valueInput = `<input type="number" id="ndb-edit-value" value="${val != null ? val : 0}" step="${type === 'float' ? 'any' : '1'}"
-        style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">`;
+        style="width:260px;padding:6px 10px;font-size:13px">`;
       break;
     case 'bool':
       valueInput = `<select id="ndb-edit-value" class="ndb-type-select" style="width:120px">
@@ -1021,7 +1088,7 @@ window.ndbStartEditTyped = function(key) {
     case 'vector': {
       const arrStr = Array.isArray(val) ? val.join(', ') : '';
       valueInput = `<textarea id="ndb-edit-value" class="ndb-value-textarea" style="width:400px" placeholder="0.1, 0.2, 0.3, ...">${esc(arrStr)}</textarea>
-        <div style="color:var(--text-muted);font-size:11px;margin-top:2px">${Array.isArray(val) ? val.length + ' dimensions' : ''} — comma-separated floats</div>`;
+        <div style="color:var(--text-dim);font-size:10px;margin-top:2px">${Array.isArray(val) ? val.length + ' dimensions' : ''} &mdash; comma-separated floats</div>`;
       break;
     }
     case 'bytes':
@@ -1029,19 +1096,19 @@ window.ndbStartEditTyped = function(key) {
       break;
     default:
       valueInput = `<input type="text" id="ndb-edit-value" value="${esc(String(val || ''))}"
-        style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">`;
+        style="width:260px;padding:6px 10px;font-size:13px">`;
   }
 
   panel.innerHTML = `
     <div class="ndb-edit-panel">
       <div class="section-header">Edit Key</div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-        <label style="font-weight:600;min-width:50px">Key:</label>
-        <span style="font-family:var(--font-mono)">${esc(key)}</span>
+        <label style="font-weight:600;min-width:50px;font-size:12px">Key:</label>
+        <span style="color:var(--accent)">${esc(key)}</span>
         ${typeBadge(type)}
       </div>
       <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:12px">
-        <label style="font-weight:600;min-width:50px;margin-top:6px">Value:</label>
+        <label style="font-weight:600;min-width:50px;margin-top:6px;font-size:12px">Value:</label>
         <div>${valueInput}</div>
       </div>
       <div style="display:flex;gap:8px">
@@ -1091,7 +1158,7 @@ window.ndbSaveEditTyped = async function(key, type) {
       $('#ndb-edit-result').innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
     } else {
       const typeLabel = res.type ? ` (${res.type})` : '';
-      $('#ndb-detail-panel').innerHTML = `<div style="color:var(--green);padding:8px">Saved ${esc(key)}${typeLabel} and committed.</div>`;
+      $('#ndb-detail-panel').innerHTML = `<div style="color:var(--green);padding:8px;text-shadow:var(--glow-green)">Saved ${esc(key)}${typeLabel} and committed.</div>`;
       setTimeout(() => ndbRenderBrowse(), 800);
     }
   } catch (e) {
@@ -1105,12 +1172,11 @@ window.ndbNewKey = function() {
     <div class="ndb-edit-panel">
       <div class="section-header">New Key-Value Pair</div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-        <label style="font-weight:600;min-width:50px">Key:</label>
-        <input type="text" id="ndb-new-key" placeholder="my_key"
-          style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">
+        <label style="font-weight:600;min-width:50px;font-size:12px">Key:</label>
+        <input type="text" id="ndb-new-key" placeholder="my_key" style="width:260px;padding:6px 10px;font-size:13px">
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-        <label style="font-weight:600;min-width:50px">Type:</label>
+        <label style="font-weight:600;min-width:50px;font-size:12px">Type:</label>
         <select id="ndb-new-type" class="ndb-type-select" onchange="ndbNewKeyTypeChanged()">
           <option value="integer">Integer</option>
           <option value="float">Float</option>
@@ -1122,10 +1188,9 @@ window.ndbNewKey = function() {
         </select>
       </div>
       <div id="ndb-new-value-wrap" style="display:flex;gap:8px;align-items:flex-start;margin-bottom:12px">
-        <label style="font-weight:600;min-width:50px;margin-top:6px">Value:</label>
+        <label style="font-weight:600;min-width:50px;margin-top:6px;font-size:12px">Value:</label>
         <div id="ndb-new-value-input">
-          <input type="number" id="ndb-new-value" value="0"
-            style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">
+          <input type="number" id="ndb-new-value" value="0" style="width:260px;padding:6px 10px;font-size:13px">
         </div>
       </div>
       <div style="display:flex;gap:8px">
@@ -1144,12 +1209,10 @@ window.ndbNewKeyTypeChanged = function() {
   if (!wrap) return;
   switch (type) {
     case 'integer':
-      wrap.innerHTML = `<input type="number" id="ndb-new-value" value="0" step="1"
-        style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">`;
+      wrap.innerHTML = `<input type="number" id="ndb-new-value" value="0" step="1" style="width:260px;padding:6px 10px;font-size:13px">`;
       break;
     case 'float':
-      wrap.innerHTML = `<input type="number" id="ndb-new-value" value="0.0" step="any"
-        style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">`;
+      wrap.innerHTML = `<input type="number" id="ndb-new-value" value="0.0" step="any" style="width:260px;padding:6px 10px;font-size:13px">`;
       break;
     case 'text':
       wrap.innerHTML = `<textarea id="ndb-new-value" class="ndb-value-textarea" style="width:400px" placeholder="Enter text..."></textarea>`;
@@ -1163,10 +1226,10 @@ window.ndbNewKeyTypeChanged = function() {
       break;
     case 'vector':
       wrap.innerHTML = `<textarea id="ndb-new-value" class="ndb-value-textarea" style="width:400px" placeholder="0.1, 0.2, 0.3, ..."></textarea>
-        <div style="color:var(--text-muted);font-size:11px;margin-top:2px">Comma-separated float values</div>`;
+        <div style="color:var(--text-dim);font-size:10px;margin-top:2px">Comma-separated float values</div>`;
       break;
     case 'null':
-      wrap.innerHTML = `<span style="color:var(--text-muted);font-style:italic">NULL — no value</span>
+      wrap.innerHTML = `<span style="color:var(--text-muted);font-style:italic">NULL &mdash; no value</span>
         <input type="hidden" id="ndb-new-value" value="null">`;
       break;
   }
@@ -1210,7 +1273,7 @@ window.ndbInsertNew = async function() {
       $('#ndb-new-result').innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
     } else {
       const typeLabel = res.type ? ` (${res.type})` : '';
-      $('#ndb-detail-panel').innerHTML = `<div style="color:var(--green);padding:8px">Inserted ${esc(key)}${typeLabel} and committed.</div>`;
+      $('#ndb-detail-panel').innerHTML = `<div style="color:var(--green);padding:8px;text-shadow:var(--glow-green)">Inserted ${esc(key)}${typeLabel} and committed.</div>`;
       setTimeout(() => ndbRenderBrowse(), 800);
     }
   } catch (e) {
@@ -1245,7 +1308,7 @@ window.ndbVerifyKey = async function(key) {
       <div class="ndb-verify-panel">
         <div class="section-header">Merkle Proof Verification</div>
         <div class="ndb-verify-grid">
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Key</span><span class="ndb-mono">${esc(res.key)}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Key</span><span class="ndb-mono" style="color:var(--accent)">${esc(res.key)}</span></div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Type</span>${typeBadge(res.type || 'integer')}</div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Value</span><span class="ndb-mono">${esc(res.display || String(res.value))}</span></div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Index</span><span class="ndb-mono">${res.index}</span></div>
@@ -1259,8 +1322,8 @@ window.ndbVerifyKey = async function(key) {
           <div class="ndb-verify-row">
             <span class="ndb-verify-label">Verified</span>
             <span>${res.verified
-              ? '<span class="badge badge-ok" style="font-size:14px">&#10003; VERIFIED</span>'
-              : '<span class="badge badge-err" style="font-size:14px">&#10007; FAILED</span>'
+              ? '<span class="badge badge-ok" style="font-size:13px">&#10003; VERIFIED</span>'
+              : '<span class="badge badge-err" style="font-size:13px">&#10007; FAILED</span>'
             }</span>
           </div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Root Hash</span><span class="ndb-mono ndb-hash">${esc(res.root_hash)}</span></div>
@@ -1298,28 +1361,28 @@ window.ndbKeyHistory = async function(key) {
           <div class="ndb-verify-row"><span class="ndb-verify-label">Type</span>${typeBadge(typeTag)}</div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Display</span><span class="ndb-mono">${esc(currentDisplay)}</span></div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Typed Value</span><span class="ndb-mono">${esc(truncate(typedJson, 120))}</span></div>
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Current Value (raw)</span><span class="ndb-mono">${res.current_value}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Raw Value</span><span class="ndb-mono">${res.current_value}</span></div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Index</span><span class="ndb-mono">${res.index}</span></div>
         </div>
         ${typedJson.length > 120 ? `
           <details style="margin-bottom:10px">
-            <summary style="cursor:pointer;color:var(--text-muted)">Show full typed value JSON</summary>
-            <pre style="margin-top:6px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;word-break:break-word">${esc(typedJson)}</pre>
+            <summary style="cursor:pointer;color:var(--text-muted);font-size:12px">Show full typed value JSON</summary>
+            <pre class="ndb-json-expanded">${esc(typedJson)}</pre>
           </details>
         ` : ''}
         ${res.commits && res.commits.length > 0 ? `
-          <div style="font-size:13px;font-weight:600;margin-bottom:6px">Commits (${res.commits.length})</div>
+          <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Commits (${res.commits.length})</div>
           <div class="table-wrap"><table>
             <thead><tr><th>Height</th><th>State Root</th><th>Timestamp</th></tr></thead>
             <tbody>${res.commits.map(c => `
               <tr>
-                <td>${c.height}</td>
+                <td style="color:var(--accent)">${c.height}</td>
                 <td class="ndb-mono ndb-hash">${esc(c.state_root)}</td>
-                <td style="font-size:12px">${c.timestamp_unix ? fmtTime(c.timestamp_unix) : 'n/a'}</td>
+                <td style="font-size:11px">${c.timestamp_unix ? fmtTime(c.timestamp_unix) : 'n/a'}</td>
               </tr>
             `).join('')}</tbody>
           </table></div>
-          ${res.note ? `<div style="color:var(--text-muted);font-size:12px;margin-top:4px">${esc(res.note)}</div>` : ''}
+          ${res.note ? `<div style="color:var(--text-dim);font-size:11px;margin-top:4px">${esc(res.note)}</div>` : ''}
         ` : '<div style="color:var(--text-muted)">No commits yet.</div>'}
         <button class="btn btn-sm" style="margin-top:8px" onclick="$('#ndb-detail-panel').innerHTML=''">Close</button>
       </div>
@@ -1349,17 +1412,17 @@ window.ndbExport = async function(fmt) {
 function ndbRenderSQL() {
   const el = $('#ndb-content');
   el.innerHTML = `
-    <div style="margin:16px 0">
+    <div style="margin:12px 0">
       <div style="display:flex;gap:8px;margin-bottom:8px">
         <input type="text" id="sql-input" placeholder="Enter SQL (e.g. SELECT * FROM data)"
-          style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
+          style="flex:1;padding:8px 12px;font-size:12px">
         <button class="btn btn-primary" onclick="runSQL()">Execute</button>
       </div>
       <div class="config-desc" style="margin-bottom:4px">
-        <strong>Supported:</strong> SELECT, INSERT, UPDATE, DELETE, COMMIT, VERIFY, SHOW STATUS/HISTORY/MODE/TYPES, VECTOR_SEARCH, SET MODE APPEND_ONLY, EXPORT
+        <strong style="color:var(--accent)">Supported:</strong> SELECT, INSERT, UPDATE, DELETE, COMMIT, VERIFY, SHOW STATUS/HISTORY/MODE/TYPES, VECTOR_SEARCH, SET MODE APPEND_ONLY, EXPORT
       </div>
       <div class="ndb-sql-presets">
-        <span style="color:var(--text-muted);font-size:12px">Quick:</span>
+        <span style="color:var(--text-dim);font-size:11px">Quick:</span>
         <button class="btn btn-xs" onclick="ndbSQLPreset('SELECT * FROM data')">All Data</button>
         <button class="btn btn-xs" onclick="ndbSQLPreset('SHOW TYPES')">Types</button>
         <button class="btn btn-xs" onclick="ndbSQLPreset('SHOW STATUS')">Status</button>
@@ -1367,7 +1430,7 @@ function ndbRenderSQL() {
         <button class="btn btn-xs" onclick="ndbSQLPreset('EXPORT')">Export</button>
       </div>
       <div class="ndb-sql-presets" style="margin-top:2px">
-        <span style="color:var(--text-muted);font-size:12px">Insert:</span>
+        <span style="color:var(--text-dim);font-size:11px">Insert:</span>
         <button class="btn btn-xs" onclick="ndbSQLPreset(&quot;INSERT INTO data (key, value) VALUES ('mykey', 'hello world')&quot;)">Text</button>
         <button class="btn btn-xs" onclick="ndbSQLPreset(&quot;INSERT INTO data (key, value) VALUES ('mykey', '{\\&quot;name\\&quot;:\\&quot;Alice\\&quot;}')&quot;)">JSON</button>
         <button class="btn btn-xs" onclick="ndbSQLPreset(&quot;INSERT INTO data (key, value) VALUES ('mykey', VECTOR(0.1, 0.2, 0.3))&quot;)">Vector</button>
@@ -1375,7 +1438,6 @@ function ndbRenderSQL() {
       <div id="sql-result" style="margin-top:12px"></div>
     </div>
   `;
-  // Bind Enter key
   const inp = $('#sql-input');
   if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSQL(); });
 }
@@ -1401,15 +1463,15 @@ window.runSQL = async function() {
         el.innerHTML = `<div class="table-wrap"><table>
           <thead><tr>${data.columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>
           <tbody>${data.rows.map(row =>
-            `<tr>${row.map(cell => `<td style="font-family:var(--font-mono);font-size:12px">${esc(cell)}</td>`).join('')}</tr>`
+            `<tr>${row.map(cell => `<td style="font-size:11px">${esc(cell)}</td>`).join('')}</tr>`
           ).join('')}</tbody>
         </table></div>
-        <div style="color:var(--text-muted);font-size:12px;margin-top:4px">${data.rows.length} row(s)</div>`;
+        <div style="color:var(--text-muted);font-size:11px;margin-top:4px">${data.rows.length} row(s)</div>`;
       }
     } else if (data.message) {
-      el.innerHTML = `<div style="color:var(--green)">${esc(data.message)}</div>`;
+      el.innerHTML = `<div style="color:var(--green);text-shadow:var(--glow-green)">${esc(data.message)}</div>`;
     } else {
-      el.innerHTML = `<pre style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:var(--font-mono);font-size:12px;overflow-x:auto">${esc(JSON.stringify(data, null, 2))}</pre>`;
+      el.innerHTML = `<pre class="ndb-json-expanded">${esc(JSON.stringify(data, null, 2))}</pre>`;
     }
   } catch (e) {
     el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
@@ -1421,12 +1483,12 @@ async function ndbRenderVectors() {
   const el = $('#ndb-content');
   el.innerHTML = '<div style="color:var(--text-muted)">Loading vector index...</div>';
   try {
-    const stats = await api('/nucleusdb/stats');
+    const stats = window._ndbStats || await api('/nucleusdb/stats');
     const vecCount = stats.vector_count || 0;
     const vecDims = stats.vector_dims || 0;
 
     el.innerHTML = `
-      <div style="margin:16px 0">
+      <div style="margin:12px 0">
         <div class="card-grid">
           <div class="card">
             <div class="card-label">Vectors Indexed</div>
@@ -1438,7 +1500,7 @@ async function ndbRenderVectors() {
           </div>
           <div class="card">
             <div class="card-label">Blob Storage</div>
-            <div class="card-value" style="font-size:16px">${formatBytes(stats.blob_total_bytes || 0)}</div>
+            <div class="card-value" style="font-size:14px">${formatBytes(stats.blob_total_bytes || 0)}</div>
             <div class="card-sub">${stats.blob_count || 0} objects</div>
           </div>
         </div>
@@ -1446,35 +1508,35 @@ async function ndbRenderVectors() {
         <div class="section-header">Similarity Search</div>
         <div class="ndb-vector-search">
           <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
-            <label style="font-weight:600;min-width:60px;margin-top:6px">Query:</label>
+            <label style="font-weight:600;min-width:60px;margin-top:6px;font-size:12px">Query:</label>
             <textarea id="ndb-vec-query" class="ndb-value-textarea" style="width:400px;min-height:40px"
               placeholder="0.1, 0.2, 0.3, ...${vecDims ? ' (' + vecDims + ' dims)' : ''}"></textarea>
           </div>
           <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px">
-            <label style="font-weight:600;min-width:60px">Metric:</label>
+            <label style="font-weight:600;min-width:60px;font-size:12px">Metric:</label>
             <select id="ndb-vec-metric" class="ndb-type-select">
               <option value="cosine">Cosine</option>
               <option value="l2">L2 (Euclidean)</option>
               <option value="inner_product">Inner Product</option>
             </select>
-            <label style="font-weight:500;margin-left:8px">k:</label>
+            <label style="font-weight:500;margin-left:8px;font-size:12px">k:</label>
             <input type="number" id="ndb-vec-k" value="10" min="1" max="100"
-              style="width:60px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
+              style="width:60px;padding:6px 10px;font-size:12px">
             <button class="btn btn-primary btn-sm" onclick="ndbVectorSearch()">Search</button>
           </div>
-          ${vecCount === 0 ? `<div style="color:var(--text-muted);font-size:13px">No vectors in the index yet. Insert vectors via the Browse tab or SQL console.</div>` : ''}
+          ${vecCount === 0 ? `<div style="color:var(--text-muted);font-size:12px">No vectors in the index yet. Insert vectors via the Browse tab or SQL console.</div>` : ''}
         </div>
         <div id="ndb-vec-results"></div>
 
         <div class="section-header">Insert Vector</div>
         <div class="ndb-vector-search">
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-            <label style="font-weight:600;min-width:60px">Key:</label>
+            <label style="font-weight:600;min-width:60px;font-size:12px">Key:</label>
             <input type="text" id="ndb-vec-insert-key" placeholder="doc:embedding:1"
-              style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
+              style="width:260px;padding:6px 10px;font-size:12px">
           </div>
           <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
-            <label style="font-weight:600;min-width:60px;margin-top:6px">Dims:</label>
+            <label style="font-weight:600;min-width:60px;margin-top:6px;font-size:12px">Dims:</label>
             <textarea id="ndb-vec-insert-dims" class="ndb-value-textarea" style="width:400px;min-height:40px"
               placeholder="0.1, 0.2, 0.3, ..."></textarea>
           </div>
@@ -1499,7 +1561,7 @@ window.ndbVectorSearch = async function() {
   if (!raw) { el.innerHTML = '<div style="color:var(--red)">Enter a query vector</div>'; return; }
 
   const query = raw.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
-  if (query.length === 0) { el.innerHTML = '<div style="color:var(--red)">Invalid vector — enter comma-separated numbers</div>'; return; }
+  if (query.length === 0) { el.innerHTML = '<div style="color:var(--red)">Invalid vector</div>'; return; }
 
   el.innerHTML = '<div style="color:var(--text-muted)">Searching...</div>';
   try {
@@ -1515,7 +1577,7 @@ window.ndbVectorSearch = async function() {
       return;
     }
     el.innerHTML = `
-      <div class="section-header" style="margin-top:12px">Results (${results.length} nearest neighbors, ${esc(metric)})</div>
+      <div class="section-header" style="margin-top:12px">Results (${results.length} nearest, ${esc(metric)})</div>
       <div class="ndb-vector-results">
         ${results.map((r, i) => `
           <div class="ndb-vector-result-item">
@@ -1552,51 +1614,50 @@ window.ndbVectorInsert = async function() {
     if (res.error) {
       el.innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
     } else {
-      el.innerHTML = `<div style="color:var(--green)">Inserted ${esc(key)} — ${nums.length}d vector committed.</div>`;
+      el.innerHTML = `<div style="color:var(--green);text-shadow:var(--glow-green)">Inserted ${esc(key)} &mdash; ${nums.length}d vector committed.</div>`;
     }
   } catch (e) {
     el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
   }
 };
 
-// -- Commits Sub-Tab ----------------------------------------------------------
+// -- Commits Sub-Tab (Seal Chain Visualization) -------------------------------
 async function ndbRenderCommits() {
   const el = $('#ndb-content');
-  el.innerHTML = '<div style="color:var(--text-muted)">Loading commits...</div>';
+  el.innerHTML = '<div style="color:var(--text-muted)">Loading seal chain...</div>';
   try {
     const history = await api('/nucleusdb/history');
-    el.innerHTML = `
-      <div style="margin:16px 0">
-        <div class="section-header">Commit Ledger</div>
-        ${history.commits && history.commits.rows && history.commits.rows.length > 0 ? `
-          <div class="table-wrap"><table>
-            <thead><tr>${(history.commits.columns || []).map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>
-            <tbody>
-              ${history.commits.rows.map(row =>
-                `<tr>${row.map((cell, i) => `<td class="ndb-mono" style="font-size:12px">${i === 1 ? `<span class="ndb-hash">${esc(cell)}</span>` : esc(cell)}</td>`).join('')}</tr>`
-              ).join('')}
-            </tbody>
-          </table></div>
-          <div style="color:var(--text-muted);font-size:12px;margin-top:4px">${history.commits.rows.length} commit(s)</div>
-        ` : '<div style="color:var(--text-muted)">No commits yet. Insert data and COMMIT to create the first entry.</div>'}
+    const commits = history.commits?.rows || [];
+    const columns = history.commits?.columns || [];
 
-        <div class="section-header" style="margin-top:24px">Recent Sessions</div>
-        ${(history.sessions || []).length > 0 ? `
-          <div class="table-wrap"><table>
-            <thead><tr><th>Session ID</th><th>Agent</th><th>Model</th><th>Started</th><th>Status</th></tr></thead>
-            <tbody>
-              ${(history.sessions || []).map(h => `
-                <tr class="clickable" onclick="location.hash='#/sessions/${encodeURIComponent(h.session_id)}'">
-                  <td class="ndb-mono" style="font-size:12px">${esc(truncate(h.session_id, 28))}</td>
-                  <td>${esc(h.agent)}</td>
-                  <td>${esc(truncate(h.model || 'unknown', 20))}</td>
-                  <td style="font-size:12px">${fmtTime(h.started_at)}</td>
-                  <td>${statusBadge(h.status)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table></div>
-        ` : '<div style="color:var(--text-muted)">No sessions recorded.</div>'}
+    el.innerHTML = `
+      <div style="margin:12px 0">
+        <div class="seal-chain-status ${commits.length > 0 ? 'ok' : ''}">
+          <span class="seal-chain-indicator">${commits.length > 0
+            ? '&#10003; SEAL CHAIN UNBROKEN'
+            : '&#9888; NO COMMITS'}</span>
+          <span style="color:var(--text-dim);font-size:11px;margin-left:auto">${commits.length} commit${commits.length !== 1 ? 's' : ''}</span>
+        </div>
+
+        ${commits.length > 0 ? `
+          <div class="seal-chain">
+            ${commits.slice().reverse().slice(0, 20).map((row, i) => {
+              const height = row[0];
+              const rootHash = row[1] || '';
+              const timestamp = row[2] || '';
+              return `
+                <div class="seal-node">
+                  <div class="seal-height">Commit #${esc(String(height))}</div>
+                  <div class="seal-detail"><span>Root:</span> ${esc(truncate(rootHash, 48))}</div>
+                  <div class="seal-detail"><span>Seal:</span> SHA-256(seal_${height > 0 ? height - 1 : 0} | kv_digest)</div>
+                  <div class="seal-detail"><span>Time:</span> ${esc(timestamp)}</div>
+                </div>
+                ${i < Math.min(commits.length, 20) - 1 ? '<div class="seal-connector"></div>' : ''}
+              `;
+            }).join('')}
+          </div>
+          ${commits.length > 20 ? `<div style="color:var(--text-dim);font-size:11px;margin-top:8px;text-align:center">Showing 20 of ${commits.length} commits</div>` : ''}
+        ` : '<div style="color:var(--text-muted);padding:24px;text-align:center">No commits yet. Insert data and COMMIT to create the first seal.</div>'}
       </div>
     `;
   } catch (e) {
@@ -1604,17 +1665,187 @@ async function ndbRenderCommits() {
   }
 }
 
-// -- Schema Sub-Tab -----------------------------------------------------------
-async function ndbRenderSchema() {
+// -- Proofs Sub-Tab (NEW) -----------------------------------------------------
+function ndbRenderProofs() {
   const el = $('#ndb-content');
-  el.innerHTML = '<div style="color:var(--text-muted)">Loading schema...</div>';
+  const stats = window._ndbStats || {};
+  const status = window._ndbStatus || {};
+  const backend = status.backend || 'binary_merkle';
+  const bi = backendInfo[backend] || backendInfo.binary_merkle;
+
+  el.innerHTML = `
+    <div style="margin:12px 0">
+      <div class="proof-section">
+        <div class="proof-section-title">Active Backend</div>
+        <div class="ndb-verify-grid">
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Engine</span><span class="ndb-mono" style="color:var(--accent)">${esc(bi.name)}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Algorithm</span><span class="ndb-mono">${esc(bi.algo)}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Security</span><span class="ndb-mono">${esc(bi.type)}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Proof Size</span><span class="ndb-mono">${esc(bi.proof)}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Setup</span><span class="ndb-mono">${esc(bi.setup)}</span></div>
+        </div>
+        <div style="color:var(--text-dim);font-size:11px;margin-top:8px">
+          Every key has a position in a Merkle tree. A proof is a path from the leaf to the root.
+          If ANY value changes, the root changes. Verification: ${esc(bi.proof)} hashes.
+        </div>
+      </div>
+
+      ${stats.sth ? `
+      <div class="proof-section">
+        <div class="proof-section-title">Certificate Transparency (RFC 6962)</div>
+        <div class="ndb-verify-grid">
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Tree Size</span><span class="ndb-mono" style="color:var(--accent)">${stats.sth.tree_size}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Root Hash</span><span class="ndb-mono ndb-hash">${esc(stats.sth.root_hash)}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Timestamp</span><span class="ndb-mono">${stats.sth.timestamp_unix ? fmtTime(stats.sth.timestamp_unix) : 'n/a'}</span></div>
+        </div>
+      </div>
+      ` : ''}
+
+      <div class="proof-section">
+        <div class="proof-section-title">Verify a Key</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+          <input type="text" id="ndb-proof-key" placeholder="Enter key to verify..." style="flex:1;padding:8px 12px;font-size:12px">
+          <button class="btn btn-primary btn-sm" onclick="ndbProofVerify()">Verify</button>
+        </div>
+        <div id="ndb-proof-result"></div>
+      </div>
+
+      <div class="proof-section">
+        <div class="proof-section-title">Backend Comparison</div>
+        <div class="backend-comparison">
+          <div class="backend-card ${backend === 'binary_merkle' ? 'active' : ''}">
+            <div class="backend-card-name">BinaryMerkle</div>
+            <div class="backend-card-detail">SHA-256</div>
+            <div class="backend-card-detail">Post-Quantum</div>
+            <div class="backend-card-detail">O(log n) proof</div>
+            <div class="backend-card-detail">No trusted setup</div>
+            <div style="margin-top:6px">${backend === 'binary_merkle' ? '<span class="badge badge-ok">ACTIVE</span>' : '<span class="badge badge-muted">Available</span>'}</div>
+          </div>
+          <div class="backend-card ${backend === 'ipa' ? 'active' : ''}">
+            <div class="backend-card-name">IPA</div>
+            <div class="backend-card-detail">Pedersen</div>
+            <div class="backend-card-detail">Binding</div>
+            <div class="backend-card-detail">O(n) proof*</div>
+            <div class="backend-card-detail">No trusted setup</div>
+            <div style="margin-top:6px">${backend === 'ipa' ? '<span class="badge badge-ok">ACTIVE</span>' : '<span class="badge badge-muted">Available</span>'}</div>
+          </div>
+          <div class="backend-card ${backend === 'kzg' ? 'active' : ''}">
+            <div class="backend-card-name">KZG</div>
+            <div class="backend-card-detail">BLS12-381</div>
+            <div class="backend-card-detail">Pairing</div>
+            <div class="backend-card-detail">O(1) proof**</div>
+            <div class="backend-card-detail">Trusted setup</div>
+            <div style="margin-top:6px">${backend === 'kzg' ? '<span class="badge badge-ok">ACTIVE</span>' : '<span class="badge badge-muted">Available</span>'}</div>
+          </div>
+        </div>
+        <div style="color:var(--text-dim);font-size:10px;margin-top:8px">
+          * IPA currently carries full vector (P1.3 planned) &nbsp;&nbsp;
+          ** KZG requires consumer to have same trusted setup
+        </div>
+      </div>
+    </div>
+  `;
+
+  const inp = $('#ndb-proof-key');
+  if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') ndbProofVerify(); });
+}
+
+window.ndbProofVerify = async function() {
+  const key = ($('#ndb-proof-key')?.value || '').trim();
+  if (!key) return;
+  const el = $('#ndb-proof-result');
+  el.innerHTML = '<div style="color:var(--text-muted)">Verifying...</div>';
   try {
-    const stats = await api('/nucleusdb/stats');
+    const res = await api(`/nucleusdb/verify/${encodeURIComponent(key)}`);
+    if (!res.found) {
+      el.innerHTML = `<span class="badge badge-err">Key not found</span>`;
+      return;
+    }
+    el.innerHTML = `
+      <div class="ndb-verify-grid" style="margin-top:8px">
+        <div class="ndb-verify-row"><span class="ndb-verify-label">Key</span><span class="ndb-mono" style="color:var(--accent)">${esc(res.key)}</span></div>
+        <div class="ndb-verify-row"><span class="ndb-verify-label">Type</span>${typeBadge(res.type || 'integer')}</div>
+        <div class="ndb-verify-row"><span class="ndb-verify-label">Value</span><span class="ndb-mono">${esc(res.display || String(res.value))}</span></div>
+        <div class="ndb-verify-row"><span class="ndb-verify-label">Backend</span><span class="ndb-mono">${esc(res.backend)}</span></div>
+        <div class="ndb-verify-row">
+          <span class="ndb-verify-label">Status</span>
+          <span>${res.verified
+            ? '<span class="badge badge-ok" style="font-size:12px">&#10003; VERIFIED</span>'
+            : '<span class="badge badge-err" style="font-size:12px">&#10007; FAILED</span>'
+          }</span>
+        </div>
+        <div class="ndb-verify-row"><span class="ndb-verify-label">Root Hash</span><span class="ndb-mono ndb-hash">${esc(res.root_hash)}</span></div>
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
+  }
+};
+
+// -- Sharing Sub-Tab (NucleusPOD) (NEW) ---------------------------------------
+function ndbRenderSharing() {
+  const el = $('#ndb-content');
+
+  el.innerHTML = `
+    <div style="margin:12px 0">
+      <div class="proof-section">
+        <div class="proof-section-title">NucleusPOD &mdash; Proof-Carrying Data Sharing</div>
+        <div style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
+          Share verified records with other agents. Each shared item carries its own cryptographic proof &mdash;
+          the recipient verifies independently without trusting the sender.
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div class="card" style="flex:1;min-width:140px">
+            <div class="card-label">Proof Envelopes</div>
+            <div class="card-value" style="font-size:16px;color:var(--text-muted)">0</div>
+            <div class="card-sub">Self-contained proofs</div>
+          </div>
+          <div class="card" style="flex:1;min-width:140px">
+            <div class="card-label">Access Grants</div>
+            <div class="card-value" style="font-size:16px;color:var(--text-muted)">0</div>
+            <div class="card-sub">Active grants</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="proof-section">
+        <div class="proof-section-title">Access Grants</div>
+        <div style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
+          Grant per-key read/write access to specific agents. Grants use PUF fingerprints for identity,
+          support key patterns (exact match, glob with <code style="color:var(--accent)">*</code>, or wildcard), and optional expiry.
+        </div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:20px;text-align:center">
+          <div style="color:var(--accent);font-size:13px;margin-bottom:4px">&#9888; Phase 2: HTTP Routes Required</div>
+          <div style="color:var(--text-dim);font-size:11px">
+            Grant management data structures are implemented (<code style="color:var(--text-muted)">pod/acl.rs</code>).<br>
+            HTTP endpoints for create/revoke/list grants are Phase 2 work.
+          </div>
+        </div>
+      </div>
+
+      <div class="proof-section">
+        <div class="proof-section-title">How It Works</div>
+        <div class="ndb-verify-grid">
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Envelope</span><span style="color:var(--text-dim);font-size:11px">Self-contained proof unit: data + Merkle proof + metadata + author PUF</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Grants</span><span style="color:var(--text-dim);font-size:11px">Per-key access control: grantor PUF + grantee PUF + key pattern + permissions + expiry</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Discovery</span><span style="color:var(--text-dim);font-size:11px">.well-known/nucleus-pod &mdash; JSON capabilities doc for agent discovery</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Verify</span><span style="color:var(--text-dim);font-size:11px">Recipients verify proofs locally &mdash; no trust in sender required</span></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// -- Config Sub-Tab (Merged Schema + Settings) --------------------------------
+async function ndbRenderConfig() {
+  const el = $('#ndb-content');
+  el.innerHTML = '<div style="color:var(--text-muted)">Loading config...</div>';
+  try {
+    const stats = window._ndbStats || await api('/nucleusdb/stats');
     const prefixes = stats.top_prefixes || [];
 
     el.innerHTML = `
-      <div style="margin:16px 0">
-        <div class="section-header">Database Statistics</div>
+      <div style="margin:12px 0">
         <div class="card-grid">
           <div class="card">
             <div class="card-label">Total Keys</div>
@@ -1626,59 +1857,39 @@ async function ndbRenderSchema() {
           </div>
           <div class="card">
             <div class="card-label">Write Mode</div>
-            <div class="card-value" style="font-size:14px">${esc(stats.write_mode)}</div>
+            <div class="card-value" style="font-size:13px">${esc(stats.write_mode)}</div>
           </div>
           <div class="card">
             <div class="card-label">DB Size</div>
-            <div class="card-value" style="font-size:16px">${formatBytes(stats.db_size_bytes)}</div>
+            <div class="card-value" style="font-size:14px">${formatBytes(stats.db_size_bytes)}</div>
           </div>
         </div>
 
         ${stats.type_distribution ? `
-          <div class="section-header" style="margin-top:16px">Type Distribution</div>
+          <div class="section-header">Type Distribution</div>
           <div class="ndb-type-dist">
             ${Object.entries(stats.type_distribution).sort((a,b) => b[1] - a[1]).map(([t, count]) =>
               `<div class="ndb-type-dist-item">${typeBadge(t)} <span class="ndb-type-dist-count">${count.toLocaleString()}</span></div>`
             ).join('')}
           </div>
-          <div class="card-grid">
-            <div class="card">
-              <div class="card-label">Blob Objects</div>
-              <div class="card-value">${stats.blob_count || 0}</div>
-              <div class="card-sub">${formatBytes(stats.blob_total_bytes || 0)} stored</div>
-            </div>
-            <div class="card">
-              <div class="card-label">Vectors</div>
-              <div class="card-value">${stats.vector_count || 0}</div>
-              <div class="card-sub">${stats.vector_dims ? stats.vector_dims + ' dimensions' : 'No vectors yet'}</div>
-            </div>
-          </div>
         ` : ''}
 
-        ${stats.key_count > 0 ? `
-          <div class="section-header" style="margin-top:16px">Value Statistics (Integer Keys)</div>
-          <div class="card-grid">
-            <div class="card">
-              <div class="card-label">Min</div>
-              <div class="card-value" title="${stats.value_min != null ? stats.value_min : 'n/a'}">${stats.value_min != null ? stats.value_min.toLocaleString() : 'n/a'}</div>
-            </div>
-            <div class="card">
-              <div class="card-label">Max</div>
-              <div class="card-value" title="${stats.value_max != null ? stats.value_max : 'n/a'}">${stats.value_max != null ? stats.value_max.toLocaleString() : 'n/a'}</div>
-            </div>
-            <div class="card">
-              <div class="card-label">Average</div>
-              <div class="card-value" style="font-size:16px" title="${stats.value_avg != null ? stats.value_avg : 'n/a'}">${stats.value_avg != null ? stats.value_avg.toFixed(2) : 'n/a'}</div>
-            </div>
-            <div class="card">
-              <div class="card-label">Sum</div>
-              <div class="card-value" style="font-size:16px" title="${stats.value_sum != null ? stats.value_sum : 'n/a'}">${stats.value_sum != null ? stats.value_sum.toLocaleString() : 'n/a'}</div>
-            </div>
+        <div class="section-header">Storage</div>
+        <div class="card-grid">
+          <div class="card">
+            <div class="card-label">Blob Objects</div>
+            <div class="card-value">${stats.blob_count || 0}</div>
+            <div class="card-sub">${formatBytes(stats.blob_total_bytes || 0)} stored</div>
           </div>
-        ` : ''}
+          <div class="card">
+            <div class="card-label">Vectors</div>
+            <div class="card-value">${stats.vector_count || 0}</div>
+            <div class="card-sub">${stats.vector_dims ? stats.vector_dims + ' dimensions' : 'No vectors yet'}</div>
+          </div>
+        </div>
 
         ${prefixes.length > 0 ? `
-          <div class="section-header" style="margin-top:16px">Key Prefix Distribution</div>
+          <div class="section-header">Key Prefix Distribution</div>
           <div class="ndb-prefix-list">
             ${prefixes.map(p => `
               <div class="ndb-prefix-item">
@@ -1686,75 +1897,33 @@ async function ndbRenderSchema() {
                 <div class="ndb-prefix-bar-wrap">
                   <div class="ndb-prefix-bar" style="width:${Math.max(4, (p.count / (prefixes[0]?.count || 1)) * 100)}%"></div>
                 </div>
-                <span class="ndb-prefix-count">${p.count}</span>
+                <span style="color:var(--text-muted);font-size:12px">${p.count}</span>
               </div>
             `).join('')}
           </div>
         ` : ''}
 
-        ${stats.sth ? `
-          <div class="section-header" style="margin-top:16px">Signed Tree Head</div>
-          <div class="ndb-verify-grid">
-            <div class="ndb-verify-row"><span class="ndb-verify-label">Tree Size</span><span class="ndb-mono">${stats.sth.tree_size}</span></div>
-            <div class="ndb-verify-row"><span class="ndb-verify-label">Root Hash</span><span class="ndb-mono ndb-hash">${esc(stats.sth.root_hash)}</span></div>
-            <div class="ndb-verify-row"><span class="ndb-verify-label">Timestamp</span><span>${fmtTime(stats.sth.timestamp_unix)}</span></div>
-          </div>
-        ` : ''}
-      </div>
-    `;
-  } catch (e) {
-    el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
-  }
-}
-
-function formatBytes(bytes) {
-  if (!bytes) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let i = 0;
-  let val = bytes;
-  while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
-  return val.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
-}
-
-// -- Settings Sub-Tab ---------------------------------------------------------
-async function ndbRenderSettings() {
-  const el = $('#ndb-content');
-  el.innerHTML = '<div style="color:var(--text-muted)">Loading settings...</div>';
-  try {
-    const stats = await api('/nucleusdb/stats');
-    el.innerHTML = `
-      <div style="margin:16px 0">
         <div class="section-header">Write Mode</div>
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-          <span class="badge ${stats.write_mode === 'AppendOnly' ? 'badge-warn' : 'badge-ok'}" style="font-size:14px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <span class="badge ${stats.write_mode === 'AppendOnly' ? 'badge-warn' : 'badge-ok'}" style="font-size:12px">
             ${esc(stats.write_mode)}
           </span>
           ${stats.write_mode !== 'AppendOnly' ? `
             <button class="btn btn-sm" onclick="ndbSetAppendOnly()">Lock to Append-Only</button>
-            <span style="color:var(--text-muted);font-size:12px">INSERT only. UPDATE/DELETE disabled. Irreversible.</span>
+            <span style="color:var(--text-dim);font-size:11px">INSERT only. UPDATE/DELETE disabled. Irreversible.</span>
           ` : `
-            <span style="color:var(--text-muted);font-size:12px">Database is locked. INSERT only. UPDATE/DELETE are disabled.</span>
+            <span style="color:var(--text-dim);font-size:11px">Database is locked. INSERT only.</span>
           `}
         </div>
 
         <div class="section-header">Export</div>
-        <div style="display:flex;gap:8px;margin-bottom:16px">
+        <div style="display:flex;gap:8px;margin-bottom:12px">
           <button class="btn btn-sm" onclick="ndbExport('json')">Export JSON</button>
           <button class="btn btn-sm" onclick="ndbExport('csv')">Export CSV</button>
         </div>
 
-        <div class="section-header">Database Info</div>
-        <div class="ndb-verify-grid">
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Keys</span><span>${stats.key_count}</span></div>
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Commits</span><span>${stats.commit_count}</span></div>
-          <div class="ndb-verify-row"><span class="ndb-verify-label">DB Size</span><span>${formatBytes(stats.db_size_bytes)}</span></div>
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Blob Objects</span><span>${stats.blob_count || 0} (${formatBytes(stats.blob_total_bytes || 0)})</span></div>
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Vectors</span><span>${stats.vector_count || 0}${stats.vector_dims ? ' (' + stats.vector_dims + 'd)' : ''}</span></div>
-          ${stats.type_distribution ? `
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Types</span>
-            <span>${Object.entries(stats.type_distribution).map(([t,c]) => `${t}: ${c}`).join(', ')}</span>
-          </div>` : ''}
-        </div>
+        <div class="section-header">Database Path</div>
+        <div style="color:var(--text-dim);font-size:11px">${esc((window._ndbStatus || {}).db_path || 'unknown')}</div>
       </div>
     `;
   } catch (e) {
@@ -1769,7 +1938,7 @@ window.ndbSetAppendOnly = async function() {
     if (res.error) {
       alert('Failed: ' + res.error);
     } else {
-      ndbRenderSettings();
+      ndbRenderConfig();
     }
   } catch (e) {
     alert('Failed: ' + e.message);

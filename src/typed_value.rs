@@ -62,7 +62,8 @@ impl std::fmt::Display for TypeTag {
 }
 
 /// A fully decoded value.  Produced by reading from the state vector + blob store.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum TypedValue {
     Null,
     Integer(i64),
@@ -232,7 +233,7 @@ pub fn vector_to_bytes(dims: &[f64]) -> Vec<u8> {
 
 /// Deserialize bytes back to Vec<f64>.
 pub fn bytes_to_vector(data: &[u8]) -> Result<Vec<f64>, String> {
-    if data.len() % 8 != 0 {
+    if !data.len().is_multiple_of(8) {
         return Err(format!(
             "vector blob length {} not divisible by 8",
             data.len()
@@ -305,7 +306,14 @@ mod tests {
 
     #[test]
     fn f64_roundtrip() {
-        for v in [0.0f64, 1.0, -1.0, 3.14, f64::INFINITY, f64::NEG_INFINITY] {
+        for v in [
+            0.0f64,
+            1.0,
+            -1.0,
+            std::f64::consts::PI,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
             assert_eq!(f64::from_bits(v.to_bits()), v);
         }
     }

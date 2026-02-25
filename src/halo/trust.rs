@@ -87,18 +87,18 @@ pub fn query_trust_score(
     score = score.clamp(0.0, 1.0);
 
     let tier = trust_tier(score).to_string();
-    let digest = score_digest(
+    let digest = score_digest(ScoreDigestInput {
         score,
         total_sessions,
         completed_sessions,
         failed_sessions,
-        paid_operations_success,
-        paid_operations_failed,
+        paid_success: paid_operations_success,
+        paid_failed: paid_operations_failed,
         attestation_count,
         anonymous_attestation_count,
         recent_sessions_30d,
         session_id,
-    );
+    });
 
     Ok(TrustScoreResult {
         score,
@@ -137,7 +137,7 @@ fn trust_tier(score: f64) -> &'static str {
     }
 }
 
-fn score_digest(
+struct ScoreDigestInput<'a> {
     score: f64,
     total_sessions: u64,
     completed_sessions: u64,
@@ -147,11 +147,22 @@ fn score_digest(
     attestation_count: u64,
     anonymous_attestation_count: u64,
     recent_sessions_30d: u64,
-    session_id: Option<&str>,
-) -> String {
+    session_id: Option<&'a str>,
+}
+
+fn score_digest(input: ScoreDigestInput<'_>) -> String {
     let payload = format!(
         "agenthalo.trust.score.v1:{score:.6}:{total_sessions}:{completed_sessions}:{failed_sessions}:{paid_success}:{paid_failed}:{attestation_count}:{anonymous_attestation_count}:{recent_sessions_30d}:{}",
-        session_id.unwrap_or("")
+        input.session_id.unwrap_or(""),
+        score = input.score,
+        total_sessions = input.total_sessions,
+        completed_sessions = input.completed_sessions,
+        failed_sessions = input.failed_sessions,
+        paid_success = input.paid_success,
+        paid_failed = input.paid_failed,
+        attestation_count = input.attestation_count,
+        anonymous_attestation_count = input.anonymous_attestation_count,
+        recent_sessions_30d = input.recent_sessions_30d,
     );
     hex_encode(Sha256::digest(payload.as_bytes()).as_slice())
 }

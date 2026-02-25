@@ -912,13 +912,14 @@ fn extract_function_calls(line: &str) -> Vec<String> {
             token.push(ch);
             continue;
         }
-        if ch == '(' && !token.is_empty() {
-            if !matches!(
+        if ch == '('
+            && !token.is_empty()
+            && !matches!(
                 token.as_str(),
                 "if" | "for" | "while" | "require" | "assert" | "emit" | "return"
-            ) {
-                out.push(token.clone());
-            }
+            )
+        {
+            out.push(token.clone());
         }
         token.clear();
     }
