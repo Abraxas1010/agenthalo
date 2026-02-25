@@ -1,8 +1,34 @@
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_nucleusdb")
+}
+
+fn resolve_bin(env_key: &str, fallback_name: &str) -> PathBuf {
+    if let Ok(path) = std::env::var(env_key) {
+        return PathBuf::from(path);
+    }
+    let exe = std::env::current_exe().expect("current_exe");
+    let debug_dir = exe
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("test binary should live under target/*/deps");
+    let candidate = debug_dir.join(fallback_name);
+    #[cfg(windows)]
+    {
+        candidate.set_extension("exe");
+    }
+    candidate
+}
+
+fn agenthalo_bin() -> PathBuf {
+    resolve_bin("CARGO_BIN_EXE_agenthalo", "agenthalo")
+}
+
+fn server_bin() -> PathBuf {
+    resolve_bin("CARGO_BIN_EXE_nucleusdb_server", "nucleusdb-server")
 }
 
 #[test]
@@ -16,6 +42,58 @@ fn cli_help_smoke() {
     assert!(stdout.contains("nucleusdb"));
     assert!(stdout.contains("create"));
     assert!(stdout.contains("open"));
+}
+
+#[test]
+fn agenthalo_dashboard_help_smoke() {
+    let out = Command::new(agenthalo_bin())
+        .args(["dashboard", "--help"])
+        .output()
+        .expect("run agenthalo dashboard --help");
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("agenthalo dashboard"));
+    assert!(stdout.contains("--port"));
+}
+
+#[test]
+fn nucleusdb_server_help_smoke() {
+    let out = Command::new(server_bin())
+        .arg("--help")
+        .output()
+        .expect("run nucleusdb-server --help");
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("nucleusdb-server"));
+    assert!(stdout.contains("production"));
+}
+
+#[test]
+fn cli_tui_non_tty_exits_with_actionable_error() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let db_path = std::env::temp_dir().join(format!("nucleusdb_cli_tui_{stamp}.ndb"));
+
+    let out = Command::new(bin())
+        .args(["tui", "--db"])
+        .arg(&db_path)
+        .output()
+        .expect("run nucleusdb tui");
+
+    assert!(!out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("interactive terminal (TTY)"),
+        "stderr must include actionable TTY guidance: {stderr}"
+    );
+    assert!(
+        !stderr.to_ascii_lowercase().contains("panicked"),
+        "command should fail cleanly without panic: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(db_path);
 }
 
 #[test]

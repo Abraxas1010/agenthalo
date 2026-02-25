@@ -623,6 +623,7 @@ pub struct QueryResultRow {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct QueryRangeResponse {
     pub pattern: String,
+    pub count: usize,
     pub rows: Vec<QueryResultRow>,
 }
 
@@ -1226,6 +1227,7 @@ impl NucleusDbMcpService {
         }
         Ok(Json(QueryRangeResponse {
             pattern: req.pattern,
+            count: rows.len(),
             rows,
         }))
     }
@@ -2873,6 +2875,32 @@ mod tests {
             .expect("query_range must fail on decode error");
         let err_dbg = format!("{err:?}");
         assert!(err_dbg.contains("query_range failed for key 'pref:bad'"));
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn query_range_includes_count_metadata() {
+        let db_path = temp_db_path("query_range_count");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        {
+            let mut guard = service.state.lock().await;
+            write_typed(&mut guard.db, "pref:a", TypedValue::Integer(1));
+            write_typed(&mut guard.db, "pref:b", TypedValue::Integer(2));
+            write_typed(&mut guard.db, "other:c", TypedValue::Integer(3));
+        }
+
+        let Json(resp) = service
+            .query_range(Parameters(QueryRangeRequest {
+                pattern: "pref:%".to_string(),
+            }))
+            .await
+            .expect("query_range should succeed");
+        assert_eq!(resp.pattern, "pref:%");
+        assert_eq!(resp.count, 2);
+        assert_eq!(resp.rows.len(), 2);
+        assert!(resp.rows.iter().all(|row| row.key.starts_with("pref:")));
 
         cleanup_db_files(&db_path);
     }

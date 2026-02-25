@@ -1195,6 +1195,10 @@ async fn api_nucleusdb_key_history(
 
     // Current value
     let current_value = db.state.values.get(idx).copied().unwrap_or(0);
+    let tag = db.type_map.get(&key);
+    let blob = db.blob_store.get(&key);
+    let typed = crate::typed_value::TypedValue::decode(tag, current_value, blob)
+        .map_err(|e| internal_err(format!("typed decode failed for key '{key}': {e}")))?;
 
     // Commit history for this key (NucleusDB v1 doesn't store per-key deltas,
     // so we show commits + current value — future versions will track per-key changes)
@@ -1215,6 +1219,9 @@ async fn api_nucleusdb_key_history(
         "index": idx,
         "found": true,
         "current_value": current_value,
+        "current_typed_value": typed.to_json_value(),
+        "current_display": typed.display_string(),
+        "type": tag.as_str(),
         "commits": commits,
         "note": "Per-key delta history will be available in CommitEntry v2",
     })))

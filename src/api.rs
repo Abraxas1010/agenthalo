@@ -401,13 +401,18 @@ fn map_mt_error(err: MultiTenantError) -> (StatusCode, Json<ApiError>) {
                 error: format!("principal already exists: {tenant_id}/{principal_id}"),
             }),
         ),
-        MultiTenantError::TenantPolicyViolation { tenant_id, reason } => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ApiError {
-                ok: false,
-                error: format!("tenant policy violation ({tenant_id}): {reason}"),
-            }),
-        ),
+        MultiTenantError::TenantPolicyViolation { tenant_id, reason } => {
+            let remediation = tenant_policy_remediation(&reason);
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ApiError {
+                    ok: false,
+                    error: format!(
+                        "tenant policy violation ({tenant_id}): {reason}; remediation: {remediation}"
+                    ),
+                }),
+            )
+        }
         MultiTenantError::QueryIndexMissing { tenant_id, idx } => (
             StatusCode::NOT_FOUND,
             Json(ApiError {
@@ -422,6 +427,18 @@ fn map_mt_error(err: MultiTenantError) -> (StatusCode, Json<ApiError>) {
                 error: format!("internal error: {other:?}"),
             }),
         ),
+    }
+}
+
+fn tenant_policy_remediation(reason: &str) -> &'static str {
+    if reason.contains("backend must be binary_merkle") {
+        "set backend to 'binary_merkle'"
+    } else if reason.contains("witness signing algorithm must be ml_dsa65") {
+        "set witness_signing_algorithm to 'ml_dsa65'"
+    } else if reason.contains("insecure default development seed") {
+        "set a unique witness_seed (or NUCLEUSDB_WITNESS_SEED) instead of development defaults"
+    } else {
+        "ensure backend, witness_signing_algorithm, and witness_seed satisfy production policy"
     }
 }
 
@@ -691,4 +708,30 @@ pub async fn serve_multitenant(addr: SocketAddr, policy: MultiTenantPolicy) -> s
     let app = app_with_manager(manager);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tenant_policy_remediation;
+
+    #[test]
+    fn tenant_policy_remediation_guides_backend() {
+        let hint = tenant_policy_remediation("backend must be binary_merkle in production policy");
+        assert!(hint.contains("binary_merkle"));
+    }
+
+    #[test]
+    fn tenant_policy_remediation_guides_witness_algorithm() {
+        let hint = tenant_policy_remediation(
+            "witness signing algorithm must be ml_dsa65 in production policy",
+        );
+        assert!(hint.contains("ml_dsa65"));
+    }
+
+    #[test]
+    fn tenant_policy_remediation_guides_witness_seed() {
+        let hint =
+            tenant_policy_remediation("witness config used insecure default development seed");
+        assert!(hint.contains("witness_seed"));
+    }
 }

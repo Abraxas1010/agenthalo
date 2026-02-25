@@ -498,6 +498,33 @@ async fn nucleusdb_edit_vector_value() {
 }
 
 #[tokio::test]
+async fn nucleusdb_key_history_includes_typed_fields() {
+    let (state, db_path) = test_state("ndb_key_history_typed");
+    seed_session(&db_path, "key-history-test");
+
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/nucleusdb/edit",
+        json!({"key": "history:text", "type": "text", "value": "hello history"}),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "edit should succeed: {v1}");
+
+    let (s2, v2) = api_get(state, "/nucleusdb/key-history/history:text").await;
+    assert_eq!(s2, StatusCode::OK, "key-history should succeed: {v2}");
+    assert_eq!(v2["found"], true);
+    assert_eq!(v2["type"], "text");
+    assert_eq!(v2["current_typed_value"], json!("hello history"));
+    assert_eq!(v2["current_display"], "hello history");
+    assert!(
+        v2.get("current_value").and_then(|v| v.as_u64()).is_some(),
+        "raw current_value should remain for backward compatibility: {v2}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn nucleusdb_vector_search_endpoint() {
     let (state, db_path) = test_state("ndb_vsearch");
     seed_session(&db_path, "vsearch-test");

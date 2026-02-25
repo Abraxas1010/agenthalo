@@ -1554,6 +1554,11 @@ fn cmd_setup(_args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_dashboard(args: &[String]) -> Result<(), String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_dashboard_usage();
+        return Ok(());
+    }
+
     let mut port: u16 = 3100;
     let mut open_browser = true;
 
@@ -1580,6 +1585,12 @@ fn cmd_dashboard(args: &[String]) -> Result<(), String> {
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("create tokio runtime: {e}"))?;
     rt.block_on(dashboard::serve(port, open_browser))
+}
+
+fn print_dashboard_usage() {
+    println!(
+        "Usage:\n  agenthalo dashboard [--port N] [--no-open]\n\nOptions:\n  --port N     Port for dashboard HTTP server (default: 3100)\n  --no-open    Do not open browser automatically\n  -h, --help   Show this help"
+    );
 }
 
 fn cmd_doctor(_args: &[String]) -> Result<(), String> {

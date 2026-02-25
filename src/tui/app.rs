@@ -8,7 +8,7 @@ use chrono::{TimeZone, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -371,6 +371,11 @@ impl App {
 }
 
 pub fn run_tui(db_path: &str) -> io::Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() || !io::stderr().is_terminal() {
+        return Err(io::Error::other(
+            "TUI requires an interactive terminal (TTY). Run this command in a terminal session.",
+        ));
+    }
     let mut app = App::load(db_path)?;
     app.run()
 }
