@@ -9,6 +9,7 @@
 - [ ] SQL
 - [ ] MCP server
 - [ ] AgentHALO
+- [ ] Dashboard (web UI / API)
 - [ ] Contracts (Solidity)
 - [ ] Formal spec (Lean 4)
 - [ ] Docs / CI

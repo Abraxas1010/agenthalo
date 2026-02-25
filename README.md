@@ -47,7 +47,7 @@ We humbly thank the collective intelligence of humanity for providing the techno
 ![Lean 4](https://img.shields.io/badge/Lean%204-63%20modules-blue.svg)
 ![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
 
-[The Problem](#the-problem) · [Quick Start](#quick-start) · [The Algebraic Foundation](#the-algebraic-foundation) · [NucleusDB](#nucleusdb) · [Architecture](#architecture) · [Contributing](CONTRIBUTING.md)
+[The Problem](#the-problem) · [Quick Start](#quick-start) · [Web Dashboard](#web-dashboard) · [The Algebraic Foundation](#the-algebraic-foundation) · [NucleusDB](#nucleusdb) · [Architecture](#architecture) · [Contributing](CONTRIBUTING.md)
 
 ---
 
@@ -130,15 +130,26 @@ Every event includes token counts (input/output/cache-read) parsed from the agen
 ## Quick Start
 
 ```bash
-# Build
-git clone https://github.com/Abraxas1010/agenthalo.git
-cd agenthalo
-cargo build --release
+# One-line install (Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/Abraxas1010/agenthalo/master/install.sh | bash
 
-# Authenticate
-agenthalo login              # GitHub or Google OAuth
-agenthalo config set-key     # or paste an API key
+# Or build from source
+git clone https://github.com/Abraxas1010/agenthalo.git && cd agenthalo
+cargo install --path . --bin agenthalo
 
+# Interactive first-run wizard
+agenthalo setup
+
+# Check everything is working
+agenthalo doctor
+
+# Launch the web dashboard
+agenthalo dashboard
+```
+
+### After Setup
+
+```bash
 # Run any supported agent
 agenthalo run claude -p "explain this codebase"
 agenthalo run codex exec "write tests for auth.rs"
@@ -147,9 +158,36 @@ agenthalo run gemini -p "find security bugs"
 # Wrap all three permanently (shell aliases)
 agenthalo wrap --all         # adds aliases to ~/.bashrc or ~/.zshrc
 agenthalo unwrap --all       # removes them cleanly
+
+# View everything in the browser
+agenthalo dashboard          # opens http://localhost:3100
 ```
 
-No external dependencies, no cloud service, no account required. The `agenthalo` and `nucleusdb` binaries are at `target/release/`.
+No external dependencies, no cloud service, no account required. The entire system — CLI, web dashboard, embedded assets — compiles to a single 9.5MB binary.
+
+---
+
+## Web Dashboard
+
+```bash
+agenthalo dashboard          # opens http://localhost:3100
+agenthalo dashboard --port 8080 --no-open  # custom port, no auto-open
+```
+
+A real-time observability dashboard embedded in the binary — no npm, no CDN, no external dependencies. All assets are compiled in via `rust-embed`.
+
+| Page | What It Shows |
+|------|---------------|
+| **Overview** | Live KPIs (sessions, tokens, cost, active agents), recent sessions |
+| **Sessions** | Filterable list, drill-down to full event timeline, export, attest |
+| **Costs** | Daily cost chart, agent distribution, model comparison, paid operations |
+| **Configuration** | Toggle agent wrapping and x402 payments from the browser |
+| **Trust** | Attestation list, one-click verify, create attestations |
+| **NucleusDB** | Browse the verifiable store, execute SQL, view commit history |
+
+Dark/light theme toggle. SSE live updates. Chart.js analytics. Responsive layout.
+
+> Full API reference: **[Docs/AGENTHALO.md](Docs/AGENTHALO.md#web-dashboard)**
 
 ---
 
@@ -175,7 +213,7 @@ A cloud dashboard can show you what it claims happened. It cannot prove the log 
 | **Cryptographic seals** | None | Hash chain — each commit binds to all prior commits |
 | **Works offline** | No | Yes |
 | **Agent support** | Framework-specific SDKs | Wraps any CLI agent directly |
-| **MCP native** | No | Yes — 16 native + proxied tools over HTTP, 11 tools over stdio |
+| **MCP native** | No | Yes — 18 native + proxied tools over HTTP, 11 tools over stdio |
 | **Formal verification** | No | 63 Lean 4 modules with sheaf-theoretic proofs |
 
 H.A.L.O. doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.
@@ -529,8 +567,9 @@ Phase 5 scripts:
   │                                                             │
   │   Client Surfaces            Commitment Backends            │
   │     CLI / REPL ─────┐         vc/binary_merkle.rs           │
-  │     Terminal UI ────┤         vc/ipa.rs                     │
-  │     MCP Server ─────┼         vc/kzg.rs                     │
+  │     Web Dashboard ──┤         vc/ipa.rs                     │
+  │     Terminal UI ────┤         vc/kzg.rs                     │
+  │     MCP Server ─────┤                                       │
   │     HTTP API ───────┘                                       │
   │                                                             │
   ├─────────────────────────────────────────────────────────────┤
@@ -545,7 +584,7 @@ Phase 5 scripts:
   └─────────────────────────────────────────────────────────────┘
 ```
 
-**98 Rust source files** | **20,000+ lines** | **2,500+ lines of tests** | **20 Solidity contracts** | **63 Lean 4 modules**
+**100+ Rust source files** | **20,000+ lines** | **2,500+ lines of tests** | **20 Solidity contracts** | **63 Lean 4 modules**
 
 ## Security
 

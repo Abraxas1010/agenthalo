@@ -16,7 +16,7 @@ Thank you for your interest in contributing. NucleusDB prioritizes correctness, 
 # Build everything
 cargo build
 
-# Run all Rust tests (148 tests)
+# Run all Rust tests (202 tests)
 cargo test
 
 # Run Solidity tests (34 tests, requires Foundry)
@@ -79,6 +79,8 @@ All three must pass with zero warnings from the changed code.
 |-----------|----------|
 | `src/` | Core library and binary entry points |
 | `src/halo/` | AgentHALO observability layer |
+| `src/dashboard/` | Web dashboard (axum server, API, rust-embed assets) |
+| `dashboard/` | Frontend SPA (HTML, CSS, JS — embedded at compile time) |
 | `src/vc/` | Vector commitment backends (Merkle, IPA, KZG) |
 | `src/sql/` | SQL parser and executor |
 | `src/mcp/` | MCP server (local stdio + remote HTTP) |

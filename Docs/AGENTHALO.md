@@ -21,6 +21,8 @@
 - [Cost Tracking](#cost-tracking)
 - [Shell Wrapping](#shell-wrapping)
 - [Supported Agents](#supported-agents)
+- [Web Dashboard](#web-dashboard)
+- [Doctor Command](#doctor-command)
 - [Configuration](#configuration)
 - [Environment Variables](#environment-variables)
 - [Pricing Tables](#pricing-tables)
@@ -46,25 +48,40 @@ Every trace event is a content-addressed blob with a SHA-256 Merkle proof. If an
 
 ## Installation
 
-AgentHALO ships as a binary inside the NucleusDB build:
+### One-Line Install (Recommended)
 
 ```bash
-git clone https://github.com/Abraxas1010/nucleusdb.git
-cd nucleusdb
-cargo build --release --bin agenthalo
+curl -fsSL https://raw.githubusercontent.com/Abraxas1010/agenthalo/master/install.sh | bash
 ```
 
-The binary is at `target/release/agenthalo`. Copy it to your `PATH`:
+Detects your OS and architecture, downloads the binary, and adds it to `~/.local/bin`.
+
+### Build from Source
 
 ```bash
-cp target/release/agenthalo ~/.local/bin/
+git clone https://github.com/Abraxas1010/agenthalo.git
+cd agenthalo
+cargo install --path . --bin agenthalo
+```
+
+### First Run
+
+```bash
+# Interactive wizard — guides you to dashboard, CLI, or MCP workflow
+agenthalo setup
+
+# Check everything is working
+agenthalo doctor
+
+# Launch the web dashboard
+agenthalo dashboard
 ```
 
 Verify:
 
 ```bash
 agenthalo version
-# agenthalo 0.2.0
+# agenthalo 0.3.0
 ```
 
 ## Authentication
@@ -335,7 +352,7 @@ On first run, `pricing.json` is written with default rates. Edit it to add or up
 
 Pricing is per million tokens. Cache-read pricing is optional (`null` if the model doesn't support prompt caching).
 
-## Observability Commands (v0.2.1)
+## Observability Commands
 
 ### Status Overview
 
@@ -412,7 +429,95 @@ AgentHALO now automatically detects the model name from each agent's structured 
 
 If `--model` is not explicitly provided, the detected model is used for cost calculation and display. The `--model` flag still takes precedence when specified.
 
-## Additional Commands (v0.2.0)
+## Web Dashboard
+
+```bash
+agenthalo dashboard                  # opens http://localhost:3100
+agenthalo dashboard --port 8080      # custom port
+agenthalo dashboard --no-open        # don't auto-open browser
+```
+
+The dashboard is a 6-page SPA embedded at compile time (rust-embed) — no npm, no CDN at runtime, no external dependencies. All assets are served from the single `agenthalo` binary.
+
+### Pages
+
+| Page | What It Shows |
+|------|---------------|
+| **Overview** | Live KPIs (sessions, tokens, cost, active agents), recent sessions table |
+| **Sessions** | Filterable session list, drill-down to full event timeline |
+| **Costs** | Daily cost line chart, agent doughnut chart, model bar chart, paid operations |
+| **Configuration** | Toggle agent wrapping and x402 payments from the browser |
+| **Trust** | Attestation list, one-click verify, create new attestations |
+| **NucleusDB** | Browse the verifiable store, execute SQL, view history |
+
+### Features
+
+- **Dark/light theme** — toggles via button, persisted to localStorage
+- **SSE live updates** — session count and status refresh in real time via `/events`
+- **Chart.js analytics** — cost trends, agent distribution, model comparison
+- **Session export** — download full session JSON from the browser
+- **Responsive** — sidebar collapses at 768px
+
+### API Endpoints
+
+The dashboard is backed by a JSON API at `/api/`:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/status` | GET | Auth state, session count, total cost |
+| `/api/sessions` | GET | Session list (filterable by `?agent=` and `?model=`) |
+| `/api/sessions/:id` | GET | Session detail with summary |
+| `/api/sessions/:id/events` | GET | Full event timeline |
+| `/api/sessions/:id/export` | GET | Export session as JSON |
+| `/api/sessions/:id/attest` | POST | Create attestation |
+| `/api/costs` | GET | Cost buckets (daily or `?monthly=true`) |
+| `/api/costs/daily` | GET | Daily cost time series |
+| `/api/costs/by-agent` | GET | Cost grouped by agent |
+| `/api/costs/by-model` | GET | Cost grouped by model |
+| `/api/costs/paid` | GET | Paid operation breakdown |
+| `/api/config` | GET | Current configuration |
+| `/api/config/wrap` | POST | Toggle agent wrapping |
+| `/api/config/x402` | POST | Update x402 configuration |
+| `/api/trust` | GET | Trust score summary |
+| `/api/attestations` | GET | List attestations |
+| `/api/attestations/verify` | POST | Verify attestation by digest |
+| `/api/nucleusdb/status` | GET | NucleusDB store info |
+| `/api/nucleusdb/browse` | GET | Browse key-value entries |
+| `/api/nucleusdb/sql` | POST | Execute SQL query |
+| `/api/nucleusdb/history` | GET | Commit history |
+| `/api/capabilities` | GET | Feature and add-on discovery |
+| `/api/x402/summary` | GET | x402 spending summary |
+| `/api/x402/balance` | GET | Wallet balance |
+| `/events` | SSE | Real-time session count updates |
+
+## Doctor Command
+
+```bash
+agenthalo doctor
+```
+
+Comprehensive diagnostic that checks all subsystems in one view:
+
+```
+  Agent H.A.L.O. v0.3.0
+
+  Authentication:     OK  (GitHub: user@example.com)
+  Trace store:        OK  (47 sessions, 2,184,000 tokens, $248.30 total)
+  Agent wrapping:
+    claude            WRAPPED
+    codex             WRAPPED
+    gemini            NOT WRAPPED
+  x402 payments:      ENABLED  (Base Sepolia, 5 USDC auto-approve)
+  AgentPMT proxy:     ENABLED  (42 tools, budget tag: default)
+  PQ wallet:          OK  (ML-DSA-65)
+  On-chain:           CONFIGURED  (Base Sepolia, contract 0x1234...)
+  License:            Community (free)
+  Dashboard:          Run `agenthalo dashboard` to start
+
+  All checks completed.
+```
+
+## Additional Commands
 
 ### Attestation
 
@@ -686,6 +791,12 @@ Computed at session end:
 │              │    traces.ndb       │             │
 │              │    credentials.json │             │
 │              │    pricing.json     │             │
+│              └──────────┬──────────┘             │
+│                         │                        │
+│              ┌──────────▼──────────┐             │
+│              │  Web Dashboard      │             │
+│              │  :3100 (embedded)   │             │
+│              │  6 pages, SSE, API  │             │
 │              └─────────────────────┘             │
 │                                                  │
 └──────────────────────────────────────────────────┘
@@ -724,8 +835,18 @@ src/halo/
     gemini.rs          — Gemini CLI parser
     generic.rs         — Raw stdout capture
 
+src/dashboard/
+  mod.rs               — axum server, browser launch, DashboardState
+  api.rs               — 25+ JSON API endpoints, SSE live updates
+  assets.rs            — rust-embed static file serving
+
+dashboard/
+  index.html           — SPA shell (6 pages)
+  app.js               — SPA router, Chart.js analytics, SSE
+  style.css            — dark/light theme, responsive layout
+
 src/bin/
-  agenthalo.rs             — CLI binary (run, attest, audit, sign, trust, onchain, ...)
+  agenthalo.rs             — CLI binary (run, setup, dashboard, doctor, attest, ...)
   agenthalo_mcp_server.rs  — HTTP MCP server (18 native + proxied tools)
   nucleusdb.rs             — NucleusDB CLI binary
   nucleusdb_mcp.rs         — NucleusDB MCP server (stdio + HTTP transport)
