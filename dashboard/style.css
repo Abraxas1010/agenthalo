@@ -134,9 +134,11 @@ body { display: flex; }
   margin-left: var(--sidebar-w);
   flex: 1;
   padding: 24px 32px;
-  min-height: 100vh;
+  height: 100vh;
   max-width: 1200px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Cards */
