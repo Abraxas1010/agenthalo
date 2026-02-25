@@ -2,7 +2,7 @@ use clap::Parser;
 use nucleusdb::api::serve_multitenant;
 use nucleusdb::cli::repl::{execute_sql_text, run_repl};
 use nucleusdb::cli::{default_witness_cfg, parse_backend, print_table, Cli, Commands};
-use nucleusdb::license::{load_and_verify, verification_report, LicenseLevel, ProFeature};
+use nucleusdb::license::{load_and_verify, verification_report, LicenseLevel};
 use nucleusdb::mcp::server::run_mcp_server;
 use nucleusdb::multitenant::MultiTenantPolicy;
 use nucleusdb::persistence::{default_wal_path, init_wal};
@@ -44,39 +44,15 @@ fn resolve_license(license_path: Option<&str>) -> LicenseLevel {
     }
 }
 
-/// Gate a Pro feature — returns Err with a user-friendly message if not licensed.
-fn require_pro(license: &LicenseLevel, feature: &ProFeature, action: &str) -> Result<(), String> {
-    if license.has(feature) {
-        return Ok(());
-    }
-    Err(format!(
-        "{action} requires a Pro license with the '{}' feature.\n\
-         Obtain a license at https://www.agentpmt.com/agentaddress\n\
-         Then pass --license <path-to-certificate.json>",
-        feature.as_leaf_str()
-    ))
-}
-
 fn run(cli: Cli) -> Result<(), String> {
-    let license = resolve_license(cli.license.as_deref());
+    let _license = resolve_license(cli.license.as_deref());
 
     match cli.command {
-        Commands::Create { db, backend, wal } => {
-            cmd_create(&db, &backend, wal.as_deref(), &license)
-        }
+        Commands::Create { db, backend, wal } => cmd_create(&db, &backend, wal.as_deref()),
         Commands::Open { db } => cmd_open(&db),
-        Commands::Server { addr, policy } => {
-            require_pro(&license, &ProFeature::MultiTenant, "HTTP API server")?;
-            cmd_server(&addr, &policy)
-        }
-        Commands::Tui { db } => {
-            require_pro(&license, &ProFeature::Tui, "Terminal UI")?;
-            cmd_tui(&db)
-        }
-        Commands::Mcp { db } => {
-            require_pro(&license, &ProFeature::McpServer, "MCP server")?;
-            cmd_mcp(&db)
-        }
+        Commands::Server { addr, policy } => cmd_server(&addr, &policy),
+        Commands::Tui { db } => cmd_tui(&db),
+        Commands::Mcp { db } => cmd_mcp(&db),
         Commands::Sql { db, file } => cmd_sql(&db, file.as_deref()),
         Commands::Status { db } => cmd_status(&db),
         Commands::Export { db } => cmd_export(&db),
@@ -84,13 +60,8 @@ fn run(cli: Cli) -> Result<(), String> {
     }
 }
 
-fn cmd_create(
-    db_path: &str,
-    backend: &str,
-    wal_path: Option<&str>,
-    license: &LicenseLevel,
-) -> Result<(), String> {
-    let backend = parse_backend_gated(backend, license)?;
+fn cmd_create(db_path: &str, backend: &str, wal_path: Option<&str>) -> Result<(), String> {
+    let backend = parse_backend(backend)?;
     let cfg = default_witness_cfg();
     let db = NucleusDb::new(State::new(vec![]), backend, cfg);
     let db_path = PathBuf::from(db_path);
@@ -106,24 +77,6 @@ fn cmd_create(
     println!("Created database: {}", db_path.display());
     println!("Initialized WAL: {}", wal.display());
     Ok(())
-}
-
-/// Backend parsing with license gate for IPA and KZG.
-fn parse_backend_gated(
-    backend: &str,
-    license: &LicenseLevel,
-) -> Result<nucleusdb::protocol::VcBackend, String> {
-    let b = parse_backend(backend)?;
-    match &b {
-        nucleusdb::protocol::VcBackend::Ipa => {
-            require_pro(license, &ProFeature::IpaBackend, "IPA backend")?;
-        }
-        nucleusdb::protocol::VcBackend::Kzg => {
-            require_pro(license, &ProFeature::KzgBackend, "KZG backend")?;
-        }
-        nucleusdb::protocol::VcBackend::BinaryMerkle => {} // always available
-    }
-    Ok(b)
 }
 
 fn cmd_open(db_path: &str) -> Result<(), String> {
@@ -189,8 +142,16 @@ fn cmd_sql(db_path: &str, file: Option<&str>) -> Result<(), String> {
             .map_err(|e| format!("failed to read stdin: {e}"))?;
         buf
     };
-    execute_sql_text(&mut db, &db_path, &sql_text)
+    let summary = execute_sql_text(&mut db, &db_path, &sql_text)
         .map_err(|e| format!("SQL execution failed: {e}"))?;
+    if summary.pending_writes > 0 {
+        let source = if file.is_some() { "file" } else { "stdin" };
+        eprintln!(
+            "WARNING: {count} pending write(s) were not committed ({source} mode). \
+             No data was persisted. Add an explicit COMMIT; to persist changes.",
+            count = summary.pending_writes,
+        );
+    }
     Ok(())
 }
 
