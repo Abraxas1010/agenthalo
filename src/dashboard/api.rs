@@ -3,6 +3,11 @@
 //! All handlers are thin wrappers around existing library functions.
 //! Every endpoint returns JSON and is usable for both the web dashboard
 //! and scripting/automation.
+//!
+//! **Concurrency note:** The H.A.L.O. trace store uses redb, which takes
+//! a file-level exclusive lock. All database-touching handlers acquire
+//! `state.db_lock` before opening the database to prevent concurrent-open
+//! errors when the browser fires parallel requests (e.g. Promise.all).
 
 use super::DashboardState;
 use crate::cli::default_witness_cfg;
@@ -146,16 +151,20 @@ async fn api_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let pmt_cfg = agentpmt::load_or_default();
     let x402_cfg = x402::load_x402_config();
 
-    let sessions = list_sessions(db_path).unwrap_or_default();
-    let session_count = sessions.len();
-    let mut total_cost = 0.0f64;
-    let mut total_tokens = 0u64;
-    for s in &sessions {
-        if let Ok(Some(summary)) = session_summary(db_path, &s.session_id) {
-            total_cost += summary.estimated_cost_usd;
-            total_tokens += summary.total_input_tokens + summary.total_output_tokens;
+    let (session_count, total_cost, total_tokens) = {
+        let _guard = state.db_lock.lock().await;
+        let sessions = list_sessions(db_path).unwrap_or_default();
+        let count = sessions.len();
+        let mut cost = 0.0f64;
+        let mut tokens = 0u64;
+        for s in &sessions {
+            if let Ok(Some(summary)) = session_summary(db_path, &s.session_id) {
+                cost += summary.estimated_cost_usd;
+                tokens += summary.total_input_tokens + summary.total_output_tokens;
+            }
         }
-    }
+        (count, cost, tokens)
+    };
 
     // Agent wrapping status
     let rc = wrap::detect_shell_rc();
@@ -191,11 +200,11 @@ async fn api_sessions(
     AxumState(state): AxumState<DashboardState>,
     Query(params): Query<SessionsQuery>,
 ) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     let sessions = list_sessions(&state.db_path).map_err(internal_err)?;
 
     let mut items: Vec<Value> = Vec::new();
     for s in &sessions {
-        // Apply filters
         if let Some(ref agent_filter) = params.agent {
             if !s
                 .agent
@@ -234,6 +243,7 @@ async fn api_session_detail(
     AxumState(state): AxumState<DashboardState>,
     Path(id): Path<String>,
 ) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     let sessions = list_sessions(&state.db_path).map_err(internal_err)?;
     let meta = sessions
         .into_iter()
@@ -253,6 +263,7 @@ async fn api_session_events(
     AxumState(state): AxumState<DashboardState>,
     Path(id): Path<String>,
 ) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     let events = session_events(&state.db_path, &id).map_err(internal_err)?;
     Ok(Json(json!({"events": events})))
 }
@@ -261,6 +272,7 @@ async fn api_session_export(
     AxumState(state): AxumState<DashboardState>,
     Path(id): Path<String>,
 ) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     let export = export_session_json(&state.db_path, &id).map_err(internal_err)?;
     Ok(Json(export))
 }
@@ -269,6 +281,7 @@ async fn api_session_attest(
     AxumState(state): AxumState<DashboardState>,
     Path(id): Path<String>,
 ) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     let resolved = resolve_session_id(&state.db_path, Some(&id)).map_err(internal_err)?;
     let result = attest_session(
         &state.db_path,
@@ -304,6 +317,7 @@ async fn api_costs(
     Query(params): Query<CostsQuery>,
 ) -> ApiResult {
     let monthly = params.monthly.unwrap_or(false);
+    let _guard = state.db_lock.lock().await;
     let rows = cost_buckets(&state.db_path, monthly).map_err(internal_err)?;
 
     let total_cost: f64 = rows.iter().map(|r| r.cost_usd).sum();
@@ -334,6 +348,7 @@ async fn api_costs(
 }
 
 async fn api_costs_daily(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     let rows = cost_buckets(&state.db_path, false).map_err(internal_err)?;
     let items: Vec<Value> = rows
         .iter()
@@ -350,6 +365,7 @@ async fn api_costs_daily(AxumState(state): AxumState<DashboardState>) -> ApiResu
 }
 
 async fn api_costs_by_agent(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     let sessions = list_sessions(&state.db_path).map_err(internal_err)?;
     let mut by_agent: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for s in &sessions {
@@ -365,6 +381,7 @@ async fn api_costs_by_agent(AxumState(state): AxumState<DashboardState>) -> ApiR
 }
 
 async fn api_costs_by_model(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     let sessions = list_sessions(&state.db_path).map_err(internal_err)?;
     let mut by_model: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for s in &sessions {
@@ -381,6 +398,7 @@ async fn api_costs_by_model(AxumState(state): AxumState<DashboardState>) -> ApiR
 }
 
 async fn api_costs_paid(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     let buckets = paid_cost_buckets(&state.db_path, false).unwrap_or_default();
     let by_type = paid_breakdown_by_operation_type(&state.db_path).unwrap_or_default();
 
@@ -534,8 +552,8 @@ async fn api_trust(
     AxumState(state): AxumState<DashboardState>,
     Path(session_id): Path<String>,
 ) -> ApiResult {
-    let score =
-        query_trust_score(&state.db_path, Some(&session_id)).map_err(internal_err)?;
+    let _guard = state.db_lock.lock().await;
+    let score = query_trust_score(&state.db_path, Some(&session_id)).map_err(internal_err)?;
     Ok(Json(json!({"trust": score})))
 }
 
@@ -609,7 +627,9 @@ async fn api_attestation_verify(
             let membership_ok = stored
                 .anonymous_membership_proof
                 .as_ref()
-                .map(|p| crate::halo::attest::verify_anonymous_membership_proof(p).unwrap_or(false))
+                .map(|p| {
+                    crate::halo::attest::verify_anonymous_membership_proof(p).unwrap_or(false)
+                })
                 .unwrap_or(false);
             return Ok(Json(json!({
                 "digest": req.digest,
@@ -626,7 +646,8 @@ async fn api_attestation_verify(
         }
     };
 
-    // Re-compute attestation from the live session events
+    // Re-compute attestation from the live session events (needs db lock)
+    let _guard = state.db_lock.lock().await;
     let recomputed = attest_session(
         &state.db_path,
         AttestationRequest {
@@ -675,6 +696,7 @@ async fn api_nucleusdb_status(AxumState(state): AxumState<DashboardState>) -> Ap
     let db_path = &state.db_path;
     let exists = db_path.exists();
     let sessions = if exists {
+        let _guard = state.db_lock.lock().await;
         list_sessions(db_path).unwrap_or_default().len()
     } else {
         0
@@ -688,6 +710,7 @@ async fn api_nucleusdb_status(AxumState(state): AxumState<DashboardState>) -> Ap
 }
 
 async fn api_nucleusdb_browse(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     let mut db = load_halo_db(&state.db_path)?;
     let mut executor = SqlExecutor::new(&mut db);
     let result = executor.execute("SELECT key, value FROM data");
@@ -707,6 +730,7 @@ async fn api_nucleusdb_sql(
     Json(req): Json<SqlRequest>,
 ) -> ApiResult {
     let db_path = &state.db_path;
+    let _guard = state.db_lock.lock().await;
     let mut db = load_halo_db(db_path)?;
     let (result, committed) = {
         let mut executor = SqlExecutor::new(&mut db);
@@ -745,6 +769,7 @@ fn load_halo_db(db_path: &std::path::Path) -> Result<NucleusDb, (StatusCode, Jso
 }
 
 async fn api_nucleusdb_history(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
     // NucleusDB commit history via SHOW HISTORY
     let mut db = load_halo_db(&state.db_path)?;
     let mut executor = SqlExecutor::new(&mut db);
@@ -811,7 +836,10 @@ async fn api_capabilities(AxumState(state): AxumState<DashboardState>) -> ApiRes
 
 async fn api_x402_summary(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let cfg = x402::load_x402_config();
-    let paid = paid_breakdown_by_operation_type(&state.db_path).unwrap_or_default();
+    let paid = {
+        let _guard = state.db_lock.lock().await;
+        paid_breakdown_by_operation_type(&state.db_path).unwrap_or_default()
+    };
 
     let x402_payments: Vec<&(String, u64, u64, f64)> = paid
         .iter()
@@ -865,15 +893,29 @@ async fn api_x402_balance(AxumState(_state): AxumState<DashboardState>) -> ApiRe
 pub async fn sse_handler(
     AxumState(state): AxumState<DashboardState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let db_lock = state.db_lock.clone();
     let db_path = state.db_path.clone();
-    let mut last_count = list_sessions(&db_path).map(|s| s.len()).unwrap_or(0);
 
+    // Get initial count under the lock.
+    let initial_count = {
+        let _guard = db_lock.lock().await;
+        list_sessions(&db_path).map(|s| s.len()).unwrap_or(0)
+    };
+    let mut last_count = initial_count;
+
+    // Poll at 5s instead of 2s to reduce lock contention with page loads.
     let stream = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
-        Duration::from_millis(2000),
+        Duration::from_millis(5000),
     ))
-    .map(move |_| {
-        let current_count = list_sessions(&db_path).map(|s| s.len()).unwrap_or(0);
-
+    .then(move |_| {
+        let db_lock = db_lock.clone();
+        let db_path = db_path.clone();
+        async move {
+            let _guard = db_lock.lock().await;
+            list_sessions(&db_path).map(|s| s.len()).unwrap_or(0)
+        }
+    })
+    .map(move |current_count| {
         if current_count != last_count {
             last_count = current_count;
             Ok(Event::default()

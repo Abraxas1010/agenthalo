@@ -22,6 +22,7 @@ fn test_state(tag: &str) -> (DashboardState, PathBuf) {
     let state = DashboardState {
         db_path: db_path.clone(),
         credentials_path: creds,
+        db_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
     };
     (state, db_path)
 }

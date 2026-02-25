@@ -9,12 +9,20 @@ pub mod assets;
 use axum::routing::get;
 use axum::Router;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Shared state for all dashboard API handlers.
+///
+/// The `db_lock` serializes all database access. Redb uses file-level
+/// exclusive locking — concurrent opens from parallel HTTP requests
+/// cause "Database already open" errors. This mutex ensures at most
+/// one handler accesses the trace store at a time.
 #[derive(Clone)]
 pub struct DashboardState {
     pub db_path: std::path::PathBuf,
     pub credentials_path: std::path::PathBuf,
+    pub db_lock: Arc<Mutex<()>>,
 }
 
 /// Build the full axum Router with embedded assets + API routes.
@@ -33,6 +41,7 @@ pub async fn serve(port: u16, open_browser: bool) -> Result<(), String> {
     let state = DashboardState {
         db_path: crate::halo::config::db_path(),
         credentials_path: crate::halo::config::credentials_path(),
+        db_lock: Arc::new(Mutex::new(())),
     };
 
     let app = build_router(state);
