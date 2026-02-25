@@ -1,3 +1,4 @@
+use nucleusdb::dashboard;
 use nucleusdb::halo::addons;
 use nucleusdb::halo::agentpmt;
 use nucleusdb::halo::attest::{
@@ -69,8 +70,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "x402" => cmd_x402(&args[2..]),
         "wrap" => cmd_wrap(&args[2..]),
         "unwrap" => cmd_unwrap(&args[2..]),
+        "setup" => cmd_setup(&args[2..]),
+        "dashboard" => cmd_dashboard(&args[2..]),
+        "doctor" => cmd_doctor(&args[2..]),
         "version" | "--version" | "-V" => {
-            println!("agenthalo 0.2.0");
+            println!("agenthalo 0.3.0");
             Ok(())
         }
         "help" | "--help" | "-h" => {
@@ -408,7 +412,7 @@ fn cmd_status(_args: &[String]) -> Result<(), String> {
             "total_tokens": total_tokens,
             "latest_session": latest,
             "db_path": db_path.to_string_lossy(),
-            "version": "0.2.0",
+            "version": "0.3.0",
         });
         println!(
             "{}",
@@ -417,7 +421,7 @@ fn cmd_status(_args: &[String]) -> Result<(), String> {
         );
     } else {
         let has_auth = is_authenticated(&creds_path) || resolve_api_key(&creds_path).is_some();
-        println!("AgentHALO v0.2.0");
+        println!("AgentHALO v0.3.0");
         println!("  Authenticated: {has_auth}");
         viewer::print_status(&db_path, false)?;
     }
@@ -1483,6 +1487,243 @@ fn cmd_unwrap(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_setup(_args: &[String]) -> Result<(), String> {
+    config::ensure_halo_dir()?;
+
+    println!();
+    println!("  Welcome to Agent H.A.L.O.");
+    println!("  Tamper-proof observability for AI agents.");
+    println!();
+    println!("  How would you like to proceed?");
+    println!();
+    println!("  1. Open Dashboard (web UI)     — visual setup, analytics, configuration");
+    println!("  2. Quick CLI Setup             — terminal-based, for power users");
+    println!("  3. Agent-Only (MCP server)     — headless, for AI agent integration");
+    println!();
+    print!("  > ");
+    io::stdout()
+        .flush()
+        .map_err(|e| format!("flush stdout: {e}"))?;
+    let choice = read_line_trimmed()?;
+
+    match choice.as_str() {
+        "1" | "dashboard" => {
+            cmd_dashboard(&[])?;
+        }
+        "2" | "cli" => {
+            println!();
+            cmd_login(&[])?;
+            println!();
+            cmd_wrap(&["--all".to_string()])?;
+            println!();
+            cmd_status(&[])?;
+        }
+        "3" | "agent" | "mcp" => {
+            println!();
+            println!("  Add this to your agent's MCP configuration:");
+            println!();
+            println!("  Claude Code (.mcp.json):");
+            println!("  {{");
+            println!("    \"mcpServers\": {{");
+            println!("      \"agenthalo\": {{");
+            println!("        \"command\": \"agenthalo-mcp-server\"");
+            println!("      }}");
+            println!("    }}");
+            println!("  }}");
+            println!();
+            println!("  Codex (.codex/config.toml):");
+            println!("  [mcp_servers.agenthalo]");
+            println!("  command = \"agenthalo-mcp-server\"");
+            println!();
+            println!("  Gemini (.gemini/settings.json):");
+            println!("  {{");
+            println!("    \"mcpServers\": {{");
+            println!("      \"agenthalo\": {{");
+            println!("        \"command\": \"agenthalo-mcp-server\"");
+            println!("      }}");
+            println!("    }}");
+            println!("  }}");
+            println!();
+            println!("  Monitor via: agenthalo dashboard");
+        }
+        _ => {
+            return Err(format!("invalid choice: {choice}. Expected 1, 2, or 3."));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_dashboard(args: &[String]) -> Result<(), String> {
+    let mut port: u16 = 3100;
+    let mut open_browser = true;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" => {
+                i += 1;
+                port = args
+                    .get(i)
+                    .ok_or("--port requires a value")?
+                    .parse()
+                    .map_err(|_| "--port must be a valid port number")?;
+            }
+            "--no-open" => {
+                open_browser = false;
+            }
+            other => return Err(format!("unknown dashboard flag: {other}")),
+        }
+        i += 1;
+    }
+
+    config::ensure_halo_dir()?;
+
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("create tokio runtime: {e}"))?;
+    rt.block_on(dashboard::serve(port, open_browser))
+}
+
+fn cmd_doctor(_args: &[String]) -> Result<(), String> {
+    println!();
+    println!("  Agent H.A.L.O. v0.3.0");
+    println!();
+
+    // Authentication
+    let creds_path = config::credentials_path();
+    let has_auth = is_authenticated(&creds_path) || resolve_api_key(&creds_path).is_some();
+    let auth_detail = if has_auth {
+        let creds = load_credentials(&creds_path).ok();
+        let provider = creds
+            .as_ref()
+            .and_then(|c| c.oauth_provider.as_deref())
+            .unwrap_or("API key");
+        let user = creds
+            .as_ref()
+            .and_then(|c| c.user_id.as_deref())
+            .unwrap_or("unknown");
+        format!("OK  ({provider}, user: {user})")
+    } else {
+        "NOT AUTHENTICATED".to_string()
+    };
+    println!("  Authentication:     {auth_detail}");
+
+    // Trace store
+    let db_path = config::db_path();
+    if db_path.exists() {
+        let sessions = list_sessions(&db_path).unwrap_or_default();
+        let mut total_cost = 0.0f64;
+        let mut total_tokens = 0u64;
+        for s in &sessions {
+            if let Ok(Some(summary)) =
+                nucleusdb::halo::trace::session_summary(&db_path, &s.session_id)
+            {
+                total_cost += summary.estimated_cost_usd;
+                total_tokens += summary.total_input_tokens + summary.total_output_tokens;
+            }
+        }
+        println!(
+            "  Trace store:        OK  ({} sessions, {} tokens, ${:.2} total)",
+            sessions.len(),
+            format_number_inline(total_tokens),
+            total_cost
+        );
+    } else {
+        println!("  Trace store:        NOT CREATED");
+    }
+
+    // Agent wrapping
+    let rc = wrap::detect_shell_rc();
+    let rc_content = std::fs::read_to_string(&rc).unwrap_or_default();
+    println!("  Agent wrapping:");
+    for agent in ["claude", "codex", "gemini"] {
+        let marker = format!("# AGENTHALO_WRAP_{}", agent.to_ascii_uppercase());
+        let wrapped = rc_content.contains(&marker);
+        let label = if wrapped {
+            format!("WRAPPED  (alias active in {})", rc.display())
+        } else {
+            "NOT WRAPPED".to_string()
+        };
+        println!("    {agent:<17} {label}");
+    }
+
+    // x402
+    let x402_cfg = x402::load_x402_config();
+    if x402_cfg.enabled {
+        println!(
+            "  x402 payments:      ENABLED  ({}, max ${:.2} auto-approve)",
+            x402_cfg.preferred_network,
+            x402_cfg.max_auto_approve as f64 / 1_000_000.0
+        );
+        match x402::check_usdc_balance(&x402_cfg) {
+            Ok((_, balance)) => {
+                println!(
+                    "    wallet balance:   {:.6} USDC",
+                    balance as f64 / 1_000_000.0
+                );
+            }
+            Err(_) => {
+                println!("    wallet balance:   (unable to check)");
+            }
+        }
+    } else {
+        println!("  x402 payments:      DISABLED");
+    }
+
+    // AgentPMT
+    let pmt_cfg = agentpmt::load_or_default();
+    println!(
+        "  AgentPMT proxy:     {}",
+        if pmt_cfg.enabled {
+            "ENABLED"
+        } else {
+            "DISABLED"
+        }
+    );
+
+    // PQ wallet
+    if has_wallet() {
+        println!("  PQ wallet:          OK  (ML-DSA-65)");
+    } else {
+        println!("  PQ wallet:          NOT CREATED");
+    }
+
+    // On-chain
+    let onchain_cfg = load_onchain_config_or_default();
+    if onchain_cfg.contract_address.is_empty()
+        || onchain_cfg.contract_address == "0x0000000000000000000000000000000000000000"
+    {
+        println!("  On-chain:           NOT CONFIGURED");
+    } else {
+        println!(
+            "  On-chain:           CONFIGURED  ({}, contract {}...)",
+            if onchain_cfg.chain_name.is_empty() { "unknown chain" } else { &onchain_cfg.chain_name },
+            &onchain_cfg.contract_address[..std::cmp::min(10, onchain_cfg.contract_address.len())]
+        );
+    }
+
+    // License
+    println!("  License:            Community (free)");
+
+    // Dashboard
+    println!("  Dashboard:          Run `agenthalo dashboard` to start");
+
+    println!();
+    println!("  All checks completed.");
+    println!();
+    Ok(())
+}
+
+fn format_number_inline(v: u64) -> String {
+    let s = v.to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out.chars().rev().collect()
+}
+
 fn infer_model(args: &[String]) -> Option<String> {
     let mut i = 0;
     while i + 1 < args.len() {
@@ -1517,6 +1758,6 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.2.0\n\nCommands:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config tool-proxy [enable|disable|status|refresh]\n                             Manage AgentPMT tool proxy integration\n  config show                Show effective config\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n                             Submit governance vote intent\n  sync [--target cloudflare|local]\n                             Run sync operation\n  onchain [config|deploy|verify|status] ...\n                             Config fields: --signer-mode private_key_env|keystore --keystore-path --keystore-password-file --circuit-policy dev|production\n  protocol privacy-pool-create --denomination <u64> [--chain NAME] [--asset SYMBOL]\n                             Create privacy pool request (workflows add-on)\n  protocol privacy-pool-withdraw --pool-id <id> --recipient <addr> [--amount u64]\n                             Submit privacy withdrawal request (workflows add-on)\n  protocol pq-bridge-transfer --from <chain> --to <chain> --asset <symbol> --amount <u64> --recipient <addr>\n                             Submit PQ bridge transfer request (p2pclaw add-on)\n  license [status|verify <certificate.json>]\n                             Check or verify CAB license certificate\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n                             config flags: --upc-contract <addr> --network <base|base-sepolia> --max-auto-approve <units>\n                             pay: --body <402-json> [--option <id>]\n                             balance: check USDC wallet balance\n  addon [list|enable|disable] [name]\n                             Manage optional add-ons (p2pclaw, agentpmt-workflows, tool-proxy)\n  wrap <agent>|--all         Add shell aliases\n  unwrap <agent>|--all       Remove shell aliases\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
     );
 }

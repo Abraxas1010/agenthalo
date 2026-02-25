@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent H.A.L.O. Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <nav id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">H.A.L.O.</div>
+      <div class="logo-sub">Agent Observability</div>
+    </div>
+    <ul class="nav-links">
+      <li><a href="#/overview" class="nav-link active" data-page="overview">
+        <span class="nav-icon">&#9673;</span> Overview</a></li>
+      <li><a href="#/sessions" class="nav-link" data-page="sessions">
+        <span class="nav-icon">&#9776;</span> Sessions</a></li>
+      <li><a href="#/costs" class="nav-link" data-page="costs">
+        <span class="nav-icon">&#36;</span> Costs</a></li>
+      <li><a href="#/config" class="nav-link" data-page="config">
+        <span class="nav-icon">&#9881;</span> Configuration</a></li>
+      <li><a href="#/trust" class="nav-link" data-page="trust">
+        <span class="nav-icon">&#10003;</span> Trust</a></li>
+      <li><a href="#/nucleusdb" class="nav-link" data-page="nucleusdb">
+        <span class="nav-icon">&#9683;</span> NucleusDB</a></li>
+    </ul>
+    <div class="sidebar-footer">
+      <div class="version" id="version-label">v0.3.0</div>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">&#9788;</button>
+    </div>
+  </nav>
+  <main id="content">
+    <div id="page-loading" class="loading">Loading...</div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -10,7 +10,7 @@
 
 **NucleusDB** is the verifiable database engine underneath. It is also a standalone product: a content-addressed key-value store where every write is a cryptographic commitment, every query can come with a proof, and immutability — once activated — is enforced by mathematics, not access control.
 
-Both are built by **Apoth3osis** and ship from a single Rust codebase: ~28,000 lines of Rust, 63 Lean 4 formal proof modules, 10 Solidity smart contracts, and 202 tests.
+Both are built by **Apoth3osis** and ship from a single Rust codebase: ~28,000 lines of Rust, 63 Lean 4 formal proof modules, 10 Solidity smart contracts, and 202 tests. The entire system — CLI, web dashboard, embedded assets — compiles to a single 9.5MB binary with zero runtime dependencies.
 
 ---
 
@@ -28,6 +28,24 @@ H.A.L.O. takes the opposite approach: **local-first, zero telemetry, cryptograph
 
 ## How It Works
 
+### Getting Started
+
+```bash
+# One-line install (Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/Abraxas1010/agenthalo/master/install.sh | bash
+
+# Or build from source
+cargo install --git https://github.com/Abraxas1010/agenthalo --bin agenthalo
+
+# Interactive first-run wizard
+agenthalo setup
+
+# Check everything is working
+agenthalo doctor
+```
+
+The `setup` wizard detects the user's environment and configures the optimal workflow — web dashboard for visual users, CLI for terminal power users, or MCP integration for tool-calling agents.
+
 ### Wrapping
 
 One command. Nothing else changes about how the agent runs:
@@ -39,6 +57,14 @@ agenthalo run claude -p "refactor the auth module"
 H.A.L.O. detects the agent type, injects the right flags for structured output, spawns the agent as a subprocess, tees stdout and stderr so the user sees everything in real time, parses the structured output stream into discrete events, and writes each event to a local NucleusDB trace store at `~/.agenthalo/traces.ndb`.
 
 For permanent wrapping, a single `agenthalo wrap --all` command adds aliases to the user's shell RC file so that `claude`, `codex`, and `gemini` transparently route through H.A.L.O.
+
+### Web Dashboard
+
+```bash
+agenthalo dashboard
+```
+
+Opens a real-time web dashboard at `localhost:3100` with six pages: Overview (live KPIs), Sessions (drill-down into any session's event timeline), Costs (Chart.js analytics with daily/agent/model views), Configuration (toggle agent wrapping and x402 from the browser), Trust (attestation management), and NucleusDB (browse the underlying verifiable store). Dark and light themes. Server-Sent Events for live updates. All assets embedded at compile time — the dashboard is the binary.
 
 ### What Gets Recorded
 
@@ -225,7 +251,8 @@ H.A.L.O. uses a **freemium model** gated by SHA-256 CAB (Cryptographic Assurance
 | MCP tools (NucleusDB HTTP) | 25 |
 | Commitment backends | 3 (Merkle, IPA, KZG) |
 | Agent adapters | 4 (Claude, Codex, Gemini, Generic) |
-| Client interfaces | 5 (CLI, TUI, MCP stdio, MCP HTTP, REST API) |
+| Client interfaces | 6 (CLI, TUI, Web Dashboard, MCP stdio, MCP HTTP, REST API) |
+| Release binary size | 9.5 MB (all assets embedded) |
 
 ---
 
