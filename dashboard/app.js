@@ -294,8 +294,8 @@ async function renderSessionDetail(id) {
       </div>
 
       <div style="margin-bottom:12px;display:flex;gap:8px">
-        <button class="btn" onclick="exportSession('${esc(ss.session_id)}')">Export JSON</button>
-        <button class="btn btn-primary" onclick="attestSession('${esc(ss.session_id)}')">Attest</button>
+        <button class="btn" data-session-id="${encodeURIComponent(ss.session_id)}" onclick="exportSessionByButton(this)">Export JSON</button>
+        <button class="btn btn-primary" data-session-id="${encodeURIComponent(ss.session_id)}" onclick="attestSessionByButton(this)">Attest</button>
       </div>
 
       <div class="section-header">Event Timeline (${events.length} events)</div>
@@ -326,12 +326,32 @@ window.exportSession = async function(id) {
   } catch (e) { alert('Export failed: ' + e.message); }
 };
 
+window.exportSessionByButton = function(btn) {
+  const encoded = btn?.dataset?.sessionId || '';
+  if (!encoded) return;
+  try {
+    exportSession(decodeURIComponent(encoded));
+  } catch (_e) {
+    alert('Invalid session id');
+  }
+};
+
 window.attestSession = async function(id) {
   if (!confirm('Create attestation for this session?')) return;
   try {
     const data = await apiPost('/sessions/' + encodeURIComponent(id) + '/attest', {});
     alert('Attestation created!\nDigest: ' + (data.attestation?.attestation_digest || 'unknown'));
   } catch (e) { alert('Attestation failed: ' + e.message); }
+};
+
+window.attestSessionByButton = function(btn) {
+  const encoded = btn?.dataset?.sessionId || '';
+  if (!encoded) return;
+  try {
+    attestSession(decodeURIComponent(encoded));
+  } catch (_e) {
+    alert('Invalid session id');
+  }
 };
 
 // =============================================================================
