@@ -1,10 +1,13 @@
+use crate::blob_store::BlobStore;
 use crate::immutable::WriteMode;
 use crate::keymap::KeyMap;
 use crate::protocol::{CommitEntry, NucleusDb, VcBackend};
 use crate::security::{ParameterSet, ReductionContract};
 use crate::state::{apply, Delta, State};
 use crate::transparency::ct6962::{NodeHash, SignedTreeHead};
+use crate::type_map::TypeMap;
 use crate::vc::kzg::TrustedSetupArtifact;
+use crate::vector_index::VectorIndex;
 use crate::witness::WitnessConfig;
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -44,6 +47,15 @@ struct SnapshotV1 {
     write_mode: WriteMode,
     #[serde(default)]
     monotone_seals: Vec<NodeHash>,
+    /// Type tags for each key (added in typed-value extension).
+    #[serde(default)]
+    type_map: Option<TypeMap>,
+    /// Content-addressable blob store (added in typed-value extension).
+    #[serde(default)]
+    blob_store: Option<BlobStore>,
+    /// Vector similarity index (added in typed-value extension).
+    #[serde(default)]
+    vector_index: Option<VectorIndex>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,6 +70,12 @@ struct WalMetaV1 {
     keymap: Option<KeyMap>,
     #[serde(default)]
     write_mode: WriteMode,
+    #[serde(default)]
+    type_map: Option<TypeMap>,
+    #[serde(default)]
+    blob_store: Option<BlobStore>,
+    #[serde(default)]
+    vector_index: Option<VectorIndex>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,6 +112,9 @@ pub fn save_snapshot(path: &Path, db: &NucleusDb) -> Result<(), PersistenceError
             keymap: Some(db.keymap.clone()),
             write_mode: db.write_mode.clone(),
             monotone_seals: db.monotone_seals.clone(),
+            type_map: Some(db.type_map.clone()),
+            blob_store: Some(db.blob_store.clone()),
+            vector_index: Some(db.vector_index.clone()),
         };
         let raw = serde_json::to_vec(&payload).map_err(PersistenceError::Json)?;
         table.insert(SNAP_KEY, raw.as_slice()).map_err(map_redb)?;
@@ -149,6 +170,9 @@ pub fn load_snapshot(
     db.keymap = snapshot.keymap.unwrap_or_default();
     db.write_mode = snapshot.write_mode;
     db.monotone_seals = snapshot.monotone_seals;
+    db.type_map = snapshot.type_map.unwrap_or_default();
+    db.blob_store = snapshot.blob_store.unwrap_or_default();
+    db.vector_index = snapshot.vector_index.unwrap_or_default();
     Ok(db)
 }
 
@@ -170,6 +194,9 @@ pub fn init_wal(path: &Path, db: &NucleusDb) -> Result<(), PersistenceError> {
             initial_state: db.state.clone(),
             keymap: Some(db.keymap.clone()),
             write_mode: db.write_mode.clone(),
+            type_map: Some(db.type_map.clone()),
+            blob_store: Some(db.blob_store.clone()),
+            vector_index: Some(db.vector_index.clone()),
         };
         let got_existing: Option<WalMetaV1> = {
             let existing = meta.get(WAL_META_KEY).map_err(map_redb)?;
@@ -283,6 +310,9 @@ pub fn load_wal(path: &Path, witness_cfg: WitnessConfig) -> Result<NucleusDb, Pe
     db.state = wal_meta.initial_state;
     db.keymap = wal_meta.keymap.unwrap_or_default();
     db.write_mode = wal_meta.write_mode;
+    db.type_map = wal_meta.type_map.unwrap_or_default();
+    db.blob_store = wal_meta.blob_store.unwrap_or_default();
+    db.vector_index = wal_meta.vector_index.unwrap_or_default();
 
     for row in events.iter().map_err(map_redb)? {
         let (k, v) = row.map_err(map_redb)?;

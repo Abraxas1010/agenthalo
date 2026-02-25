@@ -64,6 +64,37 @@ function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleString();
 }
 function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '...' : s; }
+function typeBadge(type) {
+  return `<span class="type-badge type-${type || 'integer'}">${esc(type || 'integer')}</span>`;
+}
+function renderTypedValue(row) {
+  const type = row.type || 'integer';
+  const val = row.value;
+  const display = row.display != null ? row.display : String(val);
+  switch (type) {
+    case 'null':
+      return `<span class="ndb-value-display val-null">NULL</span>`;
+    case 'bool':
+      return `<span class="ndb-value-display val-bool">${val ? 'true' : 'false'}</span>`;
+    case 'integer':
+    case 'float':
+      return `<span class="ndb-value-display">${esc(display)}</span>`;
+    case 'text':
+      return `<span class="ndb-value-display val-text">"${esc(truncate(display, 60))}"</span>`;
+    case 'json': {
+      const preview = typeof val === 'object' ? JSON.stringify(val) : display;
+      return `<span class="ndb-value-display val-json" title="Click to expand" onclick="ndbExpandJson(this, '${esc(row.key)}')">${esc(truncate(preview, 60))}</span>`;
+    }
+    case 'vector': {
+      const dims = Array.isArray(val) ? val : [];
+      return `<span class="ndb-value-display val-vector">[${dims.length}d] ${esc(truncate(display, 50))}</span>`;
+    }
+    case 'bytes':
+      return `<span class="ndb-value-display val-bytes">${esc(truncate(display, 60))}</span>`;
+    default:
+      return `<span class="ndb-value-display">${esc(truncate(display, 60))}</span>`;
+  }
+}
 function statusBadge(status) {
   const cls = status === 'completed' ? 'badge-ok' : status === 'failed' ? 'badge-err' :
     status === 'running' ? 'badge-info' : 'badge-muted';
@@ -759,6 +790,7 @@ async function renderNucleusDB(subtab) {
       <div class="ndb-tabs">
         <button class="ndb-tab ${ndb.tab === 'browse' ? 'active' : ''}" onclick="ndbSwitchTab('browse')">Browse</button>
         <button class="ndb-tab ${ndb.tab === 'sql' ? 'active' : ''}" onclick="ndbSwitchTab('sql')">SQL</button>
+        <button class="ndb-tab ${ndb.tab === 'vectors' ? 'active' : ''}" onclick="ndbSwitchTab('vectors')">Vectors</button>
         <button class="ndb-tab ${ndb.tab === 'commits' ? 'active' : ''}" onclick="ndbSwitchTab('commits')">Commits</button>
         <button class="ndb-tab ${ndb.tab === 'schema' ? 'active' : ''}" onclick="ndbSwitchTab('schema')">Schema</button>
         <button class="ndb-tab ${ndb.tab === 'settings' ? 'active' : ''}" onclick="ndbSwitchTab('settings')">Settings</button>
@@ -770,6 +802,7 @@ async function renderNucleusDB(subtab) {
     switch (ndb.tab) {
       case 'browse': await ndbRenderBrowse(); break;
       case 'sql': ndbRenderSQL(); break;
+      case 'vectors': await ndbRenderVectors(); break;
       case 'commits': await ndbRenderCommits(); break;
       case 'schema': await ndbRenderSchema(); break;
       case 'settings': await ndbRenderSettings(); break;
@@ -820,20 +853,22 @@ async function ndbRenderBrowse() {
         <div class="table-wrap"><table class="ndb-table">
           <thead><tr>
             <th class="ndb-sortable" onclick="ndbSort('key')">Key ${sortIcon('key')}</th>
-            <th class="ndb-sortable" onclick="ndbSort('value')" style="width:140px">Value ${sortIcon('value')}</th>
-            <th style="width:70px">Index</th>
-            <th style="width:180px;text-align:center">Actions</th>
+            <th style="width:70px">Type</th>
+            <th class="ndb-sortable" onclick="ndbSort('value')">Value ${sortIcon('value')}</th>
+            <th style="width:60px">Index</th>
+            <th style="width:160px;text-align:center">Actions</th>
           </tr></thead>
           <tbody>
             ${rows.map(row => `
               <tr data-key="${esc(row.key)}">
                 <td class="ndb-key">${esc(row.key)}</td>
-                <td class="ndb-value" ondblclick="ndbStartEdit(this, '${esc(row.key)}', ${row.value})">${row.value}</td>
+                <td>${typeBadge(row.type)}</td>
+                <td class="ndb-value" ondblclick="ndbStartEditTyped('${esc(row.key)}')">${renderTypedValue(row)}</td>
                 <td style="color:var(--text-muted);font-size:12px">${row.index}</td>
                 <td class="ndb-actions">
                   <button class="btn-icon" onclick="ndbVerifyKey('${esc(row.key)}')" title="Verify Merkle proof">&#128737;</button>
                   <button class="btn-icon" onclick="ndbKeyHistory('${esc(row.key)}')" title="Key history">&#128339;</button>
-                  <button class="btn-icon" onclick="ndbStartEdit(null, '${esc(row.key)}', ${row.value})" title="Edit value">&#9998;</button>
+                  <button class="btn-icon" onclick="ndbStartEditTyped('${esc(row.key)}')" title="Edit value">&#9998;</button>
                   <button class="btn-icon btn-icon-danger" onclick="ndbDeleteKey('${esc(row.key)}')" title="Delete">&#128465;</button>
                 </td>
               </tr>
@@ -864,6 +899,9 @@ async function ndbRenderBrowse() {
       <div id="ndb-detail-panel"></div>
     `;
 
+    // Store rows for edit flow
+    window._ndbRows = rows;
+
     // Bind Enter key on search input
     const searchInput = $('#ndb-search');
     if (searchInput) {
@@ -875,6 +913,18 @@ async function ndbRenderBrowse() {
     el.innerHTML = `<div style="color:var(--red)">Error loading data: ${esc(e.message)}</div>`;
   }
 }
+
+// JSON expand handler for browse table
+window.ndbExpandJson = function(el, key) {
+  const existing = el.parentElement.querySelector('.ndb-json-expanded');
+  if (existing) { existing.remove(); return; }
+  const row = (window._ndbRows || []).find(r => r.key === key);
+  if (!row) return;
+  const div = document.createElement('div');
+  div.className = 'ndb-json-expanded';
+  div.textContent = typeof row.value === 'object' ? JSON.stringify(row.value, null, 2) : row.display;
+  el.parentElement.appendChild(div);
+};
 
 window.ndbSearch = function() {
   ndb.prefix = ($('#ndb-search')?.value || '').trim();
@@ -910,35 +960,95 @@ window.ndbChangePageSize = function(size) {
   ndbRenderBrowse();
 };
 
-window.ndbStartEdit = function(cell, key, currentValue) {
+// Typed edit — look up the row from cached data
+window.ndbStartEditTyped = function(key) {
+  const row = (window._ndbRows || []).find(r => r.key === key);
+  const type = row?.type || 'integer';
+  const val = row?.value;
   const panel = $('#ndb-detail-panel');
+
+  let valueInput;
+  switch (type) {
+    case 'integer':
+    case 'float':
+      valueInput = `<input type="number" id="ndb-edit-value" value="${val != null ? val : 0}" step="${type === 'float' ? 'any' : '1'}"
+        style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">`;
+      break;
+    case 'bool':
+      valueInput = `<select id="ndb-edit-value" class="ndb-type-select" style="width:120px">
+        <option value="true" ${val ? 'selected' : ''}>true</option>
+        <option value="false" ${!val ? 'selected' : ''}>false</option>
+      </select>`;
+      break;
+    case 'null':
+      valueInput = `<span style="color:var(--text-muted);font-style:italic">NULL (no editable value)</span>
+        <input type="hidden" id="ndb-edit-value" value="null">`;
+      break;
+    case 'text':
+      valueInput = `<textarea id="ndb-edit-value" class="ndb-value-textarea" style="width:400px">${esc(val || '')}</textarea>`;
+      break;
+    case 'json':
+      valueInput = `<textarea id="ndb-edit-value" class="ndb-value-textarea" style="width:400px;min-height:120px">${esc(typeof val === 'object' ? JSON.stringify(val, null, 2) : String(val))}</textarea>`;
+      break;
+    case 'vector': {
+      const arrStr = Array.isArray(val) ? val.join(', ') : '';
+      valueInput = `<textarea id="ndb-edit-value" class="ndb-value-textarea" style="width:400px" placeholder="0.1, 0.2, 0.3, ...">${esc(arrStr)}</textarea>
+        <div style="color:var(--text-muted);font-size:11px;margin-top:2px">${Array.isArray(val) ? val.length + ' dimensions' : ''} — comma-separated floats</div>`;
+      break;
+    }
+    case 'bytes':
+      valueInput = `<textarea id="ndb-edit-value" class="ndb-value-textarea" style="width:400px" placeholder="hex bytes: 0a1b2c...">${esc(val || '')}</textarea>`;
+      break;
+    default:
+      valueInput = `<input type="text" id="ndb-edit-value" value="${esc(String(val || ''))}"
+        style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">`;
+  }
+
   panel.innerHTML = `
     <div class="ndb-edit-panel">
       <div class="section-header">Edit Key</div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
         <label style="font-weight:600;min-width:50px">Key:</label>
         <span style="font-family:var(--font-mono)">${esc(key)}</span>
+        ${typeBadge(type)}
       </div>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
-        <label style="font-weight:600;min-width:50px">Value:</label>
-        <input type="number" id="ndb-edit-value" value="${currentValue}"
-          style="width:200px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">
+      <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:12px">
+        <label style="font-weight:600;min-width:50px;margin-top:6px">Value:</label>
+        <div>${valueInput}</div>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-primary btn-sm" onclick="ndbSaveEdit('${esc(key)}')">Save &amp; Commit</button>
+        <button class="btn btn-primary btn-sm" onclick="ndbSaveEditTyped('${esc(key)}', '${esc(type)}')">Save &amp; Commit</button>
         <button class="btn btn-sm" onclick="$('#ndb-detail-panel').innerHTML=''">Cancel</button>
       </div>
       <div id="ndb-edit-result" style="margin-top:8px"></div>
     </div>
   `;
-  $('#ndb-edit-value').focus();
-  $('#ndb-edit-value').select();
+  const inp = $('#ndb-edit-value');
+  if (inp && inp.focus) { inp.focus(); if (inp.select) inp.select(); }
 };
 
-window.ndbSaveEdit = async function(key) {
-  const value = parseInt($('#ndb-edit-value')?.value);
-  if (isNaN(value)) {
-    $('#ndb-edit-result').innerHTML = '<div style="color:var(--red)">Value must be an integer</div>';
+window.ndbSaveEditTyped = async function(key, type) {
+  const raw = $('#ndb-edit-value')?.value;
+  let value;
+  try {
+    switch (type) {
+      case 'integer': value = parseInt(raw); if (isNaN(value)) throw new Error('Invalid integer'); break;
+      case 'float': value = parseFloat(raw); if (isNaN(value)) throw new Error('Invalid float'); break;
+      case 'bool': value = raw === 'true'; break;
+      case 'null': value = null; break;
+      case 'text': value = raw; break;
+      case 'json': value = JSON.parse(raw); break;
+      case 'vector': {
+        const nums = raw.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+        if (nums.length === 0) throw new Error('Vector must have at least one dimension');
+        value = nums;
+        break;
+      }
+      case 'bytes': value = raw; break;
+      default: value = raw;
+    }
+  } catch (e) {
+    $('#ndb-edit-result').innerHTML = `<div style="color:var(--red)">Invalid value: ${esc(e.message)}</div>`;
     return;
   }
   try {
@@ -946,7 +1056,8 @@ window.ndbSaveEdit = async function(key) {
     if (res.error) {
       $('#ndb-edit-result').innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
     } else {
-      $('#ndb-detail-panel').innerHTML = `<div style="color:var(--green);padding:8px">Saved ${esc(key)} = ${value} and committed.</div>`;
+      const typeLabel = res.type ? ` (${res.type})` : '';
+      $('#ndb-detail-panel').innerHTML = `<div style="color:var(--green);padding:8px">Saved ${esc(key)}${typeLabel} and committed.</div>`;
       setTimeout(() => ndbRenderBrowse(), 800);
     }
   } catch (e) {
@@ -964,10 +1075,24 @@ window.ndbNewKey = function() {
         <input type="text" id="ndb-new-key" placeholder="my_key"
           style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">
       </div>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
-        <label style="font-weight:600;min-width:50px">Value:</label>
-        <input type="number" id="ndb-new-value" value="0"
-          style="width:200px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <label style="font-weight:600;min-width:50px">Type:</label>
+        <select id="ndb-new-type" class="ndb-type-select" onchange="ndbNewKeyTypeChanged()">
+          <option value="integer">Integer</option>
+          <option value="float">Float</option>
+          <option value="text">Text</option>
+          <option value="json">JSON</option>
+          <option value="bool">Boolean</option>
+          <option value="vector">Vector</option>
+          <option value="null">Null</option>
+        </select>
+      </div>
+      <div id="ndb-new-value-wrap" style="display:flex;gap:8px;align-items:flex-start;margin-bottom:12px">
+        <label style="font-weight:600;min-width:50px;margin-top:6px">Value:</label>
+        <div id="ndb-new-value-input">
+          <input type="number" id="ndb-new-value" value="0"
+            style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">
+        </div>
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-primary btn-sm" onclick="ndbInsertNew()">Insert &amp; Commit</button>
@@ -979,23 +1104,79 @@ window.ndbNewKey = function() {
   $('#ndb-new-key').focus();
 };
 
+window.ndbNewKeyTypeChanged = function() {
+  const type = $('#ndb-new-type')?.value || 'integer';
+  const wrap = $('#ndb-new-value-input');
+  if (!wrap) return;
+  switch (type) {
+    case 'integer':
+      wrap.innerHTML = `<input type="number" id="ndb-new-value" value="0" step="1"
+        style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">`;
+      break;
+    case 'float':
+      wrap.innerHTML = `<input type="number" id="ndb-new-value" value="0.0" step="any"
+        style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:14px">`;
+      break;
+    case 'text':
+      wrap.innerHTML = `<textarea id="ndb-new-value" class="ndb-value-textarea" style="width:400px" placeholder="Enter text..."></textarea>`;
+      break;
+    case 'json':
+      wrap.innerHTML = `<textarea id="ndb-new-value" class="ndb-value-textarea" style="width:400px;min-height:100px" placeholder='{"key": "value"}'>{}</textarea>`;
+      break;
+    case 'bool':
+      wrap.innerHTML = `<select id="ndb-new-value" class="ndb-type-select" style="width:120px">
+        <option value="true">true</option><option value="false">false</option></select>`;
+      break;
+    case 'vector':
+      wrap.innerHTML = `<textarea id="ndb-new-value" class="ndb-value-textarea" style="width:400px" placeholder="0.1, 0.2, 0.3, ..."></textarea>
+        <div style="color:var(--text-muted);font-size:11px;margin-top:2px">Comma-separated float values</div>`;
+      break;
+    case 'null':
+      wrap.innerHTML = `<span style="color:var(--text-muted);font-style:italic">NULL — no value</span>
+        <input type="hidden" id="ndb-new-value" value="null">`;
+      break;
+  }
+};
+
 window.ndbInsertNew = async function() {
   const key = ($('#ndb-new-key')?.value || '').trim();
-  const value = parseInt($('#ndb-new-value')?.value);
+  const type = ($('#ndb-new-type')?.value || 'integer');
+  const raw = ($('#ndb-new-value')?.value || '').trim();
+
   if (!key) {
     $('#ndb-new-result').innerHTML = '<div style="color:var(--red)">Key cannot be empty</div>';
     return;
   }
-  if (isNaN(value)) {
-    $('#ndb-new-result').innerHTML = '<div style="color:var(--red)">Value must be an integer</div>';
+
+  let value;
+  try {
+    switch (type) {
+      case 'integer': value = parseInt(raw); if (isNaN(value)) throw new Error('Invalid integer'); break;
+      case 'float': value = parseFloat(raw); if (isNaN(value)) throw new Error('Invalid float'); break;
+      case 'bool': value = raw === 'true'; break;
+      case 'null': value = null; break;
+      case 'text': value = raw; break;
+      case 'json': value = JSON.parse(raw); break;
+      case 'vector': {
+        const nums = raw.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+        if (nums.length === 0) throw new Error('Enter at least one number');
+        value = nums;
+        break;
+      }
+      default: value = raw;
+    }
+  } catch (e) {
+    $('#ndb-new-result').innerHTML = `<div style="color:var(--red)">Invalid value: ${esc(e.message)}</div>`;
     return;
   }
+
   try {
     const res = await apiPost('/nucleusdb/edit', { key, value });
     if (res.error) {
       $('#ndb-new-result').innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
     } else {
-      $('#ndb-detail-panel').innerHTML = `<div style="color:var(--green);padding:8px">Inserted ${esc(key)} = ${value} and committed.</div>`;
+      const typeLabel = res.type ? ` (${res.type})` : '';
+      $('#ndb-detail-panel').innerHTML = `<div style="color:var(--green);padding:8px">Inserted ${esc(key)}${typeLabel} and committed.</div>`;
       setTimeout(() => ndbRenderBrowse(), 800);
     }
   } catch (e) {
@@ -1031,9 +1212,16 @@ window.ndbVerifyKey = async function(key) {
         <div class="section-header">Merkle Proof Verification</div>
         <div class="ndb-verify-grid">
           <div class="ndb-verify-row"><span class="ndb-verify-label">Key</span><span class="ndb-mono">${esc(res.key)}</span></div>
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Value</span><span class="ndb-mono">${res.value}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Type</span>${typeBadge(res.type || 'integer')}</div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Value</span><span class="ndb-mono">${esc(res.display || String(res.value))}</span></div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Index</span><span class="ndb-mono">${res.index}</span></div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Backend</span><span class="ndb-mono">${esc(res.backend)}</span></div>
+          ${res.blob_verified != null ? `
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Blob</span>
+            <span>${res.blob_verified
+              ? '<span class="badge badge-ok">Blob Verified</span>'
+              : '<span class="badge badge-warn">No Blob</span>'}</span>
+          </div>` : ''}
           <div class="ndb-verify-row">
             <span class="ndb-verify-label">Verified</span>
             <span>${res.verified
@@ -1116,15 +1304,21 @@ function ndbRenderSQL() {
         <button class="btn btn-primary" onclick="runSQL()">Execute</button>
       </div>
       <div class="config-desc" style="margin-bottom:4px">
-        <strong>Supported:</strong> SELECT, INSERT, UPDATE, DELETE, COMMIT, VERIFY 'key', SHOW STATUS/HISTORY/MODE, SET MODE APPEND_ONLY, EXPORT
+        <strong>Supported:</strong> SELECT, INSERT, UPDATE, DELETE, COMMIT, VERIFY, SHOW STATUS/HISTORY/MODE/TYPES, VECTOR_SEARCH, SET MODE APPEND_ONLY, EXPORT
       </div>
       <div class="ndb-sql-presets">
         <span style="color:var(--text-muted);font-size:12px">Quick:</span>
         <button class="btn btn-xs" onclick="ndbSQLPreset('SELECT * FROM data')">All Data</button>
+        <button class="btn btn-xs" onclick="ndbSQLPreset('SHOW TYPES')">Types</button>
         <button class="btn btn-xs" onclick="ndbSQLPreset('SHOW STATUS')">Status</button>
         <button class="btn btn-xs" onclick="ndbSQLPreset('SHOW HISTORY')">History</button>
-        <button class="btn btn-xs" onclick="ndbSQLPreset('SHOW MODE')">Mode</button>
         <button class="btn btn-xs" onclick="ndbSQLPreset('EXPORT')">Export</button>
+      </div>
+      <div class="ndb-sql-presets" style="margin-top:2px">
+        <span style="color:var(--text-muted);font-size:12px">Insert:</span>
+        <button class="btn btn-xs" onclick="ndbSQLPreset(&quot;INSERT INTO data (key, value) VALUES ('mykey', 'hello world')&quot;)">Text</button>
+        <button class="btn btn-xs" onclick="ndbSQLPreset(&quot;INSERT INTO data (key, value) VALUES ('mykey', '{\\&quot;name\\&quot;:\\&quot;Alice\\&quot;}')&quot;)">JSON</button>
+        <button class="btn btn-xs" onclick="ndbSQLPreset(&quot;INSERT INTO data (key, value) VALUES ('mykey', VECTOR(0.1, 0.2, 0.3))&quot;)">Vector</button>
       </div>
       <div id="sql-result" style="margin-top:12px"></div>
     </div>
@@ -1164,6 +1358,142 @@ window.runSQL = async function() {
       el.innerHTML = `<div style="color:var(--green)">${esc(data.message)}</div>`;
     } else {
       el.innerHTML = `<pre style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:var(--font-mono);font-size:12px;overflow-x:auto">${esc(JSON.stringify(data, null, 2))}</pre>`;
+    }
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
+  }
+};
+
+// -- Vectors Sub-Tab ----------------------------------------------------------
+async function ndbRenderVectors() {
+  const el = $('#ndb-content');
+  el.innerHTML = '<div style="color:var(--text-muted)">Loading vector index...</div>';
+  try {
+    const stats = await api('/nucleusdb/stats');
+    const vecCount = stats.vector_count || 0;
+    const vecDims = stats.vector_dims || 0;
+
+    el.innerHTML = `
+      <div style="margin:16px 0">
+        <div class="card-grid">
+          <div class="card">
+            <div class="card-label">Vectors Indexed</div>
+            <div class="card-value">${vecCount}</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Dimensions</div>
+            <div class="card-value">${vecDims || 'n/a'}</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Blob Storage</div>
+            <div class="card-value" style="font-size:16px">${formatBytes(stats.blob_total_bytes || 0)}</div>
+            <div class="card-sub">${stats.blob_count || 0} objects</div>
+          </div>
+        </div>
+
+        <div class="section-header">Similarity Search</div>
+        <div class="ndb-vector-search">
+          <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
+            <label style="font-weight:600;min-width:60px;margin-top:6px">Query:</label>
+            <textarea id="ndb-vec-query" class="ndb-value-textarea" style="width:400px;min-height:40px"
+              placeholder="0.1, 0.2, 0.3, ...${vecDims ? ' (' + vecDims + ' dims)' : ''}"></textarea>
+          </div>
+          <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px">
+            <label style="font-weight:600;min-width:60px">Metric:</label>
+            <select id="ndb-vec-metric" class="ndb-type-select">
+              <option value="cosine">Cosine</option>
+              <option value="l2">L2 (Euclidean)</option>
+              <option value="inner_product">Inner Product</option>
+            </select>
+            <label style="font-weight:500;margin-left:8px">k:</label>
+            <input type="number" id="ndb-vec-k" value="10" min="1" max="100"
+              style="width:60px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
+            <button class="btn btn-primary btn-sm" onclick="ndbVectorSearch()">Search</button>
+          </div>
+          ${vecCount === 0 ? `<div style="color:var(--text-muted);font-size:13px">No vectors in the index yet. Insert vectors via the Browse tab or SQL console.</div>` : ''}
+        </div>
+        <div id="ndb-vec-results"></div>
+
+        <div class="section-header">Insert Vector</div>
+        <div class="ndb-vector-search">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <label style="font-weight:600;min-width:60px">Key:</label>
+            <input type="text" id="ndb-vec-insert-key" placeholder="doc:embedding:1"
+              style="width:260px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text);font-family:var(--font-mono);font-size:13px">
+          </div>
+          <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
+            <label style="font-weight:600;min-width:60px;margin-top:6px">Dims:</label>
+            <textarea id="ndb-vec-insert-dims" class="ndb-value-textarea" style="width:400px;min-height:40px"
+              placeholder="0.1, 0.2, 0.3, ..."></textarea>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary btn-sm" onclick="ndbVectorInsert()">Insert &amp; Commit</button>
+          </div>
+          <div id="ndb-vec-insert-result" style="margin-top:8px"></div>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+window.ndbVectorSearch = async function() {
+  const raw = ($('#ndb-vec-query')?.value || '').trim();
+  const metric = $('#ndb-vec-metric')?.value || 'cosine';
+  const k = parseInt($('#ndb-vec-k')?.value) || 10;
+  const el = $('#ndb-vec-results');
+
+  if (!raw) { el.innerHTML = '<div style="color:var(--red)">Enter a query vector</div>'; return; }
+
+  const query = raw.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+  if (query.length === 0) { el.innerHTML = '<div style="color:var(--red)">Invalid vector — enter comma-separated numbers</div>'; return; }
+
+  el.innerHTML = '<div style="color:var(--text-muted)">Searching...</div>';
+  try {
+    const res = await apiPost('/nucleusdb/vector-search', { query, k, metric });
+    if (res.error) {
+      el.innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
+      return;
+    }
+    const results = res.results || [];
+    if (results.length === 0) {
+      el.innerHTML = `<div style="color:var(--text-muted)">No results found. ${res.vector_count === 0 ? 'Index is empty.' : ''}</div>`;
+      return;
+    }
+    el.innerHTML = `
+      <div class="section-header" style="margin-top:12px">Results (${results.length} nearest neighbors, ${esc(metric)})</div>
+      <div class="ndb-vector-results">
+        ${results.map((r, i) => `
+          <div class="ndb-vector-result-item">
+            <span class="ndb-vector-rank">#${i + 1}</span>
+            <span class="ndb-key" style="flex:1">${esc(r.key)}</span>
+            <span class="ndb-vector-dist">${typeof r.distance === 'number' ? r.distance.toFixed(6) : r.distance}</span>
+            <button class="btn-icon" onclick="ndbVerifyKey('${esc(r.key)}')" title="Verify">&#128737;</button>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red)">Search error: ${esc(e.message)}</div>`;
+  }
+};
+
+window.ndbVectorInsert = async function() {
+  const key = ($('#ndb-vec-insert-key')?.value || '').trim();
+  const raw = ($('#ndb-vec-insert-dims')?.value || '').trim();
+  const el = $('#ndb-vec-insert-result');
+
+  if (!key) { el.innerHTML = '<div style="color:var(--red)">Key cannot be empty</div>'; return; }
+  const nums = raw.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+  if (nums.length === 0) { el.innerHTML = '<div style="color:var(--red)">Enter at least one dimension</div>'; return; }
+
+  try {
+    const res = await apiPost('/nucleusdb/edit', { key, value: nums });
+    if (res.error) {
+      el.innerHTML = `<div style="color:var(--red)">Error: ${esc(res.error)}</div>`;
+    } else {
+      el.innerHTML = `<div style="color:var(--green)">Inserted ${esc(key)} — ${nums.length}d vector committed.</div>`;
     }
   } catch (e) {
     el.innerHTML = `<div style="color:var(--red)">Error: ${esc(e.message)}</div>`;
@@ -1245,8 +1575,29 @@ async function ndbRenderSchema() {
           </div>
         </div>
 
+        ${stats.type_distribution ? `
+          <div class="section-header" style="margin-top:16px">Type Distribution</div>
+          <div class="ndb-type-dist">
+            ${Object.entries(stats.type_distribution).sort((a,b) => b[1] - a[1]).map(([t, count]) =>
+              `<div class="ndb-type-dist-item">${typeBadge(t)} <span class="ndb-type-dist-count">${count.toLocaleString()}</span></div>`
+            ).join('')}
+          </div>
+          <div class="card-grid">
+            <div class="card">
+              <div class="card-label">Blob Objects</div>
+              <div class="card-value">${stats.blob_count || 0}</div>
+              <div class="card-sub">${formatBytes(stats.blob_total_bytes || 0)} stored</div>
+            </div>
+            <div class="card">
+              <div class="card-label">Vectors</div>
+              <div class="card-value">${stats.vector_count || 0}</div>
+              <div class="card-sub">${stats.vector_dims ? stats.vector_dims + ' dimensions' : 'No vectors yet'}</div>
+            </div>
+          </div>
+        ` : ''}
+
         ${stats.key_count > 0 ? `
-          <div class="section-header" style="margin-top:16px">Value Statistics</div>
+          <div class="section-header" style="margin-top:16px">Value Statistics (Integer Keys)</div>
           <div class="card-grid">
             <div class="card">
               <div class="card-label">Min</div>
@@ -1338,6 +1689,12 @@ async function ndbRenderSettings() {
           <div class="ndb-verify-row"><span class="ndb-verify-label">Keys</span><span>${stats.key_count}</span></div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">Commits</span><span>${stats.commit_count}</span></div>
           <div class="ndb-verify-row"><span class="ndb-verify-label">DB Size</span><span>${formatBytes(stats.db_size_bytes)}</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Blob Objects</span><span>${stats.blob_count || 0} (${formatBytes(stats.blob_total_bytes || 0)})</span></div>
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Vectors</span><span>${stats.vector_count || 0}${stats.vector_dims ? ' (' + stats.vector_dims + 'd)' : ''}</span></div>
+          ${stats.type_distribution ? `
+          <div class="ndb-verify-row"><span class="ndb-verify-label">Types</span>
+            <span>${Object.entries(stats.type_distribution).map(([t,c]) => `${t}: ${c}`).join(', ')}</span>
+          </div>` : ''}
         </div>
       </div>
     `;

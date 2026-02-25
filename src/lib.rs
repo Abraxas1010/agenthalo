@@ -1,5 +1,6 @@
 pub mod api;
 pub mod audit;
+pub mod blob_store;
 pub mod cli;
 pub mod commitment;
 pub mod container;
@@ -23,8 +24,11 @@ pub mod state;
 pub mod transparency;
 pub mod trust;
 pub mod tui;
+pub mod type_map;
+pub mod typed_value;
 pub mod vc;
 pub mod vcs;
+pub mod vector_index;
 pub mod witness;
 
 pub use multitenant::{

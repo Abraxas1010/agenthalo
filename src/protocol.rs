@@ -1,4 +1,5 @@
 use crate::audit::CommitEvidence;
+use crate::blob_store::BlobStore;
 use crate::commitment::default_commitment_policy;
 use crate::immutable::{self, WriteMode};
 use crate::keymap::KeyMap;
@@ -15,12 +16,15 @@ use crate::transparency::ct6962::{
     hex_encode, leaf_hash, make_consistency_proof, make_sth, verify_consistency_proof,
     ConsistencyProof, NodeHash, SignedTreeHead,
 };
+use crate::type_map::TypeMap;
+use crate::typed_value::{TypeTag, TypedValue};
 use crate::vc::binary_merkle::{DemoBinaryMerkle, Proof as BinaryMerkleProof};
 use crate::vc::ipa::{DemoIpa, Proof as IpaProof};
 use crate::vc::kzg::{
     load_and_validate_trusted_setup, DemoKzg, Proof as KzgProof, TrustedSetupArtifact,
 };
 use crate::vc::VC;
+use crate::vector_index::VectorIndex;
 use crate::witness::{
     default_algorithm_tag, sign_message, verify_quorum_for_algorithm, WitnessConfig, WitnessError,
 };
@@ -87,6 +91,12 @@ pub struct NucleusDb {
     pub(crate) current_sth: Option<SignedTreeHead>,
     pub write_mode: WriteMode,
     pub(crate) monotone_seals: Vec<NodeHash>,
+    /// Type tags for each key (blob vs direct encoding).
+    pub type_map: TypeMap,
+    /// Content-addressable store for blob-typed values (Text, Json, Bytes, Vector).
+    pub blob_store: BlobStore,
+    /// Approximate nearest-neighbor index for Vector-typed keys.
+    pub vector_index: VectorIndex,
 }
 
 impl NucleusDb {
@@ -141,6 +151,9 @@ impl NucleusDb {
             current_sth: None,
             write_mode: WriteMode::Normal,
             monotone_seals: vec![],
+            type_map: TypeMap::new(),
+            blob_store: BlobStore::new(),
+            vector_index: VectorIndex::new(),
         })
     }
 
@@ -484,5 +497,47 @@ impl NucleusDb {
         proof: &ConsistencyProof,
     ) -> bool {
         verify_consistency_proof(proof, &old.root_hash, &new.root_hash)
+    }
+
+    // -------------------------------------------------------------------
+    // Typed value helpers
+    // -------------------------------------------------------------------
+
+    /// Insert or update a typed value for a key.
+    ///
+    /// This writes the encoded u64 cell into pending_writes (returned as a
+    /// Delta write), stores any blob data, updates the type map and vector
+    /// index.  The caller is responsible for committing the delta.
+    pub fn put_typed(&mut self, key: &str, value: TypedValue) -> (usize, u64) {
+        let tag = value.tag();
+        let (cell, blob) = value.encode(key);
+
+        // Store blob if present
+        if let Some(blob_data) = blob {
+            // Update vector index for Vector type
+            if tag == TypeTag::Vector {
+                if let Ok(dims) = crate::typed_value::bytes_to_vector(&blob_data) {
+                    let _ = self.vector_index.upsert(key, dims);
+                }
+            }
+            self.blob_store.put(key, blob_data);
+        } else {
+            // Remove any stale blob/vector index entry
+            self.blob_store.remove(key);
+            self.vector_index.remove(key);
+        }
+
+        self.type_map.set(key, tag);
+        let idx = self.keymap.get_or_create(key);
+        (idx, cell)
+    }
+
+    /// Read a typed value for a key.
+    pub fn get_typed(&self, key: &str) -> Option<TypedValue> {
+        let idx = self.keymap.get(key)?;
+        let cell = self.state.values.get(idx).copied().unwrap_or(0);
+        let tag = self.type_map.get(key);
+        let blob = self.blob_store.get(key);
+        TypedValue::decode(tag, cell, blob).ok()
     }
 }

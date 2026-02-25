@@ -651,6 +651,165 @@ tr.clickable { cursor: pointer; }
 
 .back-link:hover { text-decoration: underline; }
 
+/* NucleusDB type badges */
+.type-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.type-integer { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+.type-float { background: rgba(88, 166, 255, 0.15); color: #79c0ff; }
+.type-text { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+.type-json { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+.type-bool { background: rgba(188, 140, 255, 0.15); color: var(--purple); }
+.type-vector { background: rgba(219, 109, 40, 0.15); color: var(--orange); }
+.type-bytes { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); }
+.type-null { background: rgba(139, 148, 158, 0.10); color: var(--text-muted); font-style: italic; }
+
+/* Typed value display */
+.ndb-value-display {
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.ndb-value-display.val-null { color: var(--text-muted); font-style: italic; }
+.ndb-value-display.val-bool { color: var(--purple); font-weight: 600; }
+.ndb-value-display.val-text { color: var(--green); }
+.ndb-value-display.val-json { color: var(--yellow); cursor: pointer; }
+.ndb-value-display.val-vector { color: var(--orange); }
+.ndb-value-display.val-bytes { color: var(--text-muted); }
+
+/* JSON/value expanded view */
+.ndb-json-expanded {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 300px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Vector search panel */
+.ndb-vector-search {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin: 16px 0;
+}
+
+.ndb-vector-results {
+  margin-top: 12px;
+}
+
+.ndb-vector-result-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.ndb-vector-result-item:last-child { border-bottom: none; }
+
+.ndb-vector-rank {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-muted);
+  min-width: 28px;
+  text-align: center;
+}
+
+.ndb-vector-dist {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+  min-width: 80px;
+}
+
+/* Type distribution chart in schema */
+.ndb-type-dist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+
+.ndb-type-dist-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.ndb-type-dist-count {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+/* New key form - type selector */
+.ndb-type-select {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.ndb-type-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Textarea for JSON/Text input */
+.ndb-value-textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  resize: vertical;
+}
+
+.ndb-value-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* NucleusDB filter type selector */
+.ndb-filter-type {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 12px;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   #sidebar { width: 60px; }

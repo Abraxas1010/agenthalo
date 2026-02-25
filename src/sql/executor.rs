@@ -1,13 +1,15 @@
 use crate::immutable::WriteMode;
 use crate::protocol::NucleusDb;
-use crate::sql::schema::{COL_KEY, COL_VALUE, TABLE_NAME};
+use crate::sql::schema::{COL_KEY, COL_TYPE, COL_VALUE, TABLE_NAME};
 use crate::state::Delta;
 use crate::transparency::ct6962::hex_encode;
+use crate::typed_value::{infer_from_string, TypeTag, TypedValue};
+use crate::vector_index::DistanceMetric;
 use chrono::{TimeZone, Utc};
 use sqlparser::ast::{
-    Assignment, AssignmentTarget, BinaryOperator, CreateTable, Delete, Expr, Ident, Insert,
-    ObjectName, ObjectNamePart, Query, SelectItem, SetExpr, Statement, TableFactor, TableObject,
-    TableWithJoins, Value,
+    Assignment, AssignmentTarget, BinaryOperator, CreateTable, Delete, Expr, FunctionArg,
+    FunctionArgExpr, Ident, Insert, ObjectName, ObjectNamePart, Query, SelectItem, SetExpr,
+    Statement, TableFactor, TableObject, TableWithJoins, Value,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -123,6 +125,7 @@ impl<'a> SqlExecutor<'a> {
                     .to_string(),
             }),
             "EXPORT" => Some(self.export_json()),
+            "SHOW TYPES" => Some(self.show_types()),
             "SHOW MODE" => Some(SqlResult::Ok {
                 message: format!("Write mode: {:?}", self.db.write_mode()),
             }),
@@ -198,6 +201,22 @@ impl<'a> SqlExecutor<'a> {
 
         SqlResult::Rows {
             columns: vec!["field".to_string(), "value".to_string()],
+            rows,
+        }
+    }
+
+    fn show_types(&self) -> SqlResult {
+        let mut type_counts = BTreeMap::<String, usize>::new();
+        for (key, _idx) in self.db.keymap.all_keys() {
+            let tag = self.db.type_map.get(key);
+            *type_counts.entry(tag.as_str().to_string()).or_default() += 1;
+        }
+        let rows: Vec<Vec<String>> = type_counts
+            .into_iter()
+            .map(|(t, c)| vec![t, c.to_string()])
+            .collect();
+        SqlResult::Rows {
+            columns: vec!["type".to_string(), "count".to_string()],
             rows,
         }
     }
@@ -347,13 +366,17 @@ impl<'a> SqlExecutor<'a> {
 
     fn export_json(&self) -> SqlResult {
         let pending = self.pending_overlay();
-        let mut payload = BTreeMap::<String, u64>::new();
+        let mut payload = BTreeMap::<String, serde_json::Value>::new();
         for (k, idx) in self.db.keymap.all_keys() {
-            let value = pending
+            let cell = pending
                 .get(&idx)
                 .copied()
                 .unwrap_or_else(|| self.db.state.values.get(idx).copied().unwrap_or(0));
-            payload.insert(k.to_string(), value);
+            let tag = self.db.type_map.get(k);
+            let blob = self.db.blob_store.get(k);
+            let typed = TypedValue::decode(tag, cell, blob)
+                .unwrap_or(TypedValue::Integer(cell as i64));
+            payload.insert(k.to_string(), typed.to_json_value());
         }
         match serde_json::to_string_pretty(&payload) {
             Ok(json) => SqlResult::Rows {
@@ -396,15 +419,28 @@ impl<'a> SqlExecutor<'a> {
                 };
             }
         };
-        let (key, value) = match extract_insert_kv(source, &ins.columns) {
-            Ok(kv) => kv,
-            Err(e) => return SqlResult::Error { message: e },
-        };
 
-        let idx = self.db.keymap.get_or_create(&key);
-        self.pending_writes.push((idx, value));
-        SqlResult::Ok {
-            message: format!("Queued write: {key}={value} (idx={idx})"),
+        // Try typed insert first, fall back to legacy u64
+        match extract_insert_typed(source, &ins.columns) {
+            Ok(TypedInsert::Typed(key, typed_val)) => {
+                let (idx, cell) = self.db.put_typed(&key, typed_val.clone());
+                self.pending_writes.push((idx, cell));
+                SqlResult::Ok {
+                    message: format!(
+                        "Queued write: {key}={} [{}] (idx={idx})",
+                        typed_val.display_string(),
+                        typed_val.tag()
+                    ),
+                }
+            }
+            Ok(TypedInsert::LegacyU64(key, value)) => {
+                let idx = self.db.keymap.get_or_create(&key);
+                self.pending_writes.push((idx, value));
+                SqlResult::Ok {
+                    message: format!("Queued write: {key}={value} (idx={idx})"),
+                }
+            }
+            Err(e) => SqlResult::Error { message: e },
         }
     }
 
@@ -427,6 +463,14 @@ impl<'a> SqlExecutor<'a> {
             Ok(p) => p,
             Err(e) => return SqlResult::Error { message: e },
         };
+
+        // Check for VECTOR_SEARCH in the WHERE clause
+        if let Some(ref sel) = select.selection {
+            if let Some(vs) = extract_vector_search(sel) {
+                return self.execute_vector_search(&projection, &vs);
+            }
+        }
+
         let pending = self.pending_overlay();
         let mut rows = Vec::new();
         for (key, idx) in self.db.keymap.all_keys() {
@@ -437,15 +481,55 @@ impl<'a> SqlExecutor<'a> {
             if !visible {
                 continue;
             }
-            let value = pending
+            let cell = pending
                 .get(&idx)
                 .copied()
                 .unwrap_or_else(|| self.db.state.values.get(idx).copied().unwrap_or(0));
-            rows.push(render_projection_row(&projection, key, value));
+
+            // Resolve typed value
+            let tag = self.db.type_map.get(key);
+            let blob = self.db.blob_store.get(key);
+            let typed = TypedValue::decode(tag, cell, blob)
+                .unwrap_or(TypedValue::Integer(cell as i64));
+            rows.push(render_projection_row(&projection, key, &typed, tag));
         }
 
         SqlResult::Rows {
             columns: projection.iter().map(|p| p.to_string()).collect(),
+            rows,
+        }
+    }
+
+    fn execute_vector_search(
+        &self,
+        projection: &[ProjectionField],
+        vs: &VectorSearchParams,
+    ) -> SqlResult {
+        let results = match self.db.vector_index.search(
+            &vs.query_vector,
+            vs.k,
+            vs.metric,
+        ) {
+            Ok(r) => r,
+            Err(e) => return SqlResult::Error { message: e },
+        };
+
+        let mut cols: Vec<String> = projection.iter().map(|p| p.to_string()).collect();
+        cols.push("_distance".to_string());
+
+        let mut rows = Vec::new();
+        for result in results {
+            let key = &result.key;
+            if let Some(typed) = self.db.get_typed(key) {
+                let tag = self.db.type_map.get(key);
+                let mut row = render_projection_row(projection, key, &typed, tag);
+                row.push(format!("{:.6}", result.distance));
+                rows.push(row);
+            }
+        }
+
+        SqlResult::Rows {
+            columns: cols,
             rows,
         }
     }
@@ -531,6 +615,7 @@ impl<'a> SqlExecutor<'a> {
 enum ProjectionField {
     Key,
     Value,
+    Type,
 }
 
 impl std::fmt::Display for ProjectionField {
@@ -538,6 +623,7 @@ impl std::fmt::Display for ProjectionField {
         match self {
             Self::Key => f.write_str(COL_KEY),
             Self::Value => f.write_str(COL_VALUE),
+            Self::Type => f.write_str(COL_TYPE),
         }
     }
 }
@@ -640,7 +726,11 @@ fn resolve_projection(items: &[SelectItem]) -> Result<Vec<ProjectionField>, Stri
     if items.len() == 1 {
         match &items[0] {
             SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
-                return Ok(vec![ProjectionField::Key, ProjectionField::Value]);
+                return Ok(vec![
+                    ProjectionField::Key,
+                    ProjectionField::Value,
+                    ProjectionField::Type,
+                ]);
             }
             _ => {}
         }
@@ -655,6 +745,9 @@ fn resolve_projection(items: &[SelectItem]) -> Result<Vec<ProjectionField>, Stri
             SelectItem::UnnamedExpr(Expr::Identifier(id)) if ident_is(id, COL_VALUE) => {
                 out.push(ProjectionField::Value)
             }
+            SelectItem::UnnamedExpr(Expr::Identifier(id)) if ident_is(id, COL_TYPE) => {
+                out.push(ProjectionField::Type)
+            }
             SelectItem::ExprWithAlias {
                 expr: Expr::Identifier(id),
                 ..
@@ -663,9 +756,14 @@ fn resolve_projection(items: &[SelectItem]) -> Result<Vec<ProjectionField>, Stri
                 expr: Expr::Identifier(id),
                 ..
             } if ident_is(id, COL_VALUE) => out.push(ProjectionField::Value),
+            SelectItem::ExprWithAlias {
+                expr: Expr::Identifier(id),
+                ..
+            } if ident_is(id, COL_TYPE) => out.push(ProjectionField::Type),
             _ => {
                 return Err(
-                    "Only SELECT key, value (or SELECT *) projections are supported".to_string(),
+                    "Only SELECT key, value, type (or SELECT *) projections are supported"
+                        .to_string(),
                 );
             }
         }
@@ -673,17 +771,31 @@ fn resolve_projection(items: &[SelectItem]) -> Result<Vec<ProjectionField>, Stri
     Ok(out)
 }
 
-fn render_projection_row(fields: &[ProjectionField], key: &str, value: u64) -> Vec<String> {
+fn render_projection_row(
+    fields: &[ProjectionField],
+    key: &str,
+    typed: &TypedValue,
+    tag: TypeTag,
+) -> Vec<String> {
     fields
         .iter()
         .map(|f| match f {
             ProjectionField::Key => key.to_string(),
-            ProjectionField::Value => value.to_string(),
+            ProjectionField::Value => typed.display_string(),
+            ProjectionField::Type => tag.as_str().to_string(),
         })
         .collect()
 }
 
-fn extract_insert_kv(source: &Query, columns: &[Ident]) -> Result<(String, u64), String> {
+
+/// Result of parsing a typed INSERT.
+enum TypedInsert {
+    Typed(String, TypedValue),
+    LegacyU64(String, u64),
+}
+
+/// Extract a typed key-value from an INSERT statement.
+fn extract_insert_typed(source: &Query, columns: &[Ident]) -> Result<TypedInsert, String> {
     let SetExpr::Values(values) = source.body.as_ref() else {
         return Err("INSERT only supports VALUES rows".to_string());
     };
@@ -701,13 +813,13 @@ fn extract_insert_kv(source: &Query, columns: &[Ident]) -> Result<(String, u64),
     }
 
     let mut key: Option<String> = None;
-    let mut value: Option<u64> = None;
+    let mut value_expr: Option<&Expr> = None;
 
     for (col, expr) in column_names.iter().zip(row.iter()) {
         if col.eq_ignore_ascii_case(COL_KEY) {
             key = Some(expr_as_string(expr)?);
         } else if col.eq_ignore_ascii_case(COL_VALUE) {
-            value = Some(expr_as_u64(expr)?);
+            value_expr = Some(expr);
         } else {
             return Err(format!(
                 "Unknown INSERT column '{col}'. Supported columns: {COL_KEY}, {COL_VALUE}"
@@ -716,9 +828,162 @@ fn extract_insert_kv(source: &Query, columns: &[Ident]) -> Result<(String, u64),
     }
 
     let key = key.ok_or_else(|| format!("Missing '{COL_KEY}' column"))?;
-    let value = value.ok_or_else(|| format!("Missing '{COL_VALUE}' column"))?;
-    Ok((key, value))
+    let expr = value_expr.ok_or_else(|| format!("Missing '{COL_VALUE}' column"))?;
+
+    // Try VECTOR() function
+    if let Some(dims) = try_extract_vector(expr) {
+        return Ok(TypedInsert::Typed(key, TypedValue::Vector(dims)));
+    }
+
+    // Try NULL
+    if matches!(expr, Expr::Value(v) if matches!(&v.value, Value::Null)) {
+        return Ok(TypedInsert::Typed(key, TypedValue::Null));
+    }
+
+    // Try boolean
+    if matches!(expr, Expr::Value(v) if matches!(&v.value, Value::Boolean(true))) {
+        return Ok(TypedInsert::Typed(key, TypedValue::Bool(true)));
+    }
+    if matches!(expr, Expr::Value(v) if matches!(&v.value, Value::Boolean(false))) {
+        return Ok(TypedInsert::Typed(key, TypedValue::Bool(false)));
+    }
+
+    // Try number (integer or float)
+    if let Expr::Value(v) = expr {
+        if let Value::Number(n, _) = &v.value {
+            // If it parses as u64, keep legacy behavior for backward compat
+            if let Ok(u) = n.parse::<u64>() {
+                return Ok(TypedInsert::LegacyU64(key, u));
+            }
+            // Try i64
+            if let Ok(i) = n.parse::<i64>() {
+                return Ok(TypedInsert::Typed(key, TypedValue::Integer(i)));
+            }
+            // Try f64
+            if let Ok(f) = n.parse::<f64>() {
+                return Ok(TypedInsert::Typed(key, TypedValue::Float(f)));
+            }
+        }
+    }
+
+    // Try string → auto-detect type
+    if let Ok(s) = expr_as_string(expr) {
+        let typed = infer_from_string(&s);
+        return Ok(TypedInsert::Typed(key, typed));
+    }
+
+    Err("Cannot parse value expression".to_string())
 }
+
+/// Try to extract VECTOR(n1, n2, ...) or VECTOR([n1, n2, ...]) from an expression.
+fn try_extract_vector(expr: &Expr) -> Option<Vec<f64>> {
+    if let Expr::Function(func) = expr {
+        let name = func.name.to_string().to_ascii_uppercase();
+        if name == "VECTOR" || name == "VEC" || name == "EMBEDDING" {
+            let args = match &func.args {
+                sqlparser::ast::FunctionArguments::List(arg_list) => &arg_list.args,
+                _ => return None,
+            };
+            let mut dims = Vec::new();
+            for arg in args {
+                match arg {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
+                        if let Ok(f) = expr_as_f64(e) {
+                            dims.push(f);
+                        } else {
+                            return None;
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+            if !dims.is_empty() {
+                return Some(dims);
+            }
+        }
+    }
+    None
+}
+
+/// Parse an expression as f64.
+fn expr_as_f64(expr: &Expr) -> Result<f64, String> {
+    match expr {
+        Expr::Value(v) => match &v.value {
+            Value::Number(n, _) => n
+                .parse::<f64>()
+                .map_err(|_| format!("Invalid float literal '{n}'")),
+            _ => Err("Expected numeric literal".to_string()),
+        },
+        Expr::UnaryOp {
+            op: sqlparser::ast::UnaryOperator::Minus,
+            expr: inner,
+        } => expr_as_f64(inner).map(|v| -v),
+        _ => Err("Expected numeric literal".to_string()),
+    }
+}
+
+/// Parameters extracted from a VECTOR_SEARCH() call in WHERE clause.
+struct VectorSearchParams {
+    query_vector: Vec<f64>,
+    k: usize,
+    metric: DistanceMetric,
+}
+
+/// Try to extract VECTOR_SEARCH(value, VECTOR(...), k [, 'metric']) from WHERE clause.
+fn extract_vector_search(expr: &Expr) -> Option<VectorSearchParams> {
+    if let Expr::Function(func) = expr {
+        let name = func.name.to_string().to_ascii_uppercase();
+        if name == "VECTOR_SEARCH" || name == "VSEARCH" || name == "KNN" {
+            let args = match &func.args {
+                sqlparser::ast::FunctionArguments::List(arg_list) => &arg_list.args,
+                _ => return None,
+            };
+            if args.len() < 2 {
+                return None;
+            }
+
+            // arg[0] = column ref (ignored, always 'value')
+            // arg[1] = VECTOR(...) or list of numbers
+            let query_vector = match &args[1] {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => try_extract_vector(e)?,
+                _ => return None,
+            };
+
+            // arg[2] = k (optional, default 10)
+            let k = if args.len() > 2 {
+                match &args[2] {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
+                        expr_as_u64(e).ok()? as usize
+                    }
+                    _ => 10,
+                }
+            } else {
+                10
+            };
+
+            // arg[3] = metric (optional, default cosine)
+            let metric = if args.len() > 3 {
+                match &args[3] {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => {
+                        let s = expr_as_string(e).ok()?;
+                        DistanceMetric::from_str_tag(&s).unwrap_or(DistanceMetric::Cosine)
+                    }
+                    _ => DistanceMetric::Cosine,
+                }
+            } else {
+                DistanceMetric::Cosine
+            };
+
+            return Some(VectorSearchParams {
+                query_vector,
+                k,
+                metric,
+            });
+        }
+    }
+    None
+}
+
 
 fn extract_update_value(assignments: &[Assignment]) -> Result<u64, String> {
     if assignments.len() != 1 {

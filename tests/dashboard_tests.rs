@@ -383,6 +383,126 @@ async fn nucleusdb_export_returns_json() {
 }
 
 // ---------------------------------------------------------------------------
+// NucleusDB typed value edit roundtrip
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn nucleusdb_edit_text_value() {
+    let (state, db_path) = test_state("ndb_edit_text");
+    seed_session(&db_path, "edit-text-test");
+
+    let (status, val) = api_post(
+        state.clone(),
+        "/nucleusdb/edit",
+        json!({"key": "greeting", "value": "Hello, World!"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "edit text: {val}");
+    assert_eq!(val["ok"], true);
+    assert_eq!(val["type"], "text");
+
+    // Verify via browse
+    let (s2, v2) = api_get(state, "/nucleusdb/browse?prefix=greeting").await;
+    assert_eq!(s2, StatusCode::OK);
+    let rows = v2["rows"].as_array().expect("should have rows");
+    assert!(!rows.is_empty(), "should find the key");
+    assert_eq!(rows[0]["type"], "text");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn nucleusdb_edit_json_value() {
+    let (state, db_path) = test_state("ndb_edit_json");
+    seed_session(&db_path, "edit-json-test");
+
+    let (status, val) = api_post(
+        state.clone(),
+        "/nucleusdb/edit",
+        json!({"key": "user:bob", "value": {"name": "Bob", "age": 25}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "edit json: {val}");
+    assert_eq!(val["ok"], true);
+    assert_eq!(val["type"], "json");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn nucleusdb_edit_vector_value() {
+    let (state, db_path) = test_state("ndb_edit_vec");
+    seed_session(&db_path, "edit-vec-test");
+
+    let (status, val) = api_post(
+        state.clone(),
+        "/nucleusdb/edit",
+        json!({"key": "doc:1:embedding", "value": [0.1, 0.2, 0.3, 0.4]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "edit vector: {val}");
+    assert_eq!(val["ok"], true);
+    assert_eq!(val["type"], "vector");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn nucleusdb_vector_search_endpoint() {
+    let (state, db_path) = test_state("ndb_vsearch");
+    seed_session(&db_path, "vsearch-test");
+
+    // Insert vectors
+    for i in 0..3 {
+        let dims: Vec<f64> = (0..4).map(|j| if i == j { 1.0 } else { 0.0 }).collect();
+        let (s, _) = api_post(
+            state.clone(),
+            "/nucleusdb/edit",
+            json!({"key": format!("vec:{i}"), "value": dims}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+
+    // Search
+    let (status, val) = api_post(
+        state.clone(),
+        "/nucleusdb/vector-search",
+        json!({"query": [1.0, 0.0, 0.0, 0.0], "k": 2, "metric": "cosine"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "vector search: {val}");
+    let results = val["results"].as_array().expect("should have results");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["key"], "vec:0");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn nucleusdb_stats_includes_type_distribution() {
+    let (state, db_path) = test_state("ndb_type_dist");
+    seed_session(&db_path, "type-dist-test");
+
+    let (status, val) = api_get(state, "/nucleusdb/stats").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        val.get("type_distribution").is_some(),
+        "should have type_distribution: {val}"
+    );
+    assert!(
+        val.get("blob_count").is_some(),
+        "should have blob_count: {val}"
+    );
+    assert!(
+        val.get("vector_count").is_some(),
+        "should have vector_count: {val}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+// ---------------------------------------------------------------------------
 // NucleusDB history returns commit history
 // ---------------------------------------------------------------------------
 

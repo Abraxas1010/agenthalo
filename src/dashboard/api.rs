@@ -84,6 +84,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/nucleusdb/verify/{key}", get(api_nucleusdb_verify))
         .route("/nucleusdb/key-history/{key}", get(api_nucleusdb_key_history))
         .route("/nucleusdb/export", get(api_nucleusdb_export))
+        .route("/nucleusdb/vector-search", post(api_nucleusdb_vector_search))
         // Capabilities
         .route("/capabilities", get(api_capabilities))
         // x402
@@ -143,7 +144,25 @@ pub struct BrowseQuery {
 #[derive(Deserialize)]
 pub struct EditRequest {
     key: String,
-    value: u64,
+    /// Value can be a number (u64 legacy), string, JSON object, array, bool, or null.
+    value: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+pub struct VectorSearchRequest {
+    query: Vec<f64>,
+    #[serde(default = "default_k")]
+    k: usize,
+    #[serde(default = "default_metric")]
+    metric: String,
+}
+
+fn default_k() -> usize {
+    10
+}
+
+fn default_metric() -> String {
+    "cosine".to_string()
 }
 
 #[derive(Deserialize, Default)]
@@ -746,16 +765,22 @@ async fn api_nucleusdb_browse(
     let sort_field = params.sort.as_deref().unwrap_or("key");
     let sort_order = params.order.as_deref().unwrap_or("asc");
 
-    // Collect all matching key-value pairs
-    let mut items: Vec<(String, u64, usize)> = Vec::new();
+    // Collect all matching key-value pairs with typed information
+    let mut items: Vec<(String, Value, usize, String, String)> = Vec::new();
     for (key, idx) in db.keymap.all_keys() {
         if let Some(ref pfx) = params.prefix {
             if !pfx.is_empty() && !key.starts_with(pfx.as_str()) {
                 continue;
             }
         }
-        let value = db.state.values.get(idx).copied().unwrap_or(0);
-        items.push((key.to_string(), value, idx));
+        let cell = db.state.values.get(idx).copied().unwrap_or(0);
+        let tag = db.type_map.get(key);
+        let blob = db.blob_store.get(key);
+        let typed = crate::typed_value::TypedValue::decode(tag, cell, blob)
+            .unwrap_or(crate::typed_value::TypedValue::Integer(cell as i64));
+        let display = typed.display_string();
+        let json_val = typed.to_json_value();
+        items.push((key.to_string(), json_val, idx, tag.as_str().to_string(), display));
     }
 
     let total = items.len();
@@ -763,8 +788,8 @@ async fn api_nucleusdb_browse(
     // Sort
     match (sort_field, sort_order) {
         ("key", "desc") => items.sort_by(|a, b| b.0.cmp(&a.0)),
-        ("value", "asc") => items.sort_by_key(|i| i.1),
-        ("value", "desc") => items.sort_by(|a, b| b.1.cmp(&a.1)),
+        ("type", "asc") => items.sort_by(|a, b| a.3.cmp(&b.3)),
+        ("type", "desc") => items.sort_by(|a, b| b.3.cmp(&a.3)),
         ("index", "asc") => items.sort_by_key(|i| i.2),
         ("index", "desc") => items.sort_by(|a, b| b.2.cmp(&a.2)),
         _ => items.sort_by(|a, b| a.0.cmp(&b.0)), // default: key asc
@@ -776,11 +801,13 @@ async fn api_nucleusdb_browse(
         .iter()
         .skip(start)
         .take(page_size)
-        .map(|(key, value, idx)| {
+        .map(|(key, json_val, idx, type_tag, display)| {
             json!({
                 "key": key,
-                "value": value,
+                "value": json_val,
+                "display": display,
                 "index": idx,
+                "type": type_tag,
             })
         })
         .collect();
@@ -856,6 +883,18 @@ async fn api_nucleusdb_stats(AxumState(state): AxumState<DashboardState>) -> Api
         })
     });
 
+    // Type distribution
+    let mut type_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for (key, _) in db.keymap.all_keys() {
+        let tag = db.type_map.get(key);
+        *type_counts.entry(tag.as_str().to_string()).or_default() += 1;
+    }
+    let blob_count = db.blob_store.len();
+    let blob_bytes = db.blob_store.total_bytes();
+    let vector_count = db.vector_index.len();
+    let vector_dims = db.vector_index.dims();
+
     Ok(Json(json!({
         "key_count": key_count,
         "commit_count": commit_count,
@@ -867,6 +906,11 @@ async fn api_nucleusdb_stats(AxumState(state): AxumState<DashboardState>) -> Api
         "db_size_bytes": db_size_bytes,
         "top_prefixes": prefix_list.iter().map(|(p, c)| json!({"prefix": p, "count": c})).collect::<Vec<_>>(),
         "sth": sth_info,
+        "type_distribution": type_counts,
+        "blob_count": blob_count,
+        "blob_total_bytes": blob_bytes,
+        "vector_count": vector_count,
+        "vector_dims": vector_dims,
     })))
 }
 
@@ -877,38 +921,72 @@ async fn api_nucleusdb_edit(
     let db_path = &state.db_path;
     let _guard = state.db_lock.lock().await;
     let mut db = load_halo_db(db_path)?;
-    {
-        // Check key existence before creating executor (borrow checker)
-        let key_exists = db.keymap.get(&req.key).is_some();
-        let sql = if key_exists {
-            format!(
-                "UPDATE data SET value = {} WHERE key = '{}'; COMMIT",
-                req.value,
-                req.key.replace('\'', "''")
-            )
-        } else {
-            format!(
-                "INSERT INTO data (key, value) VALUES ('{}', {}); COMMIT",
-                req.key.replace('\'', "''"),
-                req.value
-            )
-        };
-        let mut executor = SqlExecutor::new(&mut db);
-        let result = executor.execute(&sql);
-        if let SqlResult::Error { message } = result {
-            return Ok(Json(json!({ "error": message })));
-        }
-        if executor.committed() {
+
+    // Convert JSON value to TypedValue
+    let typed = json_to_typed_value(&req.value);
+    let (idx, cell) = db.put_typed(&req.key, typed.clone());
+
+    // Build delta and commit
+    let delta = crate::state::Delta::new(vec![(idx, cell)]);
+    match db.commit(delta, &[]) {
+        Ok(entry) => {
             let wal_path = default_wal_path(db_path);
             persist_snapshot_and_sync_wal(db_path, &wal_path, &db)
                 .map_err(|e| internal_err(format!("persist after edit: {e:?}")))?;
+            Ok(Json(json!({
+                "ok": true,
+                "key": req.key,
+                "value": typed.to_json_value(),
+                "type": typed.tag().as_str(),
+                "height": entry.height,
+            })))
         }
+        Err(e) => Ok(Json(json!({
+            "error": format!("Commit failed: {e:?}"),
+        }))),
     }
-    Ok(Json(json!({
-        "ok": true,
-        "key": req.key,
-        "value": req.value,
-    })))
+}
+
+/// Convert a serde_json::Value to a TypedValue.
+fn json_to_typed_value(v: &serde_json::Value) -> crate::typed_value::TypedValue {
+    use crate::typed_value::TypedValue;
+    match v {
+        serde_json::Value::Null => TypedValue::Null,
+        serde_json::Value::Bool(b) => TypedValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                TypedValue::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                TypedValue::Float(f)
+            } else {
+                TypedValue::Integer(0)
+            }
+        }
+        serde_json::Value::String(s) => {
+            // Try to detect JSON inside string
+            let trimmed = s.trim();
+            if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+                || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+            {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    return TypedValue::Json(parsed);
+                }
+            }
+            TypedValue::Text(s.clone())
+        }
+        serde_json::Value::Array(arr) => {
+            // Check if all elements are numbers (vector embedding)
+            let all_numbers = arr.iter().all(|v| v.is_number());
+            if all_numbers && !arr.is_empty() {
+                let dims: Vec<f64> = arr.iter().filter_map(|v| v.as_f64()).collect();
+                if dims.len() == arr.len() {
+                    return TypedValue::Vector(dims);
+                }
+            }
+            TypedValue::Json(serde_json::Value::Array(arr.clone()))
+        }
+        serde_json::Value::Object(_) => TypedValue::Json(v.clone()),
+    }
 }
 
 async fn api_nucleusdb_verify(
@@ -939,12 +1017,33 @@ async fn api_nucleusdb_verify(
     let verified = db.verify_query(idx, value, &proof, root);
     let root_hex = crate::transparency::ct6962::hex_encode(&root);
 
+    // Include typed value info
+    let tag = db.type_map.get(&key);
+    let blob = db.blob_store.get(&key);
+    let typed = crate::typed_value::TypedValue::decode(tag, value, blob)
+        .unwrap_or(crate::typed_value::TypedValue::Integer(value as i64));
+
+    // For blob types, verify content hash binding
+    let blob_verified = if tag.is_blob() {
+        if let Some(blob_data) = blob {
+            let expected_cell = crate::typed_value::content_hash_u64(&key, blob_data);
+            expected_cell == value
+        } else {
+            false
+        }
+    } else {
+        true // Direct types don't need blob verification
+    };
+
     Ok(Json(json!({
         "key": key,
         "index": idx,
-        "value": value,
+        "value": typed.to_json_value(),
+        "display": typed.display_string(),
+        "type": tag.as_str(),
         "found": true,
         "verified": verified,
+        "blob_verified": blob_verified,
         "root_hash": root_hex,
         "backend": format!("{:?}", db.backend),
     })))
@@ -1000,18 +1099,31 @@ async fn api_nucleusdb_export(
     let db = load_halo_db(&state.db_path)?;
     let fmt = params.format.as_deref().unwrap_or("json");
 
-    let mut entries: Vec<(String, u64)> = Vec::new();
+    let mut entries: Vec<(String, Value, String)> = Vec::new();
     for (key, idx) in db.keymap.all_keys() {
-        let value = db.state.values.get(idx).copied().unwrap_or(0);
-        entries.push((key.to_string(), value));
+        let cell = db.state.values.get(idx).copied().unwrap_or(0);
+        let tag = db.type_map.get(key);
+        let blob = db.blob_store.get(key);
+        let typed = crate::typed_value::TypedValue::decode(tag, cell, blob)
+            .unwrap_or(crate::typed_value::TypedValue::Integer(cell as i64));
+        entries.push((key.to_string(), typed.to_json_value(), tag.as_str().to_string()));
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     match fmt {
         "csv" => {
-            let mut csv = String::from("key,value\n");
-            for (key, value) in &entries {
-                csv.push_str(&format!("{},{}\n", key.replace(',', "\\,"), value));
+            let mut csv = String::from("key,value,type\n");
+            for (key, value, type_tag) in &entries {
+                let val_str = match value {
+                    Value::String(s) => format!("\"{}\"", s.replace('"', "\"\"")),
+                    other => other.to_string(),
+                };
+                csv.push_str(&format!(
+                    "{},{},{}\n",
+                    key.replace(',', "\\,"),
+                    val_str,
+                    type_tag
+                ));
             }
             Ok(Json(json!({
                 "format": "csv",
@@ -1020,9 +1132,15 @@ async fn api_nucleusdb_export(
             })))
         }
         _ => {
-            let map: serde_json::Map<String, Value> = entries
+            let map: Vec<Value> = entries
                 .iter()
-                .map(|(k, v)| (k.clone(), json!(v)))
+                .map(|(k, v, t)| {
+                    json!({
+                        "key": k,
+                        "value": v,
+                        "type": t,
+                    })
+                })
                 .collect();
             Ok(Json(json!({
                 "format": "json",
@@ -1031,6 +1149,44 @@ async fn api_nucleusdb_export(
             })))
         }
     }
+}
+
+async fn api_nucleusdb_vector_search(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<VectorSearchRequest>,
+) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
+    let db = load_halo_db(&state.db_path)?;
+
+    let metric = crate::vector_index::DistanceMetric::from_str_tag(&req.metric)
+        .unwrap_or(crate::vector_index::DistanceMetric::Cosine);
+
+    let results = db
+        .vector_index
+        .search(&req.query, req.k, metric)
+        .map_err(|e| internal_err(format!("vector search: {e}")))?;
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            let typed = db.get_typed(&r.key);
+            let tag = db.type_map.get(&r.key);
+            json!({
+                "key": r.key,
+                "distance": r.distance,
+                "value": typed.as_ref().map(|t| t.to_json_value()),
+                "type": tag.as_str(),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "results": items,
+        "query_dims": req.query.len(),
+        "k": req.k,
+        "metric": req.metric,
+        "total_vectors": db.vector_index.len(),
+    })))
 }
 
 async fn api_nucleusdb_sql(
