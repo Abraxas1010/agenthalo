@@ -1107,116 +1107,120 @@ async function renderSetup() {
   const optionalTooling = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === 'tooling');
 
   // Step states
-  const step1Done = ss.agentpmt;   // AgentPMT account connected
-  const step2Done = ss.llm;        // OpenRouter configured
-  const identityDone = ss.identity; // Auth or wallet
+  const step1Done = ss.agentpmt;
+  const step2Done = ss.llm;
+  const identityDone = ss.identity;
   const allDone = ss.complete;
 
-  // Determine which step is active
-  const step1Class = step1Done ? 'step-done' : 'step-active';
-  const step2Class = step1Done ? (step2Done ? 'step-done' : 'step-active') : 'step-locked';
-  const step3Class = step1Done && step2Done ? 'step-done' : 'step-locked';
-
-  // AgentPMT connection status
   const pmtEnabled = cfg && cfg.agentpmt && cfg.agentpmt.enabled;
   const pmtAuth = cfg && cfg.agentpmt && cfg.agentpmt.auth_configured;
   const pmtToolCount = (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) || 0;
 
-  const bannerTitle = allDone ? 'Setup Complete' : 'Get Started';
-  const bannerSub = allDone
-    ? 'All required services are configured. Your dashboard is fully operational.'
-    : 'Complete these steps to unlock your Agent H.A.L.O. dashboard.';
+  // Stepper step classes
+  const s1c = step1Done ? 's-done' : 's-active';
+  const s2c = step1Done ? (step2Done ? 's-done' : 's-active') : '';
+  const s3c = allDone ? 's-done' : (step1Done && step2Done ? 's-active' : '');
+
+  // Card classes
+  const c1c = step1Done ? 'card-done' : 'card-active';
+  const c2c = step1Done ? (step2Done ? 'card-done' : 'card-active') : 'card-locked';
+  const c3c = allDone ? 'card-done card-celebrate' : 'card-locked';
 
   content.innerHTML = `
-    <div class="page-header">
-      <h1>Setup</h1>
-      <p class="subtitle">Connect your account, configure services, launch agents.</p>
+
+    <!-- Hero -->
+    <div class="setup-hero">
+      <div class="setup-hero-emoji">${allDone ? '&#127881;' : '&#128075;'}</div>
+      <h1>${allDone ? 'You\'re All Set!' : 'Welcome to Agent H.A.L.O.'}</h1>
+      <p>${allDone
+        ? 'Your dashboard is fully operational. Go build something amazing.'
+        : 'Get your agent economy running in just a couple of steps. It only takes a minute.'}</p>
     </div>
 
-    <div class="setup-banner">
-      <div class="setup-banner-title">${esc(bannerTitle)}</div>
-      <div class="setup-banner-sub">${esc(bannerSub)}</div>
+    <!-- Stepper -->
+    <div class="setup-stepper">
+      <div class="setup-stepper-step ${s1c}">
+        <div class="setup-stepper-dot">${step1Done ? '&#10003;' : '1'}</div>
+        <div class="setup-stepper-label">Account</div>
+      </div>
+      <div class="setup-stepper-step ${s2c}">
+        <div class="setup-stepper-dot">${step2Done ? '&#10003;' : '2'}</div>
+        <div class="setup-stepper-label">LLM Key</div>
+      </div>
+      <div class="setup-stepper-step ${s3c}">
+        <div class="setup-stepper-dot">${allDone ? '&#10003;' : '3'}</div>
+        <div class="setup-stepper-label">Ready</div>
+      </div>
     </div>
 
-    <!-- ============================================================
-         STEP 1: AgentPMT Account (Primary CTA)
-         ============================================================ -->
-    <div class="setup-wizard-step ${step1Class}" id="setup-step-1">
-      <h3>${step1Done ? '&#10003;' : '1.'} Connect Your AgentPMT Account</h3>
-      <p style="color:var(--text-muted);font-size:12px;line-height:1.5;margin-bottom:10px">
-        AgentPMT is the marketplace powering all tool access, workflows, and agent budgets.
-        Create a free account to connect your dashboard to the agent economy.
-      </p>
+    <!-- STEP 1: AgentPMT Account -->
+    <div class="setup-card-v2 ${c1c}" id="setup-step-1">
+      <div class="card-header">
+        <div class="card-icon">&#9883;</div>
+        <div>
+          <div class="card-title">Connect Your Account</div>
+          <div class="card-desc">Link to AgentPMT to access ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and agent budgets</div>
+        </div>
+      </div>
 
       ${step1Done ? `
-        <div style="padding:10px 12px;border:1px solid var(--green);border-radius:var(--radius);font-size:12px;color:var(--green);display:flex;align-items:center;gap:8px">
-          <span style="font-size:16px">&#10003;</span>
-          <span>AgentPMT connected${pmtToolCount > 0 ? ' &mdash; ' + pmtToolCount + ' tools available' : ''}</span>
+        <div class="setup-success-banner">
+          <span class="success-icon">&#10003;</span>
+          <span>AgentPMT connected${pmtToolCount > 0 ? ' &mdash; <strong>' + pmtToolCount + ' tools</strong> ready to use' : ''}</span>
         </div>
       ` : `
-        <!-- Path A: Direct AgentPMT account (Primary) -->
-        <div class="setup-path-primary">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-            <span class="badge badge-ok" style="font-size:10px">RECOMMENDED</span>
-            <span style="font-size:13px;font-weight:700;color:var(--accent)">Create an AgentPMT Account</span>
-          </div>
+        <div class="setup-recommended">
+          <div class="setup-recommended-label">Recommended</div>
 
-          <ol class="setup-step-list">
+          <ol class="setup-steps-friendly">
             <li>
-              <span class="step-num">1</span>
-              <span>Sign up for a free account at AgentPMT.com</span>
+              <span class="step-circle">1</span>
+              <span>Create a <strong>free account</strong> at AgentPMT.com &mdash; takes 30 seconds</span>
             </li>
             <li>
-              <span class="step-num">2</span>
-              <span>Navigate to your account settings and copy your API token</span>
+              <span class="step-circle">2</span>
+              <span>Go to <strong>Account Settings</strong> and copy your API token</span>
             </li>
             <li>
-              <span class="step-num">3</span>
-              <span>Paste your token below to connect</span>
+              <span class="step-circle">3</span>
+              <span>Paste it below and hit <strong>Save</strong></span>
             </li>
           </ol>
 
-          <div style="margin:12px 0 8px">
-            <a class="btn btn-primary" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer"
-               style="font-size:13px;padding:10px 20px;letter-spacing:0.6px">
-              Create Free Account at AgentPMT.com &#8599;
-            </a>
-          </div>
+          <a class="setup-cta-big" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer">
+            Create Free Account &#8599;
+          </a>
 
-          <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
-            <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">
-              Paste your AgentPMT API token
-            </div>
-            <div class="setup-token-input">
-              <input id="setup-agentpmt-token" type="password" placeholder="Paste AgentPMT API token here"
+          <div class="setup-token-area">
+            <label for="setup-agentpmt-token">Your AgentPMT API Token</label>
+            <div class="setup-token-row">
+              <input id="setup-agentpmt-token" type="password" placeholder="Paste your token here..."
                      autocomplete="off" spellcheck="false">
-              <button class="btn btn-sm btn-primary" id="setup-save-agentpmt">Save Token</button>
-              <button class="btn btn-sm" id="setup-test-agentpmt" ${!pmtAuth ? 'disabled style="opacity:0.5"' : ''}>
-                Test Connection
+              <button class="btn btn-primary" id="setup-save-agentpmt" style="padding:10px 20px;font-size:13px;border-radius:6px">Save</button>
+              <button class="btn" id="setup-test-agentpmt" style="padding:10px 16px;font-size:13px;border-radius:6px" ${!pmtAuth ? 'disabled' : ''}>
+                Test
               </button>
             </div>
-            <div id="setup-agentpmt-status" style="margin-top:6px;font-size:11px;min-height:16px"></div>
+            <div id="setup-agentpmt-status" class="setup-token-status"></div>
           </div>
         </div>
 
-        <!-- Path B: Local PQ wallet (Secondary, collapsed) -->
-        <details class="setup-path-secondary">
-          <summary>Or use local PQ wallet identity (advanced)</summary>
-          <div style="padding-top:10px">
-            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;line-height:1.5">
-              This creates a local-only cryptographic identity. It enables vault storage and
-              dashboard authentication, but does <strong>not</strong> provide marketplace access.
-              For full tool, workflow, and budget capabilities, use an AgentPMT account above.
-            </div>
-            <div style="border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin:8px 0">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-                <span style="font-size:12px">Dashboard auth</span>
+        <details class="setup-alt-path">
+          <summary>Advanced: Use local PQ wallet identity instead</summary>
+          <div class="alt-body">
+            <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin-bottom:12px">
+              Creates a local cryptographic identity for vault storage and dashboard auth.
+              Does <strong>not</strong> provide marketplace access &mdash; for tools and workflows, use AgentPMT above.
+            </p>
+            <div style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                <span style="font-size:13px;color:var(--text)">Dashboard auth</span>
                 ${isAuthenticated
                   ? '<span class="badge badge-ok">Authenticated</span>'
-                  : '<span class="badge badge-muted">Not authenticated</span>'}
+                  : '<span class="badge badge-muted">Not set up</span>'}
               </div>
               <div style="display:flex;justify-content:space-between;align-items:center">
-                <span style="font-size:12px">PQ wallet (vault master key)</span>
+                <span style="font-size:13px;color:var(--text)">PQ wallet</span>
                 ${hasWallet
                   ? '<span class="badge badge-ok">Present</span>'
                   : '<span class="badge badge-muted">Not created</span>'}
@@ -1232,8 +1236,9 @@ async function renderSetup() {
                 <button class="btn btn-sm" onclick="copySetupText('agenthalo login')">Copy</button>
               </div>
             ` : `
-              <div style="font-size:11px;color:var(--green);margin-top:6px">
-                &#10003; Local identity configured. Consider adding an AgentPMT account for full marketplace access.
+              <div class="setup-success-banner" style="font-size:12px">
+                <span class="success-icon">&#10003;</span>
+                <span>Local identity configured. Add AgentPMT above for full marketplace access.</span>
               </div>
             `}
           </div>
@@ -1241,109 +1246,122 @@ async function renderSetup() {
       `}
     </div>
 
-    <!-- ============================================================
-         STEP 2: OpenRouter LLM Key
-         ============================================================ -->
-    <div class="setup-wizard-step ${step2Class}" id="setup-step-2">
-      <h3>${step2Done ? '&#10003;' : '2.'} Configure LLM Inference (OpenRouter)</h3>
-      <p style="font-size:12px;color:${step1Done ? 'var(--amber)' : 'var(--text-dim)'};line-height:1.5;margin-bottom:10px">
-        All LLM inference routes exclusively through your OpenRouter account.
-        Customer requests are proxied with configurable markup pricing.
-      </p>
-      ${requiredProviders.map(p => providerCard(p)).join('')}
+    <!-- STEP 2: OpenRouter LLM Key -->
+    <div class="setup-card-v2 ${c2c}" id="setup-step-2">
+      <div class="card-header">
+        <div class="card-icon">&#9889;</div>
+        <div>
+          <div class="card-title">Add Your LLM Key</div>
+          <div class="card-desc">Power your agents with OpenRouter &mdash; one key for 200+ models</div>
+        </div>
+      </div>
+
+      ${requiredProviders.map(p => {
+        const info = PROVIDER_INFO[p] || { name: p, envVar: providerDefaultEnv(p), keyUrl: '#', description: '' };
+        const s = providerStatus(p);
+        return `
+          <div class="setup-provider-card">
+            <div class="provider-info">
+              <div class="provider-name">${esc(info.name)}</div>
+              <div class="provider-env">${esc(info.envVar)}</div>
+              ${info.description ? '<div class="provider-desc">' + esc(info.description) + '</div>' : ''}
+            </div>
+            <div class="provider-actions">
+              ${statusBadgeHtml(p)}
+              ${info.keyUrl && info.keyUrl !== '#' ? '<a class="btn btn-sm" href="' + esc(info.keyUrl) + '" target="_blank" rel="noopener noreferrer">Get Key</a>' : ''}
+              <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(p)}">Set Key</button>
+              ${s.configured ? '<button class="btn btn-sm setup-provider-test-btn" data-provider="' + esc(p) + '">Test</button>' : ''}
+            </div>
+          </div>
+        `;
+      }).join('')}
+
       ${step2Done ? `
-        <div style="margin-top:10px;padding:8px 12px;border:1px solid var(--green);border-radius:var(--radius);font-size:11px;color:var(--green)">
-          &#10003; OpenRouter is configured. LLM proxy is operational.
+        <div class="setup-success-banner" style="margin-top:14px">
+          <span class="success-icon">&#10003;</span>
+          <span>OpenRouter connected &mdash; LLM proxy is live</span>
         </div>
       ` : step1Done ? `
-        <div style="margin-top:10px;padding:8px 12px;border:1px solid var(--amber);border-radius:var(--radius);font-size:11px;color:var(--amber)">
-          &#9888; OpenRouter key required before customers can use LLM inference.
+        <div class="setup-info-box" style="margin-top:14px">
+          <span class="info-icon">&#9888;</span>
+          <span>Add your OpenRouter key so customers can use LLM inference through your agents.</span>
         </div>
       ` : ''}
     </div>
 
-    <!-- ============================================================
-         STEP 3: All Done / Continue
-         ============================================================ -->
-    <div class="setup-wizard-step ${step3Class}" id="setup-step-3">
-      <h3>${allDone ? '&#10003;' : '3.'} Dashboard Unlocked</h3>
+    <!-- STEP 3: Dashboard Unlocked -->
+    <div class="setup-card-v2 ${c3c}" id="setup-step-3">
+      <div class="card-header">
+        <div class="card-icon">&#127919;</div>
+        <div>
+          <div class="card-title">${allDone ? 'Dashboard Unlocked!' : 'Almost There'}</div>
+          <div class="card-desc">${allDone ? 'All systems go. Explore your dashboard.' : 'Complete the steps above to unlock everything.'}</div>
+        </div>
+      </div>
       ${allDone ? `
-        <p style="color:var(--green);font-size:12px;line-height:1.5">
-          All required services are configured. Your dashboard tabs are now unlocked.
-        </p>
-        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-          <a class="btn btn-primary" href="#/overview">Go to Overview</a>
-          <a class="btn" href="#/cockpit">Open Cockpit</a>
-          <a class="btn" href="#/deploy">Deploy Agents</a>
+        <div class="setup-unlocked-actions">
+          <a class="btn btn-primary" href="#/overview" style="border-radius:6px">Explore Overview</a>
+          <a class="btn" href="#/cockpit" style="border-radius:6px">Open Cockpit</a>
+          <a class="btn" href="#/deploy" style="border-radius:6px">Deploy Agents</a>
         </div>
       ` : `
-        <p style="color:var(--text-dim);font-size:12px;line-height:1.5">
-          Complete steps 1 and 2 above to unlock all dashboard features.
+        <p style="color:var(--text-dim);font-size:13px;line-height:1.6;margin-top:4px">
+          Once you connect your account and add an LLM key, all tabs unlock automatically.
         </p>
       `}
     </div>
 
-    <!-- ============================================================
-         Optional Integrations (collapsed)
-         ============================================================ -->
+    <!-- Optional Integrations -->
     <details class="setup-optional-section">
       <summary>Optional Integrations (${optionalStorage.length + optionalLLM.length + optionalTooling.length} services)</summary>
       <div class="optional-body">
-        <div style="margin-top:8px">
-          <div style="font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px">
-            Immutable 3rd-Party Storage
-          </div>
-          <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
-            IPFS-based immutable storage for agent traces, attestations, and customer data.
+        <div style="margin-top:12px">
+          <div style="font-size:14px;font-weight:700;color:var(--accent);margin-bottom:6px">Immutable Storage</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.5">
+            IPFS-based storage for agent traces, attestations, and customer data.
           </div>
           ${optionalStorage.map(p => providerCard(p)).join('')}
         </div>
-        <div style="margin-top:14px">
-          <div style="font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px">
-            Direct LLM Keys (Operator Only)
-          </div>
-          <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
-            Operator-side diagnostics and fallback. Customer traffic always uses OpenRouter.
+        <div style="margin-top:18px">
+          <div style="font-size:14px;font-weight:700;color:var(--accent);margin-bottom:6px">Direct LLM Keys</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.5">
+            Operator-side diagnostics and fallback. Customer traffic uses OpenRouter.
           </div>
           ${optionalLLM.map(p => providerCard(p)).join('')}
         </div>
-        <div style="margin-top:14px">
-          <div style="font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px">
-            Additional Tool Integrations
-          </div>
+        <div style="margin-top:18px">
+          <div style="font-size:14px;font-weight:700;color:var(--accent);margin-bottom:6px">Additional Tools</div>
           ${optionalTooling.map(p => providerCard(p)).join('')}
         </div>
       </div>
     </details>
 
-    <!-- ============================================================
-         Funding & Monetization (informational)
-         ============================================================ -->
-    <div class="setup-wizard-step" style="margin-top:12px;border-color:var(--accent)">
-      <h3>Funding &amp; Monetization</h3>
-      <p style="font-size:12px;color:var(--text-dim);line-height:1.5;margin-bottom:10px">
-        All customer balance top-ups flow through two channels only:
+    <!-- Funding & Monetization -->
+    <div class="setup-card-v2" style="margin-top:20px;border-color:rgba(255,106,0,0.25)">
+      <div class="card-header">
+        <div class="card-icon">&#128176;</div>
+        <div>
+          <div class="card-title">Funding &amp; Monetization</div>
+          <div class="card-desc">Two verified channels for customer balance top-ups</div>
+        </div>
+      </div>
+      <div class="setup-funding-channel">
+        <div class="channel-icon">&#127968;</div>
+        <div>
+          <div class="channel-name">AgentPMT Token Purchase</div>
+          <div class="channel-desc">Customers buy tokens at AgentPMT.com. Signed receipts verified via HMAC-SHA256.</div>
+        </div>
+      </div>
+      <div class="setup-funding-channel">
+        <div class="channel-icon">&#9939;</div>
+        <div>
+          <div class="channel-name">x402direct (USDC on Base L2)</div>
+          <div class="channel-desc">Direct USDC stablecoin payment. Transaction hash verified on-chain.</div>
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.5">
+        All tools, workflows, and agent configurations are accessible exclusively through AgentPMT MCP.
       </p>
-      <div style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin:8px 0">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-          <span class="badge badge-ok" style="font-size:10px">PRIMARY</span>
-          <div>
-            <div style="font-size:12px;font-weight:bold;color:var(--amber)">AgentPMT.com Token Purchase</div>
-            <div style="font-size:10px;color:var(--text-dim)">Customers buy tokens at AgentPMT.com. Signed receipts verified via HMAC-SHA256.</div>
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;gap:10px">
-          <span class="badge badge-info" style="font-size:10px">ON-CHAIN</span>
-          <div>
-            <div style="font-size:12px;font-weight:bold;color:var(--amber)">x402direct (USDC on Base L2)</div>
-            <div style="font-size:10px;color:var(--text-dim)">Direct USDC stablecoin payment. Transaction hash verified on-chain.</div>
-          </div>
-        </div>
-      </div>
-      <div style="font-size:10px;color:var(--text-dim);margin-top:4px">
-        No other funding channel is accepted. All tools, workflows, skills, and agent configurations
-        are accessible exclusively through AgentPMT MCP.
-      </div>
     </div>
   `;
 
