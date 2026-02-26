@@ -2,6 +2,7 @@
 
 use nucleusdb::dashboard::api::api_router;
 use nucleusdb::dashboard::{build_state, DashboardState};
+use nucleusdb::halo::agentpmt;
 use nucleusdb::halo::auth::{save_credentials, Credentials};
 use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
 use nucleusdb::halo::trace::{list_sessions as list_trace_sessions, now_unix_secs, TraceWriter};
@@ -11,12 +12,43 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use tower::ServiceExt;
 
 fn temp_db_path(tag: &str) -> PathBuf {
     let stamp = format!("{}-{}-{}", tag, std::process::id(), now_unix_secs());
     std::env::temp_dir().join(format!("dashboard_test_{stamp}.ndb"))
+}
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: Option<&str>) -> Self {
+        let prev = std::env::var(key).ok();
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        Self { key, prev }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(v) = self.prev.as_ref() {
+            std::env::set_var(self.key, v);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
 }
 
 fn test_state(tag: &str) -> (DashboardState, PathBuf) {
@@ -1077,6 +1109,47 @@ async fn config_includes_setup_complete_fields() {
 }
 
 #[tokio::test]
+async fn config_agentpmt_setup_false_when_token_unverified() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_agentpmt_unverified_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _token_guard = EnvVarGuard::set("AGENTPMT_API_KEY", Some("fake-token-for-test"));
+    let _bearer_guard = EnvVarGuard::set("AGENTPMT_BEARER_TOKEN", None);
+
+    let cfg = agentpmt::AgentPmtConfig {
+        enabled: true,
+        budget_tag: None,
+        mcp_endpoint: Some("http://127.0.0.1:1/mcp".to_string()),
+        auth_token: None,
+        updated_at: now_unix_secs(),
+    };
+    let cfg_path = agentpmt::agentpmt_config_path();
+    agentpmt::save_config(&cfg_path, &cfg).expect("save agentpmt config");
+    let _ = std::fs::remove_file(agentpmt::tool_catalog_path());
+
+    let (state, db_path) = test_state("config_agentpmt_unverified");
+    let (status, val) = api_get(state, "/config").await;
+    assert_eq!(status, StatusCode::OK, "config should succeed: {val}");
+    assert_eq!(
+        val["setup_complete"]["agentpmt"], false,
+        "agentpmt setup should fail closed when token cannot be verified: {val}"
+    );
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn agentpmt_refresh_requires_auth() {
     let (state, db_path, creds_path) = test_state_unauth("agentpmt_refresh_auth");
     let (status, val) = api_post(state, "/agentpmt/refresh", json!({})).await;
@@ -1090,6 +1163,54 @@ async fn agentpmt_refresh_requires_auth() {
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn agentpmt_enable_requires_auth() {
+    let (state, db_path, creds_path) = test_state_unauth("agentpmt_enable_auth");
+    let (status, val) = api_post(state, "/agentpmt/enable", json!({})).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "enable should require auth"
+    );
+    assert_eq!(val["code"], "auth_required");
+    assert_eq!(val["setup_route"], "#/setup");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn agentpmt_enable_sets_enabled_in_config() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_agentpmt_enable_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _token_guard = EnvVarGuard::set("AGENTPMT_API_KEY", None);
+    let _bearer_guard = EnvVarGuard::set("AGENTPMT_BEARER_TOKEN", None);
+
+    let (state, db_path) = test_state("agentpmt_enable_sets_enabled");
+    let (s1, v1) = api_post(state.clone(), "/agentpmt/enable", json!({})).await;
+    assert_eq!(s1, StatusCode::OK, "enable should succeed: {v1}");
+    assert_eq!(v1["ok"], true);
+    assert_eq!(v1["enabled"], true);
+
+    let (s2, v2) = api_get(state, "/config").await;
+    assert_eq!(s2, StatusCode::OK, "config should succeed: {v2}");
+    assert_eq!(v2["agentpmt"]["enabled"], true);
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
 }
 
 #[tokio::test]

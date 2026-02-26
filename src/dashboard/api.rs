@@ -465,6 +465,48 @@ fn require_sensitive_access(state: &DashboardState) -> Result<(), (StatusCode, J
     }
 }
 
+fn agentpmt_refresh_interval_secs(env_var: &str, default_secs: i64) -> i64 {
+    std::env::var(env_var)
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default_secs)
+}
+
+fn agentpmt_catalog_is_stale(refreshed_at: Option<&str>, max_age_secs: i64) -> bool {
+    let now = chrono::Utc::now();
+    refreshed_at
+        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+        .map(|ts| {
+            now.signed_duration_since(ts.with_timezone(&chrono::Utc))
+                .num_seconds()
+                >= max_age_secs
+        })
+        .unwrap_or(true)
+}
+
+fn resolve_agentpmt_setup_status(
+    pmt_cfg: &agentpmt::AgentPmtConfig,
+    pmt_auth: bool,
+) -> (bool, usize) {
+    if !pmt_cfg.enabled || !pmt_auth {
+        return (false, 0);
+    }
+
+    let max_age_secs = agentpmt_refresh_interval_secs("AGENTHALO_AGENTPMT_SETUP_REFRESH_SECS", 300);
+    let mut catalog = agentpmt::load_tool_catalog();
+    let stale = agentpmt_catalog_is_stale(catalog.refreshed_at.as_deref(), max_age_secs);
+    if catalog.tools.is_empty() || stale {
+        match agentpmt::refresh_tool_catalog() {
+            Ok(fresh) => catalog = fresh,
+            Err(_) => return (false, 0),
+        }
+    }
+
+    let count = catalog.tools.len();
+    (count > 0, count)
+}
+
 fn sanitize_proxy_error(provider: &str, err: &ureq::Error) -> String {
     let msg = err.to_string();
     if msg.contains("key=") {
@@ -1144,11 +1186,6 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let creds_path = &state.credentials_path;
     let has_auth = is_authenticated(creds_path) || resolve_api_key(creds_path).is_some();
     let pmt_cfg = agentpmt::load_or_default();
-    let pmt_tool_count = if pmt_cfg.enabled {
-        agentpmt::proxied_tools_for_listing().len()
-    } else {
-        0
-    };
     let addons_cfg = addons::load_or_default();
     let x402_cfg = x402::load_x402_config();
     let onchain_cfg = load_onchain_config_or_default();
@@ -1161,9 +1198,9 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     };
 
     let pmt_auth = agentpmt::has_bearer_token();
+    let (agentpmt_ok, pmt_tool_count) = resolve_agentpmt_setup_status(&pmt_cfg, pmt_auth);
     let has_pq = has_wallet();
     let identity_ok = has_auth || has_pq;
-    let agentpmt_ok = pmt_cfg.enabled && pmt_auth;
     let llm_ok = state
         .vault
         .as_ref()
@@ -1233,22 +1270,10 @@ async fn api_agentpmt_tools(AxumState(_state): AxumState<DashboardState>) -> Api
     let mut source = "cache".to_string();
     let mut refresh_error: Option<String> = None;
     let mut catalog = agentpmt::load_tool_catalog();
-    let refresh_interval_secs = std::env::var("AGENTHALO_AGENTPMT_CATALOG_REFRESH_SECS")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(900);
-    let now = chrono::Utc::now();
-    let mut stale = catalog
-        .refreshed_at
-        .as_deref()
-        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
-        .map(|ts| {
-            now.signed_duration_since(ts.with_timezone(&chrono::Utc))
-                .num_seconds()
-                >= refresh_interval_secs
-        })
-        .unwrap_or(true);
+    let refresh_interval_secs =
+        agentpmt_refresh_interval_secs("AGENTHALO_AGENTPMT_CATALOG_REFRESH_SECS", 900);
+    let mut stale =
+        agentpmt_catalog_is_stale(catalog.refreshed_at.as_deref(), refresh_interval_secs);
     let should_refresh_live =
         pmt_cfg.enabled && auth_configured && (catalog.tools.is_empty() || stale);
 

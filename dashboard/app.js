@@ -63,6 +63,7 @@ const pages = { overview: renderOverview, sessions: renderSessions, costs: rende
 // Setup-first gate: cached setup state
 let _setupState = null;
 let _setupStateFetchedAt = 0;
+let _lastSetupComplete = null;
 const SETUP_CACHE_MS = 5000;
 
 async function fetchSetupState(force) {
@@ -73,8 +74,8 @@ async function fetchSetupState(force) {
     _setupState = cfg.setup_complete || { identity: false, agentpmt: false, llm: false, complete: false };
     _setupStateFetchedAt = now;
   } catch (_e) {
-    // If API unreachable, allow navigation (graceful degradation)
-    _setupState = { identity: true, agentpmt: true, llm: true, complete: true };
+    // Fail closed: keep users in setup if we cannot verify state.
+    _setupState = { identity: false, agentpmt: false, llm: false, complete: false };
     _setupStateFetchedAt = now;
   }
   updateNavLockState();
@@ -84,16 +85,29 @@ async function fetchSetupState(force) {
 function updateNavLockState() {
   if (!_setupState) return;
   const complete = _setupState.complete;
+  const justUnlocked = _lastSetupComplete === false && complete === true;
   $$('.nav-link').forEach(a => {
     const page = a.dataset.page;
     if (page === 'setup') {
       a.classList.remove('nav-locked');
       a.classList.toggle('setup-incomplete', !complete);
+      a.classList.remove('nav-unlocked');
     } else {
       a.classList.toggle('nav-locked', !complete);
       a.classList.remove('setup-incomplete');
+      if (!complete) a.classList.remove('nav-unlocked');
     }
   });
+
+  if (justUnlocked) {
+    $$('.nav-link').forEach(a => {
+      if (a.dataset.page !== 'setup') a.classList.add('nav-unlocked');
+    });
+    setTimeout(() => {
+      $$('.nav-link.nav-unlocked').forEach(a => a.classList.remove('nav-unlocked'));
+    }, 900);
+  }
+
   // Update progress indicator
   const prog = document.getElementById('setup-progress');
   if (prog) {
@@ -107,10 +121,14 @@ function updateNavLockState() {
         <div class="progress-bar"><div class="progress-fill" style="width:${Math.round(done/steps.length*100)}%"></div></div>`;
     }
   }
+  _lastSetupComplete = complete;
 }
 
 // Invalidate setup cache (called after setup actions)
-window._invalidateSetupState = function() { _setupStateFetchedAt = 0; };
+window._invalidateSetupState = function() {
+  _setupState = null;
+  _setupStateFetchedAt = 0;
+};
 
 async function route() {
   // Clean up particle animation when leaving NucleusDB page
@@ -1362,7 +1380,9 @@ async function renderSetup() {
         }
         // Invalidate setup state cache and re-render
         window._invalidateSetupState();
-        setTimeout(() => { renderSetup(); updateNavLockState(); }, 800);
+        await fetchSetupState(true);
+        await renderSetup();
+        updateNavLockState();
       } catch (e) {
         if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Save failed: ${esc(String(e.message || e))}</span>`;
         saveBtn.disabled = false;
@@ -1454,9 +1474,11 @@ function openVaultModal(provider, envVar) {
       await apiPost(`/vault/keys/${encodeURIComponent(provider)}`, { key, env_var: envVar });
       wrap.remove();
       window._invalidateSetupState();
+      await fetchSetupState(true);
       // Re-render current page
       const curPage = (location.hash.replace('#/', '') || 'setup').split('/')[0];
-      if (pages[curPage]) pages[curPage]();
+      if (pages[curPage]) await pages[curPage]();
+      updateNavLockState();
     } catch (e) {
       alert('Set key failed: ' + e.message);
     }
@@ -1473,8 +1495,10 @@ window.vaultTestKey = async function(provider) {
     if (res.ok) alert(`${provider}: key validated successfully`);
     else alert(`${provider}: ${res.error || 'validation failed'}`);
     window._invalidateSetupState();
+    await fetchSetupState(true);
     const curPage = (location.hash.replace('#/', '') || 'setup').split('/')[0];
-    if (pages[curPage]) pages[curPage]();
+    if (pages[curPage]) await pages[curPage]();
+    updateNavLockState();
   } catch (e) {
     alert('Test key failed: ' + e.message);
   }
@@ -1485,8 +1509,10 @@ window.vaultRemoveKey = async function(provider) {
   try {
     await apiDelete(`/vault/keys/${encodeURIComponent(provider)}`);
     window._invalidateSetupState();
+    await fetchSetupState(true);
     const curPage = (location.hash.replace('#/', '') || 'setup').split('/')[0];
-    if (pages[curPage]) pages[curPage]();
+    if (pages[curPage]) await pages[curPage]();
+    updateNavLockState();
   } catch (e) {
     alert('Remove key failed: ' + e.message);
   }
