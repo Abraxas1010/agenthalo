@@ -70,12 +70,7 @@ async fn main() -> Result<(), String> {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(8390);
     let host = std::env::var("AGENTHALO_MCP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let secret = std::env::var("AGENTHALO_MCP_SECRET").unwrap_or_else(|_| {
-        eprintln!(
-            "warning: AGENTHALO_MCP_SECRET not set; using dev default secret (set this in non-local environments)"
-        );
-        "agenthalo-dev-secret".to_string()
-    });
+    let secret = resolve_mcp_secret()?;
 
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
@@ -96,6 +91,42 @@ async fn main() -> Result<(), String> {
         .await
         .map_err(|e| format!("serve axum: {e}"))?;
     Ok(())
+}
+
+fn is_truthy_env(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn resolve_mcp_secret() -> Result<String, String> {
+    if let Ok(secret) = std::env::var("AGENTHALO_MCP_SECRET") {
+        let trimmed = secret.trim();
+        if trimmed.is_empty() {
+            return Err(
+                "AGENTHALO_MCP_SECRET is set but empty; provide a non-empty bearer secret"
+                    .to_string(),
+            );
+        }
+        return Ok(trimmed.to_string());
+    }
+
+    if is_truthy_env("AGENTHALO_ALLOW_DEV_SECRET") {
+        eprintln!(
+            "warning: using AGENTHALO_ALLOW_DEV_SECRET=1 fallback secret; localhost dev only"
+        );
+        return Ok("agenthalo-dev-secret".to_string());
+    }
+
+    Err(
+        "AGENTHALO_MCP_SECRET is required. Set it (for example: `export AGENTHALO_MCP_SECRET=$(openssl rand -hex 32)`). For localhost-only dev fallback, set AGENTHALO_ALLOW_DEV_SECRET=1.".to_string(),
+    )
 }
 
 async fn health() -> Json<Value> {
@@ -392,17 +423,22 @@ fn tool_call_response(name: &str, arguments: Value) -> Value {
                     "text": payload.to_string()
                 }
             ],
+            "structuredContent": payload,
             "isError": false
         }),
-        Err(err) => json!({
-            "content": [
-                {
-                    "type": "text",
-                    "text": json!({"status":"error","message":err}).to_string()
-                }
-            ],
-            "isError": true
-        }),
+        Err(err) => {
+            let err_payload = json!({"status":"error","message":err});
+            json!({
+                "structuredContent": err_payload.clone(),
+                "content": [
+                    {
+                        "type": "text",
+                        "text": err_payload.to_string()
+                    }
+                ],
+                "isError": true
+            })
+        }
     }
 }
 
@@ -1345,6 +1381,7 @@ mod tests {
     fn unknown_tool_sets_error_flag() {
         let out = tool_call_response("does_not_exist", json!({}));
         assert_eq!(out.get("isError").and_then(|v| v.as_bool()), Some(true));
+        assert!(out.get("structuredContent").is_some());
     }
 
     #[test]
@@ -1361,6 +1398,7 @@ mod tests {
 
         let out = tool_call_response("sync", json!({}));
         assert_eq!(out.get("isError").and_then(|v| v.as_bool()), Some(false));
+        assert!(out.get("structuredContent").is_some());
 
         std::env::remove_var("AGENTHALO_HOME");
         let _ = std::fs::remove_dir_all(&home);
@@ -1429,5 +1467,28 @@ mod tests {
 
         std::env::remove_var("AGENTHALO_HOME");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn resolve_mcp_secret_requires_explicit_secret_or_dev_opt_in() {
+        let _guard = env_lock().lock().expect("lock env");
+        std::env::remove_var("AGENTHALO_MCP_SECRET");
+        std::env::remove_var("AGENTHALO_ALLOW_DEV_SECRET");
+
+        let err = resolve_mcp_secret().expect_err("secret should be required by default");
+        assert!(
+            err.contains("AGENTHALO_MCP_SECRET is required"),
+            "unexpected error: {err}"
+        );
+
+        std::env::set_var("AGENTHALO_ALLOW_DEV_SECRET", "1");
+        let dev = resolve_mcp_secret().expect("dev opt-in should permit fallback");
+        assert_eq!(dev, "agenthalo-dev-secret");
+        std::env::remove_var("AGENTHALO_ALLOW_DEV_SECRET");
+
+        std::env::set_var("AGENTHALO_MCP_SECRET", "real-secret");
+        let explicit = resolve_mcp_secret().expect("explicit secret should work");
+        assert_eq!(explicit, "real-secret");
+        std::env::remove_var("AGENTHALO_MCP_SECRET");
     }
 }

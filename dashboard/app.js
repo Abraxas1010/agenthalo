@@ -814,7 +814,13 @@ async function renderConfig() {
         <div class="config-row">
           <div>
             <div class="config-label">Tool Catalog</div>
-            <div class="config-desc">${Number(pmtToolsResp.count || 0)} tools discovered</div>
+            <div class="config-desc">
+              ${Number(pmtToolsResp.count || 0)} tools discovered
+              (${esc(String(pmtToolsResp.source || 'cache'))}${pmtToolsResp.stale ? ', stale' : ', fresh'})
+            </div>
+            ${pmtToolsResp.refresh_attempted
+              ? `<div class="config-desc" style="font-size:10px">Live refresh attempted this request</div>`
+              : ''}
             ${pmtToolsError ? `<div class="config-desc" style="color:var(--danger);font-size:10px">Catalog error: ${esc(pmtToolsError)}</div>` : ''}
           </div>
           <div style="display:flex;gap:6px;align-items:center">

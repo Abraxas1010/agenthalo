@@ -67,6 +67,9 @@ pub struct ProxiedTool {
     /// Category tag (e.g. "email", "payments", "blockchain").
     #[serde(default)]
     pub category: Option<String>,
+    /// Optional MCP input schema for the tool.
+    #[serde(default, rename = "inputSchema")]
+    pub input_schema: Option<Value>,
 }
 
 /// The full cached catalog.
@@ -79,6 +82,13 @@ pub struct ToolCatalog {
 }
 
 impl ToolCatalog {
+    fn default_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "additionalProperties": true
+        })
+    }
+
     /// Return MCP-formatted tool list entries, prefixed with `agentpmt/`.
     pub fn as_mcp_tools(&self) -> Vec<Value> {
         self.tools
@@ -86,7 +96,11 @@ impl ToolCatalog {
             .map(|t| {
                 json!({
                     "name": format!("agentpmt/{}", t.name),
-                    "description": format!("[AgentPMT] {}", t.description)
+                    "description": format!("[AgentPMT] {}", t.description),
+                    "inputSchema": t
+                        .input_schema
+                        .clone()
+                        .unwrap_or_else(Self::default_input_schema),
                 })
             })
             .collect()
@@ -105,31 +119,37 @@ pub fn default_tool_catalog() -> ToolCatalog {
                 name: "gmail_send".to_string(),
                 description: "Send email via Gmail".to_string(),
                 category: Some("email".to_string()),
+                input_schema: None,
             },
             ProxiedTool {
                 name: "gmail_search".to_string(),
                 description: "Search Gmail inbox".to_string(),
                 category: Some("email".to_string()),
+                input_schema: None,
             },
             ProxiedTool {
                 name: "calendar_create_event".to_string(),
                 description: "Create a Google Calendar event".to_string(),
                 category: Some("productivity".to_string()),
+                input_schema: None,
             },
             ProxiedTool {
                 name: "stripe_charge".to_string(),
                 description: "Create a Stripe payment charge".to_string(),
                 category: Some("payments".to_string()),
+                input_schema: None,
             },
             ProxiedTool {
                 name: "etherscan_tx_lookup".to_string(),
                 description: "Look up on-chain transaction details".to_string(),
                 category: Some("blockchain".to_string()),
+                input_schema: None,
             },
             ProxiedTool {
                 name: "slack_post_message".to_string(),
                 description: "Post a message to Slack".to_string(),
                 category: Some("messaging".to_string()),
+                input_schema: None,
             },
             // x402_pay and x402_verify are now native AgentHALO tools
             // (x402_pay, x402_check, x402_balance). Do not duplicate here.
@@ -359,11 +379,25 @@ fn parse_remote_catalog(result: &Value) -> Result<ToolCatalog, String> {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             });
+        let input_schema = tool
+            .get("inputSchema")
+            .cloned()
+            .filter(|v| v.is_object())
+            .or_else(|| {
+                tool.get("parameters").cloned().map(|params| {
+                    json!({
+                        "type": "object",
+                        "properties": params,
+                        "additionalProperties": true,
+                    })
+                })
+            });
 
         parsed.push(ProxiedTool {
             name: name.to_string(),
             description: description.to_string(),
             category,
+            input_schema,
         });
     }
 
@@ -567,11 +601,13 @@ mod tests {
                     name: "gmail_send".to_string(),
                     description: "Send an email via Gmail".to_string(),
                     category: Some("email".to_string()),
+                    input_schema: None,
                 },
                 ProxiedTool {
                     name: "stripe_charge".to_string(),
                     description: "Create a Stripe charge".to_string(),
                     category: Some("payments".to_string()),
+                    input_schema: None,
                 },
             ],
             refreshed_at: Some("2026-02-24T12:00:00Z".to_string()),
@@ -592,6 +628,7 @@ mod tests {
                 name: "gmail_send".to_string(),
                 description: "Send email".to_string(),
                 category: None,
+                input_schema: None,
             }],
             refreshed_at: None,
         };
@@ -602,6 +639,7 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("[AgentPMT]"));
+        assert_eq!(mcp[0]["inputSchema"]["type"], "object");
     }
 
     #[test]
@@ -644,7 +682,15 @@ mod tests {
     fn parse_remote_catalog_strips_agentpmt_prefix() {
         let result = json!({
             "tools": [
-                {"name": "agentpmt/gmail_send", "description": "Send email", "category": "email"},
+                {
+                    "name": "agentpmt/gmail_send",
+                    "description": "Send email",
+                    "category": "email",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"to": {"type": "string"}}
+                    }
+                },
                 {"name": "stripe_charge", "description": "Charge customer", "annotations": {"category": "payments"}}
             ]
         });
@@ -653,6 +699,13 @@ mod tests {
         assert!(catalog.has_tool("gmail_send"));
         assert!(catalog.has_tool("stripe_charge"));
         assert_eq!(catalog.tools[1].category.as_deref(), Some("payments"));
+        assert_eq!(
+            catalog.tools[0]
+                .input_schema
+                .as_ref()
+                .and_then(|v| v.get("type")),
+            Some(&json!("object"))
+        );
     }
 
     #[test]

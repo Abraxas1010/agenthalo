@@ -1016,6 +1016,20 @@ async fn agentpmt_tools_endpoint_returns_catalog_shape() {
         val.get("count").and_then(|v| v.as_u64()).is_some(),
         "count should be present: {val}"
     );
+    assert!(
+        val.get("source").and_then(|v| v.as_str()).is_some(),
+        "source should be present: {val}"
+    );
+    assert!(
+        val.get("stale").and_then(|v| v.as_bool()).is_some(),
+        "stale should be present: {val}"
+    );
+    assert!(
+        val.get("refresh_attempted")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "refresh_attempted should be present: {val}"
+    );
 
     let tools = val["tools"]
         .as_array()

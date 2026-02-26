@@ -1207,15 +1207,35 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
 
 async fn api_agentpmt_tools(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let pmt_cfg = agentpmt::load_or_default();
+    let auth_configured = agentpmt::has_bearer_token();
     let mut source = "cache".to_string();
     let mut refresh_error: Option<String> = None;
     let mut catalog = agentpmt::load_tool_catalog();
+    let refresh_interval_secs = std::env::var("AGENTHALO_AGENTPMT_CATALOG_REFRESH_SECS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(900);
+    let now = chrono::Utc::now();
+    let mut stale = catalog
+        .refreshed_at
+        .as_deref()
+        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+        .map(|ts| {
+            now.signed_duration_since(ts.with_timezone(&chrono::Utc))
+                .num_seconds()
+                >= refresh_interval_secs
+        })
+        .unwrap_or(true);
+    let should_refresh_live =
+        pmt_cfg.enabled && auth_configured && (catalog.tools.is_empty() || stale);
 
-    if pmt_cfg.enabled && catalog.tools.is_empty() {
+    if should_refresh_live {
         match agentpmt::refresh_tool_catalog() {
             Ok(fresh) => {
                 source = "live".to_string();
                 catalog = fresh;
+                stale = false;
             }
             Err(e) => {
                 source = "cache".to_string();
@@ -1239,9 +1259,12 @@ async fn api_agentpmt_tools(AxumState(_state): AxumState<DashboardState>) -> Api
     Ok(Json(json!({
         "enabled": pmt_cfg.enabled,
         "endpoint": agentpmt::resolved_mcp_endpoint(&pmt_cfg),
-        "auth_configured": agentpmt::has_bearer_token(),
+        "auth_configured": auth_configured,
         "count": tools.len(),
         "refreshed_at": catalog.refreshed_at,
+        "stale": stale,
+        "refresh_interval_secs": refresh_interval_secs,
+        "refresh_attempted": should_refresh_live,
         "source": source,
         "refresh_error": refresh_error,
         "tools": tools,
