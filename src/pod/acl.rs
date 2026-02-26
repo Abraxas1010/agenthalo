@@ -147,8 +147,16 @@ impl GrantStore {
         Self { grants: vec![] }
     }
 
+    pub fn from_grants(grants: Vec<AccessGrant>) -> Self {
+        Self { grants }
+    }
+
     pub fn shared() -> SharedGrantStore {
         Arc::new(RwLock::new(Self::new()))
+    }
+
+    pub fn replace_all(&mut self, grants: Vec<AccessGrant>) {
+        self.grants = grants;
     }
 
     /// Create a new grant and return it.

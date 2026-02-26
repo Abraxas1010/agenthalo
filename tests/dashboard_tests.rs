@@ -1,14 +1,17 @@
 //! Tests for the dashboard API security and correctness.
 
 use nucleusdb::dashboard::api::api_router;
-use nucleusdb::dashboard::DashboardState;
+use nucleusdb::dashboard::{build_state, DashboardState};
+use nucleusdb::halo::auth::{save_credentials, Credentials};
 use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
 use nucleusdb::halo::trace::{now_unix_secs, TraceWriter};
+use nucleusdb::halo::vault::Vault;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tower::ServiceExt;
 
 fn temp_db_path(tag: &str) -> PathBuf {
@@ -19,12 +22,30 @@ fn temp_db_path(tag: &str) -> PathBuf {
 fn test_state(tag: &str) -> (DashboardState, PathBuf) {
     let db_path = temp_db_path(tag);
     let creds = std::env::temp_dir().join(format!("creds_{tag}_{}.json", std::process::id()));
-    let state = DashboardState {
-        db_path: db_path.clone(),
-        credentials_path: creds,
-        db_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-    };
+    let _ = save_credentials(
+        &creds,
+        &Credentials {
+            api_key: Some("test-local-api-key".to_string()),
+            oauth_token: None,
+            oauth_provider: None,
+            user_id: Some("dashboard-tests".to_string()),
+            created_at: now_unix_secs(),
+        },
+    );
+    let state = build_state(db_path.clone(), creds);
     (state, db_path)
+}
+
+fn test_state_unauth(tag: &str) -> (DashboardState, PathBuf, PathBuf) {
+    let db_path = temp_db_path(tag);
+    let creds = std::env::temp_dir().join(format!(
+        "creds_unauth_{tag}_{}_{}.json",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_file(&creds);
+    let state = build_state(db_path.clone(), creds.clone());
+    (state, db_path, creds)
 }
 
 fn seed_session(db_path: &std::path::Path, session_id: &str) {
@@ -91,6 +112,59 @@ async fn api_post(state: DashboardState, path: &str, body: Value) -> (StatusCode
         .unwrap();
     let val: Value = serde_json::from_slice(&body).unwrap_or(json!(null));
     (status, val)
+}
+
+async fn api_delete(state: DashboardState, path: &str) -> (StatusCode, Value) {
+    let app = api_router(state.clone()).with_state(state);
+    let req = Request::builder()
+        .uri(path)
+        .method("DELETE")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let val: Value = serde_json::from_slice(&body).unwrap_or(json!(null));
+    (status, val)
+}
+
+fn write_wallet_json(path: &std::path::Path, key_id: &str, seed_hex: &str) {
+    let wallet = json!({
+        "version": 1,
+        "algorithm": "ml_dsa65",
+        "key_id": key_id,
+        "public_key_hex": "00",
+        "secret_seed_hex": seed_hex,
+        "created_at": now_unix_secs(),
+    });
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&wallet).unwrap()).unwrap();
+}
+
+fn test_vault(tag: &str) -> (Arc<Vault>, PathBuf, PathBuf) {
+    let wallet_path = std::env::temp_dir().join(format!(
+        "wallet_{}_{}_{}.json",
+        tag,
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let vault_path = std::env::temp_dir().join(format!(
+        "vault_{}_{}_{}.enc",
+        tag,
+        std::process::id(),
+        now_unix_secs()
+    ));
+    write_wallet_json(
+        &wallet_path,
+        "test-key-id",
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    );
+    let vault = Arc::new(Vault::open(&wallet_path, &vault_path).expect("open vault"));
+    (vault, wallet_path, vault_path)
 }
 
 // ---------------------------------------------------------------------------
@@ -600,4 +674,258 @@ async fn nucleusdb_history_has_commits_and_sessions() {
     );
 
     let _ = std::fs::remove_file(&db_path);
+}
+
+// ---------------------------------------------------------------------------
+// NucleusDB grant management routes
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn nucleusdb_grants_create_list_revoke_roundtrip() {
+    let (state, db_path) = test_state("ndb_grants_roundtrip");
+    let grantor = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let grantee = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/nucleusdb/grants",
+        json!({
+            "grantor_puf_hex": grantor,
+            "grantee_puf_hex": grantee,
+            "key_pattern": "docs/*",
+            "permissions": {"read": true, "write": false, "append": false},
+            "expires_at": null
+        }),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "create grant should succeed: {v1}");
+    assert_eq!(v1["ok"], true);
+    let grant_id = v1["grant"]["grant_id_hex"]
+        .as_str()
+        .expect("grant_id_hex should be present")
+        .to_string();
+
+    let (s2, v2) = api_get(state.clone(), "/nucleusdb/grants?active=true").await;
+    assert_eq!(s2, StatusCode::OK, "list active should succeed: {v2}");
+    let grants = v2["grants"].as_array().expect("grants should be array");
+    assert_eq!(grants.len(), 1, "exactly one active grant expected");
+    assert_eq!(grants[0]["key_pattern"], "docs/*");
+    assert_eq!(grants[0]["active"], true);
+
+    let (s3, v3) = api_post(
+        state.clone(),
+        &format!("/nucleusdb/grants/{grant_id}/revoke"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(s3, StatusCode::OK, "revoke should succeed: {v3}");
+    assert_eq!(v3["ok"], true);
+    assert_eq!(v3["grant"]["revoked"], true);
+
+    let (s4, v4) = api_get(state.clone(), "/nucleusdb/grants?active=true").await;
+    assert_eq!(s4, StatusCode::OK);
+    assert_eq!(
+        v4["grants"].as_array().expect("grants array").len(),
+        0,
+        "active list should be empty after revoke"
+    );
+
+    let (s5, v5) = api_get(state, "/nucleusdb/grants?include_revoked=true").await;
+    assert_eq!(s5, StatusCode::OK);
+    let all = v5["grants"].as_array().expect("grants array");
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0]["revoked"], true);
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn nucleusdb_grants_reject_invalid_hex_input() {
+    let (state, db_path) = test_state("ndb_grants_badhex");
+    let (status, val) = api_post(
+        state,
+        "/nucleusdb/grants",
+        json!({
+            "grantor_puf_hex": "0x1234",
+            "grantee_puf_hex": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "key_pattern": "docs/*",
+            "permissions": {"read": true, "write": false, "append": false},
+            "expires_at": null
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "invalid hex should be rejected"
+    );
+    assert!(
+        val["error"].is_string(),
+        "error field should be present: {val}"
+    );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn nucleusdb_grants_persist_across_state_restart() {
+    let (state1, db_path) = test_state("ndb_grants_restart");
+    let creds2 = std::env::temp_dir().join(format!(
+        "creds_ndb_grants_restart_reload_{}_{}.json",
+        std::process::id(),
+        now_unix_secs()
+    ));
+
+    let (s1, v1) = api_post(
+        state1.clone(),
+        "/nucleusdb/grants",
+        json!({
+            "grantor_puf_hex": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "grantee_puf_hex": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "key_pattern": "persist/*",
+            "permissions": {"read": true, "write": false, "append": false},
+            "expires_at": null
+        }),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "create grant should succeed: {v1}");
+
+    let state2 = build_state(db_path.clone(), creds2);
+    let (s2, v2) = api_get(state2, "/nucleusdb/grants?active=true").await;
+    assert_eq!(s2, StatusCode::OK, "list after reload should succeed: {v2}");
+    let grants = v2["grants"].as_array().expect("grants array");
+    assert_eq!(grants.len(), 1, "grant should survive state restart");
+    assert_eq!(grants[0]["key_pattern"], "persist/*");
+
+    let grants_path = db_path.with_extension("pod_grants.json");
+    let _ = std::fs::remove_file(&grants_path);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+// ---------------------------------------------------------------------------
+// Cockpit + Deploy + Vault + Proxy routes
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cockpit_session_create_list_destroy_roundtrip() {
+    let (state, db_path) = test_state("cockpit_roundtrip");
+
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/cockpit/sessions",
+        json!({"command": "/bin/bash", "args": [], "cols": 80, "rows": 24}),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "create session should succeed: {v1}");
+    let id = v1["id"].as_str().expect("session id").to_string();
+
+    let (s2, v2) = api_get(state.clone(), "/cockpit/sessions").await;
+    assert_eq!(s2, StatusCode::OK, "list sessions should succeed: {v2}");
+    let sessions = v2["sessions"].as_array().expect("sessions array");
+    assert!(sessions.iter().any(|s| s["id"] == id));
+
+    let (s3, v3) = api_delete(state.clone(), &format!("/cockpit/sessions/{id}")).await;
+    assert_eq!(s3, StatusCode::OK, "destroy session should succeed: {v3}");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn cockpit_rejects_shell_dash_c_commands() {
+    let (state, db_path) = test_state("cockpit_reject_shell_c");
+    let (status, val) = api_post(
+        state,
+        "/cockpit/sessions",
+        json!({"command": "/bin/sh", "args": ["-c", "whoami"], "cols": 80, "rows": 24}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "must reject shell -c: {val}"
+    );
+    assert!(
+        val["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("-c/--command"),
+        "error should explain shell execution flags are disallowed: {val}"
+    );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn deploy_catalog_and_preflight_shell() {
+    let (state, db_path) = test_state("deploy_catalog");
+
+    let (s1, v1) = api_get(state.clone(), "/deploy/catalog").await;
+    assert_eq!(s1, StatusCode::OK);
+    let agents = v1["agents"].as_array().expect("agents list");
+    assert!(
+        agents.iter().any(|a| a["id"] == "shell"),
+        "shell agent should be present: {v1}"
+    );
+
+    let (s2, v2) = api_post(state, "/deploy/preflight", json!({"agent_id": "shell"})).await;
+    assert_eq!(s2, StatusCode::OK, "shell preflight should pass: {v2}");
+    assert_eq!(v2["ready"], true);
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn vault_set_list_delete_via_api() {
+    let (mut state, db_path) = test_state("vault_api");
+    let (vault, wallet_path, vault_path) = test_vault("vault_api");
+    state.vault = Some(vault);
+
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/vault/keys/openai",
+        json!({"key": "sk-test-123", "env_var": "OPENAI_API_KEY"}),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "set key should succeed: {v1}");
+
+    let (s2, v2) = api_get(state.clone(), "/vault/keys").await;
+    assert_eq!(s2, StatusCode::OK, "list keys should succeed: {v2}");
+    let keys = v2["keys"].as_array().expect("keys array");
+    let openai = keys.iter().find(|k| k["provider"] == "openai").unwrap();
+    assert_eq!(openai["configured"], true);
+
+    let (s3, v3) = api_delete(state, "/vault/keys/openai").await;
+    assert_eq!(s3, StatusCode::OK, "delete key should succeed: {v3}");
+
+    let _ = std::fs::remove_file(&wallet_path);
+    let _ = std::fs::remove_file(&vault_path);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn proxy_models_empty_without_vault() {
+    let (state, db_path) = test_state("proxy_models");
+    let (status, val) = api_get(state, "/proxy/v1/models").await;
+    assert_eq!(status, StatusCode::OK, "models route should succeed: {val}");
+    assert_eq!(val["object"], "list");
+    assert!(val["data"].as_array().expect("data array").is_empty());
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn cockpit_create_requires_auth_and_returns_setup_payload() {
+    let (state, db_path, creds_path) = test_state_unauth("cockpit_auth_required");
+    let (status, val) = api_post(
+        state,
+        "/cockpit/sessions",
+        json!({"command":"/bin/bash","args":[],"agent_type":"shell"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(val["code"], "auth_required");
+    assert_eq!(val["setup_route"], "#/setup");
+    assert!(val["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("agenthalo login"));
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
 }

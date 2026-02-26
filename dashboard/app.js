@@ -4,12 +4,32 @@
 const $ = (sel, ctx) => (ctx || document).querySelector(sel);
 const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 const content = $('#content');
+const PROVIDER_INFO = {
+  anthropic: {
+    name: 'Anthropic',
+    envVar: 'ANTHROPIC_API_KEY',
+    keyUrl: 'https://console.anthropic.com/settings/keys',
+  },
+  openai: {
+    name: 'OpenAI',
+    envVar: 'OPENAI_API_KEY',
+    keyUrl: 'https://platform.openai.com/api-keys',
+  },
+  google: {
+    name: 'Google AI',
+    envVar: 'GOOGLE_API_KEY',
+    keyUrl: 'https://aistudio.google.com/app/apikey',
+  },
+};
 
 // -- Routing ------------------------------------------------------------------
 const pages = { overview: renderOverview, sessions: renderSessions, costs: renderCosts,
-  config: renderConfig, trust: renderTrust, nucleusdb: renderNucleusDB };
+  config: renderConfig, setup: renderSetup, trust: renderTrust, nucleusdb: renderNucleusDB,
+  cockpit: renderCockpit, deploy: renderDeploy };
 
 function route() {
+  // Clean up particle animation when leaving NucleusDB page
+  if (window._destroyHeroParticles) window._destroyHeroParticles();
   const hash = location.hash.replace('#/', '') || 'overview';
   const page = hash.split('/')[0];
   const arg = hash.split('/').slice(1).join('/');
@@ -27,7 +47,10 @@ function toggleCRT() {
   const on = !document.body.classList.contains('no-crt');
   localStorage.setItem('crt', on ? 'on' : 'off');
   const btn = $('#crt-toggle');
-  if (btn) btn.textContent = on ? 'CRT' : 'CRT:OFF';
+  if (btn) {
+    btn.textContent = on ? 'CRT' : 'CRT:OFF';
+    btn.classList.toggle('crt-on', on);
+  }
 }
 window.toggleCRT = toggleCRT;
 
@@ -36,12 +59,15 @@ if (localStorage.getItem('crt') === 'off') {
   document.body.classList.add('no-crt');
   const btn = document.getElementById('crt-toggle');
   if (btn) btn.textContent = 'CRT:OFF';
+} else {
+  const btn = document.getElementById('crt-toggle');
+  if (btn) btn.classList.add('crt-on');
 }
 
 // -- API helpers --------------------------------------------------------------
 async function api(path) {
   const res = await fetch('/api' + path);
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  if (!res.ok) throw await toApiError(res, path);
   return res.json();
 }
 
@@ -49,8 +75,26 @@ async function apiPost(path, body) {
   const res = await fetch('/api' + path, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
   });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  if (!res.ok) throw await toApiError(res, path);
   return res.json();
+}
+
+async function apiDelete(path) {
+  const res = await fetch('/api' + path, { method: 'DELETE' });
+  if (!res.ok) throw await toApiError(res, path);
+  return res.json();
+}
+
+async function toApiError(res, path) {
+  const raw = await res.text();
+  let body = null;
+  try { body = raw ? JSON.parse(raw) : null; } catch (_e) {}
+  const message = (body && body.error) || raw || `API error: ${res.status}`;
+  const err = new Error(message);
+  err.status = res.status;
+  err.path = path;
+  err.body = body;
+  return err;
 }
 
 // -- HTML escaping (XSS prevention) -------------------------------------------
@@ -58,6 +102,84 @@ function esc(s) {
   if (s == null) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+window.__escapeHtml = esc;
+window.__providerInfo = PROVIDER_INFO;
+
+function parseProviderList(v) {
+  if (Array.isArray(v)) {
+    return [...new Set(v.map(x => String(x || '').trim().toLowerCase()).filter(Boolean))];
+  }
+  if (typeof v === 'string') {
+    return [...new Set(v.split(',').map(x => x.trim().toLowerCase()).filter(Boolean))];
+  }
+  return [];
+}
+
+window.openSetupGuide = function openSetupGuide(context) {
+  const payload = Object.assign({ ts: Date.now() }, context || {});
+  localStorage.setItem('halo_setup_context', JSON.stringify(payload));
+  location.hash = '#/setup';
+};
+
+function consumeSetupContext() {
+  const raw = localStorage.getItem('halo_setup_context');
+  if (!raw) return {};
+  localStorage.removeItem('halo_setup_context');
+  try { return JSON.parse(raw) || {}; } catch (_e) { return {}; }
+}
+
+window.copySetupText = async function copySetupText(value) {
+  try {
+    await navigator.clipboard.writeText(String(value || ''));
+    alert('Copied to clipboard');
+  } catch (_e) {
+    alert('Copy failed. Please copy manually.');
+  }
+};
+
+window.openSetupProviderConfig = function openSetupProviderConfig(provider) {
+  localStorage.setItem('halo_setup_open_provider', String(provider || '').toLowerCase());
+  location.hash = '#/config';
+};
+
+window.trySetupRedirect = function trySetupRedirect(err, agent, from) {
+  const message = String(err && err.message || '');
+  const lower = message.toLowerCase();
+  const status = Number(err && err.status);
+  const body = (err && err.body && typeof err.body === 'object') ? err.body : null;
+
+  let reason = null;
+  let providers = [];
+  if (body && body.code === 'auth_required') {
+    reason = 'auth_required';
+  } else if (status === 401 || lower.includes('authentication required') || lower.includes('agenthalo_api_key')) {
+    reason = 'auth_required';
+  } else if (body && Array.isArray(body.missing_keys) && body.missing_keys.length > 0) {
+    reason = 'provider_keys_missing';
+    providers = parseProviderList(body.missing_keys);
+  } else {
+    const match = message.match(/missing API keys?:\s*(.+)$/i);
+    if (match) {
+      reason = 'provider_keys_missing';
+      providers = parseProviderList(match[1]);
+    }
+  }
+
+  if (!reason) return false;
+  const context = {
+    reason,
+    from: from || 'dashboard',
+    agent: agent || null,
+    providers,
+  };
+
+  if (typeof window.openSetupGuide === 'function') {
+    window.openSetupGuide(context);
+  } else {
+    location.hash = '#/config';
+  }
+  return true;
+};
 
 // -- Format helpers -----------------------------------------------------------
 function fmtCost(v) { return '$' + (v || 0).toFixed(2); }
@@ -552,6 +674,14 @@ async function renderConfig() {
   content.innerHTML = '<div class="loading">Loading config...</div>';
   try {
     const cfg = await api('/config');
+    let vaultResp = { keys: [] };
+    let vaultKeysAuthRequired = false;
+    try {
+      vaultResp = await api('/vault/keys');
+    } catch (e) {
+      vaultKeysAuthRequired = Number(e && e.status) === 401;
+    }
+    const vaultKeys = vaultResp.keys || [];
 
     content.innerHTML = `
       <div class="page-title">Configuration</div>
@@ -665,6 +795,41 @@ async function renderConfig() {
         </div>
       </div>
 
+      <div class="section-header">API Keys</div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+        ${cfg.vault?.available ? `
+          ${vaultKeysAuthRequired ? `
+            <div class="config-row">
+              <div>
+                <div class="config-label">Authentication required</div>
+                <div class="config-desc">Unlock sensitive controls first, then add provider API keys.</div>
+              </div>
+              <button class="btn btn-sm btn-primary" onclick="location.hash='#/setup'">Open Quick Setup</button>
+            </div>
+          ` : ''}
+          ${vaultKeys.map(k => `
+            <div class="config-row">
+              <div>
+                <div class="config-label">${esc(k.provider)}</div>
+                <div class="config-desc">${esc(k.env_var)} · ${k.configured ? 'Configured' : 'Missing'}${k.tested ? ' · Tested' : ''}</div>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center">
+                <button class="btn btn-sm" onclick="vaultSetKey('${esc(k.provider)}','${esc(k.env_var)}')">Set Key</button>
+                <button class="btn btn-sm" onclick="vaultTestKey('${esc(k.provider)}')">Test</button>
+                <button class="btn btn-sm" onclick="vaultRemoveKey('${esc(k.provider)}')">Remove</button>
+              </div>
+            </div>
+          `).join('')}
+        ` : `
+          <div class="config-row">
+            <div>
+              <div class="config-label">Vault unavailable</div>
+              <div class="config-desc">Create/import a PQ wallet to enable encrypted API key storage.</div>
+            </div>
+          </div>
+        `}
+      </div>
+
       <div class="section-header">Paths</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         <div class="config-row"><div><div class="config-label">Home</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.home)}</div></div></div>
@@ -672,9 +837,104 @@ async function renderConfig() {
         <div class="config-row"><div><div class="config-label">PQ Wallet</div><div class="config-desc">${cfg.pq_wallet ? 'Present (ML-DSA-65)' : 'Not created'}</div></div></div>
       </div>
     `;
+
+    const autoOpenProvider = localStorage.getItem('halo_setup_open_provider');
+    if (autoOpenProvider) {
+      localStorage.removeItem('halo_setup_open_provider');
+      const providerEntry = vaultKeys.find(k => String(k.provider || '').toLowerCase() === autoOpenProvider);
+      if (providerEntry) {
+        openVaultModal(providerEntry.provider, providerEntry.env_var || providerDefaultEnv(providerEntry.provider));
+      }
+    }
   } catch (e) {
     content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
+}
+
+function providerDefaultEnv(provider) {
+  const key = String(provider || '').toLowerCase();
+  return (PROVIDER_INFO[key] && PROVIDER_INFO[key].envVar) || `${key.toUpperCase()}_API_KEY`;
+}
+
+function renderSetup() {
+  const ctx = consumeSetupContext();
+  const reason = String(ctx.reason || '').toLowerCase();
+  const missingProviders = parseProviderList(ctx.providers);
+  const fromPage = String(ctx.from || 'cockpit');
+  const title = reason === 'provider_keys_missing'
+    ? 'Provider API Keys Required'
+    : 'Authentication Required';
+  const subtitle = reason === 'provider_keys_missing'
+    ? 'Add provider keys, then launch from Cockpit/Deploy again.'
+    : 'Unlock sensitive dashboard actions, then continue.';
+
+  const providerRows = (missingProviders.length > 0 ? missingProviders : Object.keys(PROVIDER_INFO)).map((provider) => {
+    const info = PROVIDER_INFO[provider] || { name: provider, envVar: providerDefaultEnv(provider), keyUrl: '#' };
+    const docsLink = info.keyUrl && info.keyUrl !== '#'
+      ? `<a class="btn btn-sm" href="${esc(info.keyUrl)}" target="_blank" rel="noopener noreferrer">Get Key</a>`
+      : '';
+    return `
+      <div class="setup-provider-row">
+        <div>
+          <div class="setup-provider-name">${esc(info.name)}</div>
+          <div class="setup-provider-env">${esc(info.envVar)}</div>
+        </div>
+        <div class="setup-provider-actions">
+          ${docsLink}
+          <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(provider)}">Set in Config</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  content.innerHTML = `
+    <div class="page-header">
+      <h1>Quick Setup</h1>
+      <p class="subtitle">Fast path to unblock Cockpit and Deploy.</p>
+    </div>
+
+    <div class="setup-banner">
+      <div class="setup-banner-title">${esc(title)}</div>
+      <div class="setup-banner-sub">${esc(subtitle)}</div>
+      <div class="setup-banner-from">Triggered from: ${esc(fromPage)}</div>
+    </div>
+
+    <div class="setup-grid">
+      <div class="setup-card">
+        <h3>1. Unlock Dashboard Controls</h3>
+        <p>Run one of these commands in a terminal, then refresh this page.</p>
+        <div class="setup-cmd">
+          <code>agenthalo login</code>
+          <button class="btn btn-sm" onclick="copySetupText('agenthalo login')">Copy</button>
+        </div>
+        <div class="setup-cmd">
+          <code>export AGENTHALO_API_KEY=your-agenthalo-key</code>
+          <button class="btn btn-sm" onclick="copySetupText('export AGENTHALO_API_KEY=your-agenthalo-key')">Copy</button>
+        </div>
+        <div class="setup-cmd">
+          <code>agenthalo setup</code>
+          <button class="btn btn-sm" onclick="copySetupText('agenthalo setup')">Copy</button>
+        </div>
+      </div>
+
+      <div class="setup-card">
+        <h3>2. Add Provider API Keys</h3>
+        <p>Open each provider, create a key, then store it in Configuration.</p>
+        ${providerRows}
+        <div class="setup-actions">
+          <a class="btn btn-primary" href="#/config">Open Configuration</a>
+          <a class="btn" href="#/deploy">Go to Deploy</a>
+          <a class="btn" href="#/cockpit">Back to Cockpit</a>
+        </div>
+      </div>
+    </div>
+  `;
+
+  content.querySelectorAll('.setup-provider-config-btn[data-provider]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      window.openSetupProviderConfig(btn.dataset.provider || '');
+    });
+  });
 }
 
 window.toggleWrap = async function(agent, enable) {
@@ -690,6 +950,113 @@ window.toggleX402 = async function(enable) {
     renderConfig();
   } catch (e) { alert('Failed: ' + e.message); }
 };
+
+function openVaultModal(provider, envVar) {
+  const old = document.getElementById('vault-key-modal');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'vault-key-modal';
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;z-index:1200';
+  wrap.innerHTML = `
+    <div style="width:min(520px,92vw);background:var(--bg-card);border:1px solid var(--accent);padding:16px;border-radius:6px">
+      <div style="font-size:14px;color:var(--accent);margin-bottom:6px">Set API Key: ${esc(provider)}</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:10px">${esc(envVar)}</div>
+      <input id="vault-key-input" type="password" placeholder="Paste API key" style="width:100%;padding:8px 10px;font-size:12px;margin-bottom:10px">
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-sm" id="vault-key-cancel">Cancel</button>
+        <button class="btn btn-sm btn-primary" id="vault-key-save">Save</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  const input = document.getElementById('vault-key-input');
+  input?.focus();
+  wrap.querySelector('#vault-key-cancel').addEventListener('click', () => wrap.remove());
+  wrap.querySelector('#vault-key-save').addEventListener('click', async () => {
+    const key = input?.value || '';
+    if (!key.trim()) return;
+    try {
+      await apiPost(`/vault/keys/${encodeURIComponent(provider)}`, { key, env_var: envVar });
+      wrap.remove();
+      renderConfig();
+    } catch (e) {
+      alert('Set key failed: ' + e.message);
+    }
+  });
+}
+
+window.vaultSetKey = function(provider, envVar) {
+  openVaultModal(provider, envVar);
+};
+
+window.vaultTestKey = async function(provider) {
+  try {
+    const res = await apiPost(`/vault/test/${encodeURIComponent(provider)}`, {});
+    if (res.ok) alert(`${provider}: key validated successfully`);
+    else alert(`${provider}: ${res.error || 'validation failed'}`);
+    renderConfig();
+  } catch (e) {
+    alert('Test key failed: ' + e.message);
+  }
+};
+
+window.vaultRemoveKey = async function(provider) {
+  if (!confirm(`Remove key for ${provider}?`)) return;
+  try {
+    await apiDelete(`/vault/keys/${encodeURIComponent(provider)}`);
+    renderConfig();
+  } catch (e) {
+    alert('Remove key failed: ' + e.message);
+  }
+};
+
+// =============================================================================
+// PAGE: Cockpit
+// =============================================================================
+function renderCockpit() {
+  content.innerHTML = `
+    <div class="page-header">
+      <h1>Cockpit</h1>
+      <p class="subtitle">Agent orchestration terminal</p>
+    </div>
+    <div id="cockpit-root" style="margin-top:10px"></div>
+  `;
+
+  const root = document.getElementById('cockpit-root');
+  if (window.CockpitPage && typeof window.CockpitPage.mount === 'function') {
+    window.CockpitPage.mount(root);
+  } else {
+    root.innerHTML = `
+      <div class="card" style="padding:2rem;text-align:center;color:var(--amber);">
+        <p style="font-size:1.5rem;">&#9654; Cockpit unavailable</p>
+        <p style="margin-top:1rem;color:var(--text-dim);">cockpit.js failed to load.</p>
+      </div>`;
+  }
+}
+
+// =============================================================================
+// PAGE: Deploy
+// =============================================================================
+function renderDeploy() {
+  content.innerHTML = `
+    <div class="page-header">
+      <h1>Deploy</h1>
+      <p class="subtitle">Launch and manage agents</p>
+    </div>
+    <div id="deploy-root"></div>
+  `;
+
+  const root = document.getElementById('deploy-root');
+  if (window.DeployPage && typeof window.DeployPage.init === 'function') {
+    window.DeployPage.init(root);
+  } else {
+    root.innerHTML = `
+      <div class="card" style="padding:2rem;text-align:center;color:var(--amber);">
+        <p style="font-size:1.5rem;">&#9732; Deploy unavailable</p>
+        <p style="margin-top:1rem;color:var(--text-dim);">deploy.js failed to load.</p>
+      </div>`;
+  }
+}
 
 // =============================================================================
 // PAGE: Trust & Attestations
@@ -792,6 +1159,10 @@ const ndb = {
   editingKey: null,
 };
 
+const ndbSharing = {
+  includeRevoked: false,
+};
+
 // Backend description map
 const backendInfo = {
   binary_merkle: { name: 'BinaryMerkle', algo: 'SHA-256', type: 'Post-Quantum', proof: 'O(log n)', setup: 'None' },
@@ -818,9 +1189,18 @@ async function renderNucleusDB(subtab) {
 
     content.innerHTML = `
       <div class="ndb-hero">
-        <img src="img/nucleus_db_logo.png" alt="NucleusDB" onerror="this.style.display='none'">
-        <div class="ndb-hero-title">NucleusDB</div>
-        <div class="ndb-hero-subtitle">Proof-Carrying Algebraic Database</div>
+        <canvas class="ndb-hero-canvas" id="hero-particles"></canvas>
+        <div class="ndb-hero-grid">
+          <div class="ndb-hero-logo-wrap">
+            <img src="img/nucleus_db_hero.png" alt="NucleusDB" onerror="this.style.display='none'">
+          </div>
+          <div class="ndb-hero-copy">
+            <div class="ndb-hero-kicker">Agent H.A.L.O. // Containment Node</div>
+            <div class="ndb-hero-title">NucleusDB</div>
+            <div class="ndb-hero-subtitle">Proof-Carrying Algebraic Database</div>
+            <div class="ndb-hero-separator"></div>
+          </div>
+        </div>
       </div>
 
       <div class="card-grid" style="margin-bottom:14px">
@@ -864,6 +1244,9 @@ async function renderNucleusDB(subtab) {
     window._ndbStats = stats;
     window._ndbStatus = status;
 
+    // Start particle network animation
+    if (window._initHeroParticles) window._initHeroParticles();
+
     // Render active sub-tab
     switch (ndb.tab) {
       case 'browse': await ndbRenderBrowse(); break;
@@ -871,7 +1254,7 @@ async function renderNucleusDB(subtab) {
       case 'vectors': await ndbRenderVectors(); break;
       case 'commits': await ndbRenderCommits(); break;
       case 'proofs': ndbRenderProofs(); break;
-      case 'sharing': ndbRenderSharing(); break;
+      case 'sharing': await ndbRenderSharing(); break;
       case 'config': await ndbRenderConfig(); break;
     }
   } catch (e) {
@@ -1782,59 +2165,200 @@ window.ndbProofVerify = async function() {
   }
 };
 
-// -- Sharing Sub-Tab (NucleusPOD) (NEW) ---------------------------------------
-function ndbRenderSharing() {
-  const el = $('#ndb-content');
-
-  el.innerHTML = `
-    <div style="margin:12px 0">
-      <div class="proof-section">
-        <div class="proof-section-title">NucleusPOD &mdash; Proof-Carrying Data Sharing</div>
-        <div style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
-          Share verified records with other agents. Each shared item carries its own cryptographic proof &mdash;
-          the recipient verifies independently without trusting the sender.
-        </div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <div class="card" style="flex:1;min-width:140px">
-            <div class="card-label">Proof Envelopes</div>
-            <div class="card-value" style="font-size:16px;color:var(--text-muted)">0</div>
-            <div class="card-sub">Self-contained proofs</div>
-          </div>
-          <div class="card" style="flex:1;min-width:140px">
-            <div class="card-label">Access Grants</div>
-            <div class="card-value" style="font-size:16px;color:var(--text-muted)">0</div>
-            <div class="card-sub">Active grants</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="proof-section">
-        <div class="proof-section-title">Access Grants</div>
-        <div style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
-          Grant per-key read/write access to specific agents. Grants use PUF fingerprints for identity,
-          support key patterns (exact match, glob with <code style="color:var(--accent)">*</code>, or wildcard), and optional expiry.
-        </div>
-        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:20px;text-align:center">
-          <div style="color:var(--accent);font-size:13px;margin-bottom:4px">&#9888; Phase 2: HTTP Routes Required</div>
-          <div style="color:var(--text-dim);font-size:11px">
-            Grant management data structures are implemented (<code style="color:var(--text-muted)">pod/acl.rs</code>).<br>
-            HTTP endpoints for create/revoke/list grants are Phase 2 work.
-          </div>
-        </div>
-      </div>
-
-      <div class="proof-section">
-        <div class="proof-section-title">How It Works</div>
-        <div class="ndb-verify-grid">
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Envelope</span><span style="color:var(--text-dim);font-size:11px">Self-contained proof unit: data + Merkle proof + metadata + author PUF</span></div>
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Grants</span><span style="color:var(--text-dim);font-size:11px">Per-key access control: grantor PUF + grantee PUF + key pattern + permissions + expiry</span></div>
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Discovery</span><span style="color:var(--text-dim);font-size:11px">.well-known/nucleus-pod &mdash; JSON capabilities doc for agent discovery</span></div>
-          <div class="ndb-verify-row"><span class="ndb-verify-label">Verify</span><span style="color:var(--text-dim);font-size:11px">Recipients verify proofs locally &mdash; no trust in sender required</span></div>
-        </div>
-      </div>
-    </div>
-  `;
+// -- Sharing Sub-Tab (NucleusPOD) ---------------------------------------------
+function ndbGrantShortHex(hex) {
+  if (!hex || hex.length <= 24) return hex || '';
+  return `${hex.slice(0, 14)}...${hex.slice(-8)}`;
 }
+
+function ndbGrantFormatExpiry(expiresAt) {
+  if (!expiresAt) return 'No expiry';
+  return `Expires ${new Date(expiresAt * 1000).toLocaleString()}`;
+}
+
+async function ndbRenderSharing() {
+  const el = $('#ndb-content');
+  el.innerHTML = '<div style="color:var(--text-muted)">Loading sharing controls...</div>';
+  try {
+    const modeQuery = ndbSharing.includeRevoked ? 'include_revoked=true' : 'active=true';
+    const [stats, grantResp] = await Promise.all([
+      api('/nucleusdb/stats'),
+      api(`/nucleusdb/grants?${modeQuery}`),
+    ]);
+    window._ndbStats = stats;
+    const grants = grantResp?.grants || [];
+    const activeGrants = stats?.grant_active_count ?? grantResp?.active_total ?? 0;
+    const totalGrants = stats?.grant_count ?? grantResp?.total ?? grants.length;
+
+    el.innerHTML = `
+      <div style="margin:12px 0">
+        <div class="proof-section">
+          <div class="proof-section-title">NucleusPOD &mdash; Proof-Carrying Data Sharing</div>
+          <div style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
+            Share verified records with other agents. Each shared item carries its own cryptographic proof &mdash;
+            the recipient verifies independently without trusting the sender.
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <div class="card" style="flex:1;min-width:140px">
+              <div class="card-label">Proof Envelopes</div>
+              <div class="card-value" style="font-size:16px;color:var(--text-muted)">0</div>
+              <div class="card-sub">Self-contained proofs</div>
+            </div>
+            <div class="card" style="flex:1;min-width:140px">
+              <div class="card-label">Access Grants</div>
+              <div class="card-value" style="font-size:16px">${Number(activeGrants).toLocaleString()}</div>
+              <div class="card-sub">${Number(totalGrants).toLocaleString()} total</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="proof-section">
+          <div class="proof-section-title">Access Grants</div>
+          <div style="color:var(--text-dim);font-size:12px;margin-bottom:12px">
+            Grant per-key read/write/append access to specific agents. PUF identifiers are 32-byte hex fingerprints.
+          </div>
+
+          <div class="grant-form-grid">
+            <input id="ndb-grant-grantor" type="text" placeholder="Grantor PUF (0x + 64 hex chars)" class="input">
+            <input id="ndb-grant-grantee" type="text" placeholder="Grantee PUF (0x + 64 hex chars)" class="input">
+            <input id="ndb-grant-pattern" type="text" placeholder="Key pattern (examples: docs/*, report:2026, *)" class="input">
+            <input id="ndb-grant-expiry" type="datetime-local" class="input">
+          </div>
+
+          <div class="grant-toolbar">
+            <label><input id="ndb-grant-read" type="checkbox" checked> READ</label>
+            <label><input id="ndb-grant-write" type="checkbox"> WRITE</label>
+            <label><input id="ndb-grant-append" type="checkbox"> APPEND</label>
+            <button class="btn btn-sm" onclick="ndbCreateGrant()">Create Grant</button>
+            <button class="btn btn-sm" onclick="ndbRefreshGrants()">Refresh</button>
+            <label><input id="ndb-grant-show-revoked" type="checkbox" ${ndbSharing.includeRevoked ? 'checked' : ''} onchange="ndbToggleRevoked(this.checked)"> Show revoked/expired</label>
+          </div>
+
+          <div id="ndb-grant-status" style="color:var(--text-dim);font-size:11px;margin:8px 0 2px">Loaded ${grants.length} grant(s).</div>
+
+          <div id="ndb-grant-list">
+            ${grants.length === 0
+              ? `<div class="grant-empty">No grants to display.</div>`
+              : grants.map(g => `
+                <div class="grant-card">
+                  <div class="grant-header">
+                    <div class="grant-id">${esc(g.grant_id_hex || '')}</div>
+                    <div>
+                      ${g.active
+                        ? '<span class="badge badge-ok">ACTIVE</span>'
+                        : (g.revoked ? '<span class="badge badge-err">REVOKED</span>' : '<span class="badge badge-warn">EXPIRED</span>')
+                      }
+                      ${g.revoked ? '' : `<button class="btn-icon btn-icon-danger" title="Revoke grant" onclick="ndbRevokeGrant('${g.grant_id_hex}')">&#10005;</button>`}
+                    </div>
+                  </div>
+                  <div class="grant-detail"><span>Key Pattern:</span> <code>${esc(g.key_pattern || '')}</code></div>
+                  <div class="grant-detail"><span>Grantor:</span> <code>${esc(ndbGrantShortHex(g.grantor_puf_hex || ''))}</code> &nbsp; <span>Grantee:</span> <code>${esc(ndbGrantShortHex(g.grantee_puf_hex || ''))}</code></div>
+                  <div class="grant-detail">
+                    <span>Permissions:</span>
+                    <span class="grant-perm ${g.permissions?.read ? 'active' : ''}">READ</span>
+                    <span class="grant-perm ${g.permissions?.write ? 'active' : ''}">WRITE</span>
+                    <span class="grant-perm ${g.permissions?.append ? 'active' : ''}">APPEND</span>
+                    &nbsp; <span>${esc(ndbGrantFormatExpiry(g.expires_at))}</span>
+                  </div>
+                </div>
+              `).join('')
+            }
+          </div>
+        </div>
+
+        <div class="proof-section">
+          <div class="proof-section-title">How It Works</div>
+          <div class="ndb-verify-grid">
+            <div class="ndb-verify-row"><span class="ndb-verify-label">Envelope</span><span style="color:var(--text-dim);font-size:11px">Self-contained proof unit: data + Merkle proof + metadata + author PUF</span></div>
+            <div class="ndb-verify-row"><span class="ndb-verify-label">Grants</span><span style="color:var(--text-dim);font-size:11px">Per-key access control: grantor PUF + grantee PUF + key pattern + permissions + expiry</span></div>
+            <div class="ndb-verify-row"><span class="ndb-verify-label">Discovery</span><span style="color:var(--text-dim);font-size:11px">.well-known/nucleus-pod &mdash; JSON capabilities doc for agent discovery</span></div>
+            <div class="ndb-verify-row"><span class="ndb-verify-label">Verify</span><span style="color:var(--text-dim);font-size:11px">Recipients verify proofs locally &mdash; no trust in sender required</span></div>
+          </div>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red)">Sharing tab load failed: ${esc(e.message)}</div>`;
+  }
+}
+
+window.ndbToggleRevoked = async function(on) {
+  ndbSharing.includeRevoked = !!on;
+  await ndbRenderSharing();
+};
+
+window.ndbRefreshGrants = async function() {
+  await ndbRenderSharing();
+};
+
+window.ndbCreateGrant = async function() {
+  const statusEl = $('#ndb-grant-status');
+  const grantorRaw = ($('#ndb-grant-grantor')?.value || '').trim();
+  const granteeRaw = ($('#ndb-grant-grantee')?.value || '').trim();
+  const keyPattern = ($('#ndb-grant-pattern')?.value || '').trim();
+  const expiryRaw = ($('#ndb-grant-expiry')?.value || '').trim();
+  const read = !!($('#ndb-grant-read') && $('#ndb-grant-read').checked);
+  const write = !!($('#ndb-grant-write') && $('#ndb-grant-write').checked);
+  const append = !!($('#ndb-grant-append') && $('#ndb-grant-append').checked);
+
+  const normalizeHex = (v) => {
+    const s = v.toLowerCase().replace(/^0x/, '');
+    return s.length === 64 && /^[0-9a-f]+$/.test(s) ? `0x${s}` : null;
+  };
+
+  const grantor = normalizeHex(grantorRaw);
+  const grantee = normalizeHex(granteeRaw);
+  if (!grantor || !grantee) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Grantor and grantee must be 32-byte hex PUF values.</span>';
+    return;
+  }
+  if (!keyPattern) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Key pattern is required.</span>';
+    return;
+  }
+  if (!read && !write && !append) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Enable at least one permission.</span>';
+    return;
+  }
+
+  let expiresAt = null;
+  if (expiryRaw) {
+    const ms = Date.parse(expiryRaw);
+    if (!Number.isFinite(ms)) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Invalid expiry date/time.</span>';
+      return;
+    }
+    expiresAt = Math.floor(ms / 1000);
+  }
+
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-muted)">Creating grant...</span>';
+  try {
+    await apiPost('/nucleusdb/grants', {
+      grantor_puf_hex: grantor,
+      grantee_puf_hex: grantee,
+      key_pattern: keyPattern,
+      permissions: { read, write, append },
+      expires_at: expiresAt,
+    });
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">Grant created.</span>';
+    await ndbRenderSharing();
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Create failed: ${esc(e.message)}</span>`;
+  }
+};
+
+window.ndbRevokeGrant = async function(grantIdHex) {
+  if (!grantIdHex) return;
+  const statusEl = $('#ndb-grant-status');
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-muted)">Revoking grant...</span>';
+  try {
+    await apiPost(`/nucleusdb/grants/${encodeURIComponent(grantIdHex)}/revoke`, {});
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">Grant revoked.</span>';
+    await ndbRenderSharing();
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Revoke failed: ${esc(e.message)}</span>`;
+  }
+};
 
 // -- Config Sub-Tab (Merged Schema + Settings) --------------------------------
 async function ndbRenderConfig() {
@@ -1952,3 +2476,120 @@ window.ndbSetAppendOnly = async function() {
     alert('Failed: ' + e.message);
   }
 };
+
+// =============================================================================
+// Particle Network — amber constellation mesh (inspired by apoth3osis.io banner)
+// =============================================================================
+(function() {
+  let _raf = 0;
+  const PARTICLE_COUNT = 80;
+  const CONNECT_DIST = 110;
+  const SPEED = 0.12;
+
+  function initParticles(canvasId) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Cancel any prior animation loop for this canvas
+    if (_raf) cancelAnimationFrame(_raf);
+
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    ctx.scale(dpr, dpr);
+
+    const W = rect.width;
+    const H = rect.height;
+
+    // Create particles
+    const particles = [];
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      particles.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        vx: (Math.random() - 0.5) * SPEED * 2,
+        vy: (Math.random() - 0.5) * SPEED * 2,
+        r: Math.random() * 1.6 + 0.6,          // radius 0.6 – 2.2
+        brightness: Math.random() * 0.5 + 0.3   // 0.3 – 0.8
+      });
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      // Subtle background gradient (dark, barely visible)
+      const bg = ctx.createRadialGradient(W * 0.3, H * 0.4, 0, W * 0.5, H * 0.5, W * 0.8);
+      bg.addColorStop(0, 'rgba(255, 106, 0, 0.04)');
+      bg.addColorStop(0.5, 'rgba(255, 159, 42, 0.02)');
+      bg.addColorStop(1, 'transparent');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+
+      // Update positions
+      for (const p of particles) {
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.x < 0 || p.x > W) p.vx *= -1;
+        if (p.y < 0 || p.y > H) p.vy *= -1;
+        p.x = Math.max(0, Math.min(W, p.x));
+        p.y = Math.max(0, Math.min(H, p.y));
+      }
+
+      // Draw connections
+      for (let i = 0; i < particles.length; i++) {
+        for (let j = i + 1; j < particles.length; j++) {
+          const dx = particles[i].x - particles[j].x;
+          const dy = particles[i].y - particles[j].y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < CONNECT_DIST) {
+            const alpha = (1 - dist / CONNECT_DIST) * 0.25;
+            ctx.strokeStyle = `rgba(255, 140, 20, ${alpha})`;
+            ctx.lineWidth = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(particles[i].x, particles[i].y);
+            ctx.lineTo(particles[j].x, particles[j].y);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // Draw nodes
+      for (const p of particles) {
+        // Outer glow
+        const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r * 4);
+        glow.addColorStop(0, `rgba(255, 140, 20, ${p.brightness * 0.35})`);
+        glow.addColorStop(1, 'transparent');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r * 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Core dot
+        ctx.fillStyle = `rgba(255, 159, 42, ${p.brightness})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      _raf = requestAnimationFrame(draw);
+    }
+
+    draw();
+  }
+
+  // Expose for use after NucleusDB tab renders
+  window._initHeroParticles = function() {
+    // Small delay to let DOM settle
+    setTimeout(() => initParticles('hero-particles'), 50);
+  };
+
+  // Clean up on page navigation
+  window._destroyHeroParticles = function() {
+    if (_raf) { cancelAnimationFrame(_raf); _raf = 0; }
+  };
+})();

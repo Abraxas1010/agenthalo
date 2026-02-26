@@ -1530,6 +1530,7 @@ impl NucleusDbMcpService {
             command,
             use_gvisor: req.runtime_runsc.unwrap_or(false),
             host_sock: None,
+            env_vars: vec![],
         })
         .map_err(|e| McpError::internal_error(e, None))?;
         Ok(Json(ContainerLaunchResponse {

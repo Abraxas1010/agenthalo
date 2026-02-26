@@ -2,6 +2,7 @@ pub mod api;
 pub mod audit;
 pub mod blob_store;
 pub mod cli;
+pub mod cockpit;
 pub mod commitment;
 pub mod container;
 pub mod dashboard;

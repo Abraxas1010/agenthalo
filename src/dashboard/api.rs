@@ -11,6 +11,7 @@
 
 use super::DashboardState;
 use crate::cli::default_witness_cfg;
+use crate::cockpit::deploy::{self, LaunchRequest};
 use crate::halo::addons;
 use crate::halo::agentpmt;
 use crate::halo::attest::{
@@ -28,7 +29,9 @@ use crate::halo::trust::query_trust_score;
 use crate::halo::viewer::export_session_json;
 use crate::halo::wrap;
 use crate::halo::x402;
+use crate::halo::{proxy, vault};
 use crate::persistence::{default_wal_path, load_snapshot, persist_snapshot_and_sync_wal};
+use crate::pod::acl::{AccessGrant, GrantPermissions, GrantRequest};
 use crate::protocol::NucleusDb;
 use crate::sql::executor::{SqlExecutor, SqlResult};
 use crate::state::State;
@@ -70,10 +73,41 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/config", get(api_config))
         .route("/config/wrap", post(api_config_wrap))
         .route("/config/x402", post(api_config_x402))
+        .route("/vault/keys", get(api_vault_keys))
+        .route(
+            "/vault/keys/{provider}",
+            post(api_vault_set_key).delete(api_vault_delete_key),
+        )
+        .route("/vault/test/{provider}", post(api_vault_test_key))
         // Trust & Attestations
         .route("/trust/{session_id}", get(api_trust))
         .route("/attestations", get(api_attestations))
         .route("/attestations/verify", post(api_attestation_verify))
+        // Cockpit
+        .route(
+            "/cockpit/sessions",
+            get(api_cockpit_sessions).post(api_cockpit_create_session),
+        )
+        .route(
+            "/cockpit/sessions/{id}",
+            axum::routing::delete(api_cockpit_destroy_session),
+        )
+        .route(
+            "/cockpit/sessions/{id}/resize",
+            post(api_cockpit_resize_session),
+        )
+        .route(
+            "/cockpit/sessions/{id}/ws",
+            get(crate::cockpit::ws_bridge::ws_handler),
+        )
+        // Deploy
+        .route("/deploy/catalog", get(api_deploy_catalog))
+        .route("/deploy/preflight", post(api_deploy_preflight))
+        .route("/deploy/launch", post(api_deploy_launch))
+        .route("/deploy/status/{id}", get(api_deploy_status))
+        // OpenAI-compatible proxy
+        .route("/proxy/v1/chat/completions", post(api_proxy_chat))
+        .route("/proxy/v1/models", get(api_proxy_models))
         // NucleusDB
         .route("/nucleusdb/status", get(api_nucleusdb_status))
         .route("/nucleusdb/browse", get(api_nucleusdb_browse))
@@ -90,6 +124,14 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route(
             "/nucleusdb/vector-search",
             post(api_nucleusdb_vector_search),
+        )
+        .route(
+            "/nucleusdb/grants",
+            get(api_nucleusdb_grants).post(api_nucleusdb_grants_create),
+        )
+        .route(
+            "/nucleusdb/grants/{grant_id_hex}/revoke",
+            post(api_nucleusdb_grants_revoke),
         )
         // Capabilities
         .route("/capabilities", get(api_capabilities))
@@ -181,6 +223,60 @@ pub struct ExportQuery {
     format: Option<String>,
 }
 
+#[derive(Deserialize, Default)]
+pub struct GrantListQuery {
+    /// Return only active grants.
+    active: Option<bool>,
+    /// Include revoked grants in response (ignored when active=true).
+    include_revoked: Option<bool>,
+    /// Optional grantee PUF filter (hex, 32 bytes).
+    grantee_puf_hex: Option<String>,
+    /// Optional key filter — only grants whose pattern matches this key.
+    key: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct GrantCreateRequest {
+    grantor_puf_hex: String,
+    grantee_puf_hex: String,
+    key_pattern: String,
+    permissions: GrantPermissions,
+    expires_at: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub struct VaultSetKeyRequest {
+    key: String,
+    #[serde(default)]
+    env_var: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CockpitCreateSessionRequest {
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    working_dir: Option<String>,
+    #[serde(default)]
+    cols: Option<u16>,
+    #[serde(default)]
+    rows: Option<u16>,
+    #[serde(default)]
+    agent_type: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CockpitResizeRequest {
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Deserialize)]
+pub struct DeployPreflightRequest {
+    agent_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -193,6 +289,216 @@ fn api_err(code: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
 
 fn internal_err(msg: String) -> (StatusCode, Json<Value>) {
     api_err(StatusCode::INTERNAL_SERVER_ERROR, &msg)
+}
+
+fn decode_hex_32(input: &str, field_name: &str) -> Result<[u8; 32], (StatusCode, Json<Value>)> {
+    let raw = input.trim().strip_prefix("0x").unwrap_or(input.trim());
+    if raw.len() != 64 {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("{field_name} must be exactly 32 bytes (64 hex chars)"),
+        ));
+    }
+    let mut out = [0u8; 32];
+    for (idx, chunk) in raw.as_bytes().chunks_exact(2).enumerate() {
+        let pair = std::str::from_utf8(chunk).map_err(|_| {
+            api_err(
+                StatusCode::BAD_REQUEST,
+                &format!("{field_name} must be valid hex"),
+            )
+        })?;
+        out[idx] = u8::from_str_radix(pair, 16).map_err(|_| {
+            api_err(
+                StatusCode::BAD_REQUEST,
+                &format!("{field_name} must be valid hex"),
+            )
+        })?;
+    }
+    Ok(out)
+}
+
+fn encode_hex_prefixed(bytes: &[u8; 32]) -> String {
+    format!("0x{}", crate::transparency::ct6962::hex_encode(bytes))
+}
+
+fn grant_to_json(g: &AccessGrant) -> Value {
+    json!({
+        "grant_id_hex": encode_hex_prefixed(&g.grant_id),
+        "grantor_puf_hex": encode_hex_prefixed(&g.grantor_puf),
+        "grantee_puf_hex": encode_hex_prefixed(&g.grantee_puf),
+        "key_pattern": g.key_pattern,
+        "permissions": g.permissions,
+        "expires_at": g.expires_at,
+        "created_at": g.created_at,
+        "revoked": g.revoked,
+        "active": g.is_active(),
+        "nonce": g.nonce,
+    })
+}
+
+fn persist_grants_to_disk(
+    store: &crate::pod::acl::GrantStore,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create grants dir {}: {e}", parent.display()))?;
+    }
+    let payload = serde_json::to_vec_pretty(store.list_all())
+        .map_err(|e| format!("serialize grants for {}: {e}", path.display()))?;
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, payload)
+        .map_err(|e| format!("write temp grants {}: {e}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        format!(
+            "rename grants {} -> {}: {e}",
+            tmp_path.display(),
+            path.display()
+        )
+    })
+}
+
+fn configured_vault(
+    state: &DashboardState,
+) -> Result<std::sync::Arc<vault::Vault>, (StatusCode, Json<Value>)> {
+    state.vault.clone().ok_or_else(|| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            "vault unavailable: PQ wallet not initialized",
+        )
+    })
+}
+
+fn require_sensitive_access(state: &DashboardState) -> Result<(), (StatusCode, Json<Value>)> {
+    let authenticated = is_authenticated(&state.credentials_path)
+        || resolve_api_key(&state.credentials_path).is_some();
+    if authenticated {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "authentication required: run `agenthalo login` or configure AGENTHALO_API_KEY, then retry",
+                "code": "auth_required",
+                "setup_route": "#/setup",
+                "next_steps": [
+                    "agenthalo login",
+                    "export AGENTHALO_API_KEY=your-agenthalo-key"
+                ]
+            })),
+        ))
+    }
+}
+
+fn sanitize_proxy_error(provider: &str, err: &ureq::Error) -> String {
+    let msg = err.to_string();
+    if msg.contains("key=") {
+        format!("{} upstream error (credentials redacted)", provider)
+    } else {
+        format!("{} upstream error: {}", provider, msg)
+    }
+}
+
+fn validate_cockpit_command(
+    command: &str,
+    args: &[String],
+    agent_type: Option<&str>,
+) -> Result<(), String> {
+    let cmd = command.trim();
+    if cmd.is_empty() {
+        return Err("command must not be empty".to_string());
+    }
+    if args.len() > 32 {
+        return Err("too many args (max 32)".to_string());
+    }
+    if args
+        .iter()
+        .any(|a| a.len() > 256 || a.contains('\n') || a.contains('\r'))
+    {
+        return Err("invalid arg (contains newline or exceeds 256 chars)".to_string());
+    }
+
+    let mut allowed: std::collections::BTreeSet<String> = deploy::agent_catalog()
+        .into_iter()
+        .map(|a| a.cli_command.to_string())
+        .collect();
+    for shell_cmd in ["bash", "/bin/bash", "sh", "/bin/sh"] {
+        allowed.insert(shell_cmd.to_string());
+    }
+
+    let custom_allowed = std::env::var("AGENTHALO_ALLOW_CUSTOM_COCKPIT")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+
+    if !allowed.contains(cmd) {
+        if custom_allowed && agent_type == Some("custom") {
+            // Opt-in escape hatch for trusted local experimentation.
+            return Ok(());
+        }
+        return Err(format!(
+            "command `{cmd}` is not allowed; use deploy catalog commands"
+        ));
+    }
+
+    // Shell PTY sessions are interactive; disallow one-shot command execution flags.
+    if matches!(cmd, "bash" | "/bin/bash" | "sh" | "/bin/sh")
+        && args.iter().any(|a| a == "-c" || a == "--command")
+    {
+        return Err("shell command execution flags (-c/--command) are not allowed".to_string());
+    }
+
+    Ok(())
+}
+
+fn provider_test_request(provider: &str, api_key: &str) -> Result<(), String> {
+    match provider {
+        "anthropic" => {
+            let resp = ureq::get("https://api.anthropic.com/v1/models")
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .call()
+                .map_err(|e| sanitize_proxy_error("anthropic", &e))?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Anthropic API returned HTTP {}",
+                    resp.status().as_u16()
+                ))
+            }
+        }
+        "openai" | "openclaw" => {
+            let resp = ureq::get("https://api.openai.com/v1/models")
+                .header("Authorization", &format!("Bearer {api_key}"))
+                .call()
+                .map_err(|e| sanitize_proxy_error("openai", &e))?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "OpenAI API returned HTTP {}",
+                    resp.status().as_u16()
+                ))
+            }
+        }
+        "google" => {
+            let url =
+                format!("https://generativelanguage.googleapis.com/v1beta/models?key={api_key}");
+            let resp = ureq::get(&url)
+                .call()
+                .map_err(|e| sanitize_proxy_error("google", &e))?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Google API returned HTTP {}",
+                    resp.status().as_u16()
+                ))
+            }
+        }
+        other => Err(format!("provider `{other}` does not support API test")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +843,10 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "agentpmt_workflows": addons_cfg.agentpmt_workflows_enabled,
         },
         "pq_wallet": has_wallet(),
+        "vault": {
+            "available": state.vault.is_some(),
+            "path": config::vault_path().to_string_lossy(),
+        },
         "paths": {
             "home": config::halo_dir().to_string_lossy(),
             "db": state.db_path.to_string_lossy(),
@@ -597,6 +907,201 @@ async fn api_config_x402(
         "network": cfg.preferred_network,
         "max_auto_approve": cfg.max_auto_approve,
     }})))
+}
+
+async fn api_vault_keys(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let vault = configured_vault(&state)?;
+    let keys = vault.list_keys().map_err(internal_err)?;
+    Ok(Json(json!({ "keys": keys })))
+}
+
+async fn api_vault_set_key(
+    AxumState(state): AxumState<DashboardState>,
+    Path(provider): Path<String>,
+    Json(req): Json<VaultSetKeyRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let vault = configured_vault(&state)?;
+    let env_var = req
+        .env_var
+        .unwrap_or_else(|| vault::provider_default_env_var(&provider));
+    vault
+        .set_key(&provider, &env_var, req.key.trim())
+        .map_err(internal_err)?;
+    Ok(Json(
+        json!({ "ok": true, "provider": provider, "env_var": env_var }),
+    ))
+}
+
+async fn api_vault_delete_key(
+    AxumState(state): AxumState<DashboardState>,
+    Path(provider): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let vault = configured_vault(&state)?;
+    vault.delete_key(&provider).map_err(internal_err)?;
+    Ok(Json(json!({ "ok": true, "provider": provider })))
+}
+
+async fn api_vault_test_key(
+    AxumState(state): AxumState<DashboardState>,
+    Path(provider): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let vault = configured_vault(&state)?;
+    let key = vault.get_key(&provider).map_err(|_| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("no API key configured for {}", provider),
+        )
+    })?;
+    let test_result = provider_test_request(&provider.to_ascii_lowercase(), &key);
+    match test_result {
+        Ok(()) => {
+            let _ = vault.set_test_result(&provider, true);
+            Ok(Json(
+                json!({ "ok": true, "provider": provider, "tested": true }),
+            ))
+        }
+        Err(e) => {
+            let _ = vault.set_test_result(&provider, false);
+            Ok(Json(
+                json!({ "ok": false, "provider": provider, "tested": false, "error": e }),
+            ))
+        }
+    }
+}
+
+async fn api_cockpit_sessions(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let sessions = state.pty_manager.list_sessions();
+    Ok(Json(
+        json!({ "sessions": sessions, "count": sessions.len() }),
+    ))
+}
+
+async fn api_cockpit_create_session(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<CockpitCreateSessionRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    validate_cockpit_command(req.command.trim(), &req.args, req.agent_type.as_deref())
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let cols = req.cols.unwrap_or(120).max(20);
+    let rows = req.rows.unwrap_or(36).max(10);
+    let id = state
+        .pty_manager
+        .create_session(
+            req.command.trim(),
+            &req.args,
+            vec![],
+            req.working_dir.as_deref(),
+            cols,
+            rows,
+            req.agent_type.clone(),
+        )
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "id": id,
+        "status": "active",
+        "ws_url": format!("/api/cockpit/sessions/{}/ws", id),
+    })))
+}
+
+async fn api_cockpit_destroy_session(
+    AxumState(state): AxumState<DashboardState>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    state
+        .pty_manager
+        .destroy_session(&id)
+        .map_err(|e| api_err(StatusCode::NOT_FOUND, &e))?;
+    Ok(Json(json!({ "ok": true, "id": id })))
+}
+
+async fn api_cockpit_resize_session(
+    AxumState(state): AxumState<DashboardState>,
+    Path(id): Path<String>,
+    Json(req): Json<CockpitResizeRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    state
+        .pty_manager
+        .resize_session(&id, req.cols.max(20), req.rows.max(10))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(
+        json!({ "ok": true, "id": id, "cols": req.cols, "rows": req.rows }),
+    ))
+}
+
+async fn api_deploy_catalog(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    Ok(Json(json!({ "agents": deploy::agent_catalog() })))
+}
+
+async fn api_deploy_preflight(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<DeployPreflightRequest>,
+) -> ApiResult {
+    let result = deploy::preflight(&req.agent_id, state.vault.as_deref())
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!(result)))
+}
+
+async fn api_deploy_launch(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<LaunchRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let result = deploy::launch(&req, &state.pty_manager, state.vault.as_deref())
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!(result)))
+}
+
+async fn api_deploy_status(
+    AxumState(state): AxumState<DashboardState>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let session = state
+        .pty_manager
+        .get_session(&id)
+        .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "session not found"))?;
+    Ok(Json(json!({ "id": id, "status": session.status() })))
+}
+
+async fn api_proxy_models(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let models = match state.vault.as_ref() {
+        Some(vault) => proxy::list_available_models(vault),
+        None => Vec::new(),
+    };
+    Ok(Json(json!({ "object": "list", "data": models })))
+}
+
+async fn api_proxy_chat(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<proxy::ChatCompletionRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if req.stream.unwrap_or(false) {
+        return Err(api_err(
+            StatusCode::NOT_IMPLEMENTED,
+            "streaming not yet supported",
+        ));
+    }
+    let Some(vault) = state.vault.clone() else {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "vault unavailable: configure PQ wallet and API keys first",
+        ));
+    };
+
+    let response = tokio::task::spawn_blocking(move || proxy::proxy_chat_sync(&vault, &req))
+        .await
+        .map_err(|e| internal_err(format!("proxy task join: {e}")))?
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+
+    Ok(Json(response))
 }
 
 // ---------------------------------------------------------------------------
@@ -926,6 +1431,14 @@ async fn api_nucleusdb_stats(AxumState(state): AxumState<DashboardState>) -> Api
     let blob_bytes = db.blob_store.total_bytes();
     let vector_count = db.vector_index.len();
     let vector_dims = db.vector_index.dims();
+    let (grant_count, grant_active_count) = {
+        let guard = state
+            .grant_store
+            .read()
+            .map_err(|e| internal_err(format!("grant store read lock poisoned: {e}")))?;
+        let all = guard.list_all();
+        (all.len(), all.iter().filter(|g| g.is_active()).count())
+    };
 
     Ok(Json(json!({
         "key_count": key_count,
@@ -943,6 +1456,8 @@ async fn api_nucleusdb_stats(AxumState(state): AxumState<DashboardState>) -> Api
         "blob_total_bytes": blob_bytes,
         "vector_count": vector_count,
         "vector_dims": vector_dims,
+        "grant_count": grant_count,
+        "grant_active_count": grant_active_count,
     })))
 }
 
@@ -1336,6 +1851,129 @@ async fn api_nucleusdb_vector_search(
         "metric": req.metric,
         "total_vectors": db.vector_index.len(),
         "vector_count": db.vector_index.len(),
+    })))
+}
+
+async fn api_nucleusdb_grants(
+    AxumState(state): AxumState<DashboardState>,
+    Query(params): Query<GrantListQuery>,
+) -> ApiResult {
+    let only_active = params.active.unwrap_or(false);
+    let include_revoked = params.include_revoked.unwrap_or(false) && !only_active;
+    let grantee_filter = match params.grantee_puf_hex {
+        Some(hex) if !hex.trim().is_empty() => Some(decode_hex_32(&hex, "grantee_puf_hex")?),
+        _ => None,
+    };
+    let key_filter = params.key.filter(|k| !k.trim().is_empty());
+
+    let guard = state
+        .grant_store
+        .read()
+        .map_err(|e| internal_err(format!("grant store read lock poisoned: {e}")))?;
+    let mut grants: Vec<&AccessGrant> = guard.list_all().iter().collect();
+    if !include_revoked {
+        grants.retain(|g| !g.revoked);
+    }
+    if only_active {
+        grants.retain(|g| g.is_active());
+    }
+    if let Some(grantee) = grantee_filter.as_ref() {
+        grants.retain(|g| &g.grantee_puf == grantee);
+    }
+    if let Some(key) = key_filter.as_ref() {
+        grants.retain(|g| g.matches_key(key));
+    }
+    grants.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    let items: Vec<Value> = grants.into_iter().map(grant_to_json).collect();
+    let active_total = guard.list_all().iter().filter(|g| g.is_active()).count();
+    let total = items.len();
+
+    Ok(Json(json!({
+        "grants": items,
+        "total": total,
+        "active_total": active_total,
+    })))
+}
+
+async fn api_nucleusdb_grants_create(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<GrantCreateRequest>,
+) -> ApiResult {
+    let key_pattern = req.key_pattern.trim();
+    if key_pattern.is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "key_pattern must not be empty",
+        ));
+    }
+    if key_pattern != "*" && key_pattern.contains('*') && !key_pattern.ends_with('*') {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "key_pattern '*' is only supported as trailing glob suffix",
+        ));
+    }
+    if !req.permissions.read && !req.permissions.write && !req.permissions.append {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "permissions must enable at least one of read/write/append",
+        ));
+    }
+    if let Some(expires_at) = req.expires_at {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if expires_at <= now {
+            return Err(api_err(
+                StatusCode::BAD_REQUEST,
+                "expires_at must be a future Unix timestamp",
+            ));
+        }
+    }
+
+    let request = GrantRequest {
+        grantor_puf: decode_hex_32(&req.grantor_puf_hex, "grantor_puf_hex")?,
+        grantee_puf: decode_hex_32(&req.grantee_puf_hex, "grantee_puf_hex")?,
+        key_pattern: key_pattern.to_string(),
+        permissions: req.permissions,
+        expires_at: req.expires_at,
+    };
+
+    let mut guard = state
+        .grant_store
+        .write()
+        .map_err(|e| internal_err(format!("grant store write lock poisoned: {e}")))?;
+    let grant = guard.create(request);
+    persist_grants_to_disk(&guard, &state.grant_store_path).map_err(internal_err)?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "grant": grant_to_json(&grant),
+    })))
+}
+
+async fn api_nucleusdb_grants_revoke(
+    AxumState(state): AxumState<DashboardState>,
+    Path(grant_id_hex): Path<String>,
+) -> ApiResult {
+    let grant_id = decode_hex_32(&grant_id_hex, "grant_id_hex")?;
+    let mut guard = state
+        .grant_store
+        .write()
+        .map_err(|e| internal_err(format!("grant store write lock poisoned: {e}")))?;
+    let found = guard.revoke(&grant_id);
+    if !found {
+        return Err(api_err(StatusCode::NOT_FOUND, "grant not found"));
+    }
+    persist_grants_to_disk(&guard, &state.grant_store_path).map_err(internal_err)?;
+    let grant = guard
+        .get(&grant_id)
+        .ok_or_else(|| internal_err("grant revoked but could not be loaded".to_string()))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "grant": grant_to_json(grant),
     })))
 }
 

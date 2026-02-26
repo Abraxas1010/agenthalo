@@ -42,6 +42,8 @@ pub struct RunConfig {
     pub command: Vec<String>,
     pub use_gvisor: bool,
     pub host_sock: Option<PathBuf>,
+    #[serde(default)]
+    pub env_vars: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,6 +94,9 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
         .arg(format!("{}:/run/nucleusdb.sock", host_sock.display()));
     if cfg.use_gvisor {
         cmd.arg("--runtime").arg("runsc");
+    }
+    for (key, value) in &cfg.env_vars {
+        cmd.arg("-e").arg(format!("{key}={value}"));
     }
     cmd.arg(&cfg.image);
     for arg in &cfg.command {

@@ -64,6 +64,10 @@ pub fn pq_wallet_path() -> PathBuf {
     halo_dir().join("pq_wallet.json")
 }
 
+pub fn vault_path() -> PathBuf {
+    halo_dir().join("vault.enc")
+}
+
 pub fn ensure_halo_dir() -> Result<(), String> {
     std::fs::create_dir_all(halo_dir()).map_err(|e| format!("create halo dir: {e}"))
 }

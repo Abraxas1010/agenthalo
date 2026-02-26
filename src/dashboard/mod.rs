@@ -9,6 +9,7 @@ pub mod assets;
 use axum::routing::get;
 use axum::Router;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -23,6 +24,65 @@ pub struct DashboardState {
     pub db_path: std::path::PathBuf,
     pub credentials_path: std::path::PathBuf,
     pub db_lock: Arc<Mutex<()>>,
+    pub grant_store: crate::pod::acl::SharedGrantStore,
+    pub grant_store_path: PathBuf,
+    pub vault: Option<Arc<crate::halo::vault::Vault>>,
+    pub pty_manager: Arc<crate::cockpit::pty_manager::PtyManager>,
+}
+
+fn default_grant_store_path(db_path: &Path) -> PathBuf {
+    db_path.with_extension("pod_grants.json")
+}
+
+fn load_grants_into_store(
+    store: &crate::pod::acl::SharedGrantStore,
+    path: &Path,
+) -> Result<usize, String> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("read grants {}: {e}", path.display()))?;
+    let grants: Vec<crate::pod::acl::AccessGrant> = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("parse grants {}: {e}", path.display()))?;
+    let count = grants.len();
+    let mut guard = store
+        .write()
+        .map_err(|e| format!("grant store write lock poisoned: {e}"))?;
+    guard.replace_all(grants);
+    Ok(count)
+}
+
+pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardState {
+    let grant_store = crate::pod::acl::GrantStore::shared();
+    let grant_store_path = default_grant_store_path(&db_path);
+    if let Err(e) = load_grants_into_store(&grant_store, &grant_store_path) {
+        eprintln!("warning: failed to load POD grants: {e}");
+    }
+
+    let vault = if crate::halo::config::pq_wallet_path().exists() {
+        match crate::halo::vault::Vault::open(
+            &crate::halo::config::pq_wallet_path(),
+            &crate::halo::config::vault_path(),
+        ) {
+            Ok(v) => Some(Arc::new(v)),
+            Err(e) => {
+                eprintln!("warning: failed to initialize vault: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    DashboardState {
+        db_path,
+        credentials_path,
+        db_lock: Arc::new(Mutex::new(())),
+        grant_store,
+        grant_store_path,
+        vault,
+        pty_manager: Arc::new(crate::cockpit::pty_manager::PtyManager::new(10)),
+    }
 }
 
 /// Build the full axum Router with embedded assets + API routes.
@@ -38,11 +98,10 @@ pub fn build_router(state: DashboardState) -> Router {
 
 /// Start the dashboard server and optionally open the browser.
 pub async fn serve(port: u16, open_browser: bool) -> Result<(), String> {
-    let state = DashboardState {
-        db_path: crate::halo::config::db_path(),
-        credentials_path: crate::halo::config::credentials_path(),
-        db_lock: Arc::new(Mutex::new(())),
-    };
+    let state = build_state(
+        crate::halo::config::db_path(),
+        crate::halo::config::credentials_path(),
+    );
 
     let app = build_router(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
