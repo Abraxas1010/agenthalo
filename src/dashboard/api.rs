@@ -79,6 +79,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/config/x402", post(api_config_x402))
         .route("/agentpmt/tools", get(api_agentpmt_tools))
         .route("/agentpmt/refresh", post(api_agentpmt_refresh))
+        .route("/agentpmt/enable", post(api_agentpmt_enable))
         .route("/vault/keys", get(api_vault_keys))
         .route(
             "/vault/keys/{provider}",
@@ -1159,6 +1160,21 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         rc_content.contains(&marker)
     };
 
+    let pmt_auth = agentpmt::has_bearer_token();
+    let has_pq = has_wallet();
+    let identity_ok = has_auth || has_pq;
+    let agentpmt_ok = pmt_cfg.enabled && pmt_auth;
+    let llm_ok = state
+        .vault
+        .as_ref()
+        .and_then(|v| v.get_key("openrouter").ok())
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false)
+        || std::env::var("OPENROUTER_API_KEY")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some();
+
     Ok(Json(json!({
         "authentication": {
             "authenticated": has_auth,
@@ -1179,7 +1195,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "enabled": pmt_cfg.enabled,
             "budget_tag": pmt_cfg.budget_tag,
             "endpoint": agentpmt::resolved_mcp_endpoint(&pmt_cfg),
-            "auth_configured": agentpmt::has_bearer_token(),
+            "auth_configured": pmt_auth,
             "tool_count": pmt_tool_count,
         },
         "onchain": {
@@ -1192,7 +1208,13 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "p2pclaw": addons_cfg.p2pclaw_enabled,
             "agentpmt_workflows": addons_cfg.agentpmt_workflows_enabled,
         },
-        "pq_wallet": has_wallet(),
+        "setup_complete": {
+            "identity": identity_ok,
+            "agentpmt": agentpmt_ok,
+            "llm": llm_ok,
+            "complete": identity_ok && agentpmt_ok,
+        },
+        "pq_wallet": has_pq,
         "vault": {
             "available": state.vault.is_some(),
             "path": config::vault_path().to_string_lossy(),
@@ -1296,6 +1318,16 @@ async fn api_agentpmt_refresh(AxumState(state): AxumState<DashboardState>) -> Ap
         "refreshed_at": catalog.refreshed_at,
         "tools": tools,
     })))
+}
+
+async fn api_agentpmt_enable(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mut cfg = agentpmt::load_or_default();
+    cfg.enabled = true;
+    cfg.updated_at = chrono::Utc::now().timestamp() as u64;
+    let path = agentpmt::agentpmt_config_path();
+    agentpmt::save_config(&path, &cfg).map_err(internal_err)?;
+    Ok(Json(json!({ "ok": true, "enabled": true })))
 }
 
 /// Allowed agent names for shell wrapping — prevents shell RC injection.

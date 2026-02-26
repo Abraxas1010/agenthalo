@@ -22,7 +22,9 @@
       <div class="logo-sub"><span class="logo-letter">H</span>uman-<span class="logo-letter">A</span>gent <span class="logo-letter">L</span>attice <span class="logo-letter">O</span>rchestration</div>
     </div>
     <ul class="nav-links">
-      <li><a href="#/overview" class="nav-link active" data-page="overview">
+      <li><a href="#/setup" class="nav-link active" data-page="setup">
+        <span class="nav-icon">&#9883;</span> Setup</a></li>
+      <li><a href="#/overview" class="nav-link" data-page="overview">
         <span class="nav-icon">&#9673;</span> Overview</a></li>
       <li><a href="#/sessions" class="nav-link" data-page="sessions">
         <span class="nav-icon">&#9776;</span> Sessions</a></li>
@@ -30,8 +32,6 @@
         <span class="nav-icon">&#36;</span> Costs</a></li>
       <li><a href="#/config" class="nav-link" data-page="config">
         <span class="nav-icon">&#9881;</span> Configuration</a></li>
-      <li><a href="#/setup" class="nav-link" data-page="setup">
-        <span class="nav-icon">&#9888;</span> Setup</a></li>
       <li><a href="#/trust" class="nav-link" data-page="trust">
         <span class="nav-icon">&#10003;</span> Trust</a></li>
       <li><a href="#/nucleusdb" class="nav-link" data-page="nucleusdb">
@@ -41,6 +41,7 @@
       <li><a href="#/deploy" class="nav-link" data-page="deploy">
         <span class="nav-icon">&#9732;</span> Deploy</a></li>
     </ul>
+    <div id="setup-progress" class="setup-progress-indicator" style="display:none"></div>
     <div class="sidebar-footer">
       <div class="version" id="version-label">v0.3.0</div>
       <button class="theme-toggle" onclick="toggleCRT()" title="Toggle CRT effects" id="crt-toggle">CRT</button>

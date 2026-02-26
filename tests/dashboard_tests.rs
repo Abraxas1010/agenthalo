@@ -1048,6 +1048,35 @@ async fn agentpmt_tools_endpoint_returns_catalog_shape() {
 }
 
 #[tokio::test]
+async fn config_includes_setup_complete_fields() {
+    let (state, db_path) = test_state("config_setup_complete");
+    let (status, val) = api_get(state, "/config").await;
+    assert_eq!(status, StatusCode::OK, "config route should succeed: {val}");
+
+    let sc = val
+        .get("setup_complete")
+        .expect("setup_complete should be present");
+    assert!(
+        sc.get("identity").and_then(|v| v.as_bool()).is_some(),
+        "setup_complete.identity should be a boolean: {sc}"
+    );
+    assert!(
+        sc.get("agentpmt").and_then(|v| v.as_bool()).is_some(),
+        "setup_complete.agentpmt should be a boolean: {sc}"
+    );
+    assert!(
+        sc.get("llm").and_then(|v| v.as_bool()).is_some(),
+        "setup_complete.llm should be a boolean: {sc}"
+    );
+    assert!(
+        sc.get("complete").and_then(|v| v.as_bool()).is_some(),
+        "setup_complete.complete should be a boolean: {sc}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn agentpmt_refresh_requires_auth() {
     let (state, db_path, creds_path) = test_state_unauth("agentpmt_refresh_auth");
     let (status, val) = api_post(state, "/agentpmt/refresh", json!({})).await;

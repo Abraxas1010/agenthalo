@@ -60,12 +60,72 @@ const pages = { overview: renderOverview, sessions: renderSessions, costs: rende
   config: renderConfig, setup: renderSetup, trust: renderTrust, nucleusdb: renderNucleusDB,
   cockpit: renderCockpit, deploy: renderDeploy };
 
-function route() {
+// Setup-first gate: cached setup state
+let _setupState = null;
+let _setupStateFetchedAt = 0;
+const SETUP_CACHE_MS = 5000;
+
+async function fetchSetupState(force) {
+  const now = Date.now();
+  if (!force && _setupState && (now - _setupStateFetchedAt) < SETUP_CACHE_MS) return _setupState;
+  try {
+    const cfg = await api('/config');
+    _setupState = cfg.setup_complete || { identity: false, agentpmt: false, llm: false, complete: false };
+    _setupStateFetchedAt = now;
+  } catch (_e) {
+    // If API unreachable, allow navigation (graceful degradation)
+    _setupState = { identity: true, agentpmt: true, llm: true, complete: true };
+    _setupStateFetchedAt = now;
+  }
+  updateNavLockState();
+  return _setupState;
+}
+
+function updateNavLockState() {
+  if (!_setupState) return;
+  const complete = _setupState.complete;
+  $$('.nav-link').forEach(a => {
+    const page = a.dataset.page;
+    if (page === 'setup') {
+      a.classList.remove('nav-locked');
+      a.classList.toggle('setup-incomplete', !complete);
+    } else {
+      a.classList.toggle('nav-locked', !complete);
+      a.classList.remove('setup-incomplete');
+    }
+  });
+  // Update progress indicator
+  const prog = document.getElementById('setup-progress');
+  if (prog) {
+    if (complete) {
+      prog.style.display = 'none';
+    } else {
+      const steps = [_setupState.identity, _setupState.agentpmt, _setupState.llm];
+      const done = steps.filter(Boolean).length;
+      prog.style.display = 'block';
+      prog.innerHTML = `Setup: ${done}/${steps.length}
+        <div class="progress-bar"><div class="progress-fill" style="width:${Math.round(done/steps.length*100)}%"></div></div>`;
+    }
+  }
+}
+
+// Invalidate setup cache (called after setup actions)
+window._invalidateSetupState = function() { _setupStateFetchedAt = 0; };
+
+async function route() {
   // Clean up particle animation when leaving NucleusDB page
   if (window._destroyHeroParticles) window._destroyHeroParticles();
-  const hash = location.hash.replace('#/', '') || 'overview';
+  const hash = location.hash.replace('#/', '') || 'setup';
   const page = hash.split('/')[0];
   const arg = hash.split('/').slice(1).join('/');
+
+  // Fetch setup state and gate navigation
+  const ss = await fetchSetupState();
+  if (!ss.complete && page !== 'setup') {
+    location.hash = '#/setup';
+    return;
+  }
+
   $$('.nav-link').forEach(a => a.classList.toggle('active', a.dataset.page === page));
   if (pages[page]) pages[page](arg);
   else content.innerHTML = '<div class="loading">Page not found</div>';
@@ -967,11 +1027,8 @@ function providerDefaultEnv(provider) {
 
 async function renderSetup() {
   const ctx = consumeSetupContext();
-  const reason = String(ctx.reason || '').toLowerCase();
-  const missingProviders = parseProviderList(ctx.providers);
-  const fromPage = String(ctx.from || 'cockpit');
 
-  // Fetch live vault status
+  // Fetch live state
   let vaultKeys = [];
   let vaultAvailable = false;
   try {
@@ -980,11 +1037,11 @@ async function renderSetup() {
     vaultAvailable = true;
   } catch (_e) { /* vault locked or unavailable */ }
 
-  // Fetch config for auth/wallet status
   let cfg = null;
   try { cfg = await api('/config'); } catch (_e) {}
   const isAuthenticated = cfg && cfg.authentication && cfg.authentication.authenticated;
   const hasWallet = cfg && cfg.pq_wallet;
+  const ss = (cfg && cfg.setup_complete) || { identity: false, agentpmt: false, llm: false, complete: false };
 
   // Build status lookup from vault keys
   const keyStatus = {};
@@ -996,7 +1053,7 @@ async function renderSetup() {
     return { configured: !!v.configured, tested: !!v.tested };
   }
 
-  function statusBadge(provider) {
+  function statusBadgeHtml(provider) {
     const s = providerStatus(provider);
     if (s.tested) return '<span class="badge badge-ok">Verified</span>';
     if (s.configured) return '<span class="badge badge-warn">Configured (untested)</span>';
@@ -1010,14 +1067,14 @@ async function renderSetup() {
       ? `<a class="btn btn-sm" href="${esc(info.keyUrl)}" target="_blank" rel="noopener noreferrer">Get Key</a>`
       : '';
     return `
-      <div class="setup-provider-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
-        <div style="flex:1">
-          <div class="setup-provider-name" style="font-size:13px">${esc(info.name)}</div>
-          <div class="setup-provider-env" style="font-size:10px;color:var(--text-dim);margin-top:2px">${esc(info.envVar)}</div>
+      <div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div style="flex:1;min-width:180px">
+          <div style="font-size:13px">${esc(info.name)}</div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:2px">${esc(info.envVar)}</div>
           ${info.description ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px">${esc(info.description)}</div>` : ''}
         </div>
-        <div class="setup-provider-actions" style="display:flex;gap:6px;align-items:center">
-          ${statusBadge(provider)}
+        <div style="display:flex;gap:6px;align-items:center">
+          ${statusBadgeHtml(provider)}
           ${docsLink}
           <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(provider)}">Set Key</button>
           ${s.configured ? `<button class="btn btn-sm setup-provider-test-btn" data-provider="${esc(provider)}">Test</button>` : ''}
@@ -1026,29 +1083,36 @@ async function renderSetup() {
     `;
   }
 
-  // Split providers into required and optional
   const requiredProviders = Object.keys(PROVIDER_INFO).filter(p => PROVIDER_INFO[p].required);
   const optionalLLM = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === 'llm');
   const optionalStorage = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === 'storage');
   const optionalTooling = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === 'tooling');
 
-  // Step completion checks
-  const step1Done = isAuthenticated || hasWallet;
-  const step2Done = requiredProviders.every(p => providerStatus(p).configured);
-  const allOptionalConfigured = [...optionalStorage].every(p => providerStatus(p).configured);
+  // Step states
+  const step1Done = ss.agentpmt;   // AgentPMT account connected
+  const step2Done = ss.llm;        // OpenRouter configured
+  const identityDone = ss.identity; // Auth or wallet
+  const allDone = ss.complete;
 
-  const bannerTitle = reason === 'provider_keys_missing'
-    ? 'Provider API Keys Required'
-    : (step1Done && step2Done) ? 'Setup Complete' : 'Service Configuration';
-  const bannerSub = reason === 'provider_keys_missing'
-    ? 'Configure the required OpenRouter key to enable LLM inference, then return to ' + fromPage + '.'
-    : (step1Done && step2Done) ? 'All required services are configured. Optional services below.'
-    : 'Configure your operator credentials and upstream services.';
+  // Determine which step is active
+  const step1Class = step1Done ? 'step-done' : 'step-active';
+  const step2Class = step1Done ? (step2Done ? 'step-done' : 'step-active') : 'step-locked';
+  const step3Class = step1Done && step2Done ? 'step-done' : 'step-locked';
+
+  // AgentPMT connection status
+  const pmtEnabled = cfg && cfg.agentpmt && cfg.agentpmt.enabled;
+  const pmtAuth = cfg && cfg.agentpmt && cfg.agentpmt.auth_configured;
+  const pmtToolCount = (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) || 0;
+
+  const bannerTitle = allDone ? 'Setup Complete' : 'Get Started';
+  const bannerSub = allDone
+    ? 'All required services are configured. Your dashboard is fully operational.'
+    : 'Complete these steps to unlock your Agent H.A.L.O. dashboard.';
 
   content.innerHTML = `
     <div class="page-header">
       <h1>Setup</h1>
-      <p class="subtitle">Configure upstream services and operator credentials.</p>
+      <p class="subtitle">Connect your account, configure services, launch agents.</p>
     </div>
 
     <div class="setup-banner">
@@ -1056,129 +1120,274 @@ async function renderSetup() {
       <div class="setup-banner-sub">${esc(bannerSub)}</div>
     </div>
 
-    <div class="setup-grid">
+    <!-- ============================================================
+         STEP 1: AgentPMT Account (Primary CTA)
+         ============================================================ -->
+    <div class="setup-wizard-step ${step1Class}" id="setup-step-1">
+      <h3>${step1Done ? '&#10003;' : '1.'} Connect Your AgentPMT Account</h3>
+      <p style="color:var(--text-muted);font-size:12px;line-height:1.5;margin-bottom:10px">
+        AgentPMT is the marketplace powering all tool access, workflows, and agent budgets.
+        Create a free account to connect your dashboard to the agent economy.
+      </p>
 
-      <!-- Step 1: Authentication & Wallet -->
-      <div class="setup-card">
-        <h3>${step1Done ? '&#10003;' : '1.'} Operator Authentication</h3>
-        <p>Unlock dashboard controls and create the encrypted vault for API key storage.</p>
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin:8px 0">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <span style="font-size:12px">Dashboard auth</span>
-            ${isAuthenticated
-              ? '<span class="badge badge-ok">Authenticated</span>'
-              : '<span class="badge badge-muted">Not authenticated</span>'}
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:12px">PQ wallet (vault master key)</span>
-            ${hasWallet
-              ? '<span class="badge badge-ok">Present</span>'
-              : '<span class="badge badge-muted">Not created</span>'}
-          </div>
+      ${step1Done ? `
+        <div style="padding:10px 12px;border:1px solid var(--green);border-radius:var(--radius);font-size:12px;color:var(--green);display:flex;align-items:center;gap:8px">
+          <span style="font-size:16px">&#10003;</span>
+          <span>AgentPMT connected${pmtToolCount > 0 ? ' &mdash; ' + pmtToolCount + ' tools available' : ''}</span>
         </div>
-        ${!step1Done ? `
-          <div class="setup-cmd">
-            <code>agenthalo keygen --pq</code>
-            <button class="btn btn-sm" onclick="copySetupText('agenthalo keygen --pq')">Copy</button>
+      ` : `
+        <!-- Path A: Direct AgentPMT account (Primary) -->
+        <div class="setup-path-primary">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <span class="badge badge-ok" style="font-size:10px">RECOMMENDED</span>
+            <span style="font-size:13px;font-weight:700;color:var(--accent)">Create an AgentPMT Account</span>
           </div>
-          <div class="setup-cmd">
-            <code>agenthalo login</code>
-            <button class="btn btn-sm" onclick="copySetupText('agenthalo login')">Copy</button>
+
+          <ol class="setup-step-list">
+            <li>
+              <span class="step-num">1</span>
+              <span>Sign up for a free account at AgentPMT.com</span>
+            </li>
+            <li>
+              <span class="step-num">2</span>
+              <span>Navigate to your account settings and copy your API token</span>
+            </li>
+            <li>
+              <span class="step-num">3</span>
+              <span>Paste your token below to connect</span>
+            </li>
+          </ol>
+
+          <div style="margin:12px 0 8px">
+            <a class="btn btn-primary" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer"
+               style="font-size:13px;padding:10px 20px;letter-spacing:0.6px">
+              Create Free Account at AgentPMT.com &#8599;
+            </a>
           </div>
-        ` : ''}
-      </div>
 
-      <!-- Step 2: Required Services (OpenRouter) -->
-      <div class="setup-card">
-        <h3>${step2Done ? '&#10003;' : '2.'} Required: LLM Inference (OpenRouter)</h3>
-        <p style="font-size:12px;color:var(--amber)">
-          All LLM inference routes exclusively through your OpenRouter account.
-          Customer requests are proxied with configurable markup pricing.
-        </p>
-        ${requiredProviders.map(p => providerCard(p)).join('')}
-        ${step2Done ? `
-          <div style="margin-top:10px;padding:8px 12px;border:1px solid var(--green);border-radius:var(--radius);font-size:11px;color:var(--green)">
-            &#10003; OpenRouter is configured. LLM proxy is operational.
-            <a href="#/config" style="color:var(--accent);margin-left:8px">Adjust markup in Configuration</a>
-          </div>
-        ` : `
-          <div style="margin-top:10px;padding:8px 12px;border:1px solid var(--amber);border-radius:var(--radius);font-size:11px;color:var(--amber)">
-            &#9888; OpenRouter key required before customers can use LLM inference.
-          </div>
-        `}
-      </div>
-
-      <!-- Step 3: Optional — Immutable 3rd-Party Storage -->
-      <div class="setup-card">
-        <h3>3. Optional: Immutable 3rd-Party Storage</h3>
-        <p style="font-size:12px;color:var(--text-dim)">
-          IPFS-based immutable storage for agent traces, attestations, and customer data.
-          Customer pins route through your Pinata account with per-pin metered billing.
-        </p>
-        ${optionalStorage.map(p => providerCard(p)).join('')}
-        <div style="margin-top:8px;font-size:10px;color:var(--text-dim)">
-          Pricing: per-pin fee + per-MB/month storage, with operator markup applied.
-        </div>
-      </div>
-
-      <!-- Step 4: Optional — Direct LLM Keys (operator only) -->
-      <div class="setup-card">
-        <h3>4. Optional: Direct LLM Keys (Operator Only)</h3>
-        <p style="font-size:12px;color:var(--text-dim)">
-          These are for operator-side diagnostics and fallback only.
-          Customer traffic always routes through OpenRouter — never directly to providers.
-        </p>
-        ${optionalLLM.map(p => providerCard(p)).join('')}
-      </div>
-
-      <!-- Step 5: Optional — Tool Integrations -->
-      <div class="setup-card">
-        <h3>5. Optional: Tool Integrations</h3>
-        <p style="font-size:12px;color:var(--text-dim)">
-          Configure external MCP/tooling providers used by the AgentPMT proxy path.
-        </p>
-        ${optionalTooling.map(p => providerCard(p)).join('')}
-      </div>
-
-      <!-- Funding & Monetization Info -->
-      <div class="setup-card" style="border-color:var(--accent)">
-        <h3>Funding &amp; Monetization</h3>
-        <p style="font-size:12px;color:var(--text-dim)">
-          All customer balance top-ups flow through two channels only:
-        </p>
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin:8px 0">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-            <span class="badge badge-ok" style="font-size:10px">PRIMARY</span>
-            <div>
-              <div style="font-size:12px;font-weight:bold;color:var(--amber)">AgentPMT.com Token Purchase</div>
-              <div style="font-size:10px;color:var(--text-dim)">Customers buy tokens at AgentPMT.com. Signed receipts verified via HMAC-SHA256.</div>
+          <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">
+              Paste your AgentPMT API token
             </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px">
-            <span class="badge badge-info" style="font-size:10px">ON-CHAIN</span>
-            <div>
-              <div style="font-size:12px;font-weight:bold;color:var(--amber)">x402direct (USDC on Base L2)</div>
-              <div style="font-size:10px;color:var(--text-dim)">Direct USDC stablecoin payment. Transaction hash verified on-chain.</div>
+            <div class="setup-token-input">
+              <input id="setup-agentpmt-token" type="password" placeholder="Paste AgentPMT API token here"
+                     autocomplete="off" spellcheck="false">
+              <button class="btn btn-sm btn-primary" id="setup-save-agentpmt">Save Token</button>
+              <button class="btn btn-sm" id="setup-test-agentpmt" ${!pmtAuth ? 'disabled style="opacity:0.5"' : ''}>
+                Test Connection
+              </button>
             </div>
+            <div id="setup-agentpmt-status" style="margin-top:6px;font-size:11px;min-height:16px"></div>
           </div>
         </div>
-        <div style="font-size:10px;color:var(--text-dim);margin-top:4px">
-          No other funding channel is accepted. All tools, workflows, skills, and agent configurations
-          are accessible exclusively through AgentPMT MCP. This ensures all revenue flows through
-          monetizable systems.
-        </div>
-      </div>
 
+        <!-- Path B: Local PQ wallet (Secondary, collapsed) -->
+        <details class="setup-path-secondary">
+          <summary>Or use local PQ wallet identity (advanced)</summary>
+          <div style="padding-top:10px">
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;line-height:1.5">
+              This creates a local-only cryptographic identity. It enables vault storage and
+              dashboard authentication, but does <strong>not</strong> provide marketplace access.
+              For full tool, workflow, and budget capabilities, use an AgentPMT account above.
+            </div>
+            <div style="border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin:8px 0">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <span style="font-size:12px">Dashboard auth</span>
+                ${isAuthenticated
+                  ? '<span class="badge badge-ok">Authenticated</span>'
+                  : '<span class="badge badge-muted">Not authenticated</span>'}
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="font-size:12px">PQ wallet (vault master key)</span>
+                ${hasWallet
+                  ? '<span class="badge badge-ok">Present</span>'
+                  : '<span class="badge badge-muted">Not created</span>'}
+              </div>
+            </div>
+            ${!identityDone ? `
+              <div class="setup-cmd">
+                <code>agenthalo keygen --pq</code>
+                <button class="btn btn-sm" onclick="copySetupText('agenthalo keygen --pq')">Copy</button>
+              </div>
+              <div class="setup-cmd">
+                <code>agenthalo login</code>
+                <button class="btn btn-sm" onclick="copySetupText('agenthalo login')">Copy</button>
+              </div>
+            ` : `
+              <div style="font-size:11px;color:var(--green);margin-top:6px">
+                &#10003; Local identity configured. Consider adding an AgentPMT account for full marketplace access.
+              </div>
+            `}
+          </div>
+        </details>
+      `}
     </div>
 
-    <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
-      <a class="btn btn-primary" href="#/config">Open Configuration</a>
-      <a class="btn" href="#/deploy">Go to Deploy</a>
-      <a class="btn" href="#/cockpit">Back to Cockpit</a>
+    <!-- ============================================================
+         STEP 2: OpenRouter LLM Key
+         ============================================================ -->
+    <div class="setup-wizard-step ${step2Class}" id="setup-step-2">
+      <h3>${step2Done ? '&#10003;' : '2.'} Configure LLM Inference (OpenRouter)</h3>
+      <p style="font-size:12px;color:${step1Done ? 'var(--amber)' : 'var(--text-dim)'};line-height:1.5;margin-bottom:10px">
+        All LLM inference routes exclusively through your OpenRouter account.
+        Customer requests are proxied with configurable markup pricing.
+      </p>
+      ${requiredProviders.map(p => providerCard(p)).join('')}
+      ${step2Done ? `
+        <div style="margin-top:10px;padding:8px 12px;border:1px solid var(--green);border-radius:var(--radius);font-size:11px;color:var(--green)">
+          &#10003; OpenRouter is configured. LLM proxy is operational.
+        </div>
+      ` : step1Done ? `
+        <div style="margin-top:10px;padding:8px 12px;border:1px solid var(--amber);border-radius:var(--radius);font-size:11px;color:var(--amber)">
+          &#9888; OpenRouter key required before customers can use LLM inference.
+        </div>
+      ` : ''}
+    </div>
+
+    <!-- ============================================================
+         STEP 3: All Done / Continue
+         ============================================================ -->
+    <div class="setup-wizard-step ${step3Class}" id="setup-step-3">
+      <h3>${allDone ? '&#10003;' : '3.'} Dashboard Unlocked</h3>
+      ${allDone ? `
+        <p style="color:var(--green);font-size:12px;line-height:1.5">
+          All required services are configured. Your dashboard tabs are now unlocked.
+        </p>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <a class="btn btn-primary" href="#/overview">Go to Overview</a>
+          <a class="btn" href="#/cockpit">Open Cockpit</a>
+          <a class="btn" href="#/deploy">Deploy Agents</a>
+        </div>
+      ` : `
+        <p style="color:var(--text-dim);font-size:12px;line-height:1.5">
+          Complete steps 1 and 2 above to unlock all dashboard features.
+        </p>
+      `}
+    </div>
+
+    <!-- ============================================================
+         Optional Integrations (collapsed)
+         ============================================================ -->
+    <details class="setup-optional-section">
+      <summary>Optional Integrations (${optionalStorage.length + optionalLLM.length + optionalTooling.length} services)</summary>
+      <div class="optional-body">
+        <div style="margin-top:8px">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px">
+            Immutable 3rd-Party Storage
+          </div>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
+            IPFS-based immutable storage for agent traces, attestations, and customer data.
+          </div>
+          ${optionalStorage.map(p => providerCard(p)).join('')}
+        </div>
+        <div style="margin-top:14px">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px">
+            Direct LLM Keys (Operator Only)
+          </div>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
+            Operator-side diagnostics and fallback. Customer traffic always uses OpenRouter.
+          </div>
+          ${optionalLLM.map(p => providerCard(p)).join('')}
+        </div>
+        <div style="margin-top:14px">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px">
+            Additional Tool Integrations
+          </div>
+          ${optionalTooling.map(p => providerCard(p)).join('')}
+        </div>
+      </div>
+    </details>
+
+    <!-- ============================================================
+         Funding & Monetization (informational)
+         ============================================================ -->
+    <div class="setup-wizard-step" style="margin-top:12px;border-color:var(--accent)">
+      <h3>Funding &amp; Monetization</h3>
+      <p style="font-size:12px;color:var(--text-dim);line-height:1.5;margin-bottom:10px">
+        All customer balance top-ups flow through two channels only:
+      </p>
+      <div style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin:8px 0">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <span class="badge badge-ok" style="font-size:10px">PRIMARY</span>
+          <div>
+            <div style="font-size:12px;font-weight:bold;color:var(--amber)">AgentPMT.com Token Purchase</div>
+            <div style="font-size:10px;color:var(--text-dim)">Customers buy tokens at AgentPMT.com. Signed receipts verified via HMAC-SHA256.</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span class="badge badge-info" style="font-size:10px">ON-CHAIN</span>
+          <div>
+            <div style="font-size:12px;font-weight:bold;color:var(--amber)">x402direct (USDC on Base L2)</div>
+            <div style="font-size:10px;color:var(--text-dim)">Direct USDC stablecoin payment. Transaction hash verified on-chain.</div>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:4px">
+        No other funding channel is accepted. All tools, workflows, skills, and agent configurations
+        are accessible exclusively through AgentPMT MCP.
+      </div>
     </div>
   `;
 
-  // Wire up "Set Key" buttons
+  // ---- Wire up interactive elements ----
+
+  // AgentPMT token save
+  const saveBtn = document.getElementById('setup-save-agentpmt');
+  const testBtn = document.getElementById('setup-test-agentpmt');
+  const tokenInput = document.getElementById('setup-agentpmt-token');
+  const statusEl = document.getElementById('setup-agentpmt-status');
+
+  if (saveBtn && tokenInput) {
+    saveBtn.addEventListener('click', async () => {
+      const token = (tokenInput.value || '').trim();
+      if (!token) {
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Please paste your API token first.</span>';
+        return;
+      }
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving...';
+      try {
+        // Store the token in the vault under the agentpmt provider
+        await apiPost('/vault/keys/agentpmt', { key: token, env_var: 'AGENTPMT_API_KEY' });
+        // Enable the tool proxy
+        await apiPost('/agentpmt/enable', {});
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Token saved. Testing connection...</span>';
+        // Auto-test: refresh catalog
+        try {
+          const refreshResp = await apiPost('/agentpmt/refresh', {});
+          const count = Number(refreshResp.count || 0);
+          if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">&#10003; Connected! ${count} tools available.</span>`;
+        } catch (re) {
+          if (statusEl) statusEl.innerHTML = `<span style="color:var(--amber)">Token saved but catalog refresh failed: ${esc(String(re.message || re))}</span>`;
+        }
+        // Invalidate setup state cache and re-render
+        window._invalidateSetupState();
+        setTimeout(() => { renderSetup(); updateNavLockState(); }, 800);
+      } catch (e) {
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Save failed: ${esc(String(e.message || e))}</span>`;
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save Token';
+      }
+    });
+  }
+
+  if (testBtn) {
+    testBtn.addEventListener('click', async () => {
+      testBtn.disabled = true;
+      testBtn.textContent = 'Testing...';
+      try {
+        const resp = await apiPost('/agentpmt/refresh', {});
+        const count = Number(resp.count || 0);
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">&#10003; Connection OK &mdash; ${count} tools loaded.</span>`;
+      } catch (e) {
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Test failed: ${esc(String(e.message || e))}</span>`;
+      }
+      testBtn.disabled = false;
+      testBtn.textContent = 'Test Connection';
+    });
+  }
+
+  // Provider "Set Key" buttons
   content.querySelectorAll('.setup-provider-config-btn[data-provider]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const provider = btn.dataset.provider || '';
@@ -1187,7 +1396,7 @@ async function renderSetup() {
     });
   });
 
-  // Wire up "Test" buttons
+  // Provider "Test" buttons
   content.querySelectorAll('.setup-provider-test-btn[data-provider]').forEach((btn) => {
     btn.addEventListener('click', () => {
       window.vaultTestKey(btn.dataset.provider || '');
@@ -1244,7 +1453,10 @@ function openVaultModal(provider, envVar) {
     try {
       await apiPost(`/vault/keys/${encodeURIComponent(provider)}`, { key, env_var: envVar });
       wrap.remove();
-      renderConfig();
+      window._invalidateSetupState();
+      // Re-render current page
+      const curPage = (location.hash.replace('#/', '') || 'setup').split('/')[0];
+      if (pages[curPage]) pages[curPage]();
     } catch (e) {
       alert('Set key failed: ' + e.message);
     }
@@ -1260,7 +1472,9 @@ window.vaultTestKey = async function(provider) {
     const res = await apiPost(`/vault/test/${encodeURIComponent(provider)}`, {});
     if (res.ok) alert(`${provider}: key validated successfully`);
     else alert(`${provider}: ${res.error || 'validation failed'}`);
-    renderConfig();
+    window._invalidateSetupState();
+    const curPage = (location.hash.replace('#/', '') || 'setup').split('/')[0];
+    if (pages[curPage]) pages[curPage]();
   } catch (e) {
     alert('Test key failed: ' + e.message);
   }
@@ -1270,7 +1484,9 @@ window.vaultRemoveKey = async function(provider) {
   if (!confirm(`Remove key for ${provider}?`)) return;
   try {
     await apiDelete(`/vault/keys/${encodeURIComponent(provider)}`);
-    renderConfig();
+    window._invalidateSetupState();
+    const curPage = (location.hash.replace('#/', '') || 'setup').split('/')[0];
+    if (pages[curPage]) pages[curPage]();
   } catch (e) {
     alert('Remove key failed: ' + e.message);
   }

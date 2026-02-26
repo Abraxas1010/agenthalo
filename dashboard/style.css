@@ -255,7 +255,230 @@ body.no-crt #crt-overlay { display: none; }
 }
 
 /* ================================================================
-   QUICK SETUP PAGE
+   NAV LOCKING (Setup-first onboarding gate)
+   ================================================================ */
+
+.nav-link.nav-locked {
+  color: var(--text-dim);
+  opacity: 0.35;
+  pointer-events: none;
+  cursor: not-allowed;
+  position: relative;
+}
+
+.nav-link.nav-locked::after {
+  content: '\1F512';
+  font-size: 8px;
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.6;
+}
+
+.nav-link.nav-locked:hover {
+  background: none;
+  color: var(--text-dim);
+  text-shadow: none;
+}
+
+/* Pulse animation on Setup tab when incomplete */
+.nav-link.setup-incomplete {
+  animation: setup-pulse 2.5s ease-in-out infinite;
+}
+
+@keyframes setup-pulse {
+  0%, 100% { border-left-color: var(--accent); }
+  50% { border-left-color: var(--green); }
+}
+
+/* Unlock flash animation */
+@keyframes nav-unlock-flash {
+  0% { background: rgba(0, 255, 65, 0.15); }
+  100% { background: transparent; }
+}
+
+.nav-link.nav-unlocked {
+  animation: nav-unlock-flash 0.8s ease-out;
+}
+
+/* Setup progress indicator in sidebar */
+.setup-progress-indicator {
+  padding: 6px 16px 10px;
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+.setup-progress-indicator .progress-bar {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+
+.setup-progress-indicator .progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+/* ================================================================
+   SETUP WIZARD — Two-path onboarding
+   ================================================================ */
+
+.setup-wizard-step {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 16px;
+  margin-bottom: 12px;
+  transition: border-color 0.3s, opacity 0.3s;
+}
+
+.setup-wizard-step.step-active {
+  border-color: var(--accent);
+}
+
+.setup-wizard-step.step-done {
+  border-color: var(--green);
+  opacity: 0.85;
+}
+
+.setup-wizard-step.step-locked {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.setup-wizard-step h3 {
+  color: var(--accent);
+  font-size: 13px;
+  margin-bottom: 8px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.setup-wizard-step.step-done h3 {
+  color: var(--green);
+}
+
+.setup-path-primary {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin: 10px 0;
+  background: linear-gradient(180deg, rgba(255, 106, 0, 0.06), rgba(13, 20, 8, 0.9));
+}
+
+.setup-path-secondary {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin: 10px 0;
+  background: var(--bg);
+}
+
+.setup-path-secondary summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.setup-path-secondary summary:hover {
+  color: var(--text-muted);
+}
+
+.setup-token-input {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: center;
+}
+
+.setup-token-input input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.setup-token-input input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 4px rgba(255, 106, 0, 0.2);
+}
+
+.setup-token-input input::placeholder {
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
+.setup-step-list {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0;
+}
+
+.setup-step-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.setup-step-list li .step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.setup-optional-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  margin-top: 12px;
+}
+
+.setup-optional-section summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.setup-optional-section summary:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.setup-optional-section .optional-body {
+  padding: 0 14px 14px;
+}
+
+/* ================================================================
+   QUICK SETUP PAGE (legacy styles kept for compat)
    ================================================================ */
 
 .setup-banner {
