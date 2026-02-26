@@ -503,7 +503,12 @@ fn resolve_agentpmt_setup_status(
         }
     }
 
-    let count = catalog.tools.len();
+    // Prefer marketplace_tool_count (actual vendor products) over meta-tool count
+    let count = if catalog.marketplace_tool_count > 0 {
+        catalog.marketplace_tool_count
+    } else {
+        catalog.tools.len()
+    };
     (count > 0, count)
 }
 
@@ -1337,9 +1342,12 @@ async fn api_agentpmt_refresh(AxumState(state): AxumState<DashboardState>) -> Ap
             })
         })
         .collect();
+    let marketplace_count = catalog.marketplace_tool_count;
     Ok(Json(json!({
         "ok": true,
-        "count": tools.len(),
+        "count": if marketplace_count > 0 { marketplace_count } else { tools.len() },
+        "mcp_tool_count": tools.len(),
+        "marketplace_tool_count": marketplace_count,
         "refreshed_at": catalog.refreshed_at,
         "tools": tools,
     })))

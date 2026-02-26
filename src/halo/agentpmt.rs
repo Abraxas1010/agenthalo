@@ -79,6 +79,11 @@ pub struct ToolCatalog {
     /// ISO-8601 timestamp of last refresh.
     #[serde(default)]
     pub refreshed_at: Option<String>,
+    /// Number of marketplace tools discovered via AgentPMT-Tool-Search-and-Execution.
+    /// The `tools` vec holds MCP interface tools (meta-tools); this count reflects
+    /// the actual vendor products available through the marketplace.
+    #[serde(default)]
+    pub marketplace_tool_count: usize,
 }
 
 impl ToolCatalog {
@@ -155,6 +160,7 @@ pub fn default_tool_catalog() -> ToolCatalog {
             // (x402_pay, x402_check, x402_balance). Do not duplicate here.
         ],
         refreshed_at: Some(chrono::Utc::now().to_rfc3339()),
+        marketplace_tool_count: 0,
     }
 }
 
@@ -408,20 +414,80 @@ fn parse_remote_catalog(result: &Value) -> Result<ToolCatalog, String> {
     Ok(ToolCatalog {
         tools: parsed,
         refreshed_at: Some(chrono::Utc::now().to_rfc3339()),
+        marketplace_tool_count: 0, // populated by refresh_tool_catalog after discovery
     })
+}
+
+/// Discover actual marketplace tool count via `AgentPMT-Tool-Search-and-Execution`.
+///
+/// The MCP `tools/list` returns meta-tools (search, workflows, etc.), not the
+/// real vendor products.  This function calls the search meta-tool with
+/// `action: "get_tools"` to get the total count of available marketplace tools.
+fn extract_mcp_text(result: &Value) -> Option<Value> {
+    let text = result
+        .get("content")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.get("text"))
+        .and_then(|v| v.as_str())?;
+    serde_json::from_str(text).ok()
+}
+
+fn discover_marketplace_tool_count() -> usize {
+    // First try page_size=1 — if the response has a total/pagination field, one request suffices.
+    let result = mcp_call(
+        "tools/call",
+        json!({
+            "name": "AgentPMT-Tool-Search-and-Execution",
+            "arguments": { "action": "get_tools", "page": 1, "page_size": 100 }
+        }),
+    );
+    let Ok(result) = result else {
+        return 0;
+    };
+    let Some(parsed) = extract_mcp_text(&result) else {
+        return 0;
+    };
+
+    // AgentPMT response: { pagination: { total_count, total_pages, ... }, tools: [...] }
+    if let Some(total) = parsed
+        .get("pagination")
+        .and_then(|p| {
+            p.get("total_count")
+                .or_else(|| p.get("totalCount"))
+                .or_else(|| p.get("total"))
+        })
+        .or_else(|| parsed.get("total"))
+        .or_else(|| parsed.get("totalCount"))
+        .or_else(|| parsed.get("total_count"))
+        .and_then(|v| v.as_u64())
+    {
+        return total as usize;
+    }
+
+    // Fallback: count items in the response array
+    parsed
+        .get("tools")
+        .or_else(|| parsed.get("products"))
+        .or_else(|| parsed.get("results"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0)
 }
 
 /// Refresh the tool catalog.
 ///
 /// Uses AgentPMT MCP `tools/list` over HTTP JSON-RPC.
 /// If `AGENTHALO_AGENTPMT_STUB=1` is set, uses built-in defaults.
+/// Also discovers the marketplace tool count via the search meta-tool.
 pub fn refresh_tool_catalog() -> Result<ToolCatalog, String> {
-    let catalog = if is_truthy_env("AGENTHALO_AGENTPMT_STUB") {
+    let mut catalog = if is_truthy_env("AGENTHALO_AGENTPMT_STUB") {
         default_tool_catalog()
     } else {
         let result = mcp_call("tools/list", json!({}))?;
         parse_remote_catalog(&result)?
     };
+    catalog.marketplace_tool_count = discover_marketplace_tool_count();
     save_tool_catalog(&catalog)?;
     Ok(catalog)
 }
@@ -611,6 +677,7 @@ mod tests {
                 },
             ],
             refreshed_at: Some("2026-02-24T12:00:00Z".to_string()),
+            marketplace_tool_count: 42,
         };
 
         let json = serde_json::to_string_pretty(&catalog).expect("serialize");
@@ -631,6 +698,7 @@ mod tests {
                 input_schema: None,
             }],
             refreshed_at: None,
+            marketplace_tool_count: 0,
         };
         let mcp = catalog.as_mcp_tools();
         assert_eq!(mcp.len(), 1);
