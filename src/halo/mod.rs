@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod addons;
 pub mod agentpmt;
+pub mod api_keys;
 pub mod attest;
 pub mod audit;
 pub mod auth;
@@ -8,7 +9,9 @@ pub mod circuit;
 pub mod circuit_policy;
 pub mod config;
 pub mod detect;
+pub mod funding;
 pub mod onchain;
+pub mod pinata;
 pub mod pq;
 pub mod pricing;
 pub mod proxy;

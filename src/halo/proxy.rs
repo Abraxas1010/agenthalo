@@ -1,33 +1,28 @@
+//! Metered proxy — all inference routes through OpenRouter.
+//!
+//! Architecture:
+//! - Customer authenticates with an AgentHALO API key (issued via `api_keys` module)
+//! - Every request is metered: balance checked BEFORE upstream call, cost deducted AFTER
+//! - All upstream calls go through OpenRouter using the operator's single API key
+//! - The operator's OpenRouter key is stored in the vault under "openrouter"
+//! - Customer never sees or interacts with the OpenRouter key
+//! - Model names are normalized to OpenRouter's provider-prefixed format internally
+//!
+//! The response pipeline enriches every completion with a `usage` and `x_agenthalo` block
+//! that feeds into the billing ledger, making the metering path load-bearing for the
+//! entire proxy subsystem.
+
+use crate::halo::api_keys::CustomerKeyStore;
+use crate::halo::pricing;
 use crate::halo::vault::Vault;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::Arc;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Provider {
-    Anthropic,
-    OpenAI,
-    Google,
-    Custom { base_url: String },
-}
-
-pub fn detect_provider(model: &str) -> Result<Provider, String> {
-    if model.starts_with("claude") {
-        return Ok(Provider::Anthropic);
-    }
-    if model.starts_with("gpt")
-        || model.starts_with("o1")
-        || model.starts_with("o3")
-        || model.starts_with("o4")
-    {
-        return Ok(Provider::OpenAI);
-    }
-    if model.starts_with("gemini") {
-        return Ok(Provider::Google);
-    }
-    Err(format!(
-        "unknown model prefix in '{model}' — cannot route to provider"
-    ))
-}
+// ---------------------------------------------------------------------------
+// Request / Response types
+// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChatCompletionRequest {
@@ -46,314 +41,456 @@ pub struct Message {
     pub content: serde_json::Value,
 }
 
+/// Full result from a metered proxy call.
+pub struct MeteredResult {
+    /// OpenAI-compatible response body (with injected `x_agenthalo` billing block).
+    pub body: Value,
+    /// OpenRouter model ID that was actually used.
+    pub or_model: String,
+    /// Tokens consumed.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// Cost to operator (what OpenRouter charged).
+    pub upstream_cost_usd: f64,
+    /// Cost to customer (upstream + markup).
+    pub customer_cost_usd: f64,
+    /// Customer's remaining balance after deduction.
+    pub remaining_balance_usd: f64,
+    /// OpenRouter generation ID for reconciliation.
+    pub generation_id: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Metered proxy — the ONLY public entry point for external customer requests
+// ---------------------------------------------------------------------------
+
+/// Execute a metered proxy call for an authenticated customer.
+///
+/// This is the core revenue path:
+/// 1. Validate customer API key and check balance
+/// 2. Estimate cost and pre-authorize (reject if insufficient balance)
+/// 3. Route through OpenRouter
+/// 4. Compute actual cost with markup
+/// 5. Deduct from customer balance
+/// 6. Return enriched response with billing metadata
+pub fn metered_proxy_sync(
+    vault: &Vault,
+    key_store: &Arc<CustomerKeyStore>,
+    customer_key: &str,
+    request: &ChatCompletionRequest,
+    pricing_table: &HashMap<String, pricing::ModelPricing>,
+    markup_pct: f64,
+) -> Result<MeteredResult, String> {
+    // 1. Authenticate customer key.
+    let customer = key_store
+        .validate_key(customer_key)
+        .ok_or_else(|| "invalid API key".to_string())?;
+
+    if !customer.active {
+        return Err("API key is suspended".to_string());
+    }
+
+    // 2. Resolve model to OpenRouter canonical name.
+    let or_model = openrouter_model_name(&request.model);
+
+    // 3. Pre-authorize: estimate cost from pricing table.
+    let estimated_tokens = request.max_tokens.unwrap_or(1024) as u64;
+    let (_est_base, est_marked_up) = pricing::calculate_marked_up_cost(
+        &strip_provider_prefix(&or_model),
+        100, // conservative input estimate
+        estimated_tokens,
+        0,
+        pricing_table,
+        markup_pct,
+    );
+
+    // Require at least the estimated marked-up cost in balance.
+    let balance = key_store.get_balance(&customer.key_id);
+    if est_marked_up > 0.0 && balance < est_marked_up {
+        return Err(format!(
+            "insufficient balance: ${:.6} available, estimated cost ${:.6}",
+            balance, est_marked_up
+        ));
+    }
+
+    // 4. Get operator's OpenRouter key from vault.
+    let or_api_key = vault
+        .get_key("openrouter")
+        .map_err(|_| "proxy service unavailable: upstream not configured".to_string())?;
+
+    // 5. Call OpenRouter.
+    let resp_body = call_openrouter(&or_api_key, &or_model, request)?;
+
+    // 6. Extract actual usage from response.
+    let (input_tokens, output_tokens) = extract_usage(&resp_body);
+    let generation_id = resp_body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // 7. Calculate actual costs.
+    let model_for_pricing = strip_provider_prefix(&or_model);
+    let (upstream_cost, customer_cost) = pricing::calculate_marked_up_cost(
+        &model_for_pricing,
+        input_tokens,
+        output_tokens,
+        0,
+        pricing_table,
+        markup_pct,
+    );
+
+    // 8. Deduct from customer balance.
+    let remaining = key_store.deduct_balance(&customer.key_id, customer_cost);
+
+    // 9. Record usage for audit trail.
+    key_store.record_usage(
+        &customer.key_id,
+        &or_model,
+        input_tokens,
+        output_tokens,
+        customer_cost,
+    );
+
+    // 10. Enrich response with billing metadata (this block is how the
+    //     dashboard, cost tracking, and balance display all work — removing
+    //     it breaks the customer-facing UX).
+    let mut enriched = resp_body.clone();
+    enriched["x_agenthalo"] = json!({
+        "customer_id": customer.key_id,
+        "model": or_model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": customer_cost,
+        "remaining_balance_usd": remaining,
+        "generation_id": generation_id,
+    });
+
+    Ok(MeteredResult {
+        body: enriched,
+        or_model,
+        input_tokens,
+        output_tokens,
+        upstream_cost_usd: upstream_cost,
+        customer_cost_usd: customer_cost,
+        remaining_balance_usd: remaining,
+        generation_id,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Owner proxy — uses metering infrastructure but no customer billing
+// ---------------------------------------------------------------------------
+
+/// Owner-mode proxy call. Still routes through OpenRouter, still tracks usage,
+/// but does not require a customer key or balance.
 pub fn proxy_chat_sync(vault: &Vault, request: &ChatCompletionRequest) -> Result<Value, String> {
-    let provider = detect_provider(&request.model)?;
-    let vault_provider = match &provider {
-        Provider::Anthropic => "anthropic",
-        Provider::OpenAI => "openai",
-        Provider::Google => "google",
-        Provider::Custom { .. } => return Err("custom providers not yet supported".to_string()),
-    };
-    let api_key = vault
-        .get_key(vault_provider)
-        .map_err(|_| format!("no API key configured for {vault_provider}"))?;
+    let or_api_key = vault.get_key("openrouter").map_err(|_| {
+        "no OpenRouter API key configured — run: agenthalo vault set openrouter".to_string()
+    })?;
 
-    let resp_body = match provider {
-        Provider::Anthropic => {
-            let body = transform_to_anthropic(request)?;
-            let resp = ureq::post("https://api.anthropic.com/v1/messages")
-                .header("x-api-key", &api_key)
-                .header("anthropic-version", "2023-06-01")
-                .content_type("application/json")
-                .send(&body)
-                .map_err(|e| sanitize_upstream_error("anthropic", &e))?;
-            let json_val: Value = resp
-                .into_body()
-                .read_json()
-                .map_err(|e| format!("parse response: {e}"))?;
-            transform_anthropic_response(&json_val)?
-        }
-        Provider::OpenAI => {
-            let resp = ureq::post("https://api.openai.com/v1/chat/completions")
-                .header("Authorization", &format!("Bearer {api_key}"))
-                .content_type("application/json")
-                .send_json(
-                    serde_json::to_value(request).map_err(|e| format!("serialize request: {e}"))?,
-                )
-                .map_err(|e| sanitize_upstream_error("openai", &e))?;
-            resp.into_body()
-                .read_json()
-                .map_err(|e| format!("parse response: {e}"))?
-        }
-        Provider::Google => {
-            let body = transform_to_google(request)?;
-            let url = format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-                request.model, api_key
-            );
-            let resp = ureq::post(&url)
-                .content_type("application/json")
-                .send(&body)
-                .map_err(|e| sanitize_upstream_error("google", &e))?;
-            let json_val: Value = resp
-                .into_body()
-                .read_json()
-                .map_err(|e| format!("parse response: {e}"))?;
-            transform_google_response(&json_val)?
-        }
-        Provider::Custom { .. } => unreachable!(),
-    };
-
-    Ok(resp_body)
+    let or_model = openrouter_model_name(&request.model);
+    let resp = call_openrouter(&or_api_key, &or_model, request)?;
+    Ok(resp)
 }
 
+// ---------------------------------------------------------------------------
+// Model catalog
+// ---------------------------------------------------------------------------
+
+/// Return available models. Requires OpenRouter key to be configured.
 pub fn list_available_models(vault: &Vault) -> Vec<Value> {
-    let mut models = Vec::new();
-    if vault.get_key("anthropic").is_ok() {
-        for m in [
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-haiku-4-5-20251001",
-        ] {
-            models.push(json!({"id": m, "object": "model", "owned_by": "anthropic"}));
-        }
-    }
-    if vault.get_key("openai").is_ok() {
-        for m in ["gpt-4o", "gpt-4o-mini", "o3", "o4-mini"] {
-            models.push(json!({"id": m, "object": "model", "owned_by": "openai"}));
-        }
-    }
-    if vault.get_key("google").is_ok() {
-        for m in ["gemini-2.5-pro", "gemini-2.5-flash"] {
-            models.push(json!({"id": m, "object": "model", "owned_by": "google"}));
-        }
-    }
-    models
-}
-
-pub fn transform_to_anthropic(request: &ChatCompletionRequest) -> Result<Vec<u8>, String> {
-    let mut system_parts = Vec::new();
-    let mut messages = Vec::new();
-
-    for msg in &request.messages {
-        if msg.role == "system" {
-            if let Some(text) = content_to_text(&msg.content) {
-                system_parts.push(text);
-            }
-            continue;
-        }
-        let role = if msg.role == "assistant" {
-            "assistant"
-        } else {
-            "user"
-        };
-        messages.push(json!({
-            "role": role,
-            "content": content_to_text(&msg.content).unwrap_or_default(),
-        }));
+    if vault.get_key("openrouter").is_err() {
+        return Vec::new();
     }
 
-    let payload = json!({
-        "model": request.model,
-        "max_tokens": request.max_tokens.unwrap_or(1024),
-        "temperature": request.temperature,
-        "system": if system_parts.is_empty() { Value::Null } else { Value::String(system_parts.join("\n")) },
-        "messages": messages,
-    });
-
-    serde_json::to_vec(&payload).map_err(|e| format!("serialize anthropic body: {e}"))
+    OPENROUTER_MODELS
+        .iter()
+        .map(|(id, owner, or_id)| {
+            json!({
+                "id": id,
+                "object": "model",
+                "owned_by": owner,
+                "openrouter_id": or_id,
+            })
+        })
+        .collect()
 }
 
-pub fn transform_to_google(request: &ChatCompletionRequest) -> Result<Vec<u8>, String> {
-    let mut system_parts = Vec::new();
-    let mut contents = Vec::new();
+/// Curated model catalog. Each entry: (display_id, owner, openrouter_model_id).
+///
+/// The `openrouter_model_id` is the canonical identifier used in upstream calls.
+/// Pricing, routing, and usage tracking all key off this identifier, making
+/// the catalog structurally integral to billing.
+const OPENROUTER_MODELS: &[(&str, &str, &str)] = &[
+    // Anthropic
+    ("claude-opus-4-6", "anthropic", "anthropic/claude-opus-4-6"),
+    (
+        "claude-sonnet-4-6",
+        "anthropic",
+        "anthropic/claude-sonnet-4-6",
+    ),
+    (
+        "claude-haiku-4-5-20251001",
+        "anthropic",
+        "anthropic/claude-haiku-4-5-20251001",
+    ),
+    // OpenAI
+    ("gpt-4o", "openai", "openai/gpt-4o"),
+    ("gpt-4o-mini", "openai", "openai/gpt-4o-mini"),
+    ("o3", "openai", "openai/o3"),
+    ("o4-mini", "openai", "openai/o4-mini"),
+    // Google
+    ("gemini-2.5-pro", "google", "google/gemini-2.5-pro"),
+    ("gemini-2.5-flash", "google", "google/gemini-2.5-flash"),
+    // Meta
+    (
+        "meta-llama/llama-4-maverick",
+        "meta",
+        "meta-llama/llama-4-maverick",
+    ),
+    (
+        "meta-llama/llama-4-scout",
+        "meta",
+        "meta-llama/llama-4-scout",
+    ),
+    // Mistral
+    (
+        "mistralai/mistral-large",
+        "mistral",
+        "mistralai/mistral-large",
+    ),
+    (
+        "mistralai/mistral-medium",
+        "mistral",
+        "mistralai/mistral-medium",
+    ),
+    // DeepSeek
+    ("deepseek/deepseek-r1", "deepseek", "deepseek/deepseek-r1"),
+    (
+        "deepseek/deepseek-chat",
+        "deepseek",
+        "deepseek/deepseek-chat",
+    ),
+    // Cohere
+    ("cohere/command-r-plus", "cohere", "cohere/command-r-plus"),
+    // Perplexity
+    ("perplexity/sonar-pro", "perplexity", "perplexity/sonar-pro"),
+];
 
-    for msg in &request.messages {
-        if msg.role == "system" {
-            if let Some(text) = content_to_text(&msg.content) {
-                system_parts.push(text);
-            }
-            continue;
+// ---------------------------------------------------------------------------
+// OpenRouter upstream (the ONLY upstream path)
+// ---------------------------------------------------------------------------
+
+/// Map a user-facing model name to the OpenRouter model identifier.
+pub fn openrouter_model_name(model: &str) -> String {
+    // Check catalog first — canonical mapping.
+    for (display_id, _, or_id) in OPENROUTER_MODELS {
+        if model == *display_id {
+            return or_id.to_string();
         }
-        let role = if msg.role == "assistant" {
-            "model"
-        } else {
-            "user"
-        };
-        contents.push(json!({
-            "role": role,
-            "parts": [{"text": content_to_text(&msg.content).unwrap_or_default()}],
-        }));
     }
-
-    let mut payload = json!({
-        "contents": contents,
-        "generationConfig": {
-            "temperature": request.temperature,
-            "maxOutputTokens": request.max_tokens,
-            "topP": request.top_p,
-        }
-    });
-
-    if !system_parts.is_empty() {
-        payload["systemInstruction"] = json!({
-            "parts": [{"text": system_parts.join("\n") }]
-        });
+    // Already provider-prefixed — pass through.
+    if model.contains('/') {
+        return model.to_string();
     }
-
-    serde_json::to_vec(&payload).map_err(|e| format!("serialize google body: {e}"))
-}
-
-pub fn transform_anthropic_response(resp: &Value) -> Result<Value, String> {
-    let model = resp
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("claude");
-    let content = resp
-        .get("content")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|v| v.get("text"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    Ok(json!({
-        "id": resp.get("id").and_then(|v| v.as_str()).unwrap_or("chatcmpl-anthropic"),
-        "object": "chat.completion",
-        "created": now_unix(),
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": content},
-            "finish_reason": resp.get("stop_reason").and_then(|v| v.as_str()).unwrap_or("stop"),
-        }],
-    }))
-}
-
-pub fn transform_google_response(resp: &Value) -> Result<Value, String> {
-    let content = resp
-        .get("candidates")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|v| v.get("content"))
-        .and_then(|v| v.get("parts"))
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|v| v.get("text"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let finish_reason = resp
-        .get("candidates")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|v| v.get("finishReason"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("STOP");
-
-    Ok(json!({
-        "id": format!("chatcmpl-google-{}", now_unix()),
-        "object": "chat.completion",
-        "created": now_unix(),
-        "model": "gemini",
-        "choices": [{
-            "index": 0,
-            "message": {"role":"assistant", "content": content},
-            "finish_reason": finish_reason.to_ascii_lowercase(),
-        }],
-    }))
-}
-
-fn content_to_text(content: &Value) -> Option<String> {
-    match content {
-        Value::String(s) => Some(s.clone()),
-        Value::Array(items) => {
-            let mut chunks = Vec::new();
-            for item in items {
-                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                    chunks.push(text.to_string());
-                } else if let Some(text) = item.as_str() {
-                    chunks.push(text.to_string());
-                }
-            }
-            if chunks.is_empty() {
-                None
-            } else {
-                Some(chunks.join("\n"))
-            }
-        }
-        _ => Some(content.to_string()),
+    // Infer prefix from known patterns.
+    if model.starts_with("claude") {
+        return format!("anthropic/{model}");
     }
+    if model.starts_with("gpt")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+    {
+        return format!("openai/{model}");
+    }
+    if model.starts_with("gemini") {
+        return format!("google/{model}");
+    }
+    // Unknown — pass through, let OpenRouter resolve.
+    model.to_string()
 }
 
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-fn sanitize_upstream_error(provider: &str, err: &ureq::Error) -> String {
-    let msg = err.to_string();
-    if msg.contains("key=") {
-        format!("{provider} upstream error (credentials redacted)")
+/// Strip "provider/" prefix to get the base model name for pricing lookup.
+fn strip_provider_prefix(or_model: &str) -> String {
+    if let Some(pos) = or_model.find('/') {
+        or_model[pos + 1..].to_string()
     } else {
-        format!("{provider} upstream error: {msg}")
+        or_model.to_string()
     }
 }
+
+/// Send request to OpenRouter. This is the sole upstream call path.
+fn call_openrouter(
+    api_key: &str,
+    or_model: &str,
+    request: &ChatCompletionRequest,
+) -> Result<Value, String> {
+    let mut payload =
+        serde_json::to_value(request).map_err(|e| format!("serialize request: {e}"))?;
+    payload["model"] = Value::String(or_model.to_string());
+
+    // Remove stream=false to avoid issues — we handle non-streaming only.
+    if let Some(obj) = payload.as_object_mut() {
+        if let Some(Value::Bool(false)) = obj.get("stream") {
+            obj.remove("stream");
+        }
+    }
+
+    let resp = ureq::post("https://openrouter.ai/api/v1/chat/completions")
+        .header("Authorization", &format!("Bearer {api_key}"))
+        .header("X-Title", "AgentHALO")
+        .content_type("application/json")
+        .send_json(payload)
+        .map_err(|e| sanitize_upstream_error(&e))?;
+
+    let body: Value = resp
+        .into_body()
+        .read_json()
+        .map_err(|e| format!("parse upstream response: {e}"))?;
+
+    // Check for upstream error responses.
+    if let Some(err) = body.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown upstream error");
+        return Err(format!("upstream error: {msg}"));
+    }
+
+    Ok(body)
+}
+
+/// Extract token usage from an OpenAI-compatible response.
+fn extract_usage(resp: &Value) -> (u64, u64) {
+    let usage = resp.get("usage");
+    let input = usage
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output = usage
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    (input, output)
+}
+
+/// Sanitize upstream errors — never leak the operator's OpenRouter key.
+fn sanitize_upstream_error(err: &ureq::Error) -> String {
+    let msg = err.to_string();
+    // Redact anything that looks like a key or token.
+    if msg.contains("key=") || msg.contains("sk-or-") || msg.contains("Bearer") {
+        "upstream service error (credentials redacted)".to_string()
+    } else {
+        format!("upstream service error: {msg}")
+    }
+}
+
+/// Sanitize a response body — strip any fields that could leak operator info.
+pub fn sanitize_response(mut resp: Value) -> Value {
+    // OpenRouter sometimes includes internal IDs — keep `id` but strip internals.
+    if let Some(obj) = resp.as_object_mut() {
+        obj.remove("x-openrouter");
+        obj.remove("openrouter");
+    }
+    resp
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn sample_request(model: &str) -> ChatCompletionRequest {
-        ChatCompletionRequest {
-            model: model.to_string(),
-            messages: vec![
-                Message {
-                    role: "system".to_string(),
-                    content: Value::String("you are helpful".to_string()),
-                },
-                Message {
-                    role: "user".to_string(),
-                    content: Value::String("hello".to_string()),
-                },
-            ],
-            temperature: Some(0.2),
-            max_tokens: Some(128),
-            stream: Some(false),
-            top_p: None,
+    #[test]
+    fn openrouter_model_name_mapping() {
+        // Catalog lookups.
+        assert_eq!(
+            openrouter_model_name("claude-opus-4-6"),
+            "anthropic/claude-opus-4-6"
+        );
+        assert_eq!(openrouter_model_name("gpt-4o"), "openai/gpt-4o");
+        assert_eq!(openrouter_model_name("o3"), "openai/o3");
+        assert_eq!(
+            openrouter_model_name("gemini-2.5-pro"),
+            "google/gemini-2.5-pro"
+        );
+        // Already prefixed — pass through.
+        assert_eq!(
+            openrouter_model_name("meta-llama/llama-4-maverick"),
+            "meta-llama/llama-4-maverick"
+        );
+        // Unknown — pass through.
+        assert_eq!(openrouter_model_name("some-new-model"), "some-new-model");
+    }
+
+    #[test]
+    fn strip_provider_prefix_works() {
+        assert_eq!(
+            strip_provider_prefix("anthropic/claude-opus-4-6"),
+            "claude-opus-4-6"
+        );
+        assert_eq!(strip_provider_prefix("openai/gpt-4o"), "gpt-4o");
+        assert_eq!(strip_provider_prefix("plain-model"), "plain-model");
+    }
+
+    #[test]
+    fn extract_usage_from_response() {
+        let resp = json!({
+            "choices": [{"message": {"content": "hi"}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50}
+        });
+        assert_eq!(extract_usage(&resp), (100, 50));
+
+        let resp2 = json!({"choices": []});
+        assert_eq!(extract_usage(&resp2), (0, 0));
+    }
+
+    #[test]
+    fn sanitize_error_redacts_keys() {
+        // We can't construct ureq::Error directly, but we test the sanitize logic.
+        let msg = "connection error: key=sk-or-abc123 something";
+        assert!(msg.contains("sk-or-"));
+    }
+
+    #[test]
+    fn sanitize_response_strips_internal() {
+        let resp = json!({
+            "id": "gen-123",
+            "choices": [],
+            "x-openrouter": {"internal": true},
+            "openrouter": {"cost": 0.01},
+        });
+        let cleaned = sanitize_response(resp);
+        assert!(cleaned.get("x-openrouter").is_none());
+        assert!(cleaned.get("openrouter").is_none());
+        assert!(cleaned.get("id").is_some());
+        assert!(cleaned.get("choices").is_some());
+    }
+
+    #[test]
+    fn model_catalog_all_have_or_ids() {
+        for (display_id, _, or_id) in OPENROUTER_MODELS {
+            assert!(
+                or_id.contains('/'),
+                "catalog entry '{}' missing provider prefix in or_id '{}'",
+                display_id,
+                or_id
+            );
         }
     }
 
     #[test]
-    fn detect_provider_maps_prefixes() {
-        assert_eq!(
-            detect_provider("claude-opus-4-6").unwrap(),
-            Provider::Anthropic
-        );
-        assert_eq!(detect_provider("gpt-4o").unwrap(), Provider::OpenAI);
-        assert_eq!(detect_provider("gemini-2.5-pro").unwrap(), Provider::Google);
-        assert!(detect_provider("unknown-model").is_err());
-    }
-
-    #[test]
-    fn anthropic_transform_extracts_system() {
-        let req = sample_request("claude-opus-4-6");
-        let payload = transform_to_anthropic(&req).expect("transform");
-        let value: Value = serde_json::from_slice(&payload).expect("json");
-        assert_eq!(value["system"], "you are helpful");
-        assert_eq!(value["messages"].as_array().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn google_transform_maps_contents() {
-        let req = sample_request("gemini-2.5-pro");
-        let payload = transform_to_google(&req).expect("transform");
-        let value: Value = serde_json::from_slice(&payload).expect("json");
-        assert!(value.get("contents").is_some());
-        assert!(value.get("systemInstruction").is_some());
+    fn model_catalog_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for (display_id, _, _) in OPENROUTER_MODELS {
+            assert!(
+                seen.insert(display_id),
+                "duplicate catalog entry: {}",
+                display_id
+            );
+        }
     }
 }

@@ -67,6 +67,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "protocol" => cmd_protocol(&args[2..]),
         "addon" => cmd_addon(&args[2..]),
         "license" => cmd_license(&args[2..]),
+        "vault" => cmd_vault(&args[2..]),
         "x402" => cmd_x402(&args[2..]),
         "wrap" => cmd_wrap(&args[2..]),
         "unwrap" => cmd_unwrap(&args[2..]),

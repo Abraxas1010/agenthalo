@@ -1206,6 +1206,7 @@ fn tool_halo_capabilities(_arguments: Value) -> Result<Value, String> {
 
     let pmt_cfg = agentpmt::load_or_default();
     let x402_cfg = x402::load_x402_config();
+    let proxy_cfg = nucleusdb::halo::pricing::load_proxy_config();
     let has_pq = nucleusdb::halo::pq::has_wallet();
 
     let addons_available = ["agentpmt-workflows", "p2pclaw"];
@@ -1247,7 +1248,29 @@ fn tool_halo_capabilities(_arguments: Value) -> Result<Value, String> {
             "tool_proxy": {
                 "enabled": pmt_cfg.enabled,
                 "budget_tag": pmt_cfg.budget_tag,
-                "note": "AgentPMT tool proxy forwards calls to third-party tools. Proxy execution is not yet implemented.",
+                "note": "All third-party tools are accessed exclusively through AgentPMT. Tools, workflows, skills, and agent configurations are only available via AgentPMT MCP.",
+            },
+            "metered_proxy": {
+                "enabled": proxy_cfg.enabled,
+                "markup_pct": proxy_cfg.markup_pct,
+                "rate_limit_rpm": proxy_cfg.rate_limit_rpm,
+                "daily_token_limit": proxy_cfg.daily_token_limit,
+                "note": "LLM inference via OpenRouter. All models accessed through operator's account with markup.",
+            },
+            "metered_storage": {
+                "available": true,
+                "provider": "pinata",
+                "note": "IPFS storage via Pinata. All storage accessed through operator's account with markup.",
+            },
+        },
+        "monetization": {
+            "funding_channels": ["agentpmt_tokens", "x402_direct"],
+            "note": "All funding must come through AgentPMT.com token purchase or x402direct USDC payment. No other payment method accepted.",
+            "services": {
+                "llm_inference": "OpenRouter proxy (all models, markup applied)",
+                "ipfs_storage": "Pinata proxy (pin/unpin, markup applied)",
+                "tools": "AgentPMT MCP (third-party tool access)",
+                "workflows": "AgentPMT MCP (workflow execution)",
             },
         },
         "addons": addons_status,

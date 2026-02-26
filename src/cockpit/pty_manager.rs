@@ -2,6 +2,7 @@ use crate::cockpit::session::{SessionInfo, SessionStatus};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
@@ -17,6 +18,17 @@ pub enum SessionEvent {
     Status(SessionStatus),
 }
 
+#[derive(Clone, Debug)]
+pub struct SessionTelemetry {
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    pub estimated_input_tokens: u64,
+    pub estimated_output_tokens: u64,
+    pub estimated_cost_usd: f64,
+    pub runtime_secs: u64,
+    pub trace_flushed: bool,
+}
+
 pub struct PtySession {
     pub id: String,
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
@@ -30,6 +42,9 @@ pub struct PtySession {
     command: String,
     args: Vec<String>,
     output_tx: broadcast::Sender<SessionEvent>,
+    input_bytes: AtomicU64,
+    output_bytes: AtomicU64,
+    trace_flushed: AtomicBool,
 }
 
 impl PtySession {
@@ -52,10 +67,14 @@ impl PtySession {
             .writer
             .lock()
             .map_err(|e| format!("pty writer lock poisoned: {e}"))?;
-        writer
+        let result = writer
             .write_all(bytes)
             .and_then(|_| writer.flush())
-            .map_err(|e| format!("write PTY input: {e}"))
+            .map_err(|e| format!("write PTY input: {e}"));
+        if result.is_ok() && !bytes.is_empty() {
+            self.note_input(bytes.len() as u64);
+        }
+        result
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
@@ -99,10 +118,51 @@ impl PtySession {
     }
 
     pub fn publish_output(&self, bytes: Vec<u8>) {
+        if !bytes.is_empty() {
+            self.note_output(bytes.len() as u64);
+        }
         let _ = self.output_tx.send(SessionEvent::Output(bytes));
     }
 
+    pub fn note_input(&self, n: u64) {
+        self.input_bytes.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn note_output(&self, n: u64) {
+        self.output_bytes.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn telemetry_snapshot(&self) -> SessionTelemetry {
+        let input_bytes = self.input_bytes.load(Ordering::Relaxed);
+        let output_bytes = self.output_bytes.load(Ordering::Relaxed);
+        // Conservative plain-text estimate: ~4 chars per token.
+        let estimated_input_tokens = input_bytes.div_ceil(4);
+        let estimated_output_tokens = output_bytes.div_ceil(4);
+        let estimated_cost_usd = (estimated_input_tokens as f64 * 3.0 / 1_000_000.0)
+            + (estimated_output_tokens as f64 * 15.0 / 1_000_000.0);
+        let runtime_secs = now_unix().saturating_sub(self.created_at);
+
+        SessionTelemetry {
+            input_bytes,
+            output_bytes,
+            estimated_input_tokens,
+            estimated_output_tokens,
+            estimated_cost_usd,
+            runtime_secs,
+            trace_flushed: self.trace_flushed.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn mark_trace_flushed(&self) -> bool {
+        !self.trace_flushed.swap(true, Ordering::SeqCst)
+    }
+
+    pub fn is_trace_flushed(&self) -> bool {
+        self.trace_flushed.load(Ordering::Relaxed)
+    }
+
     pub fn info(&self) -> SessionInfo {
+        let t = self.telemetry_snapshot();
         SessionInfo {
             id: self.id.clone(),
             agent_type: self.agent_type.clone(),
@@ -112,6 +172,13 @@ impl PtySession {
             rows: *self.rows.lock().unwrap_or_else(|e| e.into_inner()),
             command: self.command.clone(),
             args: self.args.clone(),
+            input_bytes: t.input_bytes,
+            output_bytes: t.output_bytes,
+            estimated_input_tokens: t.estimated_input_tokens,
+            estimated_output_tokens: t.estimated_output_tokens,
+            estimated_cost_usd: t.estimated_cost_usd,
+            runtime_secs: t.runtime_secs,
+            trace_flushed: t.trace_flushed,
         }
     }
 
@@ -205,6 +272,9 @@ impl PtyManager {
             command: command.to_string(),
             args: args.to_vec(),
             output_tx,
+            input_bytes: AtomicU64::new(0),
+            output_bytes: AtomicU64::new(0),
+            trace_flushed: AtomicBool::new(false),
         });
 
         spawn_reader_thread(session.clone())?;
@@ -239,6 +309,13 @@ impl PtyManager {
         self.sessions
             .lock()
             .map(|map| map.values().map(|s| s.info()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn list_session_handles(&self) -> Vec<Arc<PtySession>> {
+        self.sessions
+            .lock()
+            .map(|map| map.values().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -344,5 +421,29 @@ mod tests {
 
         manager.destroy_session(&id).expect("destroy session");
         assert_eq!(manager.session_count(), 0);
+    }
+
+    #[test]
+    fn telemetry_estimates_tokens_and_cost() {
+        let manager = PtyManager::new(1);
+        let id = manager
+            .create_session(
+                "/bin/sh",
+                &["-c".to_string(), "sleep 1".to_string()],
+                vec![],
+                None,
+                80,
+                24,
+                Some("shell".to_string()),
+            )
+            .expect("create session");
+        let session = manager.get_session(&id).expect("session exists");
+        session.note_input(40);
+        session.note_output(80);
+        let t = session.telemetry_snapshot();
+        assert_eq!(t.estimated_input_tokens, 10);
+        assert_eq!(t.estimated_output_tokens, 20);
+        assert!(t.estimated_cost_usd > 0.0);
+        manager.destroy_session(&id).expect("destroy session");
     }
 }

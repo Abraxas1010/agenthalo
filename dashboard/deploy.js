@@ -38,11 +38,26 @@
         <h1>Deploy</h1>
         <p class="subtitle">Launch and manage agents</p>
       </div>
+      <div class="deploy-banner" style="display:flex;align-items:center;gap:8px;">
+        <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+          <input id="deploy-container-toggle" type="checkbox">
+          Container isolation
+        </label>
+        <span style="opacity:0.8;">(requires Docker)</span>
+      </div>
       <div class="deploy-grid">
         ${agents.map((agent) => renderAgentCard(agent, preflightMap.get(agent.id) || {})).join('')}
       </div>
       <div class="deploy-banner" id="deploy-banner">Select an agent to run in Cockpit.</div>
     `;
+
+    const toggle = hostEl.querySelector('#deploy-container-toggle');
+    if (toggle) {
+      toggle.checked = localStorage.getItem('deploy_container_mode') === '1';
+      toggle.addEventListener('change', () => {
+        localStorage.setItem('deploy_container_mode', toggle.checked ? '1' : '0');
+      });
+    }
 
     hostEl.querySelectorAll('[data-launch]').forEach((btn) => {
       btn.addEventListener('click', async () => {
@@ -118,6 +133,11 @@
       }
     }
 
+    if (localStorage.getItem('deploy_container_mode') === '1' && !pre.docker_available) {
+      setBanner(`${agentId}: Docker is required for container isolation mode.`, true);
+      return;
+    }
+
     setBanner(`Launching ${agentId}...`);
 
     let launch;
@@ -128,7 +148,7 @@
         body: JSON.stringify({
           agent_id: agentId,
           mode,
-          container: false,
+          container: localStorage.getItem('deploy_container_mode') === '1',
           working_dir: null,
         }),
       });

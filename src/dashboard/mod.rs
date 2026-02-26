@@ -28,6 +28,12 @@ pub struct DashboardState {
     pub grant_store_path: PathBuf,
     pub vault: Option<Arc<crate::halo::vault::Vault>>,
     pub pty_manager: Arc<crate::cockpit::pty_manager::PtyManager>,
+    /// Customer API key store for metered proxy.
+    pub key_store: Arc<crate::halo::api_keys::CustomerKeyStore>,
+    /// Proxy resale configuration (markup, rate limits).
+    pub proxy_config: crate::halo::pricing::ProxyConfig,
+    /// Pricing table for cost calculation.
+    pub pricing_table: std::collections::HashMap<String, crate::halo::pricing::ModelPricing>,
 }
 
 fn default_grant_store_path(db_path: &Path) -> PathBuf {
@@ -74,6 +80,12 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         None
     };
 
+    let key_store = Arc::new(crate::halo::api_keys::CustomerKeyStore::open(
+        crate::halo::api_keys::CustomerKeyStore::default_path(),
+    ));
+    let proxy_config = crate::halo::pricing::load_proxy_config();
+    let pricing_table = crate::halo::pricing::default_pricing();
+
     DashboardState {
         db_path,
         credentials_path,
@@ -82,6 +94,9 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         grant_store_path,
         vault,
         pty_manager: Arc::new(crate::cockpit::pty_manager::PtyManager::new(10)),
+        key_store,
+        proxy_config,
+        pricing_table,
     }
 }
 

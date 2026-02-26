@@ -26,15 +26,18 @@
   };
 
   class CockpitPanel {
-    constructor(id, type, title) {
+    constructor(id, type, title, manager) {
       this.id = id;
       this.type = type;
       this.title = title || id;
+      this.manager = manager || null;
       this.ws = null;
       this.term = null;
       this.fitAddon = null;
       this.resizeObs = null;
+      this.eventSource = null;
       this.logBuffer = '';
+      this.customSlot = null;
 
       this.el = document.createElement('div');
       this.el.className = 'cockpit-panel';
@@ -73,6 +76,8 @@
           { label: 'Reconnect WS', onClick: () => this.reconnect() },
         ]);
       });
+
+      this.installResizeHandles();
     }
 
     attachTerminal(sessionId, wsUrl, onStatus) {
@@ -127,6 +132,115 @@
       frame.src = url;
       frame.loading = 'lazy';
       this.body.appendChild(frame);
+    }
+
+    attachLogStream() {
+      this.body.innerHTML = '<pre class="cockpit-log-stream"></pre>';
+      const out = this.body.querySelector('.cockpit-log-stream');
+      const writeLine = (label, payload) => {
+        const ts = new Date().toLocaleTimeString();
+        const line = `[${ts}] ${label} ${payload || ''}\n`;
+        this.logBuffer += line;
+        out.textContent += line;
+        out.scrollTop = out.scrollHeight;
+      };
+
+      writeLine('log', 'connected');
+      try {
+        this.eventSource = new EventSource('/events');
+        this.eventSource.addEventListener('session_update', (ev) => writeLine('session_update', ev.data));
+        this.eventSource.addEventListener('heartbeat', () => writeLine('heartbeat'));
+        this.eventSource.onerror = () => writeLine('error', 'event stream disconnected');
+      } catch (e) {
+        writeLine('error', String(e && e.message ? e.message : e));
+      }
+    }
+
+    attachMetrics() {
+      this.body.innerHTML = `
+        <div class="cockpit-metrics">
+          <div class="metric-row"><span>Sessions</span><span id="metric-sessions-${escapeHtml(this.id)}">0</span></div>
+          <div class="metric-row"><span>Input Tokens</span><span id="metric-in-${escapeHtml(this.id)}">0</span></div>
+          <div class="metric-row"><span>Output Tokens</span><span id="metric-out-${escapeHtml(this.id)}">0</span></div>
+          <div class="metric-row"><span>Estimated Cost</span><span id="metric-cost-${escapeHtml(this.id)}">$0.00</span></div>
+        </div>
+      `;
+    }
+
+    updateMetrics(rows) {
+      if (this.type !== 'metrics') return;
+      const list = Array.isArray(rows) ? rows : [];
+      const sessions = list.length;
+      const input = list.reduce((acc, s) => acc + Number(s.estimated_input_tokens || 0), 0);
+      const output = list.reduce((acc, s) => acc + Number(s.estimated_output_tokens || 0), 0);
+      const cost = list.reduce((acc, s) => acc + Number(s.estimated_cost_usd || 0), 0);
+      const setText = (id, text) => {
+        const el = this.body.querySelector(id);
+        if (el) el.textContent = text;
+      };
+      setText(`#metric-sessions-${CSS.escape(this.id)}`, String(sessions));
+      setText(`#metric-in-${CSS.escape(this.id)}`, String(input));
+      setText(`#metric-out-${CSS.escape(this.id)}`, String(output));
+      setText(`#metric-cost-${CSS.escape(this.id)}`, formatUsd(cost));
+    }
+
+    installResizeHandles() {
+      ['e', 's', 'se'].forEach((dir) => {
+        const handle = document.createElement('div');
+        handle.className = `cockpit-resize-handle ${dir}`;
+        handle.dataset.dir = dir;
+        handle.addEventListener('mousedown', (ev) => this.beginResize(ev, dir));
+        this.el.appendChild(handle);
+      });
+    }
+
+    beginResize(ev, dir) {
+      if (window.matchMedia('(max-width: 768px)').matches) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const grid = this.el.parentElement;
+      if (!grid) return;
+      const startRect = this.el.getBoundingClientRect();
+      const gridRect = grid.getBoundingClientRect();
+      const minW = 220;
+      const minH = 160;
+
+      const onMove = (moveEv) => {
+        let newLeft = startRect.left;
+        let newTop = startRect.top;
+        let newWidth = startRect.width;
+        let newHeight = startRect.height;
+
+        if (dir.includes('e')) {
+          newWidth = Math.max(minW, startRect.width + (moveEv.clientX - startRect.right));
+        }
+        if (dir.includes('s')) {
+          newHeight = Math.max(minH, startRect.height + (moveEv.clientY - startRect.bottom));
+        }
+
+        const maxWidth = gridRect.right - newLeft;
+        const maxHeight = gridRect.bottom - newTop;
+        newWidth = Math.min(newWidth, maxWidth);
+        newHeight = Math.min(newHeight, maxHeight);
+
+        const slot = {
+          x: clamp((newLeft - gridRect.left) / gridRect.width, 0, 0.95),
+          y: clamp((newTop - gridRect.top) / gridRect.height, 0, 0.95),
+          w: clamp(newWidth / gridRect.width, 0.05, 1),
+          h: clamp(newHeight / gridRect.height, 0.05, 1),
+        };
+        this.customSlot = slot;
+        placePanel(this.el, slot);
+        this.fit();
+      };
+
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
     }
 
     connect(onStatus) {
@@ -219,6 +333,9 @@
       if (this.resizeObs) {
         try { this.resizeObs.disconnect(); } catch (_e) {}
       }
+      if (this.eventSource) {
+        try { this.eventSource.close(); } catch (_e) {}
+      }
       if (this.ws) {
         try { this.ws.close(); } catch (_e) {}
       }
@@ -240,6 +357,8 @@
       this.newDropdown = null;
       this.pendingLaunch = null;
       this.layoutOrder = ['1', '2h', '2v', '4', '3L', '3T', '6'];
+      this.statsTimer = null;
+      this.lastSessionSnapshot = [];
     }
 
     mount(hostEl) {
@@ -251,6 +370,7 @@
       this.restoreSessions();
       this.consumePendingLaunch();
       this.bindShortcuts();
+      this.startStatusPoll();
     }
 
     renderSkeleton() {
@@ -300,6 +420,38 @@
       });
     }
 
+    startStatusPoll() {
+      if (this.statsTimer) return;
+      this.statsTimer = setInterval(() => {
+        this.refreshSessionStats().catch(() => {});
+      }, 2000);
+      this.refreshSessionStats().catch(() => {});
+    }
+
+    async refreshSessionStats() {
+      const res = await fetch('/api/cockpit/sessions');
+      if (!res.ok) return;
+      const payload = await res.json();
+      const rows = Array.isArray(payload.sessions) ? payload.sessions : [];
+      this.lastSessionSnapshot = rows;
+      const byId = new Map(rows.map((s) => [s.id, s]));
+
+      this.sessions.forEach((entry, id) => {
+        const isSystemPanel = entry.panel.type === 'metrics' || entry.panel.type === 'log';
+        if (isSystemPanel) return;
+        const row = byId.get(id);
+        if (!row) return;
+        this.updateTabStatus(id, row.status || {});
+        this.updateTabCost(id, Number(row.estimated_cost_usd || 0));
+      });
+
+      this.sessions.forEach((entry) => {
+        if (entry.panel.type === 'metrics') {
+          entry.panel.updateMetrics(rows);
+        }
+      });
+    }
+
     toggleNewDropdown(anchor) {
       if (this.newDropdown) {
         this.hideDropdown();
@@ -311,6 +463,8 @@
         { id: 'gemini', label: 'Gemini' },
         { id: 'openclaw', label: 'OpenClaw' },
         { id: 'shell', label: 'Shell' },
+        { id: 'metrics', label: 'Metrics Panel' },
+        { id: 'log', label: 'Log Stream' },
         { id: 'custom', label: 'Custom' },
       ];
       const menu = document.createElement('div');
@@ -345,6 +499,14 @@
     }
 
     async createFromPreset(agent) {
+      if (agent === 'metrics') {
+        this.attachSystemPanel('metrics');
+        return;
+      }
+      if (agent === 'log') {
+        this.attachSystemPanel('log');
+        return;
+      }
       if (agent === 'custom') {
         const command = prompt('Command to run in PTY:', '/bin/bash');
         if (!command) return;
@@ -364,6 +526,23 @@
       };
       const cfg = map[agent] || map.shell;
       await this.createSession(cfg.command, cfg.args, cfg.agentType);
+    }
+
+    attachSystemPanel(kind) {
+      const id = `${kind}-${Date.now().toString(36)}`;
+      const title = kind === 'metrics' ? 'metrics' : 'events';
+      const panel = new CockpitPanel(id, kind, title, this);
+      const tab = this.createTab(id, title);
+      panel.el.querySelector('[data-action="close"]').addEventListener('click', () => this.detachSession(id, true));
+      if (kind === 'metrics') {
+        panel.attachMetrics();
+        panel.updateMetrics(this.lastSessionSnapshot);
+      } else {
+        panel.attachLogStream();
+      }
+      this.gridEl.appendChild(panel.el);
+      this.sessions.set(id, { panel, tab, status: { state: 'active' }, cost: 0 });
+      this.activateTab(id);
     }
 
     async ensurePresetReady(agent) {
@@ -442,14 +621,15 @@
       if (this.sessions.has(session.id)) return;
       this.gridEl.querySelector('div[style*="No active sessions"]')?.remove();
 
-      const panel = new CockpitPanel(session.id, 'terminal', `${session.agent_type || 'session'}:${session.id.slice(0, 8)}`);
+      const panel = new CockpitPanel(session.id, 'terminal', `${session.agent_type || 'session'}:${session.id.slice(0, 8)}`, this);
       const tab = this.createTab(session.id, session.agent_type || 'session');
 
       panel.el.querySelector('[data-action="close"]').addEventListener('click', () => this.destroySession(session.id));
       panel.attachTerminal(session.id, session.ws_url, (statusMsg) => this.updateTabStatus(session.id, statusMsg));
 
       this.gridEl.appendChild(panel.el);
-      this.sessions.set(session.id, { panel, tab, status: session.status || { state: 'active' }, cost: 0 });
+      this.sessions.set(session.id, { panel, tab, status: session.status || { state: 'active' }, cost: Number(session.estimated_cost_usd || 0) });
+      this.updateTabCost(session.id, Number(session.estimated_cost_usd || 0));
       this.activateTab(session.id);
     }
 
@@ -461,7 +641,7 @@
       tab.innerHTML = `
         <span class="tab-icon">●</span>
         <span class="tab-label">${escapeHtml(label)}</span>
-        <span class="tab-cost">$0.00</span>`;
+        <span class="tab-cost">${formatUsd(0)}</span>`;
       tab.addEventListener('click', () => this.activateTab(sessionId));
       tab.addEventListener('dblclick', () => {
         const panel = this.sessions.get(sessionId)?.panel?.el;
@@ -494,6 +674,7 @@
       if (!LAYOUTS[layout]) return;
       this.layout = layout;
       localStorage.setItem('cockpit_layout', layout);
+      this.sessions.forEach((entry) => { entry.panel.customSlot = null; });
       this.root.querySelectorAll('[data-layout]').forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.layout === layout);
       });
@@ -523,7 +704,7 @@
       }
 
       entries.forEach((entry, idx) => {
-        const slot = slots[idx % slots.length];
+        const slot = entry.panel.customSlot || slots[idx % slots.length];
         entry.panel.el.style.display = '';
         placePanel(entry.panel.el, slot);
         entry.panel.fit();
@@ -582,6 +763,14 @@
       if (panelStatus) panelStatus.textContent = state.toLowerCase();
     }
 
+    updateTabCost(sessionId, usd) {
+      const entry = this.sessions.get(sessionId);
+      if (!entry) return;
+      entry.cost = Number.isFinite(usd) ? usd : 0;
+      const el = entry.tab.querySelector('.tab-cost');
+      if (el) el.textContent = formatUsd(entry.cost);
+    }
+
     consumePendingLaunch() {
       const raw = localStorage.getItem('cockpit_pending_launch');
       if (!raw) return;
@@ -599,7 +788,7 @@
           }
           if (panel.panel_type === 'iframe' && panel.iframe_url) {
             const pid = panel.id || `iframe-${Date.now()}`;
-            const cockpitPanel = new CockpitPanel(pid, 'iframe', `gui:${pid.slice(0, 6)}`);
+            const cockpitPanel = new CockpitPanel(pid, 'iframe', `gui:${pid.slice(0, 6)}`, this);
             const tab = this.createTab(pid, 'gui');
             cockpitPanel.attachIframe(panel.iframe_url);
             cockpitPanel.el.querySelector('[data-action="close"]').addEventListener('click', () => {
@@ -621,6 +810,17 @@
     el.style.top = `calc(${(slot.y * 100).toFixed(4)}% + ${gutter}px)`;
     el.style.width = `calc(${(slot.w * 100).toFixed(4)}% - ${gutter * 2}px)`;
     el.style.height = `calc(${(slot.h * 100).toFixed(4)}% - ${gutter * 2}px)`;
+  }
+
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+
+  function formatUsd(usd) {
+    const n = Number(usd || 0);
+    if (!Number.isFinite(n) || n <= 0) return '$0.00';
+    if (n < 0.01) return '<$0.01';
+    return `$${n.toFixed(2)}`;
   }
 
   function showContextMenu(x, y, items) {

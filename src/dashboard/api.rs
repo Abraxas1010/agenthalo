@@ -21,9 +21,13 @@ use crate::halo::auth::{is_authenticated, resolve_api_key};
 use crate::halo::config;
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::pq::has_wallet;
+use crate::halo::schema::{
+    EventType, SessionMetadata, SessionStatus as HaloSessionStatus, TraceEvent,
+};
 use crate::halo::trace::{
-    cost_buckets, list_sessions, paid_breakdown_by_operation_type, paid_cost_buckets,
-    record_paid_operation_for_halo, session_events, session_summary,
+    cost_buckets, list_sessions, now_unix_secs, paid_breakdown_by_operation_type,
+    paid_cost_buckets, record_paid_operation_for_halo, session_events, session_summary,
+    TraceWriter,
 };
 use crate::halo::trust::query_trust_score;
 use crate::halo::viewer::export_session_json;
@@ -39,7 +43,7 @@ use crate::witness::WitnessSignatureAlgorithm;
 use crate::VcBackend;
 
 use axum::extract::{Path, Query, State as AxumState};
-use axum::http::StatusCode;
+use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -138,6 +142,33 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         // x402
         .route("/x402/summary", get(api_x402_summary))
         .route("/x402/balance", get(api_x402_balance))
+        // External metered proxy (customer-facing)
+        .route("/v1/chat/completions", post(api_metered_proxy_chat))
+        .route("/v1/models", get(api_metered_proxy_models))
+        // Customer API key management (admin)
+        .route(
+            "/admin/keys",
+            get(api_admin_list_keys).post(api_admin_create_key),
+        )
+        .route(
+            "/admin/keys/{key_id}",
+            get(api_admin_get_key).delete(api_admin_revoke_key),
+        )
+        .route("/admin/keys/{key_id}/balance", post(api_admin_add_balance))
+        .route("/admin/keys/{key_id}/suspend", post(api_admin_suspend_key))
+        .route(
+            "/admin/keys/{key_id}/activate",
+            post(api_admin_activate_key),
+        )
+        .route(
+            "/admin/proxy-config",
+            get(api_admin_get_proxy_config).post(api_admin_set_proxy_config),
+        )
+        // Funding (AgentPMT tokens + x402direct only)
+        .route("/admin/keys/{key_id}/fund", post(api_admin_fund_balance))
+        // Metered IPFS storage (customer-facing, same auth as /v1/chat/completions)
+        .route("/v1/storage/pin", post(api_metered_pin_json))
+        .route("/v1/storage/pins", get(api_metered_list_pins))
         .with_state(state)
 }
 
@@ -275,6 +306,47 @@ pub struct CockpitResizeRequest {
 #[derive(Deserialize)]
 pub struct DeployPreflightRequest {
     agent_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct AdminCreateKeyRequest {
+    label: String,
+    #[serde(default)]
+    initial_balance_usd: Option<f64>,
+}
+
+#[derive(Deserialize)]
+pub struct AdminAddBalanceRequest {
+    amount_usd: f64,
+}
+
+#[derive(Deserialize)]
+pub struct AdminProxyConfigRequest {
+    enabled: Option<bool>,
+    markup_pct: Option<f64>,
+    rate_limit_rpm: Option<u32>,
+    daily_token_limit: Option<u64>,
+}
+
+/// Fund a customer's balance — only AgentPMT tokens, x402direct, or operator credit.
+#[derive(Deserialize)]
+pub struct FundBalanceRequest {
+    /// Funding source (tagged union).
+    source: crate::halo::funding::FundingSource,
+    /// Amount in USD (used for operator credits; for AgentPMT/x402, amount
+    /// comes from the validated source).
+    #[serde(default)]
+    amount_usd: Option<f64>,
+}
+
+/// Pin JSON to IPFS via the metered Pinata proxy.
+#[derive(Deserialize)]
+pub struct PinJsonApiRequest {
+    content: serde_json::Value,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +523,24 @@ fn validate_cockpit_command(
     Ok(())
 }
 
+fn extract_bearer_token(headers: &HeaderMap) -> Result<String, (StatusCode, Json<Value>)> {
+    let raw = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "missing Authorization header"))?;
+    let token = raw
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            api_err(
+                StatusCode::UNAUTHORIZED,
+                "expected Authorization: Bearer <api_key>",
+            )
+        })?;
+    Ok(token.to_string())
+}
+
 fn provider_test_request(provider: &str, api_key: &str) -> Result<(), String> {
     match provider {
         "anthropic" => {
@@ -497,8 +587,258 @@ fn provider_test_request(provider: &str, api_key: &str) -> Result<(), String> {
                 ))
             }
         }
+        "openrouter" => {
+            let resp = ureq::get("https://openrouter.ai/api/v1/models")
+                .header("Authorization", &format!("Bearer {api_key}"))
+                .header("X-Title", "AgentHALO")
+                .call()
+                .map_err(|e| sanitize_proxy_error("openrouter", &e))?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "OpenRouter API returned HTTP {}",
+                    resp.status().as_u16()
+                ))
+            }
+        }
+        "pinata" => {
+            let resp = ureq::get("https://api.pinata.cloud/data/testAuthentication")
+                .header("Authorization", &format!("Bearer {api_key}"))
+                .call()
+                .map_err(|e| sanitize_proxy_error("pinata", &e))?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Pinata API returned HTTP {}",
+                    resp.status().as_u16()
+                ))
+            }
+        }
         other => Err(format!("provider `{other}` does not support API test")),
     }
+}
+
+fn estimate_text_tokens(text: &str) -> u64 {
+    (text.len() as u64).div_ceil(4)
+}
+
+fn estimate_message_tokens(messages: &[proxy::Message]) -> u64 {
+    messages
+        .iter()
+        .map(|m| match &m.content {
+            Value::String(s) => estimate_text_tokens(s),
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|it| it.get("text").and_then(|v| v.as_str()))
+                .map(estimate_text_tokens)
+                .sum(),
+            other => estimate_text_tokens(&other.to_string()),
+        })
+        .sum()
+}
+
+fn extract_completion_text(response: &Value) -> String {
+    response
+        .get("choices")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|msg| msg.get("content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+async fn record_proxy_trace(
+    state: &DashboardState,
+    request: &proxy::ChatCompletionRequest,
+    response: &Value,
+) -> Result<(), String> {
+    let started = now_unix_secs();
+    let session_id = format!(
+        "proxy-{}-{}",
+        started,
+        &uuid::Uuid::new_v4().as_simple().to_string()[..6]
+    );
+
+    let prompt_tokens = response
+        .get("usage")
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(|| estimate_message_tokens(&request.messages));
+
+    let completion_text = extract_completion_text(response);
+    let completion_tokens = response
+        .get("usage")
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(|| estimate_text_tokens(&completion_text));
+
+    let _guard = state.db_lock.lock().await;
+    let mut writer = TraceWriter::new(&state.db_path)?;
+    writer.start_session(SessionMetadata {
+        session_id: session_id.clone(),
+        agent: "proxy".to_string(),
+        model: Some(request.model.clone()),
+        started_at: started,
+        ended_at: None,
+        prompt: Some("proxy chat completion".to_string()),
+        status: HaloSessionStatus::Running,
+        user_id: None,
+        machine_id: None,
+        puf_digest: None,
+    })?;
+
+    writer.write_event(TraceEvent {
+        seq: 0,
+        timestamp: started,
+        event_type: EventType::Assistant,
+        content: json!({
+            "route": "/api/proxy/v1/chat/completions",
+            "model": request.model,
+            "message_count": request.messages.len(),
+            "preview": completion_text.chars().take(400).collect::<String>(),
+        }),
+        input_tokens: Some(prompt_tokens),
+        output_tokens: Some(completion_tokens),
+        cache_read_tokens: None,
+        tool_name: None,
+        tool_input: None,
+        tool_output: None,
+        file_path: None,
+        content_hash: String::new(),
+    })?;
+
+    writer.end_session(HaloSessionStatus::Completed)?;
+    Ok(())
+}
+
+async fn flush_cockpit_trace_if_done(
+    state: &DashboardState,
+    session: std::sync::Arc<crate::cockpit::pty_manager::PtySession>,
+) {
+    if session.is_trace_flushed() {
+        return;
+    }
+
+    let status = session.status();
+    let (final_status, failed_reason): (Option<HaloSessionStatus>, Option<String>) = match status {
+        crate::cockpit::session::SessionStatus::Done { exit_code } => {
+            if exit_code == 0 {
+                (Some(HaloSessionStatus::Completed), None)
+            } else {
+                (
+                    Some(HaloSessionStatus::Failed),
+                    Some(format!("exit_code={exit_code}")),
+                )
+            }
+        }
+        crate::cockpit::session::SessionStatus::Error { message } => {
+            (Some(HaloSessionStatus::Failed), Some(message))
+        }
+        _ => (None, None),
+    };
+    let Some(final_status) = final_status else {
+        return;
+    };
+
+    let info = session.info();
+    let telemetry = session.telemetry_snapshot();
+    let completion_preview = String::new();
+    let started = info.created_at;
+
+    let write_result = async {
+        let _guard = state.db_lock.lock().await;
+        let mut writer = TraceWriter::new(&state.db_path)?;
+        writer.start_session(SessionMetadata {
+            session_id: info.id.clone(),
+            agent: info
+                .agent_type
+                .clone()
+                .unwrap_or_else(|| "cockpit".to_string()),
+            model: None,
+            started_at: started,
+            ended_at: None,
+            prompt: Some("cockpit PTY session".to_string()),
+            status: HaloSessionStatus::Running,
+            user_id: None,
+            machine_id: None,
+            puf_digest: None,
+        })?;
+
+        writer.write_event(TraceEvent {
+            seq: 0,
+            timestamp: started,
+            event_type: EventType::BashCommand,
+            content: json!({
+                "command": info.command,
+                "args": info.args,
+            }),
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_tokens: None,
+            tool_name: None,
+            tool_input: None,
+            tool_output: None,
+            file_path: None,
+            content_hash: String::new(),
+        })?;
+
+        writer.write_event(TraceEvent {
+            seq: 0,
+            timestamp: now_unix_secs(),
+            event_type: EventType::SystemMessage,
+            content: json!({
+                "runtime_secs": telemetry.runtime_secs,
+                "input_bytes": telemetry.input_bytes,
+                "output_bytes": telemetry.output_bytes,
+                "estimated_input_tokens": telemetry.estimated_input_tokens,
+                "estimated_output_tokens": telemetry.estimated_output_tokens,
+                "completion_preview": completion_preview,
+            }),
+            input_tokens: Some(telemetry.estimated_input_tokens),
+            output_tokens: Some(telemetry.estimated_output_tokens),
+            cache_read_tokens: None,
+            tool_name: None,
+            tool_input: None,
+            tool_output: None,
+            file_path: None,
+            content_hash: String::new(),
+        })?;
+
+        if let Some(reason) = failed_reason {
+            writer.write_event(TraceEvent {
+                seq: 0,
+                timestamp: now_unix_secs(),
+                event_type: EventType::Error,
+                content: json!({ "reason": reason }),
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_tokens: None,
+                tool_name: None,
+                tool_input: None,
+                tool_output: None,
+                file_path: None,
+                content_hash: String::new(),
+            })?;
+        }
+
+        writer.end_session(final_status)?;
+        Ok::<(), String>(())
+    }
+    .await;
+
+    if let Err(err) = write_result {
+        eprintln!(
+            "warning: failed to flush cockpit trace for {}: {}",
+            info.id, err
+        );
+        return;
+    }
+
+    let _ = session.mark_trace_flushed();
 }
 
 // ---------------------------------------------------------------------------
@@ -974,6 +1314,9 @@ async fn api_vault_test_key(
 }
 
 async fn api_cockpit_sessions(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    for handle in state.pty_manager.list_session_handles() {
+        flush_cockpit_trace_if_done(&state, handle).await;
+    }
     let sessions = state.pty_manager.list_sessions();
     Ok(Json(
         json!({ "sessions": sessions, "count": sessions.len() }),
@@ -1013,10 +1356,14 @@ async fn api_cockpit_destroy_session(
     Path(id): Path<String>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    let session = state.pty_manager.get_session(&id);
     state
         .pty_manager
         .destroy_session(&id)
         .map_err(|e| api_err(StatusCode::NOT_FOUND, &e))?;
+    if let Some(session) = session {
+        flush_cockpit_trace_if_done(&state, session).await;
+    }
     Ok(Json(json!({ "ok": true, "id": id })))
 }
 
@@ -1096,12 +1443,390 @@ async fn api_proxy_chat(
         ));
     };
 
-    let response = tokio::task::spawn_blocking(move || proxy::proxy_chat_sync(&vault, &req))
-        .await
-        .map_err(|e| internal_err(format!("proxy task join: {e}")))?
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let req_for_proxy = req.clone();
+    let response =
+        tokio::task::spawn_blocking(move || proxy::proxy_chat_sync(&vault, &req_for_proxy))
+            .await
+            .map_err(|e| internal_err(format!("proxy task join: {e}")))?
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+
+    if let Err(e) = record_proxy_trace(&state, &req, &response).await {
+        eprintln!("warning: proxy trace write failed: {e}");
+    }
 
     Ok(Json(response))
+}
+
+async fn api_metered_proxy_models(
+    AxumState(state): AxumState<DashboardState>,
+    headers: HeaderMap,
+) -> ApiResult {
+    let cfg = crate::halo::pricing::load_proxy_config();
+    if !cfg.enabled {
+        return Err(api_err(
+            StatusCode::FORBIDDEN,
+            "metered proxy is disabled by operator",
+        ));
+    }
+
+    let customer_key = extract_bearer_token(&headers)?;
+    if state.key_store.validate_key(&customer_key).is_none() {
+        return Err(api_err(StatusCode::UNAUTHORIZED, "invalid API key"));
+    }
+
+    let Some(vault) = state.vault.clone() else {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "vault unavailable: configure OpenRouter key first",
+        ));
+    };
+
+    let models = proxy::list_available_models(&vault);
+    Ok(Json(json!({"object":"list","data":models})))
+}
+
+async fn api_metered_proxy_chat(
+    AxumState(state): AxumState<DashboardState>,
+    headers: HeaderMap,
+    Json(req): Json<proxy::ChatCompletionRequest>,
+) -> ApiResult {
+    let cfg = crate::halo::pricing::load_proxy_config();
+    if !cfg.enabled {
+        return Err(api_err(
+            StatusCode::FORBIDDEN,
+            "metered proxy is disabled by operator",
+        ));
+    }
+    if req.stream.unwrap_or(false) {
+        return Err(api_err(
+            StatusCode::NOT_IMPLEMENTED,
+            "streaming not yet supported",
+        ));
+    }
+
+    let customer_key = extract_bearer_token(&headers)?;
+    let customer = state
+        .key_store
+        .validate_key(&customer_key)
+        .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "invalid API key"))?;
+    if !customer.active {
+        return Err(api_err(StatusCode::FORBIDDEN, "API key is suspended"));
+    }
+    if cfg.daily_token_limit > 0
+        && state.key_store.today_tokens(&customer.key_id) > cfg.daily_token_limit
+    {
+        return Err(api_err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "daily token limit reached for API key",
+        ));
+    }
+
+    let Some(vault) = state.vault.clone() else {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "vault unavailable: configure OpenRouter key first",
+        ));
+    };
+    let key_store = state.key_store.clone();
+    let pricing_table = state.pricing_table.clone();
+    let markup_pct = cfg.markup_pct;
+    let req_for_proxy = req.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        proxy::metered_proxy_sync(
+            &vault,
+            &key_store,
+            &customer_key,
+            &req_for_proxy,
+            &pricing_table,
+            markup_pct,
+        )
+    })
+    .await
+    .map_err(|e| internal_err(format!("metered proxy task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+
+    if let Err(e) = record_proxy_trace(&state, &req, &result.body).await {
+        eprintln!("warning: metered proxy trace write failed: {e}");
+    }
+
+    Ok(Json(result.body))
+}
+
+async fn api_admin_list_keys(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mut keys = state.key_store.list_keys();
+    keys.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(Json(json!({"keys": keys, "count": keys.len()})))
+}
+
+async fn api_admin_create_key(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<AdminCreateKeyRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let label = req.label.trim();
+    if label.is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "label must not be empty"));
+    }
+    let key = state
+        .key_store
+        .create_key(label, req.initial_balance_usd.unwrap_or(0.0).max(0.0));
+    Ok(Json(json!({"ok": true, "key": key})))
+}
+
+async fn api_admin_get_key(
+    AxumState(state): AxumState<DashboardState>,
+    Path(key_id): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let key = state
+        .key_store
+        .get_key(&key_id)
+        .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "key not found"))?;
+    Ok(Json(json!({"key": key})))
+}
+
+async fn api_admin_revoke_key(
+    AxumState(state): AxumState<DashboardState>,
+    Path(key_id): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if !state.key_store.revoke_key(&key_id) {
+        return Err(api_err(StatusCode::NOT_FOUND, "key not found"));
+    }
+    Ok(Json(json!({"ok": true, "key_id": key_id})))
+}
+
+async fn api_admin_add_balance(
+    AxumState(state): AxumState<DashboardState>,
+    Path(key_id): Path<String>,
+    Json(req): Json<AdminAddBalanceRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if req.amount_usd <= 0.0 {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "amount_usd must be positive",
+        ));
+    }
+    if state.key_store.get_key(&key_id).is_none() {
+        return Err(api_err(StatusCode::NOT_FOUND, "key not found"));
+    }
+    let balance = state.key_store.add_balance(&key_id, req.amount_usd);
+    Ok(Json(
+        json!({"ok": true, "key_id": key_id, "balance_usd": balance }),
+    ))
+}
+
+async fn api_admin_suspend_key(
+    AxumState(state): AxumState<DashboardState>,
+    Path(key_id): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if !state.key_store.suspend_key(&key_id) {
+        return Err(api_err(StatusCode::NOT_FOUND, "key not found"));
+    }
+    Ok(Json(json!({"ok": true, "key_id": key_id, "active": false})))
+}
+
+async fn api_admin_activate_key(
+    AxumState(state): AxumState<DashboardState>,
+    Path(key_id): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if !state.key_store.activate_key(&key_id) {
+        return Err(api_err(StatusCode::NOT_FOUND, "key not found"));
+    }
+    Ok(Json(json!({"ok": true, "key_id": key_id, "active": true})))
+}
+
+async fn api_admin_get_proxy_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = crate::halo::pricing::load_proxy_config();
+    Ok(Json(json!({"proxy_config": cfg})))
+}
+
+async fn api_admin_set_proxy_config(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<AdminProxyConfigRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mut cfg = crate::halo::pricing::load_proxy_config();
+    if let Some(enabled) = req.enabled {
+        cfg.enabled = enabled;
+    }
+    if let Some(markup_pct) = req.markup_pct {
+        if markup_pct < 0.0 {
+            return Err(api_err(StatusCode::BAD_REQUEST, "markup_pct must be >= 0"));
+        }
+        cfg.markup_pct = markup_pct;
+    }
+    if let Some(rpm) = req.rate_limit_rpm {
+        cfg.rate_limit_rpm = rpm;
+    }
+    if let Some(limit) = req.daily_token_limit {
+        cfg.daily_token_limit = limit;
+    }
+    crate::halo::pricing::save_proxy_config(&cfg).map_err(internal_err)?;
+    Ok(Json(json!({"ok": true, "proxy_config": cfg})))
+}
+
+// ---------------------------------------------------------------------------
+// Funding — all balance additions go through AgentPMT or x402direct
+// ---------------------------------------------------------------------------
+
+/// Fund a customer's balance via validated funding source.
+///
+/// This replaces the raw `add_balance` endpoint for customer-facing use.
+/// Only AgentPMT tokens, x402direct, and operator credits are accepted.
+/// Every funding event is recorded in the append-only funding ledger.
+async fn api_admin_fund_balance(
+    AxumState(state): AxumState<DashboardState>,
+    Path(key_id): Path<String>,
+    Json(req): Json<FundBalanceRequest>,
+) -> ApiResult {
+    use crate::halo::funding;
+
+    // Operator credits require admin auth.  AgentPMT/x402 funding can
+    // come via webhook (TODO: add webhook signature verification).
+    if matches!(req.source, funding::FundingSource::OperatorCredit { .. }) {
+        require_sensitive_access(&state)?;
+    }
+
+    // Validate the funding source.
+    let validation = funding::validate_funding_source(&req.source, &key_id);
+    if !validation.valid {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            &validation.error.unwrap_or_else(|| "invalid funding source".to_string()),
+        ));
+    }
+
+    // Determine amount.
+    let amount = match &req.source {
+        funding::FundingSource::OperatorCredit { .. } => {
+            req.amount_usd.unwrap_or(0.0).max(0.0)
+        }
+        _ => validation.amount_usd,
+    };
+    if amount <= 0.0 {
+        return Err(api_err(StatusCode::BAD_REQUEST, "funding amount must be positive"));
+    }
+
+    // Check customer exists.
+    if state.key_store.get_key(&key_id).is_none() {
+        return Err(api_err(StatusCode::NOT_FOUND, "key not found"));
+    }
+
+    // Credit the balance.
+    let new_balance = state.key_store.add_balance(&key_id, amount);
+
+    // Record in the funding ledger.
+    let entry = funding::create_ledger_entry(&key_id, req.source, amount, new_balance);
+    if let Err(e) = funding::record_funding(&entry) {
+        eprintln!("warning: failed to record funding ledger entry: {e}");
+    }
+
+    Ok(Json(json!({
+        "ok": true,
+        "key_id": key_id,
+        "funded_usd": amount,
+        "balance_usd": new_balance,
+        "source_type": validation.source_type,
+        "receipt_id": validation.receipt_id,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Metered IPFS Storage (Pinata proxy)
+// ---------------------------------------------------------------------------
+
+async fn api_metered_pin_json(
+    AxumState(state): AxumState<DashboardState>,
+    headers: HeaderMap,
+    Json(req): Json<PinJsonApiRequest>,
+) -> ApiResult {
+    let cfg = crate::halo::pricing::load_proxy_config();
+    if !cfg.enabled {
+        return Err(api_err(
+            StatusCode::FORBIDDEN,
+            "metered proxy is disabled by operator",
+        ));
+    }
+
+    let customer_key = extract_bearer_token(&headers)?;
+
+    let Some(vault) = state.vault.clone() else {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "vault unavailable: configure Pinata JWT first",
+        ));
+    };
+
+    let key_store = state.key_store.clone();
+    let markup_pct = cfg.markup_pct;
+
+    let pin_req = crate::halo::pinata::PinJsonRequest {
+        content: req.content,
+        name: req.name,
+        metadata: req.metadata,
+    };
+
+    let result = tokio::task::spawn_blocking(move || {
+        crate::halo::pinata::metered_pin_json(
+            &vault,
+            &key_store,
+            &customer_key,
+            &pin_req,
+            markup_pct,
+        )
+    })
+    .await
+    .map_err(|e| internal_err(format!("pin task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "ipfs_hash": result.ipfs_hash,
+        "pin_size": result.pin_size,
+        "cost_usd": result.cost_usd,
+        "remaining_balance_usd": result.remaining_balance_usd,
+        "timestamp": result.timestamp,
+    })))
+}
+
+async fn api_metered_list_pins(
+    AxumState(state): AxumState<DashboardState>,
+    headers: HeaderMap,
+) -> ApiResult {
+    let cfg = crate::halo::pricing::load_proxy_config();
+    if !cfg.enabled {
+        return Err(api_err(
+            StatusCode::FORBIDDEN,
+            "metered proxy is disabled by operator",
+        ));
+    }
+
+    let customer_key = extract_bearer_token(&headers)?;
+
+    let Some(vault) = state.vault.clone() else {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "vault unavailable: configure Pinata JWT first",
+        ));
+    };
+
+    let key_store = state.key_store.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        crate::halo::pinata::metered_list_pins(&vault, &key_store, &customer_key)
+    })
+    .await
+    .map_err(|e| internal_err(format!("list pins task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+
+    Ok(Json(result))
 }
 
 // ---------------------------------------------------------------------------

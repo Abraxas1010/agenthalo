@@ -4,7 +4,7 @@ use nucleusdb::dashboard::api::api_router;
 use nucleusdb::dashboard::{build_state, DashboardState};
 use nucleusdb::halo::auth::{save_credentials, Credentials};
 use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
-use nucleusdb::halo::trace::{now_unix_secs, TraceWriter};
+use nucleusdb::halo::trace::{list_sessions as list_trace_sessions, now_unix_secs, TraceWriter};
 use nucleusdb::halo::vault::Vault;
 
 use axum::body::Body;
@@ -825,6 +825,12 @@ async fn cockpit_session_create_list_destroy_roundtrip() {
 
     let (s3, v3) = api_delete(state.clone(), &format!("/cockpit/sessions/{id}")).await;
     assert_eq!(s3, StatusCode::OK, "destroy session should succeed: {v3}");
+
+    let traced = list_trace_sessions(&db_path).expect("list trace sessions");
+    assert!(
+        traced.iter().any(|s| s.session_id == id),
+        "destroyed cockpit session should be flushed to trace DB"
+    );
 
     let _ = std::fs::remove_file(&db_path);
 }

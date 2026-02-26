@@ -9,6 +9,67 @@ pub struct ModelPricing {
     pub cache_read_per_mtok: Option<f64>,
 }
 
+/// Proxy resale configuration — controls markup and rate limits for external users.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProxyConfig {
+    /// Whether external (non-owner) API access is enabled.
+    pub enabled: bool,
+    /// Markup percentage applied to base model costs (e.g. 20.0 = 20% markup).
+    pub markup_pct: f64,
+    /// Maximum requests per minute per API key (0 = unlimited).
+    pub rate_limit_rpm: u32,
+    /// Maximum tokens per day per API key (0 = unlimited).
+    pub daily_token_limit: u64,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            markup_pct: 20.0,
+            rate_limit_rpm: 60,
+            daily_token_limit: 1_000_000,
+        }
+    }
+}
+
+pub fn proxy_config_path() -> std::path::PathBuf {
+    crate::halo::config::halo_dir().join("proxy_config.json")
+}
+
+pub fn load_proxy_config() -> ProxyConfig {
+    let path = proxy_config_path();
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => ProxyConfig::default(),
+    }
+}
+
+pub fn save_proxy_config(cfg: &ProxyConfig) -> Result<(), String> {
+    let path = proxy_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create proxy config dir: {e}"))?;
+    }
+    let raw =
+        serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize proxy config: {e}"))?;
+    std::fs::write(&path, raw)
+        .map_err(|e| format!("write proxy config {}: {e}", path.display()))
+}
+
+/// Calculate the marked-up cost for external API users.
+pub fn calculate_marked_up_cost(
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_tokens: u64,
+    pricing: &HashMap<String, ModelPricing>,
+    markup_pct: f64,
+) -> (f64, f64) {
+    let base = calculate_cost(model, input_tokens, output_tokens, cache_tokens, pricing);
+    let markup = base * (markup_pct / 100.0);
+    (base, base + markup)
+}
+
 pub fn default_pricing() -> HashMap<String, ModelPricing> {
     let mut m = HashMap::new();
     m.insert(

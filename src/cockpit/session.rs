@@ -27,4 +27,18 @@ pub struct SessionInfo {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default)]
+    pub input_bytes: u64,
+    #[serde(default)]
+    pub output_bytes: u64,
+    #[serde(default)]
+    pub estimated_input_tokens: u64,
+    #[serde(default)]
+    pub estimated_output_tokens: u64,
+    #[serde(default)]
+    pub estimated_cost_usd: f64,
+    #[serde(default)]
+    pub runtime_secs: u64,
+    #[serde(default)]
+    pub trace_flushed: bool,
 }
