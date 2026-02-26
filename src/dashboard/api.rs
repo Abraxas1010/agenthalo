@@ -80,6 +80,11 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/agentpmt/tools", get(api_agentpmt_tools))
         .route("/agentpmt/refresh", post(api_agentpmt_refresh))
         .route("/agentpmt/enable", post(api_agentpmt_enable))
+        .route("/agentpmt/disconnect", post(api_agentpmt_disconnect))
+        .route(
+            "/agentpmt/anonymous-wallet",
+            post(api_agentpmt_anonymous_wallet),
+        )
         .route("/vault/keys", get(api_vault_keys))
         .route(
             "/vault/keys/{provider}",
@@ -1361,6 +1366,63 @@ async fn api_agentpmt_enable(AxumState(state): AxumState<DashboardState>) -> Api
     let path = agentpmt::agentpmt_config_path();
     agentpmt::save_config(&path, &cfg).map_err(internal_err)?;
     Ok(Json(json!({ "ok": true, "enabled": true })))
+}
+
+async fn api_agentpmt_disconnect(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    // Remove vault key
+    if let Some(ref vault) = state.vault {
+        let _ = vault.delete_key("agentpmt");
+    }
+    // Disable config and clear catalog
+    agentpmt::disconnect().map_err(internal_err)?;
+    Ok(Json(json!({ "ok": true, "disconnected": true })))
+}
+
+#[derive(Deserialize)]
+struct AnonymousWalletRequest {
+    #[serde(default)]
+    label: Option<String>,
+}
+
+async fn api_agentpmt_anonymous_wallet(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<AnonymousWalletRequest>,
+) -> ApiResult {
+    let result = agentpmt::create_anonymous_wallet(req.label.as_deref()).map_err(|e| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("anonymous wallet creation failed: {e}"),
+        )
+    })?;
+
+    // Try to extract and persist the bearer token from the response
+    let mut token_saved = false;
+    if let Some(parsed) = agentpmt::extract_mcp_text(&result) {
+        let token = parsed
+            .get("bearer_token")
+            .or_else(|| parsed.get("token"))
+            .or_else(|| parsed.get("api_key"))
+            .and_then(|v| v.as_str());
+        if let Some(tok) = token {
+            if let Some(ref vault) = state.vault {
+                let _ = vault.set_key("agentpmt", "AGENTPMT_API_KEY", tok);
+                // Enable proxy
+                let mut cfg = agentpmt::load_or_default();
+                cfg.enabled = true;
+                cfg.updated_at = chrono::Utc::now().timestamp() as u64;
+                let path = agentpmt::agentpmt_config_path();
+                let _ = agentpmt::save_config(&path, &cfg);
+                token_saved = true;
+            }
+        }
+    }
+
+    Ok(Json(json!({
+        "ok": true,
+        "token_saved": token_saved,
+        "result": result,
+    })))
 }
 
 /// Allowed agent names for shell wrapping — prevents shell RC injection.

@@ -1096,6 +1096,7 @@ async function renderSetup() {
           ${docsLink}
           <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(provider)}">Set Key</button>
           ${s.configured ? `<button class="btn btn-sm setup-provider-test-btn" data-provider="${esc(provider)}">Test</button>` : ''}
+          ${s.configured ? `<button class="btn btn-sm setup-provider-disconnect-btn" data-provider="${esc(provider)}" title="Remove this key">Disconnect</button>` : ''}
         </div>
       </div>
     `;
@@ -1115,6 +1116,7 @@ async function renderSetup() {
   const pmtEnabled = cfg && cfg.agentpmt && cfg.agentpmt.enabled;
   const pmtAuth = cfg && cfg.agentpmt && cfg.agentpmt.auth_configured;
   const pmtToolCount = (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) || 0;
+  const orStatus = providerStatus('openrouter');
 
   // Stepper step classes
   const s1c = step1Done ? 's-done' : 's-active';
@@ -1153,50 +1155,85 @@ async function renderSetup() {
       </div>
     </div>
 
-    <!-- STEP 1: AgentPMT Account -->
+    <!-- STEP 1: Connect Your Account -->
     <div class="setup-card-v2 ${c1c}" id="setup-step-1">
       <div class="card-header">
         <div class="card-icon">&#9883;</div>
         <div>
-          <div class="card-title">Connect Your Account</div>
-          <div class="card-desc">Link to AgentPMT to access ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and agent budgets</div>
+          <div class="card-title">Verify Your Identity</div>
+          <div class="card-desc">Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and budget management</div>
         </div>
       </div>
 
       ${step1Done ? `
+        <!-- Connected state -->
         <div class="setup-success-banner">
           <span class="success-icon">&#10003;</span>
           <span>AgentPMT connected${pmtToolCount > 0 ? ' &mdash; <strong>' + pmtToolCount + ' tools</strong> ready to use' : ''}</span>
         </div>
+        <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-sm" id="setup-disconnect-agentpmt" style="border-color:var(--red);color:var(--red)">
+            Disconnect My Account
+          </button>
+          <span style="font-size:11px;color:var(--text-dim)">Removes your token and disables the tool proxy</span>
+        </div>
       ` : `
+        <!-- Not connected — two paths -->
+
+        <!-- Path A: Sign up or sign in at AgentPMT -->
         <div class="setup-recommended">
           <div class="setup-recommended-label">Recommended</div>
+          <p style="font-size:14px;color:var(--text-muted);line-height:1.6;margin-bottom:16px">
+            AgentPMT is your gateway to 100+ third-party tools, budget controls, and workflow automation.
+            Create a free account (or sign in), then grab your Bearer Token.
+          </p>
 
-          <ol class="setup-steps-friendly">
-            <li>
-              <span class="step-circle">1</span>
-              <span>Create a <strong>free account</strong> at AgentPMT.com &mdash; takes 30 seconds</span>
-            </li>
-            <li>
-              <span class="step-circle">2</span>
-              <span>Go to <strong>Account Settings</strong> and copy your API token</span>
-            </li>
-            <li>
-              <span class="step-circle">3</span>
-              <span>Paste it below and hit <strong>Save</strong></span>
-            </li>
-          </ol>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
+            <a class="setup-cta-big" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" id="setup-agentpmt-signup">
+              Create Free Account &#8599;
+            </a>
+            <a class="setup-cta-big" href="https://www.agentpmt.com/login" target="_blank" rel="noopener noreferrer" style="background:transparent;border-color:var(--border);color:var(--text-muted)">
+              I Already Have an Account &#8599;
+            </a>
+          </div>
 
-          <a class="setup-cta-big" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer">
-            Create Free Account &#8599;
-          </a>
+          <!-- Embedded signup iframe (opens when user clicks) -->
+          <div id="setup-agentpmt-iframe-wrap" style="display:none;margin-bottom:18px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <span style="font-size:12px;color:var(--text-muted)">AgentPMT &mdash; complete signup, then grab your Bearer Token below</span>
+              <button class="btn btn-sm" id="setup-close-iframe" style="font-size:11px">Close</button>
+            </div>
+            <iframe id="setup-agentpmt-iframe" style="width:100%;height:560px;border:1px solid var(--border);border-radius:8px;background:#fff" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+          </div>
 
-          <div class="setup-token-area">
-            <label for="setup-agentpmt-token">Your AgentPMT API Token</label>
+          <div style="border:1px solid var(--border);border-radius:8px;padding:18px 20px;margin-bottom:16px;background:rgba(255,106,0,0.02)">
+            <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:12px">How to get your Bearer Token:</div>
+            <ol class="setup-steps-friendly" style="margin:0">
+              <li>
+                <span class="step-circle">1</span>
+                <span>Sign in at <a href="https://www.agentpmt.com/login" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">agentpmt.com</a></span>
+              </li>
+              <li>
+                <span class="step-circle">2</span>
+                <span>Click <strong>Dashboard</strong> at the top (defaults to AU Budgets tab)</span>
+              </li>
+              <li>
+                <span class="step-circle">3</span>
+                <span>Click the <strong>Display Bearer Token</strong> button</span>
+              </li>
+              <li>
+                <span class="step-circle">4</span>
+                <span>Copy the token and paste it below</span>
+              </li>
+            </ol>
+          </div>
+
+          <div class="setup-token-area" style="border-top:none;padding-top:0">
+            <label for="setup-agentpmt-token">Your AgentPMT Bearer Token</label>
             <div class="setup-token-row">
-              <input id="setup-agentpmt-token" type="password" placeholder="Paste your token here..."
+              <input id="setup-agentpmt-token" type="password" placeholder="Paste your bearer token here..."
                      autocomplete="off" spellcheck="false">
-              <button class="btn btn-primary" id="setup-save-agentpmt" style="padding:10px 20px;font-size:13px;border-radius:6px">Save</button>
+              <button class="btn btn-primary" id="setup-save-agentpmt" style="padding:10px 20px;font-size:13px;border-radius:6px">Save &amp; Connect</button>
               <button class="btn" id="setup-test-agentpmt" style="padding:10px 16px;font-size:13px;border-radius:6px" ${!pmtAuth ? 'disabled' : ''}>
                 Test
               </button>
@@ -1205,6 +1242,28 @@ async function renderSetup() {
           </div>
         </div>
 
+        <!-- Path B: Anonymous Agent Wallet -->
+        <details class="setup-alt-path" style="margin-top:16px">
+          <summary>Skip signup &mdash; create an anonymous agent wallet instead</summary>
+          <div class="alt-body">
+            <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
+              Don't want to create an account right now? We can generate an anonymous agent wallet via the AgentPMT API.
+              You'll get a bearer token automatically &mdash; no email or signup required.
+            </p>
+            <div class="setup-info-box" style="margin-top:0;margin-bottom:14px">
+              <span class="info-icon">&#9432;</span>
+              <span>Anonymous wallets have limited budgets. You can upgrade to a full account anytime.</span>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <button class="btn btn-primary" id="setup-create-anon-wallet" style="border-radius:6px;padding:10px 20px;font-size:13px">
+                Create Anonymous Wallet
+              </button>
+              <span id="setup-anon-wallet-status" style="font-size:12px;color:var(--text-dim)"></span>
+            </div>
+          </div>
+        </details>
+
+        <!-- Path C: Local PQ wallet -->
         <details class="setup-alt-path">
           <summary>Advanced: Use local PQ wallet identity instead</summary>
           <div class="alt-body">
@@ -1256,37 +1315,49 @@ async function renderSetup() {
         </div>
       </div>
 
-      ${requiredProviders.map(p => {
-        const info = PROVIDER_INFO[p] || { name: p, envVar: providerDefaultEnv(p), keyUrl: '#', description: '' };
-        const s = providerStatus(p);
-        return `
-          <div class="setup-provider-card">
-            <div class="provider-info">
-              <div class="provider-name">${esc(info.name)}</div>
-              <div class="provider-env">${esc(info.envVar)}</div>
-              ${info.description ? '<div class="provider-desc">' + esc(info.description) + '</div>' : ''}
-            </div>
-            <div class="provider-actions">
-              ${statusBadgeHtml(p)}
-              ${info.keyUrl && info.keyUrl !== '#' ? '<a class="btn btn-sm" href="' + esc(info.keyUrl) + '" target="_blank" rel="noopener noreferrer">Get Key</a>' : ''}
-              <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(p)}">Set Key</button>
-              ${s.configured ? '<button class="btn btn-sm setup-provider-test-btn" data-provider="' + esc(p) + '">Test</button>' : ''}
-            </div>
-          </div>
-        `;
-      }).join('')}
-
       ${step2Done ? `
-        <div class="setup-success-banner" style="margin-top:14px">
+        <!-- Connected state with verified badge in proper context -->
+        <div class="setup-success-banner">
           <span class="success-icon">&#10003;</span>
-          <span>OpenRouter connected &mdash; LLM proxy is live</span>
+          <span>
+            OpenRouter ${orStatus.tested ? '<strong>verified</strong>' : 'connected'} &mdash; LLM proxy is live
+          </span>
         </div>
-      ` : step1Done ? `
-        <div class="setup-info-box" style="margin-top:14px">
-          <span class="info-icon">&#9888;</span>
-          <span>Add your OpenRouter key so customers can use LLM inference through your agents.</span>
+        <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-sm setup-provider-config-btn" data-provider="openrouter" style="border-radius:6px">Change Key</button>
+          <button class="btn btn-sm setup-provider-test-btn" data-provider="openrouter" style="border-radius:6px">Re-test</button>
+          <button class="btn btn-sm setup-provider-disconnect-btn" data-provider="openrouter" style="border-color:var(--red);color:var(--red);border-radius:6px">
+            Disconnect
+          </button>
         </div>
-      ` : ''}
+      ` : `
+        ${requiredProviders.map(p => {
+          const info = PROVIDER_INFO[p] || { name: p, envVar: providerDefaultEnv(p), keyUrl: '#', description: '' };
+          const s = providerStatus(p);
+          return `
+            <div class="setup-provider-card">
+              <div class="provider-info">
+                <div class="provider-name">${esc(info.name)}</div>
+                <div class="provider-env">${esc(info.envVar)}</div>
+                ${info.description ? '<div class="provider-desc">' + esc(info.description) + '</div>' : ''}
+              </div>
+              <div class="provider-actions">
+                ${statusBadgeHtml(p)}
+                ${info.keyUrl && info.keyUrl !== '#' ? '<a class="btn btn-sm" href="' + esc(info.keyUrl) + '" target="_blank" rel="noopener noreferrer">Get Key</a>' : ''}
+                <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(p)}">Set Key</button>
+                ${s.configured ? '<button class="btn btn-sm setup-provider-test-btn" data-provider="' + esc(p) + '">Test</button>' : ''}
+              </div>
+            </div>
+          `;
+        }).join('')}
+
+        ${step1Done ? `
+          <div class="setup-info-box" style="margin-top:14px">
+            <span class="info-icon">&#9888;</span>
+            <span>Add your OpenRouter key so customers can use LLM inference through your agents.</span>
+          </div>
+        ` : ''}
+      `}
     </div>
 
     <!-- STEP 3: Dashboard Unlocked -->
@@ -1377,11 +1448,11 @@ async function renderSetup() {
     saveBtn.addEventListener('click', async () => {
       const token = (tokenInput.value || '').trim();
       if (!token) {
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Please paste your API token first.</span>';
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Please paste your bearer token first.</span>';
         return;
       }
       saveBtn.disabled = true;
-      saveBtn.textContent = 'Saving...';
+      saveBtn.textContent = 'Connecting...';
       try {
         // Store the token in the vault under the agentpmt provider
         await apiPost('/vault/keys/agentpmt', { key: token, env_var: 'AGENTPMT_API_KEY' });
@@ -1394,7 +1465,7 @@ async function renderSetup() {
           const count = Number(refreshResp.count || 0);
           if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">&#10003; Connected! ${count} tools available.</span>`;
         } catch (re) {
-          if (statusEl) statusEl.innerHTML = `<span style="color:var(--amber)">Token saved but catalog refresh failed: ${esc(String(re.message || re))}</span>`;
+          if (statusEl) statusEl.innerHTML = `<span style="color:var(--yellow)">Token saved but catalog refresh failed: ${esc(String(re.message || re))}</span>`;
         }
         // Invalidate setup state cache and re-render
         window._invalidateSetupState();
@@ -1404,7 +1475,7 @@ async function renderSetup() {
       } catch (e) {
         if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Save failed: ${esc(String(e.message || e))}</span>`;
         saveBtn.disabled = false;
-        saveBtn.textContent = 'Save Token';
+        saveBtn.textContent = 'Save & Connect';
       }
     });
   }
@@ -1421,7 +1492,80 @@ async function renderSetup() {
         if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Test failed: ${esc(String(e.message || e))}</span>`;
       }
       testBtn.disabled = false;
-      testBtn.textContent = 'Test Connection';
+      testBtn.textContent = 'Test';
+    });
+  }
+
+  // AgentPMT disconnect
+  const disconnectPmtBtn = document.getElementById('setup-disconnect-agentpmt');
+  if (disconnectPmtBtn) {
+    disconnectPmtBtn.addEventListener('click', async () => {
+      if (!confirm('Disconnect your AgentPMT account? This removes your token and disables the tool proxy.')) return;
+      disconnectPmtBtn.disabled = true;
+      disconnectPmtBtn.textContent = 'Disconnecting...';
+      try {
+        await apiPost('/agentpmt/disconnect', {});
+        window._invalidateSetupState();
+        await fetchSetupState(true);
+        await renderSetup();
+        updateNavLockState();
+      } catch (e) {
+        alert('Disconnect failed: ' + (e.message || e));
+        disconnectPmtBtn.disabled = false;
+        disconnectPmtBtn.textContent = 'Disconnect My Account';
+      }
+    });
+  }
+
+  // Anonymous wallet creation
+  const anonWalletBtn = document.getElementById('setup-create-anon-wallet');
+  const anonWalletStatus = document.getElementById('setup-anon-wallet-status');
+  if (anonWalletBtn) {
+    anonWalletBtn.addEventListener('click', async () => {
+      anonWalletBtn.disabled = true;
+      anonWalletBtn.textContent = 'Creating wallet...';
+      if (anonWalletStatus) anonWalletStatus.innerHTML = '<span style="color:var(--text-muted)">Requesting anonymous wallet from AgentPMT...</span>';
+      try {
+        const resp = await apiPost('/agentpmt/anonymous-wallet', {});
+        if (resp.token_saved) {
+          if (anonWalletStatus) anonWalletStatus.innerHTML = '<span style="color:var(--green)">&#10003; Wallet created and connected!</span>';
+          window._invalidateSetupState();
+          await fetchSetupState(true);
+          await renderSetup();
+          updateNavLockState();
+        } else {
+          if (anonWalletStatus) anonWalletStatus.innerHTML = '<span style="color:var(--yellow)">Wallet created but no token was returned. You may need to enter it manually.</span>';
+          anonWalletBtn.disabled = false;
+          anonWalletBtn.textContent = 'Create Anonymous Wallet';
+        }
+      } catch (e) {
+        if (anonWalletStatus) anonWalletStatus.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
+        anonWalletBtn.disabled = false;
+        anonWalletBtn.textContent = 'Create Anonymous Wallet';
+      }
+    });
+  }
+
+  // Iframe embed logic: try opening AgentPMT in iframe when CTA is clicked
+  const signupBtn = document.getElementById('setup-agentpmt-signup');
+  const iframeWrap = document.getElementById('setup-agentpmt-iframe-wrap');
+  const iframe = document.getElementById('setup-agentpmt-iframe');
+  const closeIframeBtn = document.getElementById('setup-close-iframe');
+  if (signupBtn && iframeWrap && iframe) {
+    signupBtn.addEventListener('click', (e) => {
+      // Try embedding; if it fails the link still opens in new tab (target=_blank)
+      e.preventDefault();
+      iframe.src = 'https://www.agentpmt.com/login';
+      iframeWrap.style.display = 'block';
+      iframeWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      // Also open in new tab as fallback
+      window.open('https://www.agentpmt.com', '_blank', 'noopener,noreferrer');
+    });
+  }
+  if (closeIframeBtn && iframeWrap && iframe) {
+    closeIframeBtn.addEventListener('click', () => {
+      iframeWrap.style.display = 'none';
+      iframe.src = '';
     });
   }
 
@@ -1438,6 +1582,13 @@ async function renderSetup() {
   content.querySelectorAll('.setup-provider-test-btn[data-provider]').forEach((btn) => {
     btn.addEventListener('click', () => {
       window.vaultTestKey(btn.dataset.provider || '');
+    });
+  });
+
+  // Provider "Disconnect" buttons
+  content.querySelectorAll('.setup-provider-disconnect-btn[data-provider]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      window.vaultRemoveKey(btn.dataset.provider || '');
     });
   });
 

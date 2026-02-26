@@ -805,6 +805,18 @@ body.no-crt #crt-overlay { display: none; }
   align-items: center;
 }
 
+/* Disconnect button style */
+.setup-provider-disconnect-btn,
+.btn[id^="setup-disconnect"] {
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+.setup-provider-disconnect-btn:hover,
+.btn[id^="setup-disconnect"]:hover {
+  background: rgba(255, 48, 48, 0.1);
+  border-color: var(--red) !important;
+  color: var(--red) !important;
+}
+
 /* Funding section */
 .setup-funding-channel {
   display: flex;

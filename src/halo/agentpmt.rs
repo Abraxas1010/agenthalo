@@ -423,7 +423,7 @@ fn parse_remote_catalog(result: &Value) -> Result<ToolCatalog, String> {
 /// The MCP `tools/list` returns meta-tools (search, workflows, etc.), not the
 /// real vendor products.  This function calls the search meta-tool with
 /// `action: "get_tools"` to get the total count of available marketplace tools.
-fn extract_mcp_text(result: &Value) -> Option<Value> {
+pub fn extract_mcp_text(result: &Value) -> Option<Value> {
     let text = result
         .get("content")
         .and_then(|v| v.as_array())
@@ -490,6 +490,44 @@ pub fn refresh_tool_catalog() -> Result<ToolCatalog, String> {
     catalog.marketplace_tool_count = discover_marketplace_tool_count();
     save_tool_catalog(&catalog)?;
     Ok(catalog)
+}
+
+/// Disconnect AgentPMT: disable config, clear auth token, and wipe the tool catalog.
+///
+/// Does NOT touch the vault (caller should remove the vault key separately).
+pub fn disconnect() -> Result<(), String> {
+    let path = agentpmt_config_path();
+    let mut cfg = load_or_default();
+    cfg.enabled = false;
+    cfg.auth_token = None;
+    cfg.updated_at = chrono::Utc::now().timestamp() as u64;
+    save_config(&path, &cfg)?;
+
+    // Wipe catalog
+    save_tool_catalog(&ToolCatalog::default())?;
+    Ok(())
+}
+
+/// Try to create an anonymous agent wallet via AgentPMT MCP.
+///
+/// Calls `AgentPMT-Send-Human-Request` with a wallet creation request.
+/// On success the caller should extract the bearer token from the response
+/// and store it in the vault.
+pub fn create_anonymous_wallet(agent_label: Option<&str>) -> Result<Value, String> {
+    let label = agent_label.unwrap_or("agenthalo-anonymous");
+    let result = mcp_call(
+        "tools/call",
+        json!({
+            "name": "AgentPMT-Send-Human-Request",
+            "arguments": {
+                "action": "create_agent_wallet",
+                "agent_type": "agenthalo",
+                "label": label,
+                "anonymous": true
+            }
+        }),
+    )?;
+    Ok(result)
 }
 
 /// Get the merged tool list: if tool proxy is enabled and a catalog
