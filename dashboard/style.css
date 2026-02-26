@@ -331,11 +331,27 @@ body.no-crt #crt-overlay { display: none; }
    SETUP PAGE — Friendly onboarding wizard
    ================================================================ */
 
+/* Centered wrapper for setup page content */
+.setup-page-wrap {
+  max-width: 860px;
+  margin: 0 auto;
+  width: 100%;
+}
+
 /* Hero welcome section */
 .setup-hero {
   text-align: center;
   padding: 40px 24px 32px;
   margin: 0 0 28px;
+}
+
+.setup-hero-img {
+  width: 140px;
+  height: 140px;
+  object-fit: contain;
+  margin-bottom: 16px;
+  border-radius: 16px;
+  filter: drop-shadow(0 0 18px rgba(255, 106, 0, 0.3)) drop-shadow(0 0 40px rgba(0, 255, 65, 0.1));
 }
 
 .setup-hero-emoji {
@@ -508,6 +524,35 @@ body.no-crt #crt-overlay { display: none; }
   color: var(--text-muted);
   margin-top: 3px;
   line-height: 1.4;
+}
+
+/* Brand logo in card icon */
+.setup-card-v2 .card-icon-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(255, 106, 0, 0.15);
+  padding: 6px;
+}
+.setup-card-v2.card-done .card-icon-logo {
+  border-color: rgba(0, 255, 65, 0.2);
+}
+/* OpenRouter SVG needs different treatment — dark bg */
+.setup-card-v2 .card-icon-logo-dark {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  object-fit: contain;
+  background: #1a1f2e;
+  border: 1px solid rgba(255, 106, 0, 0.15);
+  padding: 6px;
+}
+.setup-card-v2.card-done .card-icon-logo-dark {
+  border-color: rgba(0, 255, 65, 0.2);
 }
 
 /* Success banner inside cards */
@@ -988,7 +1033,6 @@ body.no-crt #crt-overlay { display: none; }
   flex: 1;
   padding: 24px 32px;
   height: 100vh;
-  max-width: 1200px;
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
@@ -2245,7 +2289,9 @@ input:focus, select:focus, textarea:focus {
   .ndb-hero-subtitle { font-size: 10px; letter-spacing: 1.2px; }
 
   /* Setup page mobile */
+  .setup-page-wrap { max-width: 100%; }
   .setup-hero { padding: 24px 12px 20px; margin-bottom: 20px; }
+  .setup-hero-img { width: 100px; height: 100px; }
   .setup-hero-emoji { font-size: 36px; }
   .setup-hero h1 { font-size: 22px; }
   .setup-hero p { font-size: 13px; }

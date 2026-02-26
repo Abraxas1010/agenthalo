@@ -1129,10 +1129,11 @@ async function renderSetup() {
   const c3c = allDone ? 'card-done card-celebrate' : 'card-locked';
 
   content.innerHTML = `
+  <div class="setup-page-wrap">
 
     <!-- Hero -->
     <div class="setup-hero">
-      <div class="setup-hero-emoji">${allDone ? '&#127881;' : '&#128075;'}</div>
+      <img class="setup-hero-img" src="img/agenthalo_ready.png" alt="Agent H.A.L.O." onerror="this.style.display='none'">
       <h1>${allDone ? 'You\'re All Set!' : 'Welcome to Agent H.A.L.O.'}</h1>
       <p>${allDone
         ? 'Your dashboard is fully operational. Go build something amazing.'
@@ -1158,7 +1159,7 @@ async function renderSetup() {
     <!-- STEP 1: Connect Your Account -->
     <div class="setup-card-v2 ${c1c}" id="setup-step-1">
       <div class="card-header">
-        <div class="card-icon">&#9883;</div>
+        <img class="card-icon-logo" src="img/agentpmt-192.png" alt="AgentPMT" title="AgentPMT" onerror="this.outerHTML='<div class=\\'card-icon\\'>&#9883;</div>'">
         <div>
           <div class="card-title">Verify Your Identity</div>
           <div class="card-desc">Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and budget management</div>
@@ -1178,7 +1179,7 @@ async function renderSetup() {
           <span style="font-size:11px;color:var(--text-dim)">Removes your token and disables the tool proxy</span>
         </div>
       ` : `
-        <!-- Not connected — two paths -->
+        <!-- Not connected — three paths -->
 
         <!-- Path A: Sign up or sign in at AgentPMT -->
         <div class="setup-recommended">
@@ -1262,53 +1263,75 @@ async function renderSetup() {
             </div>
           </div>
         </details>
+      `}
 
-        <!-- Path C: Local PQ wallet -->
-        <details class="setup-alt-path">
-          <summary>Advanced: Use local PQ wallet identity instead</summary>
-          <div class="alt-body">
-            <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin-bottom:12px">
-              Creates a local cryptographic identity for vault storage and dashboard auth.
-              Does <strong>not</strong> provide marketplace access &mdash; for tools and workflows, use AgentPMT above.
-            </p>
-            <div style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-                <span style="font-size:13px;color:var(--text)">Dashboard auth</span>
-                ${isAuthenticated
-                  ? '<span class="badge badge-ok">Authenticated</span>'
-                  : '<span class="badge badge-muted">Not set up</span>'}
+      <!-- Identity options (always visible) -->
+      <details class="setup-alt-path" style="margin-top:16px">
+        <summary>${step1Done ? 'Manage identity &mdash; anonymous wallet or local PQ wallet' : 'Advanced: Use local PQ wallet identity instead'}</summary>
+        <div class="alt-body">
+          ${!step1Done ? '' : `
+            <!-- Anonymous wallet creation (when connected, allows creating additional wallets) -->
+            <div style="margin-bottom:18px">
+              <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Anonymous Agent Wallet</div>
+              <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
+                Create an anonymous agent wallet via the AgentPMT API &mdash; no email or signup required.
+                Useful for testing or running isolated agent instances.
+              </p>
+              <div class="setup-info-box" style="margin-top:0;margin-bottom:14px">
+                <span class="info-icon">&#9432;</span>
+                <span>Anonymous wallets have limited budgets. You can upgrade to a full account anytime.</span>
               </div>
-              <div style="display:flex;justify-content:space-between;align-items:center">
-                <span style="font-size:13px;color:var(--text)">PQ wallet</span>
-                ${hasWallet
-                  ? '<span class="badge badge-ok">Present</span>'
-                  : '<span class="badge badge-muted">Not created</span>'}
+              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                <button class="btn btn-primary" id="setup-create-anon-wallet" style="border-radius:6px;padding:10px 20px;font-size:13px">
+                  Create Anonymous Wallet
+                </button>
+                <span id="setup-anon-wallet-status" style="font-size:12px;color:var(--text-dim)"></span>
               </div>
             </div>
-            ${!identityDone ? `
-              <div class="setup-cmd">
-                <code>agenthalo keygen --pq</code>
-                <button class="btn btn-sm" onclick="copySetupText('agenthalo keygen --pq')">Copy</button>
-              </div>
-              <div class="setup-cmd">
-                <code>agenthalo login</code>
-                <button class="btn btn-sm" onclick="copySetupText('agenthalo login')">Copy</button>
-              </div>
-            ` : `
-              <div class="setup-success-banner" style="font-size:12px">
-                <span class="success-icon">&#10003;</span>
-                <span>Local identity configured. Add AgentPMT above for full marketplace access.</span>
-              </div>
-            `}
+            <div style="border-top:1px solid var(--border);margin:16px 0;"></div>
+          `}
+          <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Local PQ Wallet</div>
+          <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin-bottom:12px">
+            Creates a local cryptographic identity for vault storage and dashboard auth.
+            Does <strong>not</strong> provide marketplace access &mdash; for tools and workflows, use AgentPMT above.
+          </p>
+          <div style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <span style="font-size:13px;color:var(--text)">Dashboard auth</span>
+              ${isAuthenticated
+                ? '<span class="badge badge-ok">Authenticated</span>'
+                : '<span class="badge badge-muted">Not set up</span>'}
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:13px;color:var(--text)">PQ wallet</span>
+              ${hasWallet
+                ? '<span class="badge badge-ok">Present</span>'
+                : '<span class="badge badge-muted">Not created</span>'}
+            </div>
           </div>
-        </details>
-      `}
+          ${!identityDone ? `
+            <div class="setup-cmd">
+              <code>agenthalo keygen --pq</code>
+              <button class="btn btn-sm" onclick="copySetupText('agenthalo keygen --pq')">Copy</button>
+            </div>
+            <div class="setup-cmd">
+              <code>agenthalo login</code>
+              <button class="btn btn-sm" onclick="copySetupText('agenthalo login')">Copy</button>
+            </div>
+          ` : `
+            <div class="setup-success-banner" style="font-size:12px">
+              <span class="success-icon">&#10003;</span>
+              <span>Local identity configured.</span>
+            </div>
+          `}
+        </div>
+      </details>
     </div>
 
     <!-- STEP 2: OpenRouter LLM Key -->
     <div class="setup-card-v2 ${c2c}" id="setup-step-2">
       <div class="card-header">
-        <div class="card-icon">&#9889;</div>
+        <img class="card-icon-logo-dark" src="img/openrouter-logo.svg" alt="OpenRouter" title="OpenRouter">
         <div>
           <div class="card-title">Add Your LLM Key</div>
           <div class="card-desc">Power your agents with OpenRouter &mdash; one key for 200+ models</div>
@@ -1434,6 +1457,7 @@ async function renderSetup() {
         All tools, workflows, and agent configurations are accessible exclusively through AgentPMT MCP.
       </p>
     </div>
+  </div>
   `;
 
   // ---- Wire up interactive elements ----
