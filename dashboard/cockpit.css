@@ -107,6 +107,7 @@
   background: rgba(5, 9, 4, 0.95);
   min-width: 210px;
   min-height: 150px;
+  z-index: 2;
 }
 
 .cockpit-panel.active {
@@ -117,6 +118,35 @@
 .cockpit-panel.maximized {
   inset: 4px !important;
   z-index: 100;
+}
+
+.cockpit-slot-frame {
+  position: absolute;
+  border: 1px dashed rgba(0, 238, 0, 0.35);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.cockpit-slot-frame .slot-label {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  font-size: 10px;
+  color: rgba(255, 184, 48, 0.8);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cockpit-empty-hint {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  z-index: 1;
+  pointer-events: none;
 }
 
 .cockpit-panel-header {
@@ -300,5 +330,9 @@ body:not(.no-crt) .cockpit-panel-body::before {
 
   .cockpit-resize-handle {
     display: none;
+  }
+
+  .cockpit-slot-frame .slot-label {
+    font-size: 9px;
   }
 }

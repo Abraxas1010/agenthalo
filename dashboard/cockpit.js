@@ -611,15 +611,11 @@
           status: s.status,
         });
       });
-      if (sessions.length === 0) {
-        this.gridEl.innerHTML = '<div style="padding:20px;color:var(--text-dim)">No active sessions. Use <b>+ New</b> to launch one.</div>';
-      }
       this.setLayout(this.layout);
     }
 
     attachSession(session) {
       if (this.sessions.has(session.id)) return;
-      this.gridEl.querySelector('div[style*="No active sessions"]')?.remove();
 
       const panel = new CockpitPanel(session.id, 'terminal', `${session.agent_type || 'session'}:${session.id.slice(0, 8)}`, this);
       const tab = this.createTab(session.id, session.agent_type || 'session');
@@ -681,13 +677,32 @@
       this.applyLayout();
     }
 
+    renderLayoutFrames(slots, entryCount) {
+      this.gridEl.querySelectorAll('.cockpit-slot-frame,.cockpit-empty-hint').forEach((el) => el.remove());
+      slots.forEach((slot, idx) => {
+        const frame = document.createElement('div');
+        frame.className = 'cockpit-slot-frame';
+        frame.innerHTML = `<span class="slot-label">Slot ${idx + 1}</span>`;
+        placePanel(frame, slot);
+        this.gridEl.appendChild(frame);
+      });
+      if (entryCount === 0) {
+        const hint = document.createElement('div');
+        hint.className = 'cockpit-empty-hint';
+        hint.innerHTML = 'No active sessions. Use <b>+ New</b> to launch one.';
+        this.gridEl.appendChild(hint);
+      }
+    }
+
     applyLayout() {
       const entries = [...this.sessions.values()];
-      if (entries.length === 0) return;
 
       const mobileSingle = window.matchMedia('(max-width: 768px)').matches;
       const layoutKey = mobileSingle ? '1' : this.layout;
       const slots = LAYOUTS[layoutKey] || LAYOUTS['1'];
+      this.renderLayoutFrames(slots, entries.length);
+
+      if (entries.length === 0) return;
 
       if (layoutKey === '1') {
         const activeEntry = this.sessions.get(this.activeTab) || entries[0];
