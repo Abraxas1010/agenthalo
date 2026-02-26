@@ -52,8 +52,7 @@ pub fn save_proxy_config(cfg: &ProxyConfig) -> Result<(), String> {
     }
     let raw =
         serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize proxy config: {e}"))?;
-    std::fs::write(&path, raw)
-        .map_err(|e| format!("write proxy config {}: {e}", path.display()))
+    std::fs::write(&path, raw).map_err(|e| format!("write proxy config {}: {e}", path.display()))
 }
 
 /// Calculate the marked-up cost for external API users.

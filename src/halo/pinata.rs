@@ -71,7 +71,7 @@ impl Default for PinataConfig {
             // Conservative pricing — Pinata's free tier is 500 pins + 1GB.
             // Paid plan ~$20/mo for 50K pins + 250GB.
             // We charge a flat per-pin fee to keep billing simple.
-            cost_per_pin_usd: 0.001, // $0.001 per pin (before markup)
+            cost_per_pin_usd: 0.001,       // $0.001 per pin (before markup)
             cost_per_mb_month_usd: 0.0001, // $0.0001 per MB/month
         }
     }
@@ -92,13 +92,11 @@ pub fn load_pinata_config() -> PinataConfig {
 pub fn save_pinata_config(cfg: &PinataConfig) -> Result<(), String> {
     let path = pinata_config_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create pinata config dir: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create pinata config dir: {e}"))?;
     }
-    let raw = serde_json::to_string_pretty(cfg)
-        .map_err(|e| format!("serialize pinata config: {e}"))?;
-    std::fs::write(&path, raw)
-        .map_err(|e| format!("write pinata config {}: {e}", path.display()))
+    let raw =
+        serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize pinata config: {e}"))?;
+    std::fs::write(&path, raw).map_err(|e| format!("write pinata config {}: {e}", path.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -149,22 +147,13 @@ pub fn metered_pin_json(
         .and_then(|v| v.as_str())
         .ok_or("Pinata response missing IpfsHash")?
         .to_string();
-    let pin_size = result
-        .get("PinSize")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let pin_size = result.get("PinSize").and_then(|v| v.as_u64()).unwrap_or(0);
 
     // 6. Deduct from customer balance.
     let remaining = key_store.deduct_balance(&customer.key_id, marked_up_cost);
 
     // 7. Record usage.
-    key_store.record_usage(
-        &customer.key_id,
-        "pinata/pin_json",
-        0,
-        0,
-        marked_up_cost,
-    );
+    key_store.record_usage(&customer.key_id, "pinata/pin_json", 0, 0, marked_up_cost);
 
     let timestamp = chrono::Utc::now().to_rfc3339();
 

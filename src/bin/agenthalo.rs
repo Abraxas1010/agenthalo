@@ -245,8 +245,7 @@ fn cmd_login(args: &[String]) -> Result<(), String> {
 fn cmd_config(args: &[String]) -> Result<(), String> {
     if args.is_empty() {
         return Err(
-            "usage: agenthalo config set-key <key> | tool-proxy enable|disable|status|refresh | show"
-                .to_string(),
+            "usage: agenthalo config set-key <key> | set-agentpmt-key <key> | tool-proxy enable|disable|status|refresh|endpoint <url>|clear-endpoint | show".to_string(),
         );
     }
     config::ensure_halo_dir()?;
@@ -271,6 +270,27 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
             creds.created_at = now_unix_secs();
             save_credentials(&creds_path, &creds)?;
             println!("API key saved at {}", creds_path.display());
+            Ok(())
+        }
+        "set-agentpmt-key" => {
+            let key = if let Some(k) = args.get(1).cloned() {
+                k
+            } else {
+                print!("Enter AgentPMT bearer token: ");
+                io::stdout()
+                    .flush()
+                    .map_err(|e| format!("flush stdout: {e}"))?;
+                read_line_trimmed()?
+            };
+            if key.trim().is_empty() {
+                return Err("AgentPMT token cannot be empty".to_string());
+            }
+            let path = agentpmt::agentpmt_config_path();
+            let mut cfg = agentpmt::load_or_default();
+            cfg.auth_token = Some(key);
+            cfg.updated_at = now_unix_secs();
+            agentpmt::save_config(&path, &cfg)?;
+            println!("AgentPMT bearer token saved at {}", path.display());
             Ok(())
         }
         "tool-proxy" => {
@@ -309,8 +329,9 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
                     );
                     println!(
                         "MCP_ENDPOINT={}",
-                        cfg.mcp_endpoint.as_deref().unwrap_or("(default)")
+                        agentpmt::resolved_mcp_endpoint(&cfg)
                     );
+                    println!("AUTH_CONFIGURED={}", agentpmt::has_bearer_token());
                     Ok(())
                 }
                 "refresh" => {
@@ -322,9 +343,32 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
                     );
                     Ok(())
                 }
+                "endpoint" => {
+                    let endpoint = args
+                        .get(2)
+                        .ok_or_else(|| "usage: agenthalo config tool-proxy endpoint <url>".to_string())?;
+                    if endpoint.trim().is_empty() {
+                        return Err("endpoint cannot be empty".to_string());
+                    }
+                    let path = agentpmt::agentpmt_config_path();
+                    let mut cfg = agentpmt::load_or_default();
+                    cfg.mcp_endpoint = Some(endpoint.trim().to_string());
+                    cfg.updated_at = now_unix_secs();
+                    agentpmt::save_config(&path, &cfg)?;
+                    println!("AgentPMT MCP endpoint set to {}", endpoint.trim());
+                    Ok(())
+                }
+                "clear-endpoint" => {
+                    let path = agentpmt::agentpmt_config_path();
+                    let mut cfg = agentpmt::load_or_default();
+                    cfg.mcp_endpoint = None;
+                    cfg.updated_at = now_unix_secs();
+                    agentpmt::save_config(&path, &cfg)?;
+                    println!("AgentPMT MCP endpoint override cleared.");
+                    Ok(())
+                }
                 _ => Err(
-                    "usage: agenthalo config tool-proxy [enable|disable|status|refresh]"
-                        .to_string(),
+                    "usage: agenthalo config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]".to_string(),
                 ),
             }
         }
@@ -1301,6 +1345,94 @@ fn cmd_license(args: &[String]) -> Result<(), String> {
     }
 }
 
+fn cmd_vault(args: &[String]) -> Result<(), String> {
+    use nucleusdb::halo::config;
+    use nucleusdb::halo::vault;
+
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
+    let pq_wallet_path = config::pq_wallet_path();
+    let vault_path = config::vault_path();
+
+    if !pq_wallet_path.exists() {
+        return Err("PQ wallet not found. Generate one first: agenthalo keygen --pq".to_string());
+    }
+
+    let v =
+        vault::Vault::open(&pq_wallet_path, &vault_path).map_err(|e| format!("open vault: {e}"))?;
+
+    match sub {
+        "list" => {
+            let keys = v.list_keys().map_err(|e| format!("list keys: {e}"))?;
+            println!("Vault keys:");
+            for k in &keys {
+                let status = if k.configured {
+                    "configured"
+                } else {
+                    "not set"
+                };
+                let tested = if k.tested { " (tested)" } else { "" };
+                println!(
+                    "  {:<14} {:<18} {}{}",
+                    k.provider, k.env_var, status, tested
+                );
+            }
+            Ok(())
+        }
+        "set" => {
+            let provider = args
+                .get(1)
+                .ok_or("usage: agenthalo vault set <provider> [key]")?;
+            let key = if let Some(k) = args.get(2) {
+                k.clone()
+            } else {
+                // Read from stdin.
+                let mut buf = String::new();
+                std::io::stdin()
+                    .read_line(&mut buf)
+                    .map_err(|e| format!("read key from stdin: {e}"))?;
+                buf.trim().to_string()
+            };
+            if key.is_empty() {
+                return Err("key must not be empty".to_string());
+            }
+            let env_var = vault::provider_default_env_var(provider);
+            v.set_key(provider, &env_var, &key)
+                .map_err(|e| format!("set key: {e}"))?;
+            println!("Vault: {provider} key stored (env_var={env_var})");
+            Ok(())
+        }
+        "delete" => {
+            let provider = args
+                .get(1)
+                .ok_or("usage: agenthalo vault delete <provider>")?;
+            v.delete_key(provider)
+                .map_err(|e| format!("delete key: {e}"))?;
+            println!("Vault: {provider} key deleted");
+            Ok(())
+        }
+        "test" => {
+            let provider = args
+                .get(1)
+                .ok_or("usage: agenthalo vault test <provider>")?;
+            let key = v.get_key(provider).map_err(|e| format!("get key: {e}"))?;
+            println!("Testing {provider} key...");
+            // Mask key for display.
+            let masked = if key.len() > 8 {
+                format!("{}...{}", &key[..4], &key[key.len() - 4..])
+            } else {
+                "****".to_string()
+            };
+            println!("  Key: {masked}");
+            println!("  (Full test requires running dashboard)");
+            Ok(())
+        }
+        _ => Err(
+            "usage: agenthalo vault [list|set <provider> [key]|delete <provider>|test <provider>]"
+                .to_string(),
+        ),
+    }
+}
+
 fn cmd_x402(args: &[String]) -> Result<(), String> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
     match sub {
@@ -1774,6 +1906,6 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault & credentials:\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
     );
 }

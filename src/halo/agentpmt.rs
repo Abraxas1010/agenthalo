@@ -20,6 +20,8 @@
 //! evolve independently.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -42,6 +44,9 @@ pub struct AgentPmtConfig {
     /// Optional MCP endpoint override (for local testing).
     #[serde(default)]
     pub mcp_endpoint: Option<String>,
+    /// Optional bearer token fallback when env/vault is unavailable.
+    #[serde(default)]
+    pub auth_token: Option<String>,
     /// Updated-at epoch seconds.
     #[serde(default)]
     pub updated_at: u64,
@@ -75,11 +80,11 @@ pub struct ToolCatalog {
 
 impl ToolCatalog {
     /// Return MCP-formatted tool list entries, prefixed with `agentpmt/`.
-    pub fn as_mcp_tools(&self) -> Vec<serde_json::Value> {
+    pub fn as_mcp_tools(&self) -> Vec<Value> {
         self.tools
             .iter()
             .map(|t| {
-                serde_json::json!({
+                json!({
                     "name": format!("agentpmt/{}", t.name),
                     "description": format!("[AgentPMT] {}", t.description)
                 })
@@ -155,6 +160,70 @@ pub fn tool_catalog_path() -> PathBuf {
     crate::halo::config::halo_dir().join("agentpmt_tools.json")
 }
 
+fn is_truthy_env(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn normalized_opt(value: Option<&str>) -> Option<String> {
+    value.and_then(|v| {
+        let s = v.trim();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    })
+}
+
+/// Resolve the AgentPMT MCP endpoint.
+///
+/// Order:
+/// 1. `agentpmt.json:mcp_endpoint`
+/// 2. `AGENTPMT_MCP_ENDPOINT`
+/// 3. built-in testnet endpoint
+pub fn resolved_mcp_endpoint(cfg: &AgentPmtConfig) -> String {
+    normalized_opt(cfg.mcp_endpoint.as_deref())
+        .or_else(|| normalized_opt(std::env::var("AGENTPMT_MCP_ENDPOINT").ok().as_deref()))
+        .unwrap_or_else(|| "https://testnet.api.agentpmt.com/mcp".to_string())
+}
+
+fn token_from_vault() -> Option<String> {
+    let wallet_path = crate::halo::config::pq_wallet_path();
+    let vault_path = crate::halo::config::vault_path();
+    if !wallet_path.exists() || !vault_path.exists() {
+        return None;
+    }
+    let vault = crate::halo::vault::Vault::open(&wallet_path, &vault_path).ok()?;
+    normalized_opt(vault.get_key("agentpmt").ok().as_deref())
+}
+
+/// Resolve AgentPMT bearer token from env/config/vault.
+///
+/// Order:
+/// 1. `AGENTPMT_BEARER_TOKEN`
+/// 2. `AGENTPMT_API_KEY`
+/// 3. `agentpmt.json:auth_token`
+/// 4. Vault key `agentpmt`
+pub fn resolved_bearer_token(cfg: &AgentPmtConfig) -> Option<String> {
+    normalized_opt(std::env::var("AGENTPMT_BEARER_TOKEN").ok().as_deref())
+        .or_else(|| normalized_opt(std::env::var("AGENTPMT_API_KEY").ok().as_deref()))
+        .or_else(|| normalized_opt(cfg.auth_token.as_deref()))
+        .or_else(token_from_vault)
+}
+
+pub fn has_bearer_token() -> bool {
+    let cfg = load_or_default();
+    resolved_bearer_token(&cfg).is_some()
+}
+
 // ---------------------------------------------------------------------------
 // Config persistence
 // ---------------------------------------------------------------------------
@@ -183,6 +252,58 @@ pub fn is_tool_proxy_enabled() -> bool {
     load_or_default().enabled
 }
 
+fn sanitize_agentpmt_error(err: &ureq::Error) -> String {
+    let msg = err.to_string();
+    if msg.contains("Bearer ")
+        || msg.contains("AGENTPMT_BEARER_TOKEN")
+        || msg.contains("AGENTPMT_API_KEY")
+    {
+        "AgentPMT MCP request failed (credentials redacted)".to_string()
+    } else {
+        format!("AgentPMT MCP request failed: {msg}")
+    }
+}
+
+fn mcp_call(method: &str, params: Value) -> Result<Value, String> {
+    let cfg = load_or_default();
+    let endpoint = resolved_mcp_endpoint(&cfg);
+    let token = resolved_bearer_token(&cfg);
+
+    let mut req = ureq::post(&endpoint)
+        .header("Accept", "application/json")
+        .content_type("application/json");
+    if let Some(token) = token {
+        req = req.header("Authorization", &format!("Bearer {token}"));
+    }
+
+    let resp = req
+        .send_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params
+        }))
+        .map_err(|e| sanitize_agentpmt_error(&e))?;
+
+    let body: Value = resp
+        .into_body()
+        .read_json()
+        .map_err(|e| format!("parse AgentPMT MCP response: {e}"))?;
+
+    if let Some(err) = body.get("error") {
+        let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(-32000);
+        let message = err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown AgentPMT MCP error");
+        return Err(format!("AgentPMT MCP error {code}: {message}"));
+    }
+
+    body.get("result")
+        .cloned()
+        .ok_or_else(|| "invalid AgentPMT MCP response: missing result".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Tool catalog persistence
 // ---------------------------------------------------------------------------
@@ -205,27 +326,86 @@ pub fn save_tool_catalog(catalog: &ToolCatalog) -> Result<(), String> {
     std::fs::write(&path, raw).map_err(|e| format!("write tool catalog {}: {e}", path.display()))
 }
 
+fn parse_remote_catalog(result: &Value) -> Result<ToolCatalog, String> {
+    let tools = result
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "invalid AgentPMT tools/list result: missing tools array".to_string())?;
+
+    let mut seen = HashSet::new();
+    let mut parsed = Vec::new();
+    for tool in tools {
+        let raw_name = tool
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "invalid AgentPMT tool entry: missing name".to_string())?;
+        let name = raw_name.strip_prefix("agentpmt/").unwrap_or(raw_name);
+        if name.is_empty() || !seen.insert(name.to_string()) {
+            continue;
+        }
+        let description = tool
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("AgentPMT tool");
+        let category = tool
+            .get("category")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                tool.get("annotations")
+                    .and_then(|v| v.get("category"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            });
+
+        parsed.push(ProxiedTool {
+            name: name.to_string(),
+            description: description.to_string(),
+            category,
+        });
+    }
+
+    if parsed.is_empty() {
+        return Err("AgentPMT tools/list returned no tools".to_string());
+    }
+
+    Ok(ToolCatalog {
+        tools: parsed,
+        refreshed_at: Some(chrono::Utc::now().to_rfc3339()),
+    })
+}
+
 /// Refresh the tool catalog.
 ///
-/// NOTE: HTTP fetch from AgentPMT is not yet implemented. This
-/// currently returns the built-in default catalog. When the
-/// AgentPMT MCP client transport is implemented, this will
-/// query the remote catalog endpoint.
+/// Uses AgentPMT MCP `tools/list` over HTTP JSON-RPC.
+/// If `AGENTHALO_AGENTPMT_STUB=1` is set, uses built-in defaults.
 pub fn refresh_tool_catalog() -> Result<ToolCatalog, String> {
-    // TODO: implement HTTP fetch from AgentPMT catalog endpoint.
-    // For now, save the built-in defaults.
-    let catalog = default_tool_catalog();
+    let catalog = if is_truthy_env("AGENTHALO_AGENTPMT_STUB") {
+        default_tool_catalog()
+    } else {
+        let result = mcp_call("tools/list", json!({}))?;
+        parse_remote_catalog(&result)?
+    };
     save_tool_catalog(&catalog)?;
     Ok(catalog)
 }
 
 /// Get the merged tool list: if tool proxy is enabled and a catalog
 /// exists, return the proxied tools.  Otherwise return empty.
-pub fn proxied_tools_for_listing() -> Vec<serde_json::Value> {
+pub fn proxied_tools_for_listing() -> Vec<Value> {
     if !is_tool_proxy_enabled() {
         return vec![];
     }
-    load_tool_catalog().as_mcp_tools()
+    let cached = load_tool_catalog();
+    if !cached.tools.is_empty() {
+        return cached.as_mcp_tools();
+    }
+    match refresh_tool_catalog() {
+        Ok(catalog) => catalog.as_mcp_tools(),
+        Err(_) => vec![],
+    }
 }
 
 /// Check whether a tool call should be proxied to AgentPMT.
@@ -236,6 +416,77 @@ pub fn is_proxied_tool(name: &str) -> Option<String> {
         return None;
     }
     Some(suffix.to_string())
+}
+
+/// Forward a proxied AgentPMT tool call through MCP `tools/call`.
+pub fn call_tool(tool_name: &str, arguments: Value) -> Result<Value, String> {
+    if is_truthy_env("AGENTHALO_AGENTPMT_STUB") {
+        return Ok(json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": json!({
+                        "status": "ok",
+                        "stub": true,
+                        "tool": tool_name,
+                        "arguments": arguments
+                    }).to_string()
+                }
+            ],
+            "isError": false
+        }));
+    }
+
+    let primary = mcp_call(
+        "tools/call",
+        json!({
+            "name": tool_name,
+            "arguments": arguments
+        }),
+    );
+    match primary {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            // Compatibility fallback: some deployments may expect namespaced tool IDs.
+            if tool_name.starts_with("agentpmt/")
+                || !(e.contains("-32601")
+                    || e.contains("-32602")
+                    || e.to_ascii_lowercase().contains("unknown"))
+            {
+                return Err(e);
+            }
+            mcp_call(
+                "tools/call",
+                json!({
+                    "name": format!("agentpmt/{tool_name}"),
+                    "arguments": arguments
+                }),
+            )
+        }
+    }
+}
+
+pub fn extract_tool_call_error(proxy_result: &Value) -> Option<String> {
+    if !proxy_result
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let text = proxy_result
+        .get("content")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.get("text"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("AgentPMT tool call failed");
+    if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+        if let Some(msg) = parsed.get("message").and_then(|v| v.as_str()) {
+            return Some(msg.to_string());
+        }
+    }
+    Some(text.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +520,7 @@ mod tests {
             enabled: true,
             budget_tag: Some("test-project".to_string()),
             mcp_endpoint: None,
+            auth_token: None,
             updated_at: now_secs(),
         };
         save_config(&path, &config).expect("save config");
@@ -302,6 +554,7 @@ mod tests {
         assert!(loaded.enabled);
         assert!(loaded.budget_tag.is_none());
         assert!(loaded.mcp_endpoint.is_none());
+        assert!(loaded.auth_token.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -370,5 +623,53 @@ mod tests {
         assert!(!catalog.has_tool("x402_pay"));
         assert!(!catalog.has_tool("x402_verify"));
         assert!(catalog.refreshed_at.is_some());
+    }
+
+    #[test]
+    fn resolved_endpoint_prefers_config_then_env_then_default() {
+        let mut cfg = AgentPmtConfig::default();
+        std::env::remove_var("AGENTPMT_MCP_ENDPOINT");
+        assert_eq!(
+            resolved_mcp_endpoint(&cfg),
+            "https://testnet.api.agentpmt.com/mcp"
+        );
+        std::env::set_var("AGENTPMT_MCP_ENDPOINT", "https://env.example/mcp");
+        assert_eq!(resolved_mcp_endpoint(&cfg), "https://env.example/mcp");
+        cfg.mcp_endpoint = Some("https://cfg.example/mcp".to_string());
+        assert_eq!(resolved_mcp_endpoint(&cfg), "https://cfg.example/mcp");
+        std::env::remove_var("AGENTPMT_MCP_ENDPOINT");
+    }
+
+    #[test]
+    fn parse_remote_catalog_strips_agentpmt_prefix() {
+        let result = json!({
+            "tools": [
+                {"name": "agentpmt/gmail_send", "description": "Send email", "category": "email"},
+                {"name": "stripe_charge", "description": "Charge customer", "annotations": {"category": "payments"}}
+            ]
+        });
+        let catalog = parse_remote_catalog(&result).expect("parse catalog");
+        assert_eq!(catalog.tools.len(), 2);
+        assert!(catalog.has_tool("gmail_send"));
+        assert!(catalog.has_tool("stripe_charge"));
+        assert_eq!(catalog.tools[1].category.as_deref(), Some("payments"));
+    }
+
+    #[test]
+    fn extract_tool_call_error_parses_json_message() {
+        let msg = extract_tool_call_error(&json!({
+            "isError": true,
+            "content": [{"type":"text","text":"{\"status\":\"error\",\"message\":\"denied\"}"}]
+        }))
+        .expect("error message");
+        assert_eq!(msg, "denied");
+    }
+
+    #[test]
+    fn call_tool_stub_mode_returns_success_payload() {
+        std::env::set_var("AGENTHALO_AGENTPMT_STUB", "1");
+        let result = call_tool("gmail_send", json!({"to":"a@example.com"})).expect("stub call");
+        assert_eq!(result["isError"], false);
+        std::env::remove_var("AGENTHALO_AGENTPMT_STUB");
     }
 }

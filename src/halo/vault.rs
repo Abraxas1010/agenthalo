@@ -280,6 +280,7 @@ pub fn provider_default_env_var(provider: &str) -> String {
         "openai" => "OPENAI_API_KEY".to_string(),
         "google" => "GOOGLE_API_KEY".to_string(),
         "openrouter" => "OPENROUTER_API_KEY".to_string(),
+        "agentpmt" => "AGENTPMT_API_KEY".to_string(),
         "pinata" => "PINATA_JWT".to_string(),
         "openclaw" => "OPENAI_API_KEY".to_string(),
         "custom_1" => "CUSTOM_1_API_KEY".to_string(),
@@ -297,6 +298,7 @@ fn known_providers() -> Vec<&'static str> {
         "openai",
         "google",
         "openrouter",
+        "agentpmt",
         "pinata",
         "openclaw",
         "custom_1",
@@ -460,5 +462,11 @@ mod tests {
         let _ = std::fs::remove_file(wallet_a);
         let _ = std::fs::remove_file(wallet_b);
         let _ = std::fs::remove_file(vault_path);
+    }
+
+    #[test]
+    fn agentpmt_provider_is_known_and_has_default_env_var() {
+        assert_eq!(provider_default_env_var("agentpmt"), "AGENTPMT_API_KEY");
+        assert!(known_providers().contains(&"agentpmt"));
     }
 }

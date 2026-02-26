@@ -77,6 +77,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/config", get(api_config))
         .route("/config/wrap", post(api_config_wrap))
         .route("/config/x402", post(api_config_x402))
+        .route("/agentpmt/tools", get(api_agentpmt_tools))
+        .route("/agentpmt/refresh", post(api_agentpmt_refresh))
         .route("/vault/keys", get(api_vault_keys))
         .route(
             "/vault/keys/{provider}",
@@ -1141,6 +1143,11 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let creds_path = &state.credentials_path;
     let has_auth = is_authenticated(creds_path) || resolve_api_key(creds_path).is_some();
     let pmt_cfg = agentpmt::load_or_default();
+    let pmt_tool_count = if pmt_cfg.enabled {
+        agentpmt::proxied_tools_for_listing().len()
+    } else {
+        0
+    };
     let addons_cfg = addons::load_or_default();
     let x402_cfg = x402::load_x402_config();
     let onchain_cfg = load_onchain_config_or_default();
@@ -1171,6 +1178,9 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         "agentpmt": {
             "enabled": pmt_cfg.enabled,
             "budget_tag": pmt_cfg.budget_tag,
+            "endpoint": agentpmt::resolved_mcp_endpoint(&pmt_cfg),
+            "auth_configured": agentpmt::has_bearer_token(),
+            "tool_count": pmt_tool_count,
         },
         "onchain": {
             "rpc_url": onchain_cfg.rpc_url,
@@ -1192,6 +1202,76 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "db": state.db_path.to_string_lossy(),
             "credentials": state.credentials_path.to_string_lossy(),
         },
+    })))
+}
+
+async fn api_agentpmt_tools(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let pmt_cfg = agentpmt::load_or_default();
+    let mut source = "cache".to_string();
+    let mut refresh_error: Option<String> = None;
+    let mut catalog = agentpmt::load_tool_catalog();
+
+    if pmt_cfg.enabled && catalog.tools.is_empty() {
+        match agentpmt::refresh_tool_catalog() {
+            Ok(fresh) => {
+                source = "live".to_string();
+                catalog = fresh;
+            }
+            Err(e) => {
+                source = "cache".to_string();
+                refresh_error = Some(e);
+            }
+        }
+    }
+
+    let tools: Vec<Value> = catalog
+        .tools
+        .iter()
+        .map(|t| {
+            json!({
+                "name": format!("agentpmt/{}", t.name),
+                "description": t.description,
+                "category": t.category,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "enabled": pmt_cfg.enabled,
+        "endpoint": agentpmt::resolved_mcp_endpoint(&pmt_cfg),
+        "auth_configured": agentpmt::has_bearer_token(),
+        "count": tools.len(),
+        "refreshed_at": catalog.refreshed_at,
+        "source": source,
+        "refresh_error": refresh_error,
+        "tools": tools,
+    })))
+}
+
+async fn api_agentpmt_refresh(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let catalog = agentpmt::refresh_tool_catalog().map_err(|e| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("agentpmt refresh failed: {e}"),
+        )
+    })?;
+    let tools: Vec<Value> = catalog
+        .tools
+        .iter()
+        .map(|t| {
+            json!({
+                "name": format!("agentpmt/{}", t.name),
+                "description": t.description,
+                "category": t.category,
+            })
+        })
+        .collect();
+    Ok(Json(json!({
+        "ok": true,
+        "count": tools.len(),
+        "refreshed_at": catalog.refreshed_at,
+        "tools": tools,
     })))
 }
 
@@ -1699,19 +1779,22 @@ async fn api_admin_fund_balance(
     if !validation.valid {
         return Err(api_err(
             StatusCode::BAD_REQUEST,
-            &validation.error.unwrap_or_else(|| "invalid funding source".to_string()),
+            &validation
+                .error
+                .unwrap_or_else(|| "invalid funding source".to_string()),
         ));
     }
 
     // Determine amount.
     let amount = match &req.source {
-        funding::FundingSource::OperatorCredit { .. } => {
-            req.amount_usd.unwrap_or(0.0).max(0.0)
-        }
+        funding::FundingSource::OperatorCredit { .. } => req.amount_usd.unwrap_or(0.0).max(0.0),
         _ => validation.amount_usd,
     };
     if amount <= 0.0 {
-        return Err(api_err(StatusCode::BAD_REQUEST, "funding amount must be positive"));
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "funding amount must be positive",
+        ));
     }
 
     // Check customer exists.
@@ -2786,6 +2869,11 @@ async fn api_capabilities(AxumState(state): AxumState<DashboardState>) -> ApiRes
     let creds_path = &state.credentials_path;
     let has_auth = is_authenticated(creds_path) || resolve_api_key(creds_path).is_some();
     let pmt_cfg = agentpmt::load_or_default();
+    let proxied_mcp_tools = if pmt_cfg.enabled {
+        agentpmt::proxied_tools_for_listing().len()
+    } else {
+        0
+    };
     let x402_cfg = x402::load_x402_config();
     let addons_cfg = addons::load_or_default();
 
@@ -2798,11 +2886,15 @@ async fn api_capabilities(AxumState(state): AxumState<DashboardState>) -> ApiRes
         "trust_query": true,
         "x402_payments": x402_cfg.enabled,
         "tool_proxy": pmt_cfg.enabled,
+        "tool_proxy_endpoint": agentpmt::resolved_mcp_endpoint(&pmt_cfg),
+        "tool_proxy_auth_configured": agentpmt::has_bearer_token(),
         "addons": {
             "p2pclaw": addons_cfg.p2pclaw_enabled,
             "agentpmt_workflows": addons_cfg.agentpmt_workflows_enabled,
         },
-        "mcp_tools": 18,
+        "mcp_tools": 18 + proxied_mcp_tools,
+        "mcp_native_tools": 18,
+        "mcp_proxied_tools": proxied_mcp_tools,
         "dashboard": true,
     })))
 }

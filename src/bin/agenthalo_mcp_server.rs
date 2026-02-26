@@ -435,38 +435,50 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
 }
 
 /// Proxy a tool call to AgentPMT and record it in the trace.
-///
-/// AgentPMT tool proxy forwarding is not yet implemented. This
-/// returns an honest error so agents know the call was NOT executed.
-fn tool_agentpmt_proxy(tool_name: &str, _arguments: Value) -> Result<Value, String> {
+fn tool_agentpmt_proxy(tool_name: &str, arguments: Value) -> Result<Value, String> {
     if !agentpmt::is_tool_proxy_enabled() {
         return Err(
             "AgentPMT tool proxy is not enabled. Enable it via the halo_capabilities tool or CLI."
                 .to_string(),
         );
     }
+
     let catalog = agentpmt::load_tool_catalog();
-    if !catalog.has_tool(tool_name) {
+    if !catalog.tools.is_empty() && !catalog.has_tool(tool_name) {
         return Err(format!(
-            "unknown AgentPMT tool: {tool_name}. Available tools are listed in the tool catalog."
+            "unknown AgentPMT tool: {tool_name}. Refresh catalog via CLI: agenthalo config tool-proxy refresh"
         ));
     }
 
-    // Record the attempted call for observability.
-    let _ = record_paid_operation_for_halo(
-        &format!("agentpmt/{tool_name}"),
-        0,
-        None,
-        None,
-        false,
-        Some("proxy_not_implemented".to_string()),
-    );
+    let proxied_tool = format!("agentpmt/{tool_name}");
+    let proxied = match agentpmt::call_tool(tool_name, arguments) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = record_paid_operation_for_halo(
+                &proxied_tool,
+                0,
+                None,
+                None,
+                false,
+                Some(e.clone()),
+            );
+            return Err(format!("AgentPMT proxy failed: {e}"));
+        }
+    };
 
-    Err(format!(
-        "AgentPMT tool proxy is not yet implemented: '{}' was recognized but the call was NOT \
-         executed. Direct AgentPMT MCP forwarding will be available in a future release.",
-        tool_name
-    ))
+    if let Some(msg) = agentpmt::extract_tool_call_error(&proxied) {
+        let _ =
+            record_paid_operation_for_halo(&proxied_tool, 0, None, None, false, Some(msg.clone()));
+        return Err(format!("AgentPMT tool '{tool_name}' failed: {msg}"));
+    }
+
+    record_paid_operation_for_halo(&proxied_tool, 0, None, None, true, None)?;
+    Ok(json!({
+        "status": "ok",
+        "proxied": true,
+        "tool": proxied_tool,
+        "result": proxied
+    }))
 }
 
 fn tool_attest(arguments: Value) -> Result<Value, String> {
@@ -1139,6 +1151,8 @@ fn tool_halo_status(_arguments: Value) -> Result<Value, String> {
     Ok(json!({
         "authenticated": has_auth,
         "tool_proxy_enabled": pmt_cfg.enabled,
+        "tool_proxy_endpoint": agentpmt::resolved_mcp_endpoint(&pmt_cfg),
+        "tool_proxy_auth_configured": agentpmt::has_bearer_token(),
         "session_count": session_count,
         "total_cost_usd": total_cost,
         "total_tokens": total_tokens,
@@ -1247,6 +1261,8 @@ fn tool_halo_capabilities(_arguments: Value) -> Result<Value, String> {
             },
             "tool_proxy": {
                 "enabled": pmt_cfg.enabled,
+                "endpoint": agentpmt::resolved_mcp_endpoint(&pmt_cfg),
+                "auth_configured": agentpmt::has_bearer_token(),
                 "budget_tag": pmt_cfg.budget_tag,
                 "note": "All third-party tools are accessed exclusively through AgentPMT. Tools, workflows, skills, and agent configurations are only available via AgentPMT MCP.",
             },

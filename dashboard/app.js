@@ -5,20 +5,53 @@ const $ = (sel, ctx) => (ctx || document).querySelector(sel);
 const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 const content = $('#content');
 const PROVIDER_INFO = {
+  openrouter: {
+    name: 'OpenRouter (Required)',
+    envVar: 'OPENROUTER_API_KEY',
+    keyUrl: 'https://openrouter.ai/settings/keys',
+    category: 'llm',
+    required: true,
+    description: 'Sole LLM inference upstream — all model requests route through OpenRouter.',
+  },
   anthropic: {
-    name: 'Anthropic',
+    name: 'Anthropic (Direct)',
     envVar: 'ANTHROPIC_API_KEY',
     keyUrl: 'https://console.anthropic.com/settings/keys',
+    category: 'llm',
+    required: false,
+    description: 'Optional direct access (operator only). Customer traffic uses OpenRouter.',
   },
   openai: {
-    name: 'OpenAI',
+    name: 'OpenAI (Direct)',
     envVar: 'OPENAI_API_KEY',
     keyUrl: 'https://platform.openai.com/api-keys',
+    category: 'llm',
+    required: false,
+    description: 'Optional direct access (operator only). Customer traffic uses OpenRouter.',
   },
   google: {
-    name: 'Google AI',
+    name: 'Google AI (Direct)',
     envVar: 'GOOGLE_API_KEY',
     keyUrl: 'https://aistudio.google.com/app/apikey',
+    category: 'llm',
+    required: false,
+    description: 'Optional direct access (operator only). Customer traffic uses OpenRouter.',
+  },
+  pinata: {
+    name: 'Pinata (IPFS Storage)',
+    envVar: 'PINATA_JWT',
+    keyUrl: 'https://app.pinata.cloud/developers/api-keys',
+    category: 'storage',
+    required: false,
+    description: 'Immutable 3rd-party storage. Customer IPFS pins route through your Pinata account.',
+  },
+  agentpmt: {
+    name: 'AgentPMT (Tool Proxy)',
+    envVar: 'AGENTPMT_API_KEY',
+    keyUrl: 'https://www.agentpmt.com',
+    category: 'tooling',
+    required: false,
+    description: 'Third-party MCP tool routing. Required for live agentpmt/* tool execution.',
   },
 };
 
@@ -682,6 +715,13 @@ async function renderConfig() {
       vaultKeysAuthRequired = Number(e && e.status) === 401;
     }
     const vaultKeys = vaultResp.keys || [];
+    let pmtToolsResp = { count: 0, tools: [] };
+    let pmtToolsError = '';
+    try {
+      pmtToolsResp = await api('/agentpmt/tools');
+    } catch (e) {
+      pmtToolsError = String(e && e.message || 'failed to load AgentPMT tool catalog');
+    }
 
     content.innerHTML = `
       <div class="page-title">Configuration</div>
@@ -757,6 +797,41 @@ async function renderConfig() {
             <div class="config-desc">${esc(cfg.agentpmt.budget_tag || '(none)')}</div>
           </div>
         </div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">MCP Endpoint</div>
+            <div class="config-desc" style="font-size:10px">${esc(cfg.agentpmt.endpoint || '(default)')}</div>
+          </div>
+        </div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">Credential Status</div>
+            <div class="config-desc">${cfg.agentpmt.auth_configured ? 'Configured' : 'Missing'}</div>
+          </div>
+          <span class="badge ${cfg.agentpmt.auth_configured ? 'badge-ok' : 'badge-warn'}">
+            ${cfg.agentpmt.auth_configured ? 'Ready' : 'Needs Key'}</span>
+        </div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">Tool Catalog</div>
+            <div class="config-desc">${Number(pmtToolsResp.count || 0)} tools discovered</div>
+            ${pmtToolsError ? `<div class="config-desc" style="color:var(--danger);font-size:10px">Catalog error: ${esc(pmtToolsError)}</div>` : ''}
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="btn btn-sm" onclick="refreshAgentPmtCatalog()">Refresh</button>
+          </div>
+        </div>
+        ${Array.isArray(pmtToolsResp.tools) && pmtToolsResp.tools.length ? `
+          <div class="config-row">
+            <div>
+              <div class="config-label">Tools</div>
+              <div class="config-desc" style="font-size:10px">
+                ${pmtToolsResp.tools.slice(0, 8).map(t => esc(String(t.name || ''))).join(', ')}
+                ${pmtToolsResp.tools.length > 8 ? ` ... (+${pmtToolsResp.tools.length - 8} more)` : ''}
+              </div>
+            </div>
+          </div>
+        ` : ''}
       </div>
 
       <div class="section-header">On-Chain</div>
@@ -795,7 +870,7 @@ async function renderConfig() {
         </div>
       </div>
 
-      <div class="section-header">API Keys</div>
+      <div class="section-header">API Keys &amp; Services</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         ${cfg.vault?.available ? `
           ${vaultKeysAuthRequired ? `
@@ -804,14 +879,30 @@ async function renderConfig() {
                 <div class="config-label">Authentication required</div>
                 <div class="config-desc">Unlock sensitive controls first, then add provider API keys.</div>
               </div>
-              <button class="btn btn-sm btn-primary" onclick="location.hash='#/setup'">Open Quick Setup</button>
+              <button class="btn btn-sm btn-primary" onclick="location.hash='#/setup'">Open Setup</button>
             </div>
           ` : ''}
-          ${vaultKeys.map(k => `
+          ${vaultKeys.map(k => {
+            const pi = PROVIDER_INFO[String(k.provider || '').toLowerCase()] || {};
+            const isRequired = pi.required;
+            const desc = pi.description || '';
+            const catLabel = pi.category === 'storage'
+              ? 'Storage'
+              : pi.category === 'llm'
+                ? 'LLM'
+                : pi.category === 'tooling'
+                  ? 'Tooling'
+                  : '';
+            return `
             <div class="config-row">
               <div>
-                <div class="config-label">${esc(k.provider)}</div>
+                <div class="config-label">
+                  ${esc(pi.name || k.provider)}
+                  ${isRequired ? '<span class="badge badge-warn" style="font-size:9px;margin-left:6px">REQUIRED</span>' : ''}
+                  ${catLabel ? '<span class="badge badge-info" style="font-size:9px;margin-left:4px">' + esc(catLabel) + '</span>' : ''}
+                </div>
                 <div class="config-desc">${esc(k.env_var)} · ${k.configured ? 'Configured' : 'Missing'}${k.tested ? ' · Tested' : ''}</div>
+                ${desc ? '<div class="config-desc" style="font-size:10px;margin-top:2px">' + esc(desc) + '</div>' : ''}
               </div>
               <div style="display:flex;gap:6px;align-items:center">
                 <button class="btn btn-sm" onclick="vaultSetKey('${esc(k.provider)}','${esc(k.env_var)}')">Set Key</button>
@@ -819,13 +910,15 @@ async function renderConfig() {
                 <button class="btn btn-sm" onclick="vaultRemoveKey('${esc(k.provider)}')">Remove</button>
               </div>
             </div>
-          `).join('')}
+            `;
+          }).join('')}
         ` : `
           <div class="config-row">
             <div>
               <div class="config-label">Vault unavailable</div>
               <div class="config-desc">Create/import a PQ wallet to enable encrypted API key storage.</div>
             </div>
+            <button class="btn btn-sm btn-primary" onclick="location.hash='#/setup'">Open Setup</button>
           </div>
         `}
       </div>
@@ -851,90 +944,257 @@ async function renderConfig() {
   }
 }
 
+window.refreshAgentPmtCatalog = async function refreshAgentPmtCatalog() {
+  try {
+    const resp = await apiPost('/agentpmt/refresh', {});
+    alert(`AgentPMT catalog refreshed (${Number(resp.count || 0)} tools).`);
+    renderConfig();
+  } catch (e) {
+    alert(`AgentPMT refresh failed: ${String(e && e.message || e)}`);
+  }
+};
+
 function providerDefaultEnv(provider) {
   const key = String(provider || '').toLowerCase();
   return (PROVIDER_INFO[key] && PROVIDER_INFO[key].envVar) || `${key.toUpperCase()}_API_KEY`;
 }
 
-function renderSetup() {
+async function renderSetup() {
   const ctx = consumeSetupContext();
   const reason = String(ctx.reason || '').toLowerCase();
   const missingProviders = parseProviderList(ctx.providers);
   const fromPage = String(ctx.from || 'cockpit');
-  const title = reason === 'provider_keys_missing'
-    ? 'Provider API Keys Required'
-    : 'Authentication Required';
-  const subtitle = reason === 'provider_keys_missing'
-    ? 'Add provider keys, then launch from Cockpit/Deploy again.'
-    : 'Unlock sensitive dashboard actions, then continue.';
 
-  const providerRows = (missingProviders.length > 0 ? missingProviders : Object.keys(PROVIDER_INFO)).map((provider) => {
-    const info = PROVIDER_INFO[provider] || { name: provider, envVar: providerDefaultEnv(provider), keyUrl: '#' };
+  // Fetch live vault status
+  let vaultKeys = [];
+  let vaultAvailable = false;
+  try {
+    const vr = await api('/vault/keys');
+    vaultKeys = vr.keys || [];
+    vaultAvailable = true;
+  } catch (_e) { /* vault locked or unavailable */ }
+
+  // Fetch config for auth/wallet status
+  let cfg = null;
+  try { cfg = await api('/config'); } catch (_e) {}
+  const isAuthenticated = cfg && cfg.authentication && cfg.authentication.authenticated;
+  const hasWallet = cfg && cfg.pq_wallet;
+
+  // Build status lookup from vault keys
+  const keyStatus = {};
+  vaultKeys.forEach(k => { keyStatus[String(k.provider || '').toLowerCase()] = k; });
+
+  function providerStatus(provider) {
+    const v = keyStatus[provider];
+    if (!v) return { configured: false, tested: false };
+    return { configured: !!v.configured, tested: !!v.tested };
+  }
+
+  function statusBadge(provider) {
+    const s = providerStatus(provider);
+    if (s.tested) return '<span class="badge badge-ok">Verified</span>';
+    if (s.configured) return '<span class="badge badge-warn">Configured (untested)</span>';
+    return '<span class="badge badge-muted">Not configured</span>';
+  }
+
+  function providerCard(provider) {
+    const info = PROVIDER_INFO[provider] || { name: provider, envVar: providerDefaultEnv(provider), keyUrl: '#', description: '' };
+    const s = providerStatus(provider);
     const docsLink = info.keyUrl && info.keyUrl !== '#'
       ? `<a class="btn btn-sm" href="${esc(info.keyUrl)}" target="_blank" rel="noopener noreferrer">Get Key</a>`
       : '';
     return `
-      <div class="setup-provider-row">
-        <div>
-          <div class="setup-provider-name">${esc(info.name)}</div>
-          <div class="setup-provider-env">${esc(info.envVar)}</div>
+      <div class="setup-provider-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+        <div style="flex:1">
+          <div class="setup-provider-name" style="font-size:13px">${esc(info.name)}</div>
+          <div class="setup-provider-env" style="font-size:10px;color:var(--text-dim);margin-top:2px">${esc(info.envVar)}</div>
+          ${info.description ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px">${esc(info.description)}</div>` : ''}
         </div>
-        <div class="setup-provider-actions">
+        <div class="setup-provider-actions" style="display:flex;gap:6px;align-items:center">
+          ${statusBadge(provider)}
           ${docsLink}
-          <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(provider)}">Set in Config</button>
+          <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(provider)}">Set Key</button>
+          ${s.configured ? `<button class="btn btn-sm setup-provider-test-btn" data-provider="${esc(provider)}">Test</button>` : ''}
         </div>
       </div>
     `;
-  }).join('');
+  }
+
+  // Split providers into required and optional
+  const requiredProviders = Object.keys(PROVIDER_INFO).filter(p => PROVIDER_INFO[p].required);
+  const optionalLLM = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === 'llm');
+  const optionalStorage = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === 'storage');
+  const optionalTooling = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === 'tooling');
+
+  // Step completion checks
+  const step1Done = isAuthenticated || hasWallet;
+  const step2Done = requiredProviders.every(p => providerStatus(p).configured);
+  const allOptionalConfigured = [...optionalStorage].every(p => providerStatus(p).configured);
+
+  const bannerTitle = reason === 'provider_keys_missing'
+    ? 'Provider API Keys Required'
+    : (step1Done && step2Done) ? 'Setup Complete' : 'Service Configuration';
+  const bannerSub = reason === 'provider_keys_missing'
+    ? 'Configure the required OpenRouter key to enable LLM inference, then return to ' + fromPage + '.'
+    : (step1Done && step2Done) ? 'All required services are configured. Optional services below.'
+    : 'Configure your operator credentials and upstream services.';
 
   content.innerHTML = `
     <div class="page-header">
-      <h1>Quick Setup</h1>
-      <p class="subtitle">Fast path to unblock Cockpit and Deploy.</p>
+      <h1>Setup</h1>
+      <p class="subtitle">Configure upstream services and operator credentials.</p>
     </div>
 
     <div class="setup-banner">
-      <div class="setup-banner-title">${esc(title)}</div>
-      <div class="setup-banner-sub">${esc(subtitle)}</div>
-      <div class="setup-banner-from">Triggered from: ${esc(fromPage)}</div>
+      <div class="setup-banner-title">${esc(bannerTitle)}</div>
+      <div class="setup-banner-sub">${esc(bannerSub)}</div>
     </div>
 
     <div class="setup-grid">
+
+      <!-- Step 1: Authentication & Wallet -->
       <div class="setup-card">
-        <h3>1. Unlock Dashboard Controls</h3>
-        <p>Run one of these commands in a terminal, then refresh this page.</p>
-        <div class="setup-cmd">
-          <code>agenthalo login</code>
-          <button class="btn btn-sm" onclick="copySetupText('agenthalo login')">Copy</button>
+        <h3>${step1Done ? '&#10003;' : '1.'} Operator Authentication</h3>
+        <p>Unlock dashboard controls and create the encrypted vault for API key storage.</p>
+        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin:8px 0">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-size:12px">Dashboard auth</span>
+            ${isAuthenticated
+              ? '<span class="badge badge-ok">Authenticated</span>'
+              : '<span class="badge badge-muted">Not authenticated</span>'}
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:12px">PQ wallet (vault master key)</span>
+            ${hasWallet
+              ? '<span class="badge badge-ok">Present</span>'
+              : '<span class="badge badge-muted">Not created</span>'}
+          </div>
         </div>
-        <div class="setup-cmd">
-          <code>export AGENTHALO_API_KEY=your-agenthalo-key</code>
-          <button class="btn btn-sm" onclick="copySetupText('export AGENTHALO_API_KEY=your-agenthalo-key')">Copy</button>
-        </div>
-        <div class="setup-cmd">
-          <code>agenthalo setup</code>
-          <button class="btn btn-sm" onclick="copySetupText('agenthalo setup')">Copy</button>
+        ${!step1Done ? `
+          <div class="setup-cmd">
+            <code>agenthalo keygen --pq</code>
+            <button class="btn btn-sm" onclick="copySetupText('agenthalo keygen --pq')">Copy</button>
+          </div>
+          <div class="setup-cmd">
+            <code>agenthalo login</code>
+            <button class="btn btn-sm" onclick="copySetupText('agenthalo login')">Copy</button>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Step 2: Required Services (OpenRouter) -->
+      <div class="setup-card">
+        <h3>${step2Done ? '&#10003;' : '2.'} Required: LLM Inference (OpenRouter)</h3>
+        <p style="font-size:12px;color:var(--amber)">
+          All LLM inference routes exclusively through your OpenRouter account.
+          Customer requests are proxied with configurable markup pricing.
+        </p>
+        ${requiredProviders.map(p => providerCard(p)).join('')}
+        ${step2Done ? `
+          <div style="margin-top:10px;padding:8px 12px;border:1px solid var(--green);border-radius:var(--radius);font-size:11px;color:var(--green)">
+            &#10003; OpenRouter is configured. LLM proxy is operational.
+            <a href="#/config" style="color:var(--accent);margin-left:8px">Adjust markup in Configuration</a>
+          </div>
+        ` : `
+          <div style="margin-top:10px;padding:8px 12px;border:1px solid var(--amber);border-radius:var(--radius);font-size:11px;color:var(--amber)">
+            &#9888; OpenRouter key required before customers can use LLM inference.
+          </div>
+        `}
+      </div>
+
+      <!-- Step 3: Optional — Immutable 3rd-Party Storage -->
+      <div class="setup-card">
+        <h3>3. Optional: Immutable 3rd-Party Storage</h3>
+        <p style="font-size:12px;color:var(--text-dim)">
+          IPFS-based immutable storage for agent traces, attestations, and customer data.
+          Customer pins route through your Pinata account with per-pin metered billing.
+        </p>
+        ${optionalStorage.map(p => providerCard(p)).join('')}
+        <div style="margin-top:8px;font-size:10px;color:var(--text-dim)">
+          Pricing: per-pin fee + per-MB/month storage, with operator markup applied.
         </div>
       </div>
 
+      <!-- Step 4: Optional — Direct LLM Keys (operator only) -->
       <div class="setup-card">
-        <h3>2. Add Provider API Keys</h3>
-        <p>Open each provider, create a key, then store it in Configuration.</p>
-        ${providerRows}
-        <div class="setup-actions">
-          <a class="btn btn-primary" href="#/config">Open Configuration</a>
-          <a class="btn" href="#/deploy">Go to Deploy</a>
-          <a class="btn" href="#/cockpit">Back to Cockpit</a>
+        <h3>4. Optional: Direct LLM Keys (Operator Only)</h3>
+        <p style="font-size:12px;color:var(--text-dim)">
+          These are for operator-side diagnostics and fallback only.
+          Customer traffic always routes through OpenRouter — never directly to providers.
+        </p>
+        ${optionalLLM.map(p => providerCard(p)).join('')}
+      </div>
+
+      <!-- Step 5: Optional — Tool Integrations -->
+      <div class="setup-card">
+        <h3>5. Optional: Tool Integrations</h3>
+        <p style="font-size:12px;color:var(--text-dim)">
+          Configure external MCP/tooling providers used by the AgentPMT proxy path.
+        </p>
+        ${optionalTooling.map(p => providerCard(p)).join('')}
+      </div>
+
+      <!-- Funding & Monetization Info -->
+      <div class="setup-card" style="border-color:var(--accent)">
+        <h3>Funding &amp; Monetization</h3>
+        <p style="font-size:12px;color:var(--text-dim)">
+          All customer balance top-ups flow through two channels only:
+        </p>
+        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin:8px 0">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <span class="badge badge-ok" style="font-size:10px">PRIMARY</span>
+            <div>
+              <div style="font-size:12px;font-weight:bold;color:var(--amber)">AgentPMT.com Token Purchase</div>
+              <div style="font-size:10px;color:var(--text-dim)">Customers buy tokens at AgentPMT.com. Signed receipts verified via HMAC-SHA256.</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="badge badge-info" style="font-size:10px">ON-CHAIN</span>
+            <div>
+              <div style="font-size:12px;font-weight:bold;color:var(--amber)">x402direct (USDC on Base L2)</div>
+              <div style="font-size:10px;color:var(--text-dim)">Direct USDC stablecoin payment. Transaction hash verified on-chain.</div>
+            </div>
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--text-dim);margin-top:4px">
+          No other funding channel is accepted. All tools, workflows, skills, and agent configurations
+          are accessible exclusively through AgentPMT MCP. This ensures all revenue flows through
+          monetizable systems.
         </div>
       </div>
+
+    </div>
+
+    <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
+      <a class="btn btn-primary" href="#/config">Open Configuration</a>
+      <a class="btn" href="#/deploy">Go to Deploy</a>
+      <a class="btn" href="#/cockpit">Back to Cockpit</a>
     </div>
   `;
 
+  // Wire up "Set Key" buttons
   content.querySelectorAll('.setup-provider-config-btn[data-provider]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      window.openSetupProviderConfig(btn.dataset.provider || '');
+      const provider = btn.dataset.provider || '';
+      const info = PROVIDER_INFO[provider] || {};
+      openVaultModal(provider, info.envVar || providerDefaultEnv(provider));
     });
   });
+
+  // Wire up "Test" buttons
+  content.querySelectorAll('.setup-provider-test-btn[data-provider]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      window.vaultTestKey(btn.dataset.provider || '');
+    });
+  });
+
+  // Auto-open provider modal if redirected from config
+  const autoOpenProvider = localStorage.getItem('halo_setup_open_provider');
+  if (autoOpenProvider) {
+    localStorage.removeItem('halo_setup_open_provider');
+    const info = PROVIDER_INFO[autoOpenProvider];
+    if (info) openVaultModal(autoOpenProvider, info.envVar || providerDefaultEnv(autoOpenProvider));
+  }
 }
 
 window.toggleWrap = async function(agent, enable) {

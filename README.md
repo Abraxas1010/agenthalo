@@ -275,6 +275,12 @@ If these problems matter to you, [open an issue](https://github.com/Abraxas1010/
 # Enable tool proxy
 agenthalo config tool-proxy enable
 
+# Set AgentPMT bearer token (or use AGENTPMT_BEARER_TOKEN env var)
+agenthalo config set-agentpmt-key <token>
+
+# Optional: set explicit AgentPMT MCP endpoint
+agenthalo config tool-proxy endpoint https://testnet.api.agentpmt.com/mcp
+
 # Refresh available tools from AgentPMT
 agenthalo config tool-proxy refresh
 

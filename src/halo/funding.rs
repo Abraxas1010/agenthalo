@@ -75,10 +75,7 @@ pub struct FundingValidation {
 /// This is called by the admin balance endpoint and by the AgentPMT webhook.
 /// It is the ONLY path to add funds.  Bypassing this function means the
 /// balance addition will not be recorded in the funding ledger.
-pub fn validate_funding_source(
-    source: &FundingSource,
-    _key_id: &str,
-) -> FundingValidation {
+pub fn validate_funding_source(source: &FundingSource, _key_id: &str) -> FundingValidation {
     match source {
         FundingSource::AgentpmtTokens {
             receipt_id,
@@ -218,19 +215,16 @@ pub struct FundingLedgerEntry {
 pub fn record_funding(entry: &FundingLedgerEntry) -> Result<(), String> {
     let path = crate::halo::config::halo_dir().join("funding_ledger.jsonl");
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create funding ledger dir: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create funding ledger dir: {e}"))?;
     }
-    let line = serde_json::to_string(entry)
-        .map_err(|e| format!("serialize funding entry: {e}"))?;
+    let line = serde_json::to_string(entry).map_err(|e| format!("serialize funding entry: {e}"))?;
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .map_err(|e| format!("open funding ledger {}: {e}", path.display()))?;
-    writeln!(file, "{line}")
-        .map_err(|e| format!("write funding ledger: {e}"))
+    writeln!(file, "{line}").map_err(|e| format!("write funding ledger: {e}"))
 }
 
 fn now_unix() -> u64 {
@@ -302,9 +296,8 @@ mod tests {
     #[test]
     fn x402_funding_valid() {
         let source = FundingSource::X402Direct {
-            transaction_hash:
-                "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
-                    .to_string(),
+            transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                .to_string(),
             amount_base_units: 10_000_000,
             network: "base".to_string(),
         };
@@ -327,9 +320,8 @@ mod tests {
     #[test]
     fn x402_funding_rejects_unknown_network() {
         let source = FundingSource::X402Direct {
-            transaction_hash:
-                "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
-                    .to_string(),
+            transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                .to_string(),
             amount_base_units: 1_000_000,
             network: "polygon".to_string(),
         };

@@ -909,11 +909,144 @@ async fn vault_set_list_delete_via_api() {
 #[tokio::test]
 async fn proxy_models_empty_without_vault() {
     let (state, db_path) = test_state("proxy_models");
+    let has_vault = state.vault.is_some();
     let (status, val) = api_get(state, "/proxy/v1/models").await;
     assert_eq!(status, StatusCode::OK, "models route should succeed: {val}");
     assert_eq!(val["object"], "list");
-    assert!(val["data"].as_array().expect("data array").is_empty());
+    let data = val["data"].as_array().expect("data array");
+    if has_vault {
+        // When a vault is configured (e.g. dev machine with OpenRouter key),
+        // models will be returned.  Just verify the structure.
+        assert!(!data.is_empty(), "vault present: should return models");
+    } else {
+        assert!(data.is_empty(), "no vault: data should be empty");
+    }
     let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn config_includes_agentpmt_endpoint_auth_and_tool_count() {
+    let (state, db_path) = test_state("cfg_agentpmt_fields");
+    let (status, val) = api_get(state, "/config").await;
+    assert_eq!(status, StatusCode::OK, "config route should succeed: {val}");
+
+    let pmt = &val["agentpmt"];
+    assert!(
+        pmt.get("endpoint").and_then(|v| v.as_str()).is_some(),
+        "config.agentpmt.endpoint should be present: {val}"
+    );
+    assert!(
+        pmt.get("auth_configured")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "config.agentpmt.auth_configured should be present: {val}"
+    );
+    assert!(
+        pmt.get("tool_count").and_then(|v| v.as_u64()).is_some(),
+        "config.agentpmt.tool_count should be present: {val}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn capabilities_mcp_tool_counts_are_consistent() {
+    let (state, db_path) = test_state("caps_agentpmt_counts");
+    let (status, val) = api_get(state, "/capabilities").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "capabilities route should succeed: {val}"
+    );
+
+    let total = val["mcp_tools"].as_u64().expect("mcp_tools should be u64");
+    let native = val["mcp_native_tools"]
+        .as_u64()
+        .expect("mcp_native_tools should be u64");
+    let proxied = val["mcp_proxied_tools"]
+        .as_u64()
+        .expect("mcp_proxied_tools should be u64");
+    assert_eq!(native, 18, "native MCP tool count should stay 18");
+    assert_eq!(
+        total,
+        native + proxied,
+        "mcp_tools should equal native + proxied: {val}"
+    );
+    assert!(
+        val.get("tool_proxy_endpoint")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "tool_proxy_endpoint should be present: {val}"
+    );
+    assert!(
+        val.get("tool_proxy_auth_configured")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "tool_proxy_auth_configured should be present: {val}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn agentpmt_tools_endpoint_returns_catalog_shape() {
+    let (state, db_path) = test_state("agentpmt_tools_endpoint");
+    let (status, val) = api_get(state, "/agentpmt/tools").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "agentpmt tools route should succeed: {val}"
+    );
+
+    assert!(
+        val.get("enabled").and_then(|v| v.as_bool()).is_some(),
+        "enabled should be present: {val}"
+    );
+    assert!(
+        val.get("endpoint").and_then(|v| v.as_str()).is_some(),
+        "endpoint should be present: {val}"
+    );
+    assert!(
+        val.get("auth_configured")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "auth_configured should be present: {val}"
+    );
+    assert!(
+        val.get("count").and_then(|v| v.as_u64()).is_some(),
+        "count should be present: {val}"
+    );
+
+    let tools = val["tools"]
+        .as_array()
+        .expect("tools array should be present");
+    let count = val["count"].as_u64().expect("count should be numeric");
+    assert_eq!(count as usize, tools.len(), "count must match tools length");
+    for tool in tools {
+        let name = tool["name"].as_str().expect("tool name should be string");
+        assert!(
+            name.starts_with("agentpmt/"),
+            "proxied tool names should be prefixed: {name}"
+        );
+    }
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn agentpmt_refresh_requires_auth() {
+    let (state, db_path, creds_path) = test_state_unauth("agentpmt_refresh_auth");
+    let (status, val) = api_post(state, "/agentpmt/refresh", json!({})).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "refresh should require auth"
+    );
+    assert_eq!(val["code"], "auth_required");
+    assert_eq!(val["setup_route"], "#/setup");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
 }
 
 #[tokio::test]

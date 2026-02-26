@@ -583,6 +583,10 @@ agenthalo onchain verify <attestation-digest>
 agenthalo config tool-proxy enable [budget-tag]
 agenthalo config tool-proxy disable
 
+# Configure AgentPMT auth + endpoint
+agenthalo config set-agentpmt-key <token>
+agenthalo config tool-proxy endpoint https://testnet.api.agentpmt.com/mcp
+
 # Refresh tool catalog from AgentPMT
 agenthalo config tool-proxy refresh
 

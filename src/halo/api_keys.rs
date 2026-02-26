@@ -139,10 +139,7 @@ impl CustomerKeyStore {
     /// Get current balance for a customer.
     pub fn get_balance(&self, key_id: &str) -> f64 {
         let data = self.inner.lock().unwrap();
-        data.keys
-            .get(key_id)
-            .map(|k| k.balance_usd)
-            .unwrap_or(0.0)
+        data.keys.get(key_id).map(|k| k.balance_usd).unwrap_or(0.0)
     }
 
     /// Add funds to a customer's balance. Returns new balance.
