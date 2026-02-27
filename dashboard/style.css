@@ -56,6 +56,31 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ================================================================
+   BACKGROUND PATTERN — Subtle fractal army-green camo texture
+   ================================================================
+   Low-frequency feTurbulence (large organic blobs) with high octaves
+   (fractal flowery detail). Dark olive tint between --bg (#080c05)
+   and --border (#1a3312). Very low opacity — atmosphere, not noise.
+   Two layers: coarse blobs (0.008) + fine floral detail (0.03).
+   ================================================================ */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.35;
+  /* Coarse camo blobs — large, slow-rolling organic shapes */
+  background-image:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='c' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.008' numOctaves='5' seed='42' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.07' intercept='0.03'/%3E%3CfeFuncG type='linear' slope='0.12' intercept='0.04'/%3E%3CfeFuncB type='linear' slope='0.03' intercept='0.01'/%3E%3CfeFuncA type='linear' slope='0.8' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23c)'/%3E%3C/svg%3E"),
+    /* Fine fractal floral detail — smaller, more intricate */
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='f' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.03' numOctaves='6' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.05' intercept='0.02'/%3E%3CfeFuncG type='linear' slope='0.10' intercept='0.03'/%3E%3CfeFuncB type='linear' slope='0.02' intercept='0.01'/%3E%3CfeFuncA type='linear' slope='0.6' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E");
+  background-size: 512px 512px, 256px 256px;
+  background-repeat: repeat;
+}
+
 body { display: flex; }
 
 /* ================================================================
@@ -231,23 +256,22 @@ body.no-crt #crt-overlay { display: none; }
 .nav-link.active {
   color: var(--accent);
   background: var(--bg-hover);
-  border-left: 3px solid var(--accent);
+  border-left: 6px solid var(--accent);
   font-weight: 600;
   text-shadow: var(--glow-amber);
-  box-shadow: inset -1px 0 12px rgba(255, 106, 0, 0.04);
-  position: relative;
-}
-/* Rough border pseudo-element — distorts only the border, not text */
-.nav-link.active::after {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border: 2px solid rgba(255, 106, 0, 0.5);
-  border-left: 3px solid var(--accent);
-  border-radius: 0;
-  pointer-events: none;
   filter: url(#rough-border);
-  box-shadow: 0 0 6px rgba(255, 106, 0, 0.15);
+  /* Exponential diffusion glow radiating from the orange border:
+     each layer doubles in blur radius and halves in opacity */
+  box-shadow:
+    inset  2px 0  2px rgba(255, 106, 0, 0.40),
+    inset  4px 0  4px rgba(255, 106, 0, 0.25),
+    inset  8px 0  8px rgba(255, 106, 0, 0.14),
+    inset 16px 0 16px rgba(255, 106, 0, 0.07),
+    inset 32px 0 32px rgba(255, 106, 0, 0.03),
+    /* Outward glow on the left edge */
+    -2px 0  3px rgba(255, 106, 0, 0.30),
+    -4px 0  6px rgba(255, 106, 0, 0.15),
+    -8px 0 12px rgba(255, 106, 0, 0.06);
 }
 
 .nav-icon { font-size: 16px; width: 20px; text-align: center; line-height: 1; }
