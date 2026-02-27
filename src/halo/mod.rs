@@ -26,6 +26,7 @@ pub mod trust;
 pub mod util;
 pub mod vault;
 pub mod viewer;
+pub mod wdk_proxy;
 pub mod wrap;
 pub mod x402;
 

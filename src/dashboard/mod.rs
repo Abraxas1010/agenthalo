@@ -10,7 +10,7 @@ use axum::routing::get;
 use axum::Router;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 
 /// Shared state for all dashboard API handlers.
@@ -30,6 +30,8 @@ pub struct DashboardState {
     pub pty_manager: Arc<crate::cockpit::pty_manager::PtyManager>,
     /// Customer API key store for metered proxy.
     pub key_store: Arc<crate::halo::api_keys::CustomerKeyStore>,
+    /// WDK sidecar lifecycle + encrypted seed proxy.
+    pub wdk_manager: Arc<StdMutex<crate::halo::wdk_proxy::WdkManager>>,
     /// Proxy resale configuration (markup, rate limits).
     pub proxy_config: crate::halo::pricing::ProxyConfig,
     /// Pricing table for cost calculation.
@@ -95,6 +97,7 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         vault,
         pty_manager: Arc::new(crate::cockpit::pty_manager::PtyManager::new(10)),
         key_store,
+        wdk_manager: Arc::new(StdMutex::new(crate::halo::wdk_proxy::WdkManager::new())),
         proxy_config,
         pricing_table,
     }

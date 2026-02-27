@@ -1096,8 +1096,17 @@ async fn config_includes_setup_complete_fields() {
         "setup_complete.identity should be a boolean: {sc}"
     );
     assert!(
+        sc.get("wallet").and_then(|v| v.as_bool()).is_some(),
+        "setup_complete.wallet should be a boolean: {sc}"
+    );
+    assert!(
         sc.get("agentpmt").and_then(|v| v.as_bool()).is_some(),
         "setup_complete.agentpmt should be a boolean: {sc}"
+    );
+    assert_eq!(
+        sc.get("wallet").and_then(|v| v.as_bool()),
+        sc.get("agentpmt").and_then(|v| v.as_bool()),
+        "legacy setup_complete.agentpmt should mirror wallet completion: {sc}"
     );
     assert!(
         sc.get("llm").and_then(|v| v.as_bool()).is_some(),
@@ -1106,6 +1115,47 @@ async fn config_includes_setup_complete_fields() {
     assert!(
         sc.get("complete").and_then(|v| v.as_bool()).is_some(),
         "setup_complete.complete should be a boolean: {sc}"
+    );
+    let ws = val
+        .get("wallet_status")
+        .expect("wallet_status should be present");
+    assert!(
+        ws.get("agentpmt_connected")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "wallet_status.agentpmt_connected should be a boolean: {ws}"
+    );
+    assert!(
+        ws.get("agentpmt_auth_configured")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "wallet_status.agentpmt_auth_configured should be a boolean: {ws}"
+    );
+    assert!(
+        ws.get("anonymous_wallet_connected")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "wallet_status.anonymous_wallet_connected should be a boolean: {ws}"
+    );
+    assert!(
+        ws.get("wdk_available").and_then(|v| v.as_bool()).is_some(),
+        "wallet_status.wdk_available should be a boolean: {ws}"
+    );
+    assert!(
+        ws.get("wdk_wallet_exists")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "wallet_status.wdk_wallet_exists should be a boolean: {ws}"
+    );
+    assert!(
+        ws.get("wdk_unlocked").and_then(|v| v.as_bool()).is_some(),
+        "wallet_status.wdk_unlocked should be a boolean: {ws}"
+    );
+    assert!(
+        ws.get("wallet_complete")
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "wallet_status.wallet_complete should be a boolean: {ws}"
     );
 
     let _ = std::fs::remove_file(&db_path);

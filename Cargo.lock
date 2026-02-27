@@ -2335,6 +2335,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "futures-util",
+ "hex",
  "hkdf",
  "jsonwebtoken",
  "k256",

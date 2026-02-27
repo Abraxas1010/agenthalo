@@ -28,6 +28,9 @@
 # Internal ops accounting (not for public release)
 /Docs/ops/
 
+# Sidecar dependencies
+/wdk-sidecar/node_modules/
+
 # OS
 .DS_Store
 Thumbs.db

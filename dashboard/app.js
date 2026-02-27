@@ -71,11 +71,11 @@ async function fetchSetupState(force) {
   if (!force && _setupState && (now - _setupStateFetchedAt) < SETUP_CACHE_MS) return _setupState;
   try {
     const cfg = await api('/config');
-    _setupState = cfg.setup_complete || { identity: false, agentpmt: false, llm: false, complete: false };
+    _setupState = cfg.setup_complete || { identity: false, wallet: false, agentpmt: false, llm: false, complete: false };
     _setupStateFetchedAt = now;
   } catch (_e) {
     // Fail closed: keep users in setup if we cannot verify state.
-    _setupState = { identity: false, agentpmt: false, llm: false, complete: false };
+    _setupState = { identity: false, wallet: false, agentpmt: false, llm: false, complete: false };
     _setupStateFetchedAt = now;
   }
   updateNavLockState();
@@ -114,7 +114,8 @@ function updateNavLockState() {
     if (complete) {
       prog.style.display = 'none';
     } else {
-      const steps = [_setupState.identity, _setupState.agentpmt, _setupState.llm];
+      const walletDone = (_setupState.wallet !== undefined) ? _setupState.wallet : _setupState.agentpmt;
+      const steps = [_setupState.identity, walletDone, _setupState.llm];
       const done = steps.filter(Boolean).length;
       prog.style.display = 'block';
       prog.innerHTML = `Setup: ${done}/${steps.length}
@@ -1043,6 +1044,367 @@ function providerDefaultEnv(provider) {
   return (PROVIDER_INFO[key] && PROVIDER_INFO[key].envVar) || `${key.toUpperCase()}_API_KEY`;
 }
 
+function formatWdkBalance(raw, decimals, symbol) {
+  if (!raw || raw === '0') return `0 ${symbol}`;
+  try {
+    const n = BigInt(raw);
+    const d = BigInt(10) ** BigInt(decimals || 0);
+    const whole = n / d;
+    const frac = n % d;
+    const fracStr = frac.toString().padStart(decimals || 0, '0').slice(0, 6);
+    return `${whole}.${fracStr} ${symbol}`;
+  } catch (_e) {
+    return `${raw} ${symbol}`;
+  }
+}
+
+async function refreshWdkBalances() {
+  const balEl = document.getElementById('wdk-balances-list');
+  if (!balEl) return;
+  balEl.innerHTML = '<div style="font-size:12px;color:var(--text-dim)">Refreshing balances...</div>';
+  try {
+    const resp = await api('/wdk/balances');
+    const balances = Array.isArray(resp.balances) ? resp.balances : [];
+    balEl.innerHTML = balances.map((b) => {
+      const hasError = !!b.error;
+      return `
+        <div class="wdk-balance-row">
+          <span class="wdk-chain-badge">${esc(b.symbol || b.chain || '?')}</span>
+          <span class="wdk-balance-value ${hasError ? 'wdk-balance-error' : ''}">
+            ${esc(hasError ? 'unavailable' : formatWdkBalance(b.balance, b.decimals, b.symbol || ''))}
+          </span>
+          ${hasError ? `<span class="wdk-balance-error-msg" title="${esc(String(b.error))}">&#9888;</span>` : ''}
+        </div>
+      `;
+    }).join('') || '<div style="font-size:12px;color:var(--text-dim)">No balances yet.</div>';
+  } catch (e) {
+    balEl.innerHTML = `<div style="font-size:12px;color:var(--red)">Failed to load balances: ${esc(String(e.message || e))}</div>`;
+  }
+}
+
+function renderWdkCreate(container) {
+  container.innerHTML = `
+    <div class="wdk-block-title">Create New Wallet</div>
+    <div class="identity-profile-fields" style="margin-bottom:12px">
+      <input type="password" id="wdk-create-pass" class="setup-input"
+             placeholder="Choose a passphrase (min 8 chars)" minlength="8"
+             style="flex:1;min-width:200px">
+      <input type="password" id="wdk-create-pass-confirm" class="setup-input"
+             placeholder="Confirm passphrase" minlength="8"
+             style="flex:1;min-width:200px">
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <button class="btn btn-primary btn-sm" id="wdk-create-btn" style="border-radius:6px;padding:8px 16px">
+        Create Wallet
+      </button>
+      <span id="wdk-create-status" style="font-size:12px;color:var(--text-dim)"></span>
+    </div>
+
+    <details class="setup-alt-path" style="margin-top:12px">
+      <summary style="font-size:12px">Import existing seed phrase</summary>
+      <div class="alt-body">
+        <textarea id="wdk-import-seed" class="setup-input"
+                  placeholder="Enter your 12 or 24-word seed phrase..."
+                  rows="3" style="width:100%;resize:vertical;margin-bottom:10px"></textarea>
+        <div class="identity-profile-fields" style="margin-bottom:12px">
+          <input type="password" id="wdk-import-pass" class="setup-input"
+                 placeholder="Choose a passphrase (min 8 chars)" minlength="8"
+                 style="flex:1;min-width:200px">
+        </div>
+        <button class="btn btn-sm" id="wdk-import-btn" style="border-radius:6px;padding:8px 16px">
+          Import &amp; Encrypt
+        </button>
+        <span id="wdk-import-status" style="font-size:12px;color:var(--text-dim);margin-left:8px"></span>
+      </div>
+    </details>
+  `;
+
+  const createBtn = document.getElementById('wdk-create-btn');
+  createBtn?.addEventListener('click', async () => {
+    const pass = document.getElementById('wdk-create-pass')?.value || '';
+    const confirm = document.getElementById('wdk-create-pass-confirm')?.value || '';
+    const statusEl = document.getElementById('wdk-create-status');
+    if (pass.length < 8) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Passphrase must be at least 8 characters.</span>';
+      return;
+    }
+    if (pass !== confirm) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Passphrases do not match.</span>';
+      return;
+    }
+
+    createBtn.disabled = true;
+    createBtn.textContent = 'Creating...';
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Generating wallet keys...</span>';
+    try {
+      await apiPost('/wdk/create', { passphrase: pass });
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Wallet created.</span>';
+      window._invalidateSetupState();
+      await fetchSetupState(true);
+      await renderSetup();
+      updateNavLockState();
+    } catch (e) {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Create failed: ${esc(String(e.message || e))}</span>`;
+      createBtn.disabled = false;
+      createBtn.textContent = 'Create Wallet';
+    }
+  });
+
+  const importBtn = document.getElementById('wdk-import-btn');
+  importBtn?.addEventListener('click', async () => {
+    const seed = (document.getElementById('wdk-import-seed')?.value || '').trim();
+    const pass = document.getElementById('wdk-import-pass')?.value || '';
+    const statusEl = document.getElementById('wdk-import-status');
+    const wordCount = seed ? seed.split(/\s+/).length : 0;
+
+    if (!(wordCount === 12 || wordCount === 24)) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Seed phrase must be exactly 12 or 24 words.</span>';
+      return;
+    }
+    if (pass.length < 8) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Passphrase must be at least 8 characters.</span>';
+      return;
+    }
+
+    importBtn.disabled = true;
+    importBtn.textContent = 'Importing...';
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Encrypting and importing wallet...</span>';
+    try {
+      await apiPost('/wdk/import', { seed, passphrase: pass });
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Wallet imported.</span>';
+      window._invalidateSetupState();
+      await fetchSetupState(true);
+      await renderSetup();
+      updateNavLockState();
+    } catch (e) {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Import failed: ${esc(String(e.message || e))}</span>`;
+      importBtn.disabled = false;
+      importBtn.textContent = 'Import & Encrypt';
+    }
+  });
+}
+
+function renderWdkLocked(container) {
+  container.innerHTML = `
+    <div class="setup-success-banner" style="background:rgba(255,159,42,0.06);border-color:rgba(255,159,42,0.2)">
+      <span class="success-icon" style="color:var(--yellow)">&#128274;</span>
+      <span style="color:var(--yellow)">Wallet exists but is locked. Enter your passphrase to unlock.</span>
+    </div>
+    <div class="identity-profile-fields" style="margin-top:12px;margin-bottom:12px">
+      <input type="password" id="wdk-unlock-pass" class="setup-input"
+             placeholder="Enter your passphrase" style="flex:1;min-width:200px">
+      <button class="btn btn-primary btn-sm" id="wdk-unlock-btn" style="border-radius:6px;padding:8px 16px">
+        Unlock
+      </button>
+    </div>
+    <span id="wdk-unlock-status" style="font-size:12px;color:var(--text-dim)"></span>
+    <div style="margin-top:12px">
+      <button class="btn btn-sm" id="wdk-delete-btn"
+              style="border-color:var(--red);color:var(--red);border-radius:6px;padding:6px 12px;font-size:11px">
+        Delete Wallet Permanently
+      </button>
+    </div>
+  `;
+
+  const unlockBtn = document.getElementById('wdk-unlock-btn');
+  unlockBtn?.addEventListener('click', async () => {
+    const pass = document.getElementById('wdk-unlock-pass')?.value || '';
+    const statusEl = document.getElementById('wdk-unlock-status');
+    if (!pass) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Enter your passphrase.</span>';
+      return;
+    }
+    unlockBtn.disabled = true;
+    unlockBtn.textContent = 'Unlocking...';
+    try {
+      await apiPost('/wdk/unlock', { passphrase: pass });
+      window._invalidateSetupState();
+      await fetchSetupState(true);
+      await renderSetup();
+      updateNavLockState();
+    } catch (e) {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Unlock failed: ${esc(String(e.message || e))}</span>`;
+      unlockBtn.disabled = false;
+      unlockBtn.textContent = 'Unlock';
+    }
+  });
+
+  document.getElementById('wdk-unlock-pass')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') unlockBtn?.click();
+  });
+
+  document.getElementById('wdk-delete-btn')?.addEventListener('click', async () => {
+    const ok = confirm('Delete this wallet permanently? This removes the encrypted seed and cannot be undone.');
+    if (!ok) return;
+    try {
+      await apiPost('/wdk/delete', { confirm: 'DELETE' });
+      window._invalidateSetupState();
+      await fetchSetupState(true);
+      await renderSetup();
+      updateNavLockState();
+    } catch (e) {
+      alert(`Delete failed: ${String(e.message || e)}`);
+    }
+  });
+}
+
+async function renderWdkUnlocked(container) {
+  container.innerHTML = `
+    <div class="setup-success-banner">
+      <span class="success-icon">&#128275;</span>
+      <span>Self-custodial wallet unlocked and active.</span>
+    </div>
+    <div id="wdk-accounts-list" style="margin-top:12px">
+      <div style="font-size:12px;color:var(--text-dim)">Loading accounts...</div>
+    </div>
+    <div id="wdk-balances-list" style="margin-top:12px">
+      <div style="font-size:12px;color:var(--text-dim)">Loading balances...</div>
+    </div>
+    <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-sm" id="wdk-refresh-btn" style="border-radius:6px;padding:6px 12px;font-size:11px">
+        Refresh Balances
+      </button>
+      <button class="btn btn-sm" id="wdk-send-toggle"
+              style="border-radius:6px;padding:6px 12px;font-size:11px;border-color:var(--accent);color:var(--accent)">
+        Send Transaction
+      </button>
+      <button class="btn btn-sm" id="wdk-lock-btn"
+              style="border-radius:6px;padding:6px 12px;font-size:11px;border-color:var(--yellow);color:var(--yellow)">
+        Lock Wallet
+      </button>
+    </div>
+    <div id="wdk-send-panel" style="display:none;margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:8px">
+      <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px">Send Transaction</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <select id="wdk-send-chain" class="setup-input" style="max-width:220px">
+          <option value="bitcoin">Bitcoin (BTC)</option>
+          <option value="ethereum">Ethereum (ETH)</option>
+          <option value="polygon">Polygon (MATIC)</option>
+          <option value="arbitrum">Arbitrum (ETH)</option>
+        </select>
+        <input type="text" id="wdk-send-to" class="setup-input" placeholder="Recipient address">
+        <input type="text" id="wdk-send-amount" class="setup-input" placeholder="Amount (satoshis for BTC, wei for EVM)">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" id="wdk-send-btn" style="border-radius:6px;padding:8px 16px">
+            Send
+          </button>
+          <button class="btn btn-sm" id="wdk-quote-btn" style="border-radius:6px;padding:8px 12px;font-size:11px">
+            Estimate Fee
+          </button>
+          <span id="wdk-send-status" style="font-size:12px"></span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  try {
+    const acctResp = await api('/wdk/accounts');
+    const accounts = Array.isArray(acctResp.accounts) ? acctResp.accounts : [];
+    const accountsEl = document.getElementById('wdk-accounts-list');
+    if (accountsEl) {
+      if (!accounts.length) {
+        accountsEl.innerHTML = '<div style="font-size:12px;color:var(--text-dim)">No accounts returned by sidecar.</div>';
+      } else {
+        accountsEl.innerHTML = accounts.map((a, idx) => {
+          const address = String(a.address || '');
+          const short = address.length > 20 ? `${address.slice(0, 10)}...${address.slice(-6)}` : address;
+          return `
+            <div class="wdk-account-row">
+              <span class="wdk-chain-badge">${esc(a.symbol || a.chain || '?')}</span>
+              <span class="wdk-chain-label">${esc(a.label || a.chain || 'Chain')}</span>
+              <code class="wdk-address" title="${esc(address)}">${esc(short)}</code>
+              <button class="btn-copy-sm" data-copy-address="${esc(address)}" data-copy-idx="${idx}" title="Copy address">&#128203;</button>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+    container.querySelectorAll('button[data-copy-address]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const addr = btn.getAttribute('data-copy-address') || '';
+        if (!addr) return;
+        try {
+          await navigator.clipboard.writeText(addr);
+          btn.textContent = '✓';
+          window.setTimeout(() => { btn.textContent = '\uD83D\uDCC3'; }, 800);
+        } catch (_e) {}
+      });
+    });
+  } catch (e) {
+    const el = document.getElementById('wdk-accounts-list');
+    if (el) el.innerHTML = `<div style="font-size:12px;color:var(--red)">Failed to load accounts: ${esc(String(e.message || e))}</div>`;
+  }
+
+  await refreshWdkBalances();
+
+  document.getElementById('wdk-refresh-btn')?.addEventListener('click', refreshWdkBalances);
+  document.getElementById('wdk-lock-btn')?.addEventListener('click', async () => {
+    try {
+      await apiPost('/wdk/lock', {});
+      window._invalidateSetupState();
+      await fetchSetupState(true);
+      await renderSetup();
+      updateNavLockState();
+    } catch (e) {
+      alert(`Lock failed: ${String(e.message || e)}`);
+    }
+  });
+
+  document.getElementById('wdk-send-toggle')?.addEventListener('click', () => {
+    const panel = document.getElementById('wdk-send-panel');
+    if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  });
+
+  document.getElementById('wdk-send-btn')?.addEventListener('click', async () => {
+    const chain = document.getElementById('wdk-send-chain')?.value;
+    const to = (document.getElementById('wdk-send-to')?.value || '').trim();
+    const amount = (document.getElementById('wdk-send-amount')?.value || '').trim();
+    const statusEl = document.getElementById('wdk-send-status');
+    if (!chain || !to || !amount) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Fill recipient and amount.</span>';
+      return;
+    }
+    if (!confirm(`Send ${amount} on ${chain} to ${to}?`)) return;
+    const btn = document.getElementById('wdk-send-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Sending...';
+    }
+    try {
+      const resp = await apiPost('/wdk/send', { chain, to, amount });
+      if (resp.ok) {
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">&#10003; Submitted${resp.hash ? ` (${esc(String(resp.hash))})` : ''}</span>`;
+        await refreshWdkBalances();
+      } else if (statusEl) {
+        statusEl.innerHTML = `<span style="color:var(--red)">${esc(resp.error || 'Send failed')}</span>`;
+      }
+    } catch (e) {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Send failed: ${esc(String(e.message || e))}</span>`;
+    }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Send';
+    }
+  });
+
+  document.getElementById('wdk-quote-btn')?.addEventListener('click', async () => {
+    const chain = document.getElementById('wdk-send-chain')?.value;
+    const to = (document.getElementById('wdk-send-to')?.value || '').trim();
+    const amount = (document.getElementById('wdk-send-amount')?.value || '').trim();
+    const statusEl = document.getElementById('wdk-send-status');
+    if (!chain || !to || !amount) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Fill recipient and amount first.</span>';
+      return;
+    }
+    try {
+      const resp = await apiPost('/wdk/quote', { chain, to, amount });
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--text-muted)">Estimated fee: ${esc(JSON.stringify(resp.quote || resp.fees || {}))}</span>`;
+    } catch (e) {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Quote failed: ${esc(String(e.message || e))}</span>`;
+    }
+  });
+}
+
 async function renderSetup() {
   const ctx = consumeSetupContext();
 
@@ -1059,7 +1421,8 @@ async function renderSetup() {
   try { cfg = await api('/config'); } catch (_e) {}
   const isAuthenticated = cfg && cfg.authentication && cfg.authentication.authenticated;
   const hasWallet = cfg && cfg.pq_wallet;
-  const ss = (cfg && cfg.setup_complete) || { identity: false, agentpmt: false, llm: false, complete: false };
+  const ss = (cfg && cfg.setup_complete) || { identity: false, wallet: false, agentpmt: false, llm: false, complete: false };
+  const walletStatus = (cfg && cfg.wallet_status) || {};
 
   // Build status lookup from vault keys
   const keyStatus = {};
@@ -1117,14 +1480,28 @@ async function renderSetup() {
   const profileSet = !!(savedProfile.display_name && String(savedProfile.display_name).trim().length > 0);
 
   // Step states
-  const step1Done = ss.agentpmt;
+  const walletComplete = (ss.wallet !== undefined) ? ss.wallet : ss.agentpmt;
+  const step1Done = walletComplete;
   const step2Done = ss.llm;
   const identityDone = profileSet || !!identityCfg.anonymous_mode || ss.identity;
   const localIdentityDone = !!isAuthenticated || !!hasWallet;
-  const allDone = ss.complete;
+  const allDone = ss.complete || (identityDone && walletComplete && step2Done);
 
   const pmtAuth = cfg && cfg.agentpmt && cfg.agentpmt.auth_configured;
   const pmtToolCount = (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) || 0;
+  const agentpmtConnected = !!walletStatus.agentpmt_connected;
+  const anonymousWalletConnected = !!walletStatus.anonymous_wallet_connected;
+  const wdkAvailable = !!walletStatus.wdk_available;
+  const wdkWalletExists = !!walletStatus.wdk_wallet_exists;
+  const wdkUnlocked = !!walletStatus.wdk_unlocked;
+  const walletPath = agentpmtConnected
+    ? 'agentpmt'
+    : (wdkWalletExists ? 'wdk' : (anonymousWalletConnected ? 'anonymous' : 'none'));
+  const walletCardDesc = walletPath === 'wdk'
+    ? 'Self-custodial multi-chain wallet active on this machine'
+    : (walletPath === 'anonymous'
+      ? 'Anonymous agent wallet active'
+      : `Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and budget management`);
   const orStatus = providerStatus('openrouter');
 
   // Card classes
@@ -1395,7 +1772,7 @@ async function renderSetup() {
             Your Wallet
             ${step1Done ? '<span class="setup-inline-status status-done">&#10003; Connected</span>' : ''}
           </div>
-          <div class="card-desc">Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and budget management</div>
+          <div class="card-desc">${walletCardDesc}</div>
         </div>
       </div>
 
@@ -1403,14 +1780,22 @@ async function renderSetup() {
         <!-- Connected state -->
         <div class="setup-success-banner">
           <span class="success-icon">&#10003;</span>
-          <span>AgentPMT connected${pmtToolCount > 0 ? ' &mdash; <strong>' + pmtToolCount + ' tools</strong> ready to use' : ''}</span>
+          <span>
+            ${walletPath === 'agentpmt'
+              ? `AgentPMT connected${pmtToolCount > 0 ? ' &mdash; <strong>' + pmtToolCount + ' tools</strong> ready to use' : ''}`
+              : (walletPath === 'wdk'
+                ? `Self-custodial wallet configured${wdkUnlocked ? ' &mdash; unlocked' : ' &mdash; locked'}`
+                : 'Anonymous wallet connected')}
+          </span>
         </div>
-        <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button class="btn btn-sm" id="setup-disconnect-agentpmt" style="border-color:var(--red);color:var(--red)">
-            Disconnect My Account
-          </button>
-          <span style="font-size:11px;color:var(--text-dim)">Removes your token and disables the tool proxy</span>
-        </div>
+        ${walletPath === 'agentpmt' ? `
+          <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-sm" id="setup-disconnect-agentpmt" style="border-color:var(--red);color:var(--red)">
+              Disconnect My Account
+            </button>
+            <span style="font-size:11px;color:var(--text-dim)">Removes your token and disables the tool proxy</span>
+          </div>
+        ` : ''}
       ` : `
         <!-- Not connected — three paths -->
 
@@ -1497,6 +1882,29 @@ async function renderSetup() {
           </div>
         </details>
       `}
+
+      <!-- Path C: Self-custodial wallet (always available) -->
+      <details class="setup-alt-path" style="margin-top:16px" id="wdk-wallet-section">
+        <summary>Self-Custodial Multi-Chain Wallet (Bitcoin, Ethereum, Polygon, Arbitrum)</summary>
+        <div class="alt-body">
+          <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
+            Private keys stay on this machine and are encrypted at rest with your passphrase.
+            Use this wallet path if you want direct self-custodial control instead of marketplace custody.
+          </p>
+          <div class="setup-info-box" style="margin-top:0;margin-bottom:14px">
+            <span class="info-icon">&#9762;</span>
+            <span><strong>Self-custodial:</strong> if you lose the passphrase and seed phrase, funds cannot be recovered.</span>
+          </div>
+          <div id="wdk-state-container">
+            <div style="font-size:12px;color:var(--text-dim)">Checking wallet status...</div>
+          </div>
+          ${!wdkAvailable ? `
+            <div style="margin-top:10px;font-size:11px;color:var(--yellow)">
+              Node.js/WDK sidecar not detected. Run <code>cd wdk-sidecar && npm install</code> to enable this path.
+            </div>
+          ` : ''}
+        </div>
+      </details>
 
       <!-- Identity options (always visible) -->
       <details class="setup-alt-path" style="margin-top:16px">
@@ -1807,6 +2215,36 @@ async function renderSetup() {
         anonWalletBtn.textContent = 'Create Anonymous Wallet';
       }
     });
+  }
+
+  // WDK wallet state + handlers
+  const wdkContainer = document.getElementById('wdk-state-container');
+  if (wdkContainer) {
+    (async () => {
+      try {
+        const status = await api('/wdk/status');
+        if (!status.available) {
+          wdkContainer.innerHTML = `
+            <div class="setup-info-box" style="border-color:var(--yellow)">
+              <span class="info-icon">&#9888;</span>
+              <span>Node.js not detected or WDK sidecar dependencies missing.
+              Run <code>cd wdk-sidecar && npm install</code> to enable.</span>
+            </div>
+          `;
+          return;
+        }
+        const initialized = !!(status.sidecar && status.sidecar.initialized);
+        if (status.wallet_exists && status.sidecar_running && initialized) {
+          await renderWdkUnlocked(wdkContainer);
+        } else if (status.wallet_exists) {
+          renderWdkLocked(wdkContainer);
+        } else {
+          renderWdkCreate(wdkContainer);
+        }
+      } catch (e) {
+        wdkContainer.innerHTML = `<div style="font-size:12px;color:var(--red)">WDK status check failed: ${esc(String(e.message || e))}</div>`;
+      }
+    })();
   }
 
   // --- Identity handlers ---

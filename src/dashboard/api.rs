@@ -125,6 +125,19 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
             "/agentpmt/anonymous-wallet",
             post(api_agentpmt_anonymous_wallet),
         )
+        // WDK wallet
+        .route("/wdk/available", get(api_wdk_available))
+        .route("/wdk/status", get(api_wdk_status))
+        .route("/wdk/create", post(api_wdk_create))
+        .route("/wdk/import", post(api_wdk_import))
+        .route("/wdk/unlock", post(api_wdk_unlock))
+        .route("/wdk/accounts", get(api_wdk_accounts))
+        .route("/wdk/balances", get(api_wdk_balances))
+        .route("/wdk/send", post(api_wdk_send))
+        .route("/wdk/quote", post(api_wdk_quote))
+        .route("/wdk/fees", get(api_wdk_fees))
+        .route("/wdk/lock", post(api_wdk_lock))
+        .route("/wdk/delete", post(api_wdk_delete))
         .route("/vault/keys", get(api_vault_keys))
         .route(
             "/vault/keys/{provider}",
@@ -464,6 +477,22 @@ pub struct IdentityTierUpdateRequest {
     step_failures: Option<usize>,
 }
 
+#[derive(Deserialize)]
+pub struct WdkPassphraseRequest {
+    passphrase: String,
+}
+
+#[derive(Deserialize)]
+pub struct WdkImportRequest {
+    seed: String,
+    passphrase: String,
+}
+
+#[derive(Deserialize)]
+pub struct WdkDeleteRequest {
+    confirm: String,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -511,6 +540,24 @@ fn rollback_profile(previous: &crate::halo::profile::UserProfile) -> Result<(), 
 
 fn rollback_identity(previous: &crate::halo::identity::IdentityConfig) -> Result<(), String> {
     crate::halo::identity::save(previous).map_err(|e| format!("identity rollback failed: {e}"))
+}
+
+fn lock_wdk_manager<'a>(
+    state: &'a DashboardState,
+) -> Result<std::sync::MutexGuard<'a, crate::halo::wdk_proxy::WdkManager>, (StatusCode, Json<Value>)>
+{
+    state
+        .wdk_manager
+        .lock()
+        .map_err(|e| internal_err(format!("WDK manager lock poisoned: {e}")))
+}
+
+fn wdk_seed_word_count(seed: &str) -> usize {
+    seed.split_whitespace().count()
+}
+
+fn wdk_is_valid_seed_phrase(seed: &str) -> bool {
+    matches!(wdk_seed_word_count(seed), 12 | 24)
 }
 
 fn social_provider_specs() -> Vec<(&'static str, bool, &'static str)> {
@@ -2375,12 +2422,30 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         rc_content.contains(&marker)
     };
 
-    let pmt_auth = agentpmt::has_bearer_token();
-    let (agentpmt_ok, pmt_tool_count) = resolve_agentpmt_setup_status(&pmt_cfg, pmt_auth);
-    let has_pq = has_wallet();
-    let legacy_identity_ok = has_auth || has_pq;
     let profile = crate::halo::profile::load();
     let identity_cfg = crate::halo::identity::load();
+    let pmt_auth = agentpmt::has_bearer_token();
+    let (agentpmt_ok, pmt_tool_count) = resolve_agentpmt_setup_status(&pmt_cfg, pmt_auth);
+    let anonymous_wallet_connected = identity_cfg.anonymous_mode;
+    let wdk_available = crate::halo::wdk_proxy::WdkManager::is_available();
+    let wdk_wallet_exists = crate::halo::wdk_proxy::wallet_exists();
+    let wdk_unlocked = state
+        .wdk_manager
+        .lock()
+        .ok()
+        .map(|mgr| {
+            if !mgr.is_running() {
+                return false;
+            }
+            mgr.get("/status")
+                .ok()
+                .and_then(|v| v.get("initialized").and_then(|x| x.as_bool()))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    let wallet_complete = agentpmt_ok || anonymous_wallet_connected || wdk_wallet_exists;
+    let has_pq = has_wallet();
+    let legacy_identity_ok = has_auth || has_pq;
     let identity_ok = profile.has_name() || identity_cfg.anonymous_mode || legacy_identity_ok;
     let llm_ok = state
         .vault
@@ -2392,7 +2457,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .is_some();
-    let setup_complete = identity_ok && (agentpmt_ok || identity_cfg.anonymous_mode) && llm_ok;
+    let setup_complete = identity_ok && wallet_complete && llm_ok;
 
     Ok(Json(json!({
         "authentication": {
@@ -2417,6 +2482,15 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "auth_configured": pmt_auth,
             "tool_count": pmt_tool_count,
         },
+        "wallet_status": {
+            "agentpmt_connected": agentpmt_ok,
+            "agentpmt_auth_configured": pmt_auth,
+            "anonymous_wallet_connected": anonymous_wallet_connected,
+            "wdk_available": wdk_available,
+            "wdk_wallet_exists": wdk_wallet_exists,
+            "wdk_unlocked": wdk_unlocked,
+            "wallet_complete": wallet_complete,
+        },
         "onchain": {
             "rpc_url": onchain_cfg.rpc_url,
             "chain_id": onchain_cfg.chain_id,
@@ -2429,7 +2503,9 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         },
         "setup_complete": {
             "identity": identity_ok,
-            "agentpmt": agentpmt_ok,
+            // Legacy compatibility field; mapped to wallet completion.
+            "agentpmt": wallet_complete,
+            "wallet": wallet_complete,
             "llm": llm_ok,
             "complete": setup_complete,
         },
@@ -2594,6 +2670,265 @@ async fn api_agentpmt_anonymous_wallet(
         "ok": true,
         "token_saved": token_saved,
         "result": result,
+    })))
+}
+
+async fn api_wdk_available(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    Ok(Json(json!({
+        "available": crate::halo::wdk_proxy::WdkManager::is_available(),
+        "wallet_exists": crate::halo::wdk_proxy::wallet_exists(),
+    })))
+}
+
+async fn api_wdk_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let wallet_exists = crate::halo::wdk_proxy::wallet_exists();
+    let available = crate::halo::wdk_proxy::WdkManager::is_available();
+    let mgr = lock_wdk_manager(&state)?;
+    let sidecar_running = mgr.is_running();
+    let sidecar = if sidecar_running {
+        mgr.get("/status")
+            .unwrap_or_else(|e| json!({ "initialized": false, "error": e }))
+    } else {
+        json!({ "initialized": false })
+    };
+    Ok(Json(json!({
+        "available": available,
+        "wallet_exists": wallet_exists,
+        "sidecar_running": sidecar_running,
+        "sidecar": sidecar,
+    })))
+}
+
+async fn api_wdk_create(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<WdkPassphraseRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if req.passphrase.trim().len() < 8 {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "passphrase must be at least 8 characters",
+        ));
+    }
+    if crate::halo::wdk_proxy::wallet_exists() {
+        return Err(api_err(
+            StatusCode::CONFLICT,
+            "wallet already exists; unlock or delete it first",
+        ));
+    }
+    if !crate::halo::wdk_proxy::WdkManager::is_available() {
+        return Err(api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "WDK sidecar unavailable; install with `cd wdk-sidecar && npm install`",
+        ));
+    }
+
+    let mut mgr = lock_wdk_manager(&state)?;
+    if !mgr.is_running() {
+        mgr.start().map_err(internal_err)?;
+    }
+    let init_resp = mgr
+        .post("/init", &json!({"generate": true}))
+        .map_err(internal_err)?;
+    let seed = init_resp
+        .get("seed")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| internal_err("WDK sidecar did not return a seed phrase".to_string()))?;
+    let encrypted =
+        crate::halo::wdk_proxy::encrypt_seed(seed, &req.passphrase).map_err(internal_err)?;
+    if let Err(e) = crate::halo::wdk_proxy::save_encrypted_seed(&encrypted) {
+        let _ = mgr.post("/destroy", &json!({}));
+        mgr.stop();
+        return Err(internal_err(e));
+    }
+    let accounts = mgr.get("/accounts").unwrap_or_else(|_| json!({}));
+    Ok(Json(json!({
+        "ok": true,
+        "message": "wallet created and encrypted",
+        "accounts": accounts.get("accounts").cloned().unwrap_or(Value::Array(Vec::new())),
+    })))
+}
+
+async fn api_wdk_import(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<WdkImportRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let seed = req.seed.trim();
+    if !wdk_is_valid_seed_phrase(seed) {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "seed phrase must be exactly 12 or 24 words",
+        ));
+    }
+    if req.passphrase.trim().len() < 8 {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "passphrase must be at least 8 characters",
+        ));
+    }
+    if crate::halo::wdk_proxy::wallet_exists() {
+        return Err(api_err(
+            StatusCode::CONFLICT,
+            "wallet already exists; delete it first to import a new seed",
+        ));
+    }
+    if !crate::halo::wdk_proxy::WdkManager::is_available() {
+        return Err(api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "WDK sidecar unavailable; install with `cd wdk-sidecar && npm install`",
+        ));
+    }
+
+    let encrypted =
+        crate::halo::wdk_proxy::encrypt_seed(seed, &req.passphrase).map_err(internal_err)?;
+    crate::halo::wdk_proxy::save_encrypted_seed(&encrypted).map_err(internal_err)?;
+
+    let mut mgr = lock_wdk_manager(&state)?;
+    if !mgr.is_running() {
+        mgr.start().map_err(internal_err)?;
+    }
+    mgr.post("/init", &json!({"seed": seed}))
+        .map_err(internal_err)?;
+    let accounts = mgr.get("/accounts").unwrap_or_else(|_| json!({}));
+    Ok(Json(json!({
+        "ok": true,
+        "message": "wallet imported and encrypted",
+        "accounts": accounts.get("accounts").cloned().unwrap_or(Value::Array(Vec::new())),
+    })))
+}
+
+async fn api_wdk_unlock(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<WdkPassphraseRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let encrypted = crate::halo::wdk_proxy::load_encrypted_seed()
+        .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "no WDK wallet found"))?;
+    let seed = crate::halo::wdk_proxy::decrypt_seed(&encrypted, &req.passphrase)
+        .map_err(|e| api_err(StatusCode::UNAUTHORIZED, &e))?;
+    let mut mgr = lock_wdk_manager(&state)?;
+    if !mgr.is_running() {
+        mgr.start().map_err(internal_err)?;
+    }
+    let sidecar = mgr
+        .post("/init", &json!({"seed": seed}))
+        .map_err(internal_err)?;
+    Ok(Json(json!({
+        "ok": true,
+        "sidecar": sidecar,
+    })))
+}
+
+async fn api_wdk_accounts(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mgr = lock_wdk_manager(&state)?;
+    if !mgr.is_running() {
+        return Err(api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "wallet is locked; unlock it first",
+        ));
+    }
+    mgr.get("/accounts").map(Json).map_err(internal_err)
+}
+
+async fn api_wdk_balances(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mgr = lock_wdk_manager(&state)?;
+    if !mgr.is_running() {
+        return Err(api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "wallet is locked; unlock it first",
+        ));
+    }
+    mgr.get("/balances").map(Json).map_err(internal_err)
+}
+
+async fn api_wdk_send(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mgr = lock_wdk_manager(&state)?;
+    if !mgr.is_running() {
+        return Err(api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "wallet is locked; unlock it first",
+        ));
+    }
+    mgr.post("/send", &body).map(Json).map_err(internal_err)
+}
+
+async fn api_wdk_quote(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mgr = lock_wdk_manager(&state)?;
+    if !mgr.is_running() {
+        return Err(api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "wallet is locked; unlock it first",
+        ));
+    }
+    mgr.post("/quote", &body).map(Json).map_err(internal_err)
+}
+
+async fn api_wdk_fees(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mgr = lock_wdk_manager(&state)?;
+    if !mgr.is_running() {
+        return Err(api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "wallet is locked; unlock it first",
+        ));
+    }
+    mgr.get("/fees").map(Json).map_err(internal_err)
+}
+
+async fn api_wdk_lock(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mut mgr = lock_wdk_manager(&state)?;
+    if mgr.is_running() {
+        let _ = mgr.post("/destroy", &json!({}));
+    }
+    mgr.stop();
+    Ok(Json(json!({
+        "ok": true,
+        "message": "wallet locked",
+    })))
+}
+
+async fn api_wdk_delete(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<WdkDeleteRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if req.confirm.trim() != "DELETE" {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "send {\"confirm\":\"DELETE\"} to confirm permanent wallet deletion",
+        ));
+    }
+    let mut mgr = lock_wdk_manager(&state)?;
+    if mgr.is_running() {
+        let _ = mgr.post("/destroy", &json!({}));
+    }
+    mgr.stop();
+
+    let seed_path = crate::halo::wdk_proxy::encrypted_seed_path();
+    if seed_path.exists() {
+        std::fs::remove_file(&seed_path).map_err(|e| {
+            internal_err(format!(
+                "failed to delete encrypted seed at {}: {e}",
+                seed_path.display()
+            ))
+        })?;
+    }
+
+    Ok(Json(json!({
+        "ok": true,
+        "message": "wallet permanently deleted",
     })))
 }
 
