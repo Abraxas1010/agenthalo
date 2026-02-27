@@ -264,7 +264,7 @@ window.trySetupRedirect = function trySetupRedirect(err, agent, from) {
   let providers = [];
   if (body && body.code === 'auth_required') {
     reason = 'auth_required';
-  } else if (status === 401 || lower.includes('authentication required') || lower.includes('agenthalo_api_key')) {
+  } else if (status === 401 || lower.includes('authentication required')) {
     reason = 'auth_required';
   } else if (body && Array.isArray(body.missing_keys) && body.missing_keys.length > 0) {
     reason = 'provider_keys_missing';
@@ -1059,58 +1059,23 @@ function formatWdkBalance(raw, decimals, symbol) {
 }
 
 function renderWdkAuthGate(container, message) {
-  const note = message || 'Authenticate first to manage the self-custodial wallet.';
+  const note = message || 'Sign in first to manage the self-custodial wallet.';
   container.innerHTML = `
     <div class="setup-info-box" style="border-color:var(--yellow)">
       <span class="info-icon">&#9888;</span>
       <span>${esc(note)}</span>
     </div>
-    <div style="margin-top:10px">
-      <label for="wdk-auth-api-key" style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">
-        AgentHALO API Key
-      </label>
-      <div class="setup-token-row">
-        <input id="wdk-auth-api-key" type="password" class="setup-input" placeholder="Paste your AGENTHALO_API_KEY">
-        <button class="btn btn-primary btn-sm" id="wdk-auth-save-btn" style="border-radius:6px;padding:8px 14px">
-          Save & Authenticate
-        </button>
-      </div>
-      <div id="wdk-auth-status" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
-    </div>
-    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
-      <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Or continue with OAuth:</div>
+    <div style="margin-top:12px">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Continue with OAuth:</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-sm" id="wdk-auth-oauth-github">Continue with GitHub</button>
         <button class="btn btn-sm" id="wdk-auth-oauth-google">Continue with Google</button>
       </div>
+      <div id="wdk-auth-status" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
     </div>
   `;
 
-  const saveBtn = document.getElementById('wdk-auth-save-btn');
-  const input = document.getElementById('wdk-auth-api-key');
   const statusEl = document.getElementById('wdk-auth-status');
-  saveBtn?.addEventListener('click', async () => {
-    const apiKey = (input?.value || '').trim();
-    if (apiKey.length < 8) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Enter a valid API key.</span>';
-      return;
-    }
-    saveBtn.disabled = true;
-    saveBtn.textContent = 'Saving...';
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Saving key and refreshing auth state...</span>';
-    try {
-      await apiPost('/auth/set-key', { api_key: apiKey });
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated. Loading wallet status...</span>';
-      window._invalidateSetupState();
-      await fetchSetupState(true);
-      await renderSetup();
-      updateNavLockState();
-    } catch (e) {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Auth failed: ${esc(String(e.message || e))}</span>`;
-      saveBtn.disabled = false;
-      saveBtn.textContent = 'Save & Authenticate';
-    }
-  });
 
   const launchOauth = async (provider) => {
     if (statusEl) statusEl.innerHTML = `<span style="color:var(--text-dim)">Opening ${esc(provider)} OAuth...</span>`;
@@ -2027,9 +1992,9 @@ async function renderSetup() {
               <code>agenthalo keygen --pq</code>
               <button class="btn btn-sm" onclick="copySetupText('agenthalo keygen --pq')">Copy</button>
             </div>
-            <div class="setup-cmd">
-              <code>agenthalo login</code>
-              <button class="btn btn-sm" onclick="copySetupText('agenthalo login')">Copy</button>
+            <div class="setup-info-box" style="margin-top:8px">
+              <span class="info-icon">&#9432;</span>
+              <span>Dashboard authentication is handled above with GitHub/Google OAuth.</span>
             </div>
           ` : `
             <div class="setup-success-banner" style="font-size:12px">

@@ -1840,46 +1840,10 @@ async fn wdk_send_rejects_invalid_chain_before_sidecar_lookup() {
 }
 
 #[tokio::test]
-async fn auth_set_key_bootstraps_dashboard_auth_without_cli() {
-    let (state, db_path, creds_path) = test_state_unauth("auth_set_key_bootstrap");
-    let (status, val) = api_post(
-        state.clone(),
-        "/auth/set-key",
-        json!({"api_key":"agenthalo-local-test-key-123456"}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "auth set key should succeed: {val}");
-    assert_eq!(val["ok"], true);
-    assert_eq!(val["authenticated"], true);
-
-    let (cfg_status, cfg_val) = api_get(state, "/config").await;
-    assert_eq!(
-        cfg_status,
-        StatusCode::OK,
-        "config should succeed: {cfg_val}"
-    );
-    assert_eq!(cfg_val["authentication"]["authenticated"], true);
-
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(&creds_path);
-}
-
-#[tokio::test]
-async fn auth_set_key_rejects_short_key() {
-    let (state, db_path, creds_path) = test_state_unauth("auth_set_key_short");
-    let (status, val) = api_post(state, "/auth/set-key", json!({"api_key":"short"})).await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "short key should be rejected: {val}"
-    );
-    assert!(
-        val["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("at least 8"),
-        "error should mention minimum length: {val}"
-    );
+async fn auth_set_key_route_removed() {
+    let (state, db_path, creds_path) = test_state_unauth("auth_set_key_removed");
+    let (status, _body) = api_post(state, "/auth/set-key", json!({"api_key":"unused"})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(&creds_path);
 }
@@ -2005,10 +1969,11 @@ async fn cockpit_create_requires_auth_and_returns_setup_payload() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(val["code"], "auth_required");
     assert_eq!(val["setup_route"], "#/setup");
+    assert_eq!(val["next_steps"][0], "Open Setup");
     assert!(val["error"]
         .as_str()
         .unwrap_or_default()
-        .contains("agenthalo login"));
+        .contains("GitHub or Google"));
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(&creds_path);
 }

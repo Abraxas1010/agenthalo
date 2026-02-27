@@ -17,7 +17,7 @@ use crate::halo::agentpmt;
 use crate::halo::attest::{
     attest_session, resolve_session_id, save_attestation, AttestationRequest,
 };
-use crate::halo::auth::{is_authenticated, load_credentials, resolve_api_key, save_credentials};
+use crate::halo::auth::{is_authenticated, load_credentials, save_credentials};
 use crate::halo::config;
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::pq::has_wallet;
@@ -79,7 +79,6 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/config", get(api_config))
         .route("/config/wrap", post(api_config_wrap))
         .route("/config/x402", post(api_config_x402))
-        .route("/auth/set-key", post(api_auth_set_key))
         .route("/auth/oauth/start/{provider}", get(api_auth_oauth_start))
         .route("/auth/oauth/callback", get(api_auth_oauth_callback))
         .route("/profile", get(api_get_profile).post(api_save_profile))
@@ -504,11 +503,6 @@ pub struct WdkTransferRequest {
     amount: String,
 }
 
-#[derive(Deserialize)]
-pub struct AuthSetKeyRequest {
-    api_key: String,
-}
-
 #[derive(Deserialize, Default)]
 pub struct AuthOauthStartQuery {
     #[serde(default)]
@@ -844,20 +838,19 @@ fn configured_vault(
 }
 
 fn require_sensitive_access(state: &DashboardState) -> Result<(), (StatusCode, Json<Value>)> {
-    let authenticated = is_authenticated(&state.credentials_path)
-        || resolve_api_key(&state.credentials_path).is_some();
+    let authenticated = is_authenticated(&state.credentials_path);
     if authenticated {
         Ok(())
     } else {
         Err((
             StatusCode::UNAUTHORIZED,
             Json(json!({
-                "error": "authentication required: run `agenthalo login` or configure AGENTHALO_API_KEY, then retry",
+                "error": "authentication required: open Setup and sign in with GitHub or Google, then retry",
                 "code": "auth_required",
                 "setup_route": "#/setup",
                 "next_steps": [
-                    "agenthalo login",
-                    "export AGENTHALO_API_KEY=your-agenthalo-key"
+                    "Open Setup",
+                    "Select Continue with GitHub or Continue with Google"
                 ]
             })),
         ))
@@ -1297,7 +1290,7 @@ async fn flush_cockpit_trace_if_done(
 async fn api_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let db_path = &state.db_path;
     let creds_path = &state.credentials_path;
-    let has_auth = is_authenticated(creds_path) || resolve_api_key(creds_path).is_some();
+    let has_auth = is_authenticated(creds_path);
     let pmt_cfg = agentpmt::load_or_default();
     let x402_cfg = x402::load_x402_config();
 
@@ -2538,7 +2531,7 @@ async fn api_identity_pod_share(
 
 async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let creds_path = &state.credentials_path;
-    let has_auth = is_authenticated(creds_path) || resolve_api_key(creds_path).is_some();
+    let has_auth = is_authenticated(creds_path);
     let pmt_cfg = agentpmt::load_or_default();
     let addons_cfg = addons::load_or_default();
     let x402_cfg = x402::load_x402_config();
@@ -3193,32 +3186,6 @@ async fn api_wdk_delete(
         "message": "wallet permanently deleted",
         "ledger_logged": ledger_logged,
         "ledger_error": ledger_error,
-    })))
-}
-
-async fn api_auth_set_key(
-    AxumState(state): AxumState<DashboardState>,
-    Json(req): Json<AuthSetKeyRequest>,
-) -> ApiResult {
-    let key = req.api_key.trim();
-    if key.len() < 8 {
-        return Err(api_err(
-            StatusCode::BAD_REQUEST,
-            "api_key must be at least 8 characters",
-        ));
-    }
-
-    let mut creds = load_credentials(&state.credentials_path).unwrap_or_default();
-    creds.api_key = Some(key.to_string());
-    if creds.created_at == 0 {
-        creds.created_at = now_unix_secs();
-    }
-    save_credentials(&state.credentials_path, &creds).map_err(internal_err)?;
-
-    Ok(Json(json!({
-        "ok": true,
-        "authenticated": true,
-        "message": "dashboard API key saved",
     })))
 }
 
@@ -4927,7 +4894,7 @@ async fn api_nucleusdb_history(AxumState(state): AxumState<DashboardState>) -> A
 async fn api_capabilities(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     const MCP_NATIVE_TOOL_COUNT: usize = 22;
     let creds_path = &state.credentials_path;
-    let has_auth = is_authenticated(creds_path) || resolve_api_key(creds_path).is_some();
+    let has_auth = is_authenticated(creds_path);
     let pmt_cfg = agentpmt::load_or_default();
     let proxied_mcp_tools = if pmt_cfg.enabled {
         agentpmt::proxied_tools_for_listing().len()

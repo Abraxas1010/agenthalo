@@ -1,7 +1,7 @@
 use crate::cockpit::pty_manager::SessionEvent;
 use crate::cockpit::session::SessionStatus;
 use crate::dashboard::DashboardState;
-use crate::halo::auth::{is_authenticated, resolve_api_key};
+use crate::halo::auth::is_authenticated;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -13,12 +13,12 @@ use tokio::sync::broadcast;
 
 fn auth_required_payload() -> serde_json::Value {
     json!({
-        "error": "authentication required: run `agenthalo login` or configure AGENTHALO_API_KEY, then retry",
+        "error": "authentication required: open Setup and sign in with GitHub or Google, then retry",
         "code": "auth_required",
         "setup_route": "#/setup",
         "next_steps": [
-            "agenthalo login",
-            "export AGENTHALO_API_KEY=your-agenthalo-key"
+            "Open Setup",
+            "Select Continue with GitHub or Continue with Google"
         ]
     })
 }
@@ -28,9 +28,7 @@ pub async fn ws_handler(
     Path(session_id): Path<String>,
     State(state): State<DashboardState>,
 ) -> Response {
-    if !is_authenticated(&state.credentials_path)
-        && resolve_api_key(&state.credentials_path).is_none()
-    {
+    if !is_authenticated(&state.credentials_path) {
         // Browser WebSocket clients don't expose failed-upgrade bodies directly,
         // but we keep this JSON payload consistent with REST auth errors for
         // scripts and future non-browser clients.
@@ -172,11 +170,11 @@ mod tests {
         assert_eq!(payload["setup_route"], "#/setup");
         assert_eq!(
             payload["next_steps"][0].as_str().unwrap_or_default(),
-            "agenthalo login"
+            "Open Setup"
         );
         assert!(payload["error"]
             .as_str()
             .unwrap_or_default()
-            .contains("AGENTHALO_API_KEY"));
+            .contains("GitHub or Google"));
     }
 }
