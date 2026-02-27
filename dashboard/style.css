@@ -308,14 +308,8 @@ body.no-crt #crt-overlay { display: none; }
   position: relative;
 }
 .theme-toggle::after {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border: 2px solid rgba(255, 106, 0, 0.3);
-  border-radius: inherit;
-  pointer-events: none;
-  filter: url(#rough-border);
-  box-shadow: 0 0 4px rgba(255, 106, 0, 0.1);
+  content: none;
+  display: none;
 }
 
 .theme-toggle:hover {
@@ -542,11 +536,24 @@ body.no-crt #crt-overlay { display: none; }
 .setup-card-v2 {
   border: 2px solid var(--border);
   border-radius: 8px;
-  background: var(--bg-card);
+  background-color: var(--bg-card);
+  background-image:
+    /* Army-tan notecard wash (25% more transparent than prior revision) */
+    linear-gradient(180deg, rgba(155, 131, 110, 0.38), rgba(108, 87, 68, 0.31)),
+    /* Soft paper highlight */
+    radial-gradient(120% 90% at 12% 8%, rgba(219, 181, 126, 0.15) 0%, rgba(219, 181, 126, 0.00) 64%),
+    /* Faint notecard fiber striations */
+    repeating-linear-gradient(7deg, rgba(233, 215, 184, 0.04) 0 1px, rgba(108, 87, 68, 0.03) 1px 3px),
+    /* Paper grain */
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 240 240' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='paper' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.78' numOctaves='2' seed='37' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.58' intercept='0.20'/%3E%3CfeFuncG type='linear' slope='0.48' intercept='0.14'/%3E%3CfeFuncB type='linear' slope='0.34' intercept='0.08'/%3E%3CfeFuncA type='linear' slope='0.105' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23paper)'/%3E%3C/svg%3E");
+  background-size: auto, auto, auto, 240px 240px;
+  background-repeat: no-repeat, no-repeat, repeat, repeat;
+  background-blend-mode: normal, screen, soft-light, multiply;
   padding: 28px 32px 24px;
   margin-bottom: 20px;
   transition: border-color 0.3s, box-shadow 0.3s, opacity 0.3s;
   position: relative;
+  overflow: hidden;
 }
 .setup-card-v2::before {
   content: '';
@@ -566,7 +573,16 @@ body.no-crt #crt-overlay { display: none; }
 
 .setup-card-v2.card-done {
   border-color: rgba(0, 255, 65, 0.3);
-  background: linear-gradient(180deg, rgba(0, 255, 65, 0.03), var(--bg-card));
+  background-color: var(--bg-card);
+  background-image:
+    linear-gradient(180deg, rgba(0, 255, 65, 0.06), rgba(0, 255, 65, 0.01)),
+    linear-gradient(180deg, rgba(155, 131, 110, 0.38), rgba(108, 87, 68, 0.31)),
+    radial-gradient(120% 90% at 12% 8%, rgba(219, 181, 126, 0.14) 0%, rgba(219, 181, 126, 0.00) 64%),
+    repeating-linear-gradient(7deg, rgba(233, 215, 184, 0.04) 0 1px, rgba(108, 87, 68, 0.03) 1px 3px),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 240 240' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='paper2' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.78' numOctaves='2' seed='37' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.58' intercept='0.20'/%3E%3CfeFuncG type='linear' slope='0.48' intercept='0.14'/%3E%3CfeFuncB type='linear' slope='0.34' intercept='0.08'/%3E%3CfeFuncA type='linear' slope='0.105' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23paper2)'/%3E%3C/svg%3E");
+  background-size: auto, auto, auto, auto, 240px 240px;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat;
+  background-blend-mode: screen, normal, screen, soft-light, multiply;
 }
 
 .setup-card-v2.card-locked {
@@ -579,6 +595,59 @@ body.no-crt #crt-overlay { display: none; }
   align-items: center;
   gap: 14px;
   margin-bottom: 16px;
+}
+
+/* Increase contrast for content inside tan setup cards */
+.setup-card-v2 .card-title { color: var(--text-bright); }
+.setup-card-v2 .card-desc { color: #99df8f; }
+
+.setup-card-v2 .identity-profile-row {
+  background: rgba(6, 10, 4, 0.52);
+  border: 1px solid rgba(42, 85, 34, 0.9);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.setup-card-v2 .avatar-preview {
+  background: rgba(6, 10, 4, 0.9);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  box-shadow: inset 0 0 0 1px rgba(255, 106, 0, 0.22);
+}
+
+.setup-card-v2 .setup-input,
+.setup-card-v2 .setup-token-row input,
+.setup-card-v2 .setup-token-input input {
+  background: rgba(5, 9, 4, 0.84);
+  border-color: rgba(42, 85, 34, 0.95);
+  color: var(--text-bright);
+}
+
+.setup-card-v2 .setup-input::placeholder,
+.setup-card-v2 .setup-token-row input::placeholder,
+.setup-card-v2 .setup-token-input input::placeholder {
+  color: rgba(120, 203, 90, 0.9);
+}
+
+.setup-card-v2 .setup-input:focus,
+.setup-card-v2 .setup-token-row input:focus,
+.setup-card-v2 .setup-token-input input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(255, 106, 0, 0.22);
+}
+
+.setup-card-v2 .setup-alt-path {
+  background: rgba(6, 10, 4, 0.56);
+  border-color: rgba(42, 85, 34, 0.85);
+}
+
+.setup-card-v2 .setup-alt-path summary {
+  background: rgba(8, 12, 5, 0.46);
+  color: var(--text-muted);
+}
+
+.setup-card-v2 .setup-alt-path .alt-body {
+  background: rgba(4, 8, 3, 0.55);
 }
 
 .setup-card-v2 .card-icon {
@@ -1559,16 +1628,10 @@ tr.clickable { cursor: pointer; }
   transition: all 0.15s;
   position: relative;
 }
-/* Hand-drawn rough border on buttons */
+/* Clean button border (no rough-border distortion layer) */
 .btn::after {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border: 2px solid rgba(255, 106, 0, 0.35);
-  border-radius: inherit;
-  pointer-events: none;
-  filter: url(#rough-border);
-  box-shadow: 0 0 5px rgba(255, 106, 0, 0.12);
+  content: none;
+  display: none;
 }
 
 .btn:hover {
@@ -1587,14 +1650,20 @@ tr.clickable { cursor: pointer; }
   border: 2px solid var(--accent-dim);
 }
 .btn-primary::after {
-  border-color: rgba(255, 106, 0, 0.55);
-  box-shadow: 0 0 8px rgba(255, 106, 0, 0.2);
+  content: none;
+  display: none;
 }
 .btn-primary:hover {
   background: rgba(255, 184, 48, 0.25);
   color: var(--accent-hover);
   border-color: var(--accent);
   text-shadow: var(--glow-amber);
+}
+
+/* Save Name button: disable rough-border pseudo-element to avoid distortion */
+#profile-save-btn::after {
+  content: none;
+  display: none;
 }
 
 .btn-sm { padding: 4px 10px; font-size: 11px; }
