@@ -1,11 +1,48 @@
 use crate::halo::config;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum IdentitySecurityTier {
+    MaxSafe,
+    LessSafe,
+    LowSecurity,
+}
+
+pub const DEFAULT_SECURITY_TIER: IdentitySecurityTier = IdentitySecurityTier::LessSafe;
+
+pub fn default_security_tier_str() -> &'static str {
+    DEFAULT_SECURITY_TIER.as_str()
+}
+
+impl IdentitySecurityTier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MaxSafe => "max-safe",
+            Self::LessSafe => "less-safe",
+            Self::LowSecurity => "low-security",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "max-safe" | "max_safe" | "maxsafe" => Some(Self::MaxSafe),
+            "less-safe" | "less_safe" | "lesssafe" | "balanced" | "a_little_rebellious" => {
+                Some(Self::LessSafe)
+            }
+            "low-security" | "low_security" | "low" | "why-bother" => Some(Self::LowSecurity),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct IdentityConfig {
     pub version: Option<u32>,
     #[serde(default)]
     pub anonymous_mode: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_tier: Option<IdentitySecurityTier>,
     pub device: Option<DeviceIdentity>,
     pub network: Option<NetworkIdentity>,
     #[serde(default)]
@@ -22,6 +59,10 @@ pub struct DeviceIdentity {
     #[serde(default)]
     pub selected_components: Vec<String>,
     pub composite_fingerprint_hex: Option<String>,
+    #[serde(default)]
+    pub puf_fingerprint_hex: Option<String>,
+    #[serde(default)]
+    pub puf_tier: Option<String>,
     #[serde(default)]
     pub entropy_bits: u32,
     pub last_collected: Option<String>,
@@ -73,6 +114,23 @@ impl IdentityConfig {
     pub fn is_configured(&self) -> bool {
         self.anonymous_mode || self.device.as_ref().map(|d| d.enabled).unwrap_or(false)
     }
+}
+
+pub fn network_is_configured(network: &NetworkIdentity) -> bool {
+    network.share_local_ip
+        || network.share_public_ip
+        || network.share_mac
+        || network
+            .local_ip_hash
+            .as_deref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+        || network
+            .public_ip_hash
+            .as_deref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+        || !network.mac_addresses.is_empty()
 }
 
 pub fn load() -> IdentityConfig {

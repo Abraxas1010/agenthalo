@@ -11,6 +11,11 @@ const HASH_DOMAIN: &str = "agenthalo.identity.ledger.v1";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityLedgerKind {
+    ProfileUpdated,
+    DeviceUpdated,
+    NetworkUpdated,
+    AnonymousModeUpdated,
+    SafetyTierApplied,
     SocialTokenConnected,
     SocialTokenRevoked,
     SuperSecureUpdated,
@@ -61,6 +66,9 @@ pub struct LedgerProjection {
     pub total_entries: usize,
     pub head_hash: Option<String>,
     pub chain_valid: bool,
+    pub signed_entries: usize,
+    pub unsigned_entries: usize,
+    pub fully_signed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -314,9 +322,169 @@ pub fn append_super_secure_update(
     append_entry(entry)
 }
 
-pub fn project_social_status(now: u64) -> Result<LedgerProjection, String> {
+pub fn append_profile_update(
+    display_name: Option<&str>,
+    avatar_type: Option<&str>,
+    name_locked: bool,
+    name_revision: u64,
+) -> Result<IdentityLedgerEntry, String> {
+    let entry = IdentityLedgerEntry {
+        version: LEDGER_VERSION,
+        seq: 0,
+        timestamp: now_unix(),
+        kind: IdentityLedgerKind::ProfileUpdated,
+        provider: None,
+        token_ref_sha256: None,
+        expires_at: None,
+        status: "updated".to_string(),
+        payload: serde_json::json!({
+            "display_name_set": display_name.map(|v| !v.trim().is_empty()).unwrap_or(false),
+            "display_name_preview": display_name.map(|v| v.chars().take(2).collect::<String>()),
+            "avatar_type": avatar_type,
+            "name_locked": name_locked,
+            "name_revision": name_revision,
+        }),
+        prev_hash: None,
+        entry_hash: String::new(),
+        signature: None,
+    };
+    append_entry(entry)
+}
+
+pub fn append_device_update(
+    enabled: bool,
+    entropy_bits: u32,
+    component_count: usize,
+    has_browser_fingerprint: bool,
+    puf_fingerprint_hex: Option<&str>,
+    puf_tier: Option<&str>,
+) -> Result<IdentityLedgerEntry, String> {
+    let entry = IdentityLedgerEntry {
+        version: LEDGER_VERSION,
+        seq: 0,
+        timestamp: now_unix(),
+        kind: IdentityLedgerKind::DeviceUpdated,
+        provider: None,
+        token_ref_sha256: None,
+        expires_at: None,
+        status: if enabled { "enabled" } else { "disabled" }.to_string(),
+        payload: serde_json::json!({
+            "enabled": enabled,
+            "entropy_bits": entropy_bits,
+            "component_count": component_count,
+            "has_browser_fingerprint": has_browser_fingerprint,
+            "has_puf_binding": puf_fingerprint_hex.map(|v| !v.trim().is_empty()).unwrap_or(false),
+            "puf_tier": puf_tier,
+        }),
+        prev_hash: None,
+        entry_hash: String::new(),
+        signature: None,
+    };
+    append_entry(entry)
+}
+
+pub fn append_network_update(
+    share_local_ip: bool,
+    share_public_ip: bool,
+    share_mac: bool,
+    local_ip_hash_present: bool,
+    public_ip_hash_present: bool,
+    mac_count: usize,
+) -> Result<IdentityLedgerEntry, String> {
+    let configured = share_local_ip
+        || share_public_ip
+        || share_mac
+        || local_ip_hash_present
+        || public_ip_hash_present
+        || mac_count > 0;
+    let entry = IdentityLedgerEntry {
+        version: LEDGER_VERSION,
+        seq: 0,
+        timestamp: now_unix(),
+        kind: IdentityLedgerKind::NetworkUpdated,
+        provider: None,
+        token_ref_sha256: None,
+        expires_at: None,
+        status: if configured {
+            "configured".to_string()
+        } else {
+            "cleared".to_string()
+        },
+        payload: serde_json::json!({
+            "share_local_ip": share_local_ip,
+            "share_public_ip": share_public_ip,
+            "share_mac": share_mac,
+            "local_ip_hash_present": local_ip_hash_present,
+            "public_ip_hash_present": public_ip_hash_present,
+            "mac_count": mac_count,
+        }),
+        prev_hash: None,
+        entry_hash: String::new(),
+        signature: None,
+    };
+    append_entry(entry)
+}
+
+pub fn append_anonymous_mode_update(
+    enabled: bool,
+    cleared_device: bool,
+    cleared_network: bool,
+) -> Result<IdentityLedgerEntry, String> {
+    let entry = IdentityLedgerEntry {
+        version: LEDGER_VERSION,
+        seq: 0,
+        timestamp: now_unix(),
+        kind: IdentityLedgerKind::AnonymousModeUpdated,
+        provider: None,
+        token_ref_sha256: None,
+        expires_at: None,
+        status: if enabled { "enabled" } else { "disabled" }.to_string(),
+        payload: serde_json::json!({
+            "enabled": enabled,
+            "cleared_device": cleared_device,
+            "cleared_network": cleared_network,
+        }),
+        prev_hash: None,
+        entry_hash: String::new(),
+        signature: None,
+    };
+    append_entry(entry)
+}
+
+pub fn append_safety_tier_applied(
+    tier: &str,
+    applied_by: &str,
+    step_failures: usize,
+) -> Result<IdentityLedgerEntry, String> {
+    let normalized = tier.trim().to_ascii_lowercase();
+    let entry = IdentityLedgerEntry {
+        version: LEDGER_VERSION,
+        seq: 0,
+        timestamp: now_unix(),
+        kind: IdentityLedgerKind::SafetyTierApplied,
+        provider: None,
+        token_ref_sha256: None,
+        expires_at: None,
+        status: "applied".to_string(),
+        payload: serde_json::json!({
+            "tier": normalized,
+            "applied_by": applied_by,
+            "step_failures": step_failures,
+        }),
+        prev_hash: None,
+        entry_hash: String::new(),
+        signature: None,
+    };
+    append_entry(entry)
+}
+
+/// Build the current immutable-ledger projection:
+/// per-provider social activity plus global chain/signing status.
+pub fn project_ledger_status(now: u64) -> Result<LedgerProjection, String> {
     let entries = load_entries()?;
     let chain_valid = verify_chain(&entries).is_ok();
+    let signed_entries = entries.iter().filter(|e| e.signature.is_some()).count();
+    let unsigned_entries = entries.len().saturating_sub(signed_entries);
     let mut map: BTreeMap<String, SocialProviderProjection> = BTreeMap::new();
 
     for entry in &entries {
@@ -341,6 +509,11 @@ pub fn project_social_status(now: u64) -> Result<LedgerProjection, String> {
         state.last_status = Some(entry.status.clone());
 
         match entry.kind {
+            IdentityLedgerKind::ProfileUpdated
+            | IdentityLedgerKind::DeviceUpdated
+            | IdentityLedgerKind::NetworkUpdated
+            | IdentityLedgerKind::AnonymousModeUpdated
+            | IdentityLedgerKind::SafetyTierApplied => {}
             IdentityLedgerKind::SocialTokenConnected => {
                 let expired = entry.expires_at.map(|exp| exp <= now).unwrap_or(false);
                 state.expired = expired;
@@ -367,7 +540,14 @@ pub fn project_social_status(now: u64) -> Result<LedgerProjection, String> {
         total_entries: entries.len(),
         head_hash: entries.last().map(|e| e.entry_hash.clone()),
         chain_valid,
+        signed_entries,
+        unsigned_entries,
+        fully_signed: entries.is_empty() || unsigned_entries == 0,
     })
+}
+
+pub fn project_social_status(now: u64) -> Result<LedgerProjection, String> {
+    project_ledger_status(now)
 }
 
 pub fn encode_oauth_state(provider: &str, expires_at: u64, secret: &str) -> String {
@@ -498,7 +678,7 @@ mod tests {
             source: "test",
         })
         .expect("append connect");
-        let proj = project_social_status(now_unix()).expect("project");
+        let proj = project_ledger_status(now_unix()).expect("project");
         assert_eq!(proj.providers.len(), 1);
         assert!(!proj.providers[0].active);
         assert!(proj.providers[0].expired);
@@ -509,5 +689,22 @@ mod tests {
         let secret = "test-secret";
         let raw = encode_oauth_state("google", now_unix() + 60, secret);
         decode_oauth_state(&raw, "google", now_unix(), secret).expect("state must validate");
+    }
+
+    #[test]
+    fn appends_all_identity_mutation_kinds() {
+        let _home = set_tmp_home("all_kinds");
+        append_profile_update(Some("Hal"), Some("initials"), true, 0).expect("profile");
+        append_device_update(true, 64, 3, true, Some("sha256:abc"), Some("consumer"))
+            .expect("device");
+        append_network_update(true, false, true, true, false, 1).expect("network");
+        append_anonymous_mode_update(false, false, false).expect("anon");
+        append_safety_tier_applied("max-safe", "test", 0).expect("tier");
+        append_super_secure_update("totp", true, serde_json::json!({"label":"T"}))
+            .expect("super secure");
+
+        let entries = load_entries().expect("load entries");
+        assert_eq!(entries.len(), 6);
+        verify_chain(&entries).expect("chain should verify");
     }
 }

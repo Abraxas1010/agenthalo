@@ -1110,8 +1110,10 @@ async function renderSetup() {
   // Identity profile/state
   let savedProfile = { display_name: '', avatar_type: 'none' };
   let identityCfg = { anonymous_mode: false };
+  let tierCfg = { tier: '' };
   try { savedProfile = await api('/profile'); } catch (_e) {}
   try { identityCfg = (await api('/identity/status')) || identityCfg; } catch (_e) {}
+  try { tierCfg = (await api('/identity/tier')) || tierCfg; } catch (_e) {}
   const profileSet = !!(savedProfile.display_name && String(savedProfile.display_name).trim().length > 0);
 
   // Step states
@@ -1137,15 +1139,30 @@ async function renderSetup() {
     .join('')
     .slice(0, 2)
     .toUpperCase() || '?';
+  const hasSavedProfileName = !!savedProfile.name_locked
+    || !!(savedProfile.display_name && String(savedProfile.display_name).trim());
   let savedSecurityTier = '';
   try { savedSecurityTier = localStorage.getItem('halo_identity_security_tier') || ''; } catch (_e) {}
   const securityTierImageByKey = {
     'max-safe': 'img/agenthalosafe_badge.png',
     'less-safe': 'img/agenthalomediumsecurity_badge.png',
-    'why-bother': 'img/agenthalobrownsecurity_badge.png',
     'low-security': 'img/agenthalolowsecurity_badge.png',
   };
-  const initialSecurityTier = securityTierImageByKey[savedSecurityTier] ? savedSecurityTier : 'low-security';
+  const showLowSafetyTierOption = false;
+  const deferIdentityRoadmapTracks = true;
+  const backendDefaultTier = securityTierImageByKey[String(tierCfg.default_tier || '').trim()]
+    ? String(tierCfg.default_tier).trim()
+    : 'less-safe';
+  const serverTier = String(tierCfg.tier || '').trim();
+  const preferredTier = securityTierImageByKey[serverTier] ? serverTier : savedSecurityTier;
+  const appliedSecurityTier = securityTierImageByKey[serverTier] ? serverTier : '';
+  const initialSecurityTier = (
+    securityTierImageByKey[preferredTier]
+      && (showLowSafetyTierOption || preferredTier !== 'why-bother')
+  ) ? preferredTier : backendDefaultTier;
+  if (securityTierImageByKey[serverTier]) {
+    try { localStorage.setItem('halo_identity_security_tier', serverTier); } catch (_e) {}
+  }
 
   content.innerHTML = `
   <div class="setup-page-wrap">
@@ -1183,25 +1200,25 @@ async function renderSetup() {
         <div class="identity-profile-row">
           <div class="avatar-preview" id="avatar-preview">${esc(initials)}</div>
           <div class="identity-profile-fields">
-            <input type="text" id="profile-name-input" class="setup-input"
+            <input type="text" id="profile-name-input" class="setup-input ${hasSavedProfileName ? 'profile-name-locked' : ''}"
                    placeholder="What do you want to name me?"
-                   value="${esc(savedProfile.display_name || '')}" maxlength="64">
+                   value="${esc(savedProfile.display_name || '')}" maxlength="64"
+                   ${hasSavedProfileName ? 'readonly data-locked="true"' : ''}>
             <button class="btn btn-primary btn-sm" id="profile-save-btn"
-                    style="border-radius:6px;padding:8px 16px">Save Name</button>
+                    style="border-radius:6px;padding:8px 16px">${hasSavedProfileName ? 'Rename Key' : 'Save Name'}</button>
           </div>
         </div>
       </div>
 
       <div class="identity-safety-intent-label">I Want To Be</div>
-      <div class="identity-security-tier-shell" aria-label="Identity safety tier">
-        <button type="button" class="security-tier-btn tier-safe ${initialSecurityTier === 'max-safe' ? 'is-selected' : ''}" data-tier="max-safe">
-          As Safe as Possible
+      <div class="identity-security-tier-shell ${showLowSafetyTierOption ? '' : 'two-options'}" aria-label="Identity safety tier">
+        <button type="button" class="security-tier-btn tier-safe ${initialSecurityTier === 'max-safe' ? 'is-selected' : ''} ${appliedSecurityTier === 'max-safe' ? 'is-complete' : ''}" data-tier="max-safe">
+          <span>As Safe as Possible</span>
+          <span class="tier-complete-mark" aria-hidden="true">&#10003;</span>
         </button>
-        <button type="button" class="security-tier-btn tier-caution ${initialSecurityTier === 'less-safe' ? 'is-selected' : ''}" data-tier="less-safe">
-          Less Safe then I would like
-        </button>
-        <button type="button" class="security-tier-btn tier-low ${initialSecurityTier === 'why-bother' ? 'is-selected' : ''}" data-tier="why-bother">
-          Why even bother?
+        <button type="button" class="security-tier-btn tier-caution ${initialSecurityTier === 'less-safe' ? 'is-selected' : ''} ${appliedSecurityTier === 'less-safe' ? 'is-complete' : ''}" data-tier="less-safe">
+          <span>A Little Rebellious</span>
+          <span class="tier-complete-mark" aria-hidden="true">&#10003;</span>
         </button>
       </div>
       <div class="identity-tier-control-row">
@@ -1211,7 +1228,7 @@ async function renderSetup() {
       <div class="identity-tech-options-title">Individual Technical Options</div>
 
       <details class="setup-alt-path" id="setup-device-details" style="margin-top:12px">
-        <summary>Device Fingerprint</summary>
+        <summary>Device Fingerprint ${identityCfg.device_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ''}</summary>
         <div class="alt-body">
           <div class="device-fingerprint-layout">
             <div class="device-fingerprint-main">
@@ -1226,7 +1243,7 @@ async function renderSetup() {
               </p>
               <button class="btn btn-primary btn-sm" id="device-scan-btn"
                       style="border-radius:6px;padding:8px 16px;margin-bottom:12px">
-                Scan Device
+                ${identityCfg.device_configured ? 'Rescan Device' : 'Scan Device'}
               </button>
               <div id="device-scan-results" style="display:none;width:100%;max-width:460px">
                 <div id="device-components-list"></div>
@@ -1236,7 +1253,7 @@ async function renderSetup() {
                   Save Device Identity
                 </button>
               </div>
-              <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
+              <div id="device-scan-status" style="font-size:12px;margin-top:8px">${identityCfg.device_configured ? '<span style="color:var(--green)">&#10003; Device identity already configured. Re-scan to update it.</span>' : ''}</div>
             </div>
             <div class="device-fingerprint-visual">
               <img src="img/agenthalofingerprint_panel.png" alt="Fingerprint security visual" onerror="this.style.display='none'">
@@ -1246,7 +1263,7 @@ async function renderSetup() {
       </details>
 
       <details class="setup-alt-path" id="setup-network-details" style="margin-top:12px">
-        <summary>Network Identity</summary>
+        <summary>Network Identity ${identityCfg.network_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ''}</summary>
         <div class="alt-body">
           <div class="network-identity-layout">
             <div class="network-identity-main">
@@ -1258,9 +1275,11 @@ async function renderSetup() {
                 Optionally share network identifiers to strengthen your fingerprint.
               </p>
               <div id="network-info" style="font-size:13px;color:var(--text-dim);width:100%;max-width:460px">
-                Loading network info...
+                ${identityCfg.network_configured
+                  ? '&#10003; Network identity already configured. Re-open detection and update any values you want to share.'
+                  : 'Loading network info...'}
               </div>
-              <button class="btn btn-sm btn-primary" id="network-save-btn" style="border-radius:6px;padding:8px 16px;margin-top:10px">Save Network Identity</button>
+              <button class="btn btn-sm btn-primary" id="network-save-btn" style="border-radius:6px;padding:8px 16px;margin-top:10px">${identityCfg.network_configured ? 'Update Network Identity' : 'Save Network Identity'}</button>
               <p style="font-size:11px;color:var(--text-dim);margin-top:8px;max-width:460px">
                 IP/MAC values are hashed before storage. Raw values shown here for your reference only.
               </p>
@@ -1272,7 +1291,7 @@ async function renderSetup() {
         </div>
       </details>
 
-      <details class="setup-alt-path" id="setup-social-details" style="margin-top:12px">
+      <details class="setup-alt-path" id="setup-social-details" style="margin-top:12px;${deferIdentityRoadmapTracks ? 'display:none;' : ''}">
         <summary>Social Login & OAuth Tokens</summary>
         <div class="alt-body">
           <div class="social-identity-layout">
@@ -1303,8 +1322,8 @@ async function renderSetup() {
         </div>
       </details>
 
-      <div class="identity-super-secure-title">Super Secure Options</div>
-      <details class="setup-alt-path" id="setup-super-secure-details" style="margin-top:12px">
+      <div class="identity-super-secure-title" style="${deferIdentityRoadmapTracks ? 'display:none;' : ''}">Super Secure Options</div>
+      <details class="setup-alt-path" id="setup-super-secure-details" style="margin-top:12px;${deferIdentityRoadmapTracks ? 'display:none;' : ''}">
         <summary>Advanced Verification Tracks</summary>
         <div class="alt-body">
           <div class="super-secure-layout">
@@ -1339,6 +1358,12 @@ async function renderSetup() {
           </div>
         </div>
       </details>
+      ${deferIdentityRoadmapTracks ? `
+      <div class="setup-deferred-note">
+        Social Login, Super Secure Options, and Advanced Verification Tracks are saved as deferred roadmap features.
+        They are intentionally hidden in the live flow for now and can be re-enabled later without rework.
+      </div>
+      ` : ''}
 
       <div class="anon-mode-shell ${identityCfg.anonymous_mode ? 'is-active' : ''}" id="anon-mode-shell">
         <div class="anon-mode-avatar-wrap" aria-hidden="true">
@@ -1351,9 +1376,12 @@ async function renderSetup() {
             No device fingerprints, no network identifiers. Each session gets a random ephemeral ID.
           </p>
         </div>
-        <button class="anonymous-launch-btn ${identityCfg.anonymous_mode ? 'is-armed' : ''}" type="button" id="anonymous-mode-launch-btn" aria-pressed="${identityCfg.anonymous_mode ? 'true' : 'false'}">
-          ${identityCfg.anonymous_mode ? 'Disengage' : 'Engage'}
-        </button>
+        <div class="anonymous-launch-wrap">
+          <img class="anonymous-launch-ninja" src="img/agenthaloninja.png" alt="" onerror="this.style.display='none'">
+          <button class="anonymous-launch-btn ${identityCfg.anonymous_mode ? 'is-armed' : ''}" type="button" id="anonymous-mode-launch-btn" aria-pressed="${identityCfg.anonymous_mode ? 'true' : 'false'}">
+            ${identityCfg.anonymous_mode ? 'Disengage' : 'Engage'}
+          </button>
+        </div>
         <input type="checkbox" id="anonymous-mode-check" class="anon-mode-hidden-checkbox" ${identityCfg.anonymous_mode ? 'checked' : ''}>
       </div>
     </div>
@@ -1787,12 +1815,29 @@ async function renderSetup() {
   const profileNameInput = document.getElementById('profile-name-input');
   if (profileSaveBtn && profileNameInput) {
     profileSaveBtn.addEventListener('click', async () => {
+      const locked = profileNameInput.hasAttribute('readonly');
+      if (locked) {
+        profileNameInput.removeAttribute('readonly');
+        profileNameInput.dataset.locked = 'false';
+        profileNameInput.classList.remove('profile-name-locked');
+        profileSaveBtn.dataset.renamePending = '1';
+        profileSaveBtn.textContent = 'Save Name';
+        profileNameInput.focus();
+        profileNameInput.select();
+        return;
+      }
       const name = (profileNameInput.value || '').trim();
       if (!name) return;
+      const rename = profileSaveBtn.dataset.renamePending === '1';
       profileSaveBtn.disabled = true;
       profileSaveBtn.textContent = 'Saving...';
       try {
-        await apiPost('/profile', { display_name: name, avatar_type: 'initials' });
+        await apiPost('/profile', { display_name: name, avatar_type: 'initials', rename });
+        profileNameInput.setAttribute('readonly', 'readonly');
+        profileNameInput.dataset.locked = 'true';
+        profileNameInput.classList.add('profile-name-locked');
+        profileSaveBtn.dataset.renamePending = '0';
+        profileSaveBtn.textContent = 'Rename Key';
         window._invalidateSetupState();
         await fetchSetupState(true);
         await renderSetup();
@@ -1836,24 +1881,26 @@ async function renderSetup() {
     else if (tone === 'error') tierStatusNode.classList.add('is-error');
   };
   const applyTierCheckboxPreset = (tier) => {
-    if (tierDeviceEnable) tierDeviceEnable.checked = tier !== 'why-bother';
-    if (tierDeviceComponents) tierDeviceComponents.checked = tier !== 'why-bother';
+    if (tierDeviceEnable) tierDeviceEnable.checked = true;
+    if (tierDeviceComponents) tierDeviceComponents.checked = true;
     if (tierDeviceBrowser) tierDeviceBrowser.checked = tier === 'max-safe';
-    if (shareLocalIpInput) shareLocalIpInput.checked = tier !== 'why-bother';
+    if (shareLocalIpInput) shareLocalIpInput.checked = true;
     if (shareMacInput) shareMacInput.checked = tier === 'max-safe';
-    socialProviderChecks.forEach((cb) => {
-      const provider = cb.dataset.provider || '';
-      if (tier === 'max-safe') cb.checked = provider === 'google';
-      else if (tier === 'less-safe') cb.checked = provider === 'google' || provider === 'github';
-      else cb.checked = false;
-    });
-    if (superPasskeyInput) superPasskeyInput.checked = tier === 'max-safe';
-    if (superSecurityKeyInput) superSecurityKeyInput.checked = tier === 'max-safe';
-    if (superTotpInput) superTotpInput.checked = tier !== 'why-bother';
+    if (!deferIdentityRoadmapTracks) {
+      socialProviderChecks.forEach((cb) => {
+        const provider = cb.dataset.provider || '';
+        if (tier === 'max-safe') cb.checked = provider === 'google';
+        else if (tier === 'less-safe') cb.checked = provider === 'google' || provider === 'github';
+        else cb.checked = false;
+      });
+      if (superPasskeyInput) superPasskeyInput.checked = tier === 'max-safe';
+      if (superSecurityKeyInput) superSecurityKeyInput.checked = tier === 'max-safe';
+      if (superTotpInput) superTotpInput.checked = true;
+    }
     const scannedComponentChecks = content.querySelectorAll('input[name="hw-comp"]');
     scannedComponentChecks.forEach((cb) => {
       if (cb.value === 'browser_fingerprint') cb.checked = tier === 'max-safe';
-      else cb.checked = tier !== 'why-bother';
+      else cb.checked = true;
     });
   };
   const ensureNetworkIdentityLoaded = async (forceRefresh = false) => {
@@ -1878,9 +1925,13 @@ async function renderSetup() {
   };
   const setSocialStatus = (message, tone = 'ok') => {
     if (!socialStatusNode) return;
-    socialStatusNode.innerHTML = `<span style="color:${tone === 'error' ? 'var(--red)' : tone === 'warn' ? 'var(--yellow)' : 'var(--green)'}">${esc(message)}</span>`;
+    socialStatusNode.textContent = String(message || '');
+    socialStatusNode.style.color = tone === 'error'
+      ? 'var(--red)'
+      : (tone === 'warn' ? 'var(--yellow)' : 'var(--green)');
   };
   const refreshSocialStatus = async () => {
+    if (deferIdentityRoadmapTracks) return;
     try {
       const resp = await api('/identity/social');
       cachedSocialStatus = resp;
@@ -1966,6 +2017,7 @@ async function renderSetup() {
   };
   window.addEventListener('message', window.__haloSocialOauthListener);
   const refreshSuperSecureStatus = async () => {
+    if (deferIdentityRoadmapTracks) return;
     try {
       const resp = await api('/identity/super-secure');
       if (superPasskeyInput) superPasskeyInput.checked = !!resp.passkey_enabled;
@@ -2046,31 +2098,6 @@ async function renderSetup() {
     };
     try {
       applyTierCheckboxPreset(tier);
-      if (tier === 'why-bother') {
-        if (anonCheck && !anonCheck.checked) {
-          await bestEffort('anonymous_mode_enable', async () => {
-            await apiPost('/identity/anonymous', { enabled: true });
-            anonCheck.checked = true;
-            if (anonShell) anonShell.classList.add('is-active');
-            if (anonLaunchBtn) {
-              anonLaunchBtn.classList.add('is-armed');
-              anonLaunchBtn.textContent = 'Disengage';
-              anonLaunchBtn.setAttribute('aria-pressed', 'true');
-            }
-          });
-        }
-        setTierStatus(
-          stepFailures.length
-            ? `Low-security preset applied with ${stepFailures.length} skipped step(s).`
-            : 'Low-security preset applied. Anonymous mode engaged.',
-          stepFailures.length ? 'warn' : 'warn',
-        );
-        await refreshSocialStatus();
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        updateNavLockState();
-        return;
-      }
 
       if (anonCheck && anonCheck.checked) {
         await bestEffort('anonymous_mode_disable', async () => {
@@ -2122,32 +2149,46 @@ async function renderSetup() {
         });
       });
 
-      // Apply super-secure selections immediately to backend state.
-      await bestEffort(
-        'super_secure_passkey',
-        async () => apiPost('/identity/super-secure', { option: 'passkey', enabled: !!superPasskeyInput?.checked, metadata: {} }),
-      );
-      await bestEffort(
-        'super_secure_security_key',
-        async () => apiPost('/identity/super-secure', { option: 'security_key', enabled: !!superSecurityKeyInput?.checked, metadata: {} }),
-      );
-      await bestEffort(
-        'super_secure_totp',
-        async () => apiPost('/identity/super-secure', { option: 'totp', enabled: !!superTotpInput?.checked, metadata: { label: superTotpLabelInput?.value || '' } }),
-      );
+      if (!deferIdentityRoadmapTracks) {
+        // Apply super-secure selections immediately to backend state.
+        await bestEffort(
+          'super_secure_passkey',
+          async () => apiPost('/identity/super-secure', { option: 'passkey', enabled: !!superPasskeyInput?.checked, metadata: {} }),
+        );
+        await bestEffort(
+          'super_secure_security_key',
+          async () => apiPost('/identity/super-secure', { option: 'security_key', enabled: !!superSecurityKeyInput?.checked, metadata: {} }),
+        );
+        await bestEffort(
+          'super_secure_totp',
+          async () => apiPost('/identity/super-secure', { option: 'totp', enabled: !!superTotpInput?.checked, metadata: { label: superTotpLabelInput?.value || '' } }),
+        );
+      }
+
+      await bestEffort('security_tier_persist', async () => {
+        await apiPost('/identity/tier', {
+          tier,
+          applied_by: 'dashboard_setup',
+          step_failures: stepFailures.length,
+        });
+      });
 
       if (tier === 'max-safe') {
-        const days = Number(socialExpiryInput?.value || 30);
-        await bestEffort('social_google_oauth', async () => {
-          const ok = await startSocialOAuth('google', days, true, true);
-          if (!ok) {
-            throw new Error('oauth not completed');
-          }
-        });
+        if (!deferIdentityRoadmapTracks) {
+          const days = Number(socialExpiryInput?.value || 30);
+          await bestEffort('social_google_oauth', async () => {
+            const ok = await startSocialOAuth('google', days, true, true);
+            if (!ok) {
+              throw new Error('oauth not completed');
+            }
+          });
+        }
         setTierStatus(
           stepFailures.length
             ? `Max-safe preset applied with ${stepFailures.length} skipped step(s).`
-            : 'Max-safe preset applied. Google social login launched automatically.',
+            : (deferIdentityRoadmapTracks
+                ? 'Max-safe preset applied. Deferred identity tracks remain disabled.'
+                : 'Max-safe preset applied. Google social login launched automatically.'),
           stepFailures.length ? 'warn' : 'ok',
         );
       } else {
@@ -2273,7 +2314,7 @@ async function renderSetup() {
         if (statusNode) statusNode.innerHTML = `<span style="color:var(--red)">Scan failed: ${esc(String(e.message || e))}</span>`;
       }
       deviceScanBtn.disabled = false;
-      deviceScanBtn.textContent = 'Scan Device';
+      deviceScanBtn.textContent = (identityCfg.device_configured || !!lastDeviceScan) ? 'Rescan Device' : 'Scan Device';
     });
   }
 
@@ -2377,6 +2418,7 @@ async function renderSetup() {
     networkSaveBtn.addEventListener('click', async () => {
       networkSaveBtn.disabled = true;
       networkSaveBtn.textContent = 'Saving...';
+      let rerendered = false;
       const infoNode = document.getElementById('network-info');
       try {
         const resp = await ensureNetworkIdentityLoaded();
@@ -2391,11 +2433,18 @@ async function renderSetup() {
           mac_addresses: macAddresses,
         });
         if (infoNode) infoNode.innerHTML += '<div style="margin-top:8px;color:var(--green);font-size:12px">&#10003; Network identity saved.</div>';
+        window._invalidateSetupState();
+        await fetchSetupState(true);
+        await renderSetup();
+        updateNavLockState();
+        rerendered = true;
       } catch (e) {
         if (infoNode) infoNode.innerHTML += `<div style="margin-top:8px;color:var(--red);font-size:12px">Failed to save: ${esc(String(e.message || e))}</div>`;
       } finally {
-        networkSaveBtn.disabled = false;
-        networkSaveBtn.textContent = 'Save Network Identity';
+        if (!rerendered && networkSaveBtn.isConnected) {
+          networkSaveBtn.disabled = false;
+          networkSaveBtn.textContent = identityCfg.network_configured ? 'Update Network Identity' : 'Save Network Identity';
+        }
       }
     });
   }

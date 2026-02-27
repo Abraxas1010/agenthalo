@@ -88,6 +88,10 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
             get(api_identity_network).post(api_identity_network_save),
         )
         .route("/identity/anonymous", post(api_identity_anonymous))
+        .route(
+            "/identity/tier",
+            get(api_identity_tier_status).post(api_identity_tier_update),
+        )
         .route("/identity/status", get(api_identity_status))
         .route("/identity/social", get(api_identity_social_status))
         .route(
@@ -451,6 +455,15 @@ pub struct IdentityPodShareRequest {
     require_grants: Option<bool>,
 }
 
+#[derive(Deserialize)]
+pub struct IdentityTierUpdateRequest {
+    tier: String,
+    #[serde(default)]
+    applied_by: Option<String>,
+    #[serde(default)]
+    step_failures: Option<usize>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -463,6 +476,41 @@ fn api_err(code: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
 
 fn internal_err(msg: String) -> (StatusCode, Json<Value>) {
     api_err(StatusCode::INTERNAL_SERVER_ERROR, &msg)
+}
+
+fn parse_identity_tier(raw: &str) -> Option<crate::halo::identity::IdentitySecurityTier> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "max-safe" | "max_safe" | "maxsafe" => {
+            Some(crate::halo::identity::IdentitySecurityTier::MaxSafe)
+        }
+        "less-safe" | "less_safe" | "lesssafe" | "balanced" | "a_little_rebellious" => {
+            Some(crate::halo::identity::IdentitySecurityTier::LessSafe)
+        }
+        "low-security" | "low_security" | "low" | "why-bother" => {
+            Some(crate::halo::identity::IdentitySecurityTier::LowSecurity)
+        }
+        _ => None,
+    }
+}
+
+fn identity_tier_as_str(tier: &crate::halo::identity::IdentitySecurityTier) -> &'static str {
+    match tier {
+        crate::halo::identity::IdentitySecurityTier::MaxSafe => "max-safe",
+        crate::halo::identity::IdentitySecurityTier::LessSafe => "less-safe",
+        crate::halo::identity::IdentitySecurityTier::LowSecurity => "low-security",
+    }
+}
+
+fn default_identity_tier_label() -> &'static str {
+    crate::halo::identity::default_security_tier_str()
+}
+
+fn rollback_profile(previous: &crate::halo::profile::UserProfile) -> Result<(), String> {
+    crate::halo::profile::save(previous).map_err(|e| format!("profile rollback failed: {e}"))
+}
+
+fn rollback_identity(previous: &crate::halo::identity::IdentityConfig) -> Result<(), String> {
+    crate::halo::identity::save(previous).map_err(|e| format!("identity rollback failed: {e}"))
 }
 
 fn social_provider_specs() -> Vec<(&'static str, bool, &'static str)> {
@@ -1372,8 +1420,35 @@ async fn api_save_profile(
     Json(body): Json<Value>,
 ) -> ApiResult {
     let mut profile = crate::halo::profile::load();
-    if let Some(name) = body.get("display_name").and_then(|v| v.as_str()) {
+    let previous_profile = profile.clone();
+    let rename = body
+        .get("rename")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let old_name = profile.display_name.clone();
+    if let Some(name_raw) = body.get("display_name").and_then(|v| v.as_str()) {
+        let name = name_raw.trim();
+        if name.is_empty() {
+            return Err(api_err(
+                StatusCode::BAD_REQUEST,
+                "display_name must not be empty",
+            ));
+        }
+        let changed = old_name
+            .as_ref()
+            .map(|prev| prev.trim() != name)
+            .unwrap_or(true);
+        if changed && profile.name_locked && profile.has_name() && !rename {
+            return Err(api_err(
+                StatusCode::CONFLICT,
+                "profile name is locked; send rename=true to rotate it",
+            ));
+        }
+        if changed && profile.has_name() {
+            profile.name_revision = profile.name_revision.saturating_add(1);
+        }
         profile.display_name = Some(name.to_string());
+        profile.name_locked = true;
     }
     if let Some(avatar_type) = body.get("avatar_type").and_then(|v| v.as_str()) {
         profile.avatar_type = Some(avatar_type.to_string());
@@ -1395,7 +1470,26 @@ async fn api_save_profile(
     profile.updated_at = Some(now);
 
     crate::halo::profile::save(&profile).map_err(internal_err)?;
-    Ok(Json(serde_json::to_value(&profile).unwrap_or_default()))
+    if let Err(e) = crate::halo::identity_ledger::append_profile_update(
+        profile.display_name.as_deref(),
+        profile.avatar_type.as_deref(),
+        profile.name_locked,
+        profile.name_revision,
+    ) {
+        let rollback_err = rollback_profile(&previous_profile).err();
+        let msg = if let Some(rb) = rollback_err {
+            format!("identity ledger append failed: {e}; {rb}")
+        } else {
+            format!("identity ledger append failed; profile rolled back: {e}")
+        };
+        return Err(internal_err(msg));
+    }
+    let mut out = serde_json::to_value(&profile).unwrap_or_default();
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("ledger_logged".to_string(), json!(true));
+        obj.insert("ledger_error".to_string(), Value::Null);
+    }
+    Ok(Json(out))
 }
 
 async fn api_identity_device_scan(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
@@ -1440,8 +1534,19 @@ async fn api_identity_device_save(
         })
         .unwrap_or_default();
 
-    let mut components = crate::puf::core::collect_auto()
-        .map(|result| result.components)
+    let puf_result = crate::puf::core::collect_auto();
+    let puf_fingerprint_hex = puf_result.as_ref().map(|r| {
+        format!(
+            "sha256:{}",
+            crate::transparency::ct6962::hex_encode(&r.fingerprint)
+        )
+    });
+    let puf_tier = puf_result
+        .as_ref()
+        .map(|r| format!("{:?}", r.tier).to_ascii_lowercase());
+    let mut components = puf_result
+        .as_ref()
+        .map(|result| result.components.clone())
         .unwrap_or_default();
     if !selected.is_empty() {
         components.retain(|c| selected.contains(&c.name));
@@ -1472,20 +1577,47 @@ async fn api_identity_device_save(
     );
 
     let mut cfg = crate::halo::identity::load();
+    let previous_cfg = cfg.clone();
     cfg.version = Some(1);
     cfg.device = Some(crate::halo::identity::DeviceIdentity {
         enabled: true,
         browser_fingerprint: browser_fp,
         selected_components: selected,
         composite_fingerprint_hex: Some(hex.clone()),
+        puf_fingerprint_hex: puf_fingerprint_hex.clone(),
+        puf_tier: puf_tier.clone(),
         entropy_bits,
         last_collected: Some(chrono::Utc::now().to_rfc3339()),
     });
     crate::halo::identity::save(&cfg).map_err(internal_err)?;
+    if let Err(e) = crate::halo::identity_ledger::append_device_update(
+        true,
+        entropy_bits,
+        components.len(),
+        cfg.device
+            .as_ref()
+            .and_then(|d| d.browser_fingerprint.as_deref())
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false),
+        puf_fingerprint_hex.as_deref(),
+        puf_tier.as_deref(),
+    ) {
+        let rollback_err = rollback_identity(&previous_cfg).err();
+        let msg = if let Some(rb) = rollback_err {
+            format!("identity ledger append failed: {e}; {rb}")
+        } else {
+            format!("identity ledger append failed; identity rolled back: {e}")
+        };
+        return Err(internal_err(msg));
+    }
 
     Ok(Json(json!({
         "fingerprint_hex": hex,
         "entropy_bits": entropy_bits,
+        "puf_fingerprint_hex": puf_fingerprint_hex,
+        "puf_tier": puf_tier,
+        "ledger_logged": true,
+        "ledger_error": Value::Null,
     })))
 }
 
@@ -1571,6 +1703,7 @@ async fn api_identity_network_save(
     };
 
     let mut cfg = crate::halo::identity::load();
+    let previous_cfg = cfg.clone();
     cfg.version = Some(1);
     cfg.network = Some(crate::halo::identity::NetworkIdentity {
         share_local_ip,
@@ -1581,8 +1714,35 @@ async fn api_identity_network_save(
         mac_addresses,
     });
     crate::halo::identity::save(&cfg).map_err(internal_err)?;
+    let network = cfg.network.as_ref();
+    if let Err(e) = crate::halo::identity_ledger::append_network_update(
+        network.map(|n| n.share_local_ip).unwrap_or(false),
+        network.map(|n| n.share_public_ip).unwrap_or(false),
+        network.map(|n| n.share_mac).unwrap_or(false),
+        network
+            .and_then(|n| n.local_ip_hash.as_deref())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false),
+        network
+            .and_then(|n| n.public_ip_hash.as_deref())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false),
+        network.map(|n| n.mac_addresses.len()).unwrap_or(0),
+    ) {
+        let rollback_err = rollback_identity(&previous_cfg).err();
+        let msg = if let Some(rb) = rollback_err {
+            format!("identity ledger append failed: {e}; {rb}")
+        } else {
+            format!("identity ledger append failed; identity rolled back: {e}")
+        };
+        return Err(internal_err(msg));
+    }
 
-    Ok(Json(json!({"ok": true})))
+    Ok(Json(json!({
+        "ok": true,
+        "ledger_logged": true,
+        "ledger_error": Value::Null,
+    })))
 }
 
 async fn api_identity_anonymous(
@@ -1594,14 +1754,90 @@ async fn api_identity_anonymous(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let mut cfg = crate::halo::identity::load();
+    let previous_cfg = cfg.clone();
     cfg.version = Some(1);
     cfg.anonymous_mode = enabled;
+    let mut cleared_device = false;
+    let mut cleared_network = false;
     if enabled {
+        cleared_device = cfg.device.is_some();
+        cleared_network = cfg.network.is_some();
         cfg.device = None;
         cfg.network = None;
     }
     crate::halo::identity::save(&cfg).map_err(internal_err)?;
-    Ok(Json(json!({"anonymous_mode": enabled})))
+    if let Err(e) = crate::halo::identity_ledger::append_anonymous_mode_update(
+        enabled,
+        cleared_device,
+        cleared_network,
+    ) {
+        let rollback_err = rollback_identity(&previous_cfg).err();
+        let msg = if let Some(rb) = rollback_err {
+            format!("identity ledger append failed: {e}; {rb}")
+        } else {
+            format!("identity ledger append failed; identity rolled back: {e}")
+        };
+        return Err(internal_err(msg));
+    }
+    Ok(Json(json!({
+        "anonymous_mode": enabled,
+        "ledger_logged": true,
+        "ledger_error": Value::Null,
+    })))
+}
+
+async fn api_identity_tier_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let cfg = crate::halo::identity::load();
+    let tier = cfg
+        .security_tier
+        .as_ref()
+        .map(identity_tier_as_str)
+        .unwrap_or(default_identity_tier_label());
+    Ok(Json(json!({
+        "tier": tier,
+        "configured": cfg.security_tier.is_some(),
+        "default_tier": default_identity_tier_label(),
+    })))
+}
+
+async fn api_identity_tier_update(
+    AxumState(_state): AxumState<DashboardState>,
+    Json(req): Json<IdentityTierUpdateRequest>,
+) -> ApiResult {
+    let tier = parse_identity_tier(&req.tier).ok_or_else(|| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            "tier must be one of: max-safe, less-safe, low-security",
+        )
+    })?;
+    let mut cfg = crate::halo::identity::load();
+    let previous_cfg = cfg.clone();
+    cfg.version = Some(1);
+    cfg.security_tier = Some(tier.clone());
+    crate::halo::identity::save(&cfg).map_err(internal_err)?;
+    let tier_wire = identity_tier_as_str(&tier);
+    if let Err(e) = crate::halo::identity_ledger::append_safety_tier_applied(
+        tier_wire,
+        req.applied_by
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("dashboard_setup"),
+        req.step_failures.unwrap_or(0),
+    ) {
+        let rollback_err = rollback_identity(&previous_cfg).err();
+        let msg = if let Some(rb) = rollback_err {
+            format!("identity ledger append failed: {e}; {rb}")
+        } else {
+            format!("identity ledger append failed; identity rolled back: {e}")
+        };
+        return Err(internal_err(msg));
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "tier": tier_wire,
+        "ledger_logged": true,
+        "ledger_error": Value::Null,
+    })))
 }
 
 fn persist_social_token_secret(
@@ -1673,7 +1909,7 @@ fn persist_social_connection(
     crate::halo::identity::save(&cfg).map_err(internal_err)?;
 
     let projection =
-        crate::halo::identity_ledger::project_social_status(now).map_err(internal_err)?;
+        crate::halo::identity_ledger::project_ledger_status(now).map_err(internal_err)?;
     Ok(json!({
         "ok": true,
         "provider": provider,
@@ -1689,12 +1925,20 @@ async fn api_identity_status(AxumState(_state): AxumState<DashboardState>) -> Ap
     let profile_set = profile.has_name();
     let anonymous_mode = identity.anonymous_mode;
     let device_configured = identity.device.as_ref().map(|d| d.enabled).unwrap_or(false);
-    let social_projection = crate::halo::identity_ledger::project_social_status(now_unix_secs())
+    let network_configured = identity
+        .network
+        .as_ref()
+        .map(crate::halo::identity::network_is_configured)
+        .unwrap_or(false);
+    let social_projection = crate::halo::identity_ledger::project_ledger_status(now_unix_secs())
         .unwrap_or(crate::halo::identity_ledger::LedgerProjection {
             providers: Vec::new(),
             total_entries: 0,
             head_hash: None,
             chain_valid: false,
+            signed_entries: 0,
+            unsigned_entries: 0,
+            fully_signed: false,
         });
     let social_active = social_projection
         .providers
@@ -1702,13 +1946,27 @@ async fn api_identity_status(AxumState(_state): AxumState<DashboardState>) -> Ap
         .filter(|p| p.active)
         .count();
     let identity_done = profile_set || anonymous_mode;
+    let tier = identity
+        .security_tier
+        .as_ref()
+        .map(identity_tier_as_str)
+        .unwrap_or(default_identity_tier_label());
 
     Ok(Json(json!({
         "profile_set": profile_set,
         "anonymous_mode": anonymous_mode,
+        "security_tier": tier,
+        "default_security_tier": default_identity_tier_label(),
+        "name_locked": profile.name_locked,
+        "name_revision": profile.name_revision,
         "device_configured": device_configured,
+        "network_configured": network_configured,
         "social_active_count": social_active,
         "social_chain_valid": social_projection.chain_valid,
+        "identity_ledger_total_entries": social_projection.total_entries,
+        "identity_ledger_signed_entries": social_projection.signed_entries,
+        "identity_ledger_unsigned_entries": social_projection.unsigned_entries,
+        "identity_ledger_fully_signed": social_projection.fully_signed,
         "identity_done": identity_done,
         "display_name": profile.display_name,
         "avatar_type": profile.avatar_type,
@@ -1718,7 +1976,7 @@ async fn api_identity_status(AxumState(_state): AxumState<DashboardState>) -> Ap
 async fn api_identity_social_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let now = now_unix_secs();
     let projection =
-        crate::halo::identity_ledger::project_social_status(now).map_err(internal_err)?;
+        crate::halo::identity_ledger::project_ledger_status(now).map_err(internal_err)?;
     let cfg = crate::halo::identity::load();
     let providers: Vec<Value> = social_provider_specs()
         .into_iter()
@@ -1752,6 +2010,9 @@ async fn api_identity_social_status(AxumState(_state): AxumState<DashboardState>
             "total_entries": projection.total_entries,
             "head_hash": projection.head_hash,
             "chain_valid": projection.chain_valid,
+            "signed_entries": projection.signed_entries,
+            "unsigned_entries": projection.unsigned_entries,
+            "fully_signed": projection.fully_signed,
         }
     })))
 }
@@ -1813,7 +2074,7 @@ async fn api_identity_social_revoke(
     }
     cfg.social.last_updated = Some(chrono::Utc::now().to_rfc3339());
     crate::halo::identity::save(&cfg).map_err(internal_err)?;
-    let projection = crate::halo::identity_ledger::project_social_status(now_unix_secs())
+    let projection = crate::halo::identity_ledger::project_ledger_status(now_unix_secs())
         .map_err(internal_err)?;
     Ok(Json(json!({
         "ok": true,
@@ -1941,6 +2202,7 @@ async fn api_identity_super_secure_update(
         ));
     }
     let mut cfg = crate::halo::identity::load();
+    let previous_cfg = cfg.clone();
     match option.as_str() {
         "passkey" => cfg.super_secure.passkey_enabled = req.enabled,
         "security_key" => cfg.super_secure.security_key_enabled = req.enabled,
@@ -1959,12 +2221,19 @@ async fn api_identity_super_secure_update(
     }
     cfg.super_secure.last_updated = Some(chrono::Utc::now().to_rfc3339());
     crate::halo::identity::save(&cfg).map_err(internal_err)?;
-    crate::halo::identity_ledger::append_super_secure_update(
+    if let Err(e) = crate::halo::identity_ledger::append_super_secure_update(
         &option,
         req.enabled,
         req.metadata.unwrap_or(Value::Null),
-    )
-    .map_err(internal_err)?;
+    ) {
+        let rollback_err = rollback_identity(&previous_cfg).err();
+        let msg = if let Some(rb) = rollback_err {
+            format!("identity ledger append failed: {e}; {rb}")
+        } else {
+            format!("identity ledger append failed; identity rolled back: {e}")
+        };
+        return Err(internal_err(msg));
+    }
 
     Ok(Json(json!({
         "ok": true,
@@ -1988,6 +2257,7 @@ async fn api_identity_pod_share_schema(AxumState(_state): AxumState<DashboardSta
             "Raw OAuth/social tokens are never shared.",
             "Use key_patterns to constrain fields (e.g., identity/profile/*).",
             "Set require_grants=true with grantee_puf_hex to enforce POD grants.",
+            "Responses include a proof_envelope (payload hash, Merkle root, ledger head binding, optional ML-DSA signature).",
         ],
         "examples": {
             "profile_only": ["identity/profile/*"],
@@ -2005,7 +2275,7 @@ async fn api_identity_pod_share(
     let now = now_unix_secs();
     let profile = crate::halo::profile::load();
     let identity = crate::halo::identity::load();
-    let ledger = crate::halo::identity_ledger::project_social_status(now).map_err(internal_err)?;
+    let ledger = crate::halo::identity_ledger::project_ledger_status(now).map_err(internal_err)?;
 
     let mut records =
         crate::pod::identity_share::materialize_identity_records(&profile, &identity, &ledger);
@@ -2050,6 +2320,22 @@ async fn api_identity_pod_share(
     } else {
         selected
     };
+    let proof_envelope = crate::pod::identity_share::build_share_envelope(
+        &shared,
+        &ledger,
+        &patterns,
+        require_grants,
+        req.grantee_puf_hex.as_deref(),
+    )
+    .map_err(internal_err)?;
+    let proof_verification = crate::pod::identity_share::verify_share_envelope(
+        &proof_envelope,
+        &shared,
+        &ledger,
+        &patterns,
+        require_grants,
+        req.grantee_puf_hex.as_deref(),
+    );
 
     Ok(Json(json!({
         "ok": true,
@@ -2060,11 +2346,16 @@ async fn api_identity_pod_share(
         "record_count": shared.len(),
         "records": shared,
         "share_map": crate::pod::identity_share::records_to_json_map(&shared),
+        "proof_envelope": proof_envelope,
+        "proof_verification": proof_verification,
         "denied_keys": denied_keys,
         "ledger": {
             "total_entries": ledger.total_entries,
             "head_hash": ledger.head_hash,
             "chain_valid": ledger.chain_valid,
+            "signed_entries": ledger.signed_entries,
+            "unsigned_entries": ledger.unsigned_entries,
+            "fully_signed": ledger.fully_signed,
         },
     })))
 }

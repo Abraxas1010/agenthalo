@@ -8,15 +8,55 @@ use crate::halo::identity::IdentityConfig;
 use crate::halo::identity_ledger::LedgerProjection;
 use crate::halo::profile::UserProfile;
 use crate::pod::acl::{key_pattern_matches, GrantStore};
+use crate::transparency::ct6962::{hex_encode, leaf_hash, merkle_tree_hash};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+
+const IDENTITY_POD_SHARE_DOMAIN: &str = "agenthalo.identity.pod_share.v1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IdentityShareRecord {
     pub key: String,
     pub value: Value,
     pub sensitivity: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IdentityShareProofEnvelope {
+    pub version: u32,
+    pub domain: String,
+    pub created_at: u64,
+    pub payload_sha256: String,
+    pub records_merkle_root: String,
+    pub records_merkle_tree_size: usize,
+    pub ledger_head_hash: Option<String>,
+    pub ledger_total_entries: usize,
+    pub ledger_chain_valid: bool,
+    pub ledger_signed_entries: usize,
+    pub ledger_unsigned_entries: usize,
+    pub ledger_fully_signed: bool,
+    pub patterns: Vec<String>,
+    pub require_grants: bool,
+    pub grantee_puf_hex: Option<String>,
+    pub record_count: usize,
+    pub provenance_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<crate::halo::pq::PqSignatureEnvelope>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IdentityShareEnvelopeVerification {
+    pub payload_hash_valid: bool,
+    pub merkle_root_valid: bool,
+    pub signature_present: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_valid: Option<bool>,
+    pub signature_policy_ok: bool,
+    pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
 }
 
 fn record<K: Into<String>, S: Into<String>>(
@@ -66,6 +106,11 @@ pub fn materialize_identity_records(
             serde_json::json!(identity.anonymous_mode),
             "sensitive",
         ),
+        record(
+            "identity/mode/security_tier",
+            serde_json::json!(identity.security_tier),
+            "sensitive",
+        ),
     ];
 
     if let Some(device) = identity.device.as_ref() {
@@ -83,6 +128,16 @@ pub fn materialize_identity_records(
             "identity/device/last_collected",
             serde_json::json!(device.last_collected),
             "sensitive",
+        ));
+        out.push(record(
+            "identity/device/puf_fingerprint_hex",
+            serde_json::json!(device.puf_fingerprint_hex),
+            "high",
+        ));
+        out.push(record(
+            "identity/device/puf_tier",
+            serde_json::json!(device.puf_tier),
+            "high",
         ));
     } else {
         out.push(record(
@@ -216,6 +271,21 @@ pub fn materialize_identity_records(
         serde_json::json!(ledger.chain_valid),
         "internal",
     ));
+    out.push(record(
+        "identity/ledger/signed_entries",
+        serde_json::json!(ledger.signed_entries),
+        "internal",
+    ));
+    out.push(record(
+        "identity/ledger/unsigned_entries",
+        serde_json::json!(ledger.unsigned_entries),
+        "internal",
+    ));
+    out.push(record(
+        "identity/ledger/fully_signed",
+        serde_json::json!(ledger.fully_signed),
+        "internal",
+    ));
 
     out
 }
@@ -266,6 +336,224 @@ pub fn records_to_json_map(records: &[IdentityShareRecord]) -> Value {
     Value::Object(out)
 }
 
+fn canonical_records(records: &[IdentityShareRecord]) -> Vec<IdentityShareRecord> {
+    let mut ordered = records.to_vec();
+    ordered.sort_by(|a, b| a.key.cmp(&b.key));
+    ordered
+}
+
+fn canonical_payload(
+    records: &[IdentityShareRecord],
+    ledger: &LedgerProjection,
+    patterns: &[String],
+    require_grants: bool,
+    grantee_puf_hex: Option<&str>,
+) -> Value {
+    let ordered = canonical_records(records);
+    let ordered_patterns: Vec<String> = patterns.iter().map(|p| p.trim().to_string()).collect();
+    serde_json::json!({
+        "domain": IDENTITY_POD_SHARE_DOMAIN,
+        "version": 1,
+        "records": ordered,
+        "patterns": ordered_patterns,
+        "require_grants": require_grants,
+        "grantee_puf_hex": grantee_puf_hex,
+        "ledger_head_hash": ledger.head_hash,
+        "ledger_total_entries": ledger.total_entries,
+        "ledger_chain_valid": ledger.chain_valid,
+        "ledger_signed_entries": ledger.signed_entries,
+        "ledger_unsigned_entries": ledger.unsigned_entries,
+        "ledger_fully_signed": ledger.fully_signed,
+    })
+}
+
+fn payload_sha256_hex(payload: &Value) -> Result<String, String> {
+    let raw = serde_json::to_vec(payload).map_err(|e| format!("serialize share payload: {e}"))?;
+    let mut h = Sha256::new();
+    h.update(raw);
+    Ok(format!("sha256:{}", hex_encode(&h.finalize())))
+}
+
+fn records_merkle_root_hex(records: &[IdentityShareRecord]) -> Result<(String, usize), String> {
+    let ordered = canonical_records(records);
+    let mut leaves = Vec::with_capacity(ordered.len());
+    for rec in &ordered {
+        let leaf_payload = serde_json::to_vec(&serde_json::json!({
+            "key": rec.key,
+            "value": rec.value,
+            "sensitivity": rec.sensitivity,
+        }))
+        .map_err(|e| format!("serialize identity share record leaf: {e}"))?;
+        leaves.push(leaf_hash(&leaf_payload));
+    }
+    let root = merkle_tree_hash(&leaves);
+    Ok((hex_encode(&root), leaves.len()))
+}
+
+fn compute_provenance_hash_hex(
+    payload_sha256: &str,
+    merkle_root: &str,
+    ledger_head_hash: Option<&str>,
+) -> String {
+    let mut h = Sha256::new();
+    h.update(IDENTITY_POD_SHARE_DOMAIN.as_bytes());
+    h.update([0u8]);
+    h.update(payload_sha256.as_bytes());
+    h.update([0u8]);
+    h.update(merkle_root.as_bytes());
+    h.update([0u8]);
+    h.update(ledger_head_hash.unwrap_or("").as_bytes());
+    format!("sha256:{}", hex_encode(&h.finalize()))
+}
+
+pub fn build_share_envelope(
+    records: &[IdentityShareRecord],
+    ledger: &LedgerProjection,
+    patterns: &[String],
+    require_grants: bool,
+    grantee_puf_hex: Option<&str>,
+) -> Result<IdentityShareProofEnvelope, String> {
+    let payload = canonical_payload(records, ledger, patterns, require_grants, grantee_puf_hex);
+    let payload_sha256 = payload_sha256_hex(&payload)?;
+    let (records_merkle_root, records_merkle_tree_size) = records_merkle_root_hex(records)?;
+    let provenance_hash = compute_provenance_hash_hex(
+        &payload_sha256,
+        &records_merkle_root,
+        ledger.head_hash.as_deref(),
+    );
+
+    let signature = if crate::halo::pq::has_wallet() {
+        let sign_payload = serde_json::to_vec(&serde_json::json!({
+            "domain": IDENTITY_POD_SHARE_DOMAIN,
+            "payload_sha256": payload_sha256,
+            "records_merkle_root": records_merkle_root,
+            "ledger_head_hash": ledger.head_hash,
+            "provenance_hash": provenance_hash,
+        }))
+        .map_err(|e| format!("serialize share signature payload: {e}"))?;
+        match crate::halo::pq::sign_pq_payload(
+            &sign_payload,
+            "identity_pod_share_envelope",
+            Some(provenance_hash.clone()),
+        ) {
+            Ok((env, _path)) => Some(env),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    Ok(IdentityShareProofEnvelope {
+        version: 1,
+        domain: IDENTITY_POD_SHARE_DOMAIN.to_string(),
+        created_at: crate::pod::now_unix(),
+        payload_sha256,
+        records_merkle_root,
+        records_merkle_tree_size,
+        ledger_head_hash: ledger.head_hash.clone(),
+        ledger_total_entries: ledger.total_entries,
+        ledger_chain_valid: ledger.chain_valid,
+        ledger_signed_entries: ledger.signed_entries,
+        ledger_unsigned_entries: ledger.unsigned_entries,
+        ledger_fully_signed: ledger.fully_signed,
+        patterns: patterns.to_vec(),
+        require_grants,
+        grantee_puf_hex: grantee_puf_hex.map(str::to_string),
+        record_count: records.len(),
+        provenance_hash,
+        signature,
+    })
+}
+
+pub fn verify_share_envelope(
+    envelope: &IdentityShareProofEnvelope,
+    records: &[IdentityShareRecord],
+    ledger: &LedgerProjection,
+    patterns: &[String],
+    require_grants: bool,
+    grantee_puf_hex: Option<&str>,
+) -> IdentityShareEnvelopeVerification {
+    verify_share_envelope_with_policy(
+        envelope,
+        records,
+        ledger,
+        patterns,
+        require_grants,
+        grantee_puf_hex,
+        false,
+    )
+}
+
+pub fn verify_share_envelope_with_policy(
+    envelope: &IdentityShareProofEnvelope,
+    records: &[IdentityShareRecord],
+    ledger: &LedgerProjection,
+    patterns: &[String],
+    require_grants: bool,
+    grantee_puf_hex: Option<&str>,
+    require_signature: bool,
+) -> IdentityShareEnvelopeVerification {
+    let payload = canonical_payload(records, ledger, patterns, require_grants, grantee_puf_hex);
+    let payload_hash_valid = payload_sha256_hex(&payload)
+        .map(|h| h == envelope.payload_sha256)
+        .unwrap_or(false);
+    let merkle_root_valid = records_merkle_root_hex(records)
+        .map(|(root, size)| {
+            root == envelope.records_merkle_root && size == envelope.records_merkle_tree_size
+        })
+        .unwrap_or(false);
+    let signature_present = envelope.signature.is_some();
+    let signature_valid = if let Some(sig) = envelope.signature.as_ref() {
+        let sign_payload = serde_json::to_vec(&serde_json::json!({
+            "domain": IDENTITY_POD_SHARE_DOMAIN,
+            "payload_sha256": envelope.payload_sha256,
+            "records_merkle_root": envelope.records_merkle_root,
+            "ledger_head_hash": envelope.ledger_head_hash,
+            "provenance_hash": envelope.provenance_hash,
+        }))
+        .ok();
+        sign_payload
+            .map(|bytes| {
+                crate::halo::pq::verify_detached_signature(
+                    &bytes,
+                    &sig.public_key_hex,
+                    &sig.signature_hex,
+                )
+                .unwrap_or(false)
+            })
+            .map(Some)
+            .unwrap_or(Some(false))
+    } else {
+        None
+    };
+    let signature_policy_ok = if require_signature {
+        signature_valid == Some(true)
+    } else {
+        signature_valid.unwrap_or(true)
+    };
+    let accepted = payload_hash_valid && merkle_root_valid && signature_policy_ok;
+    let rejection_reason = if !payload_hash_valid {
+        Some("identity share payload hash mismatch".to_string())
+    } else if !merkle_root_valid {
+        Some("identity share records merkle root mismatch".to_string())
+    } else if require_signature && !signature_present {
+        Some("identity share signature is required but missing".to_string())
+    } else if signature_valid == Some(false) {
+        Some("identity share signature verification failed".to_string())
+    } else {
+        None
+    };
+    IdentityShareEnvelopeVerification {
+        payload_hash_valid,
+        merkle_root_valid,
+        signature_present,
+        signature_valid,
+        signature_policy_ok,
+        accepted,
+        rejection_reason,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +571,9 @@ mod tests {
             total_entries: 0,
             head_hash: None,
             chain_valid: true,
+            signed_entries: 0,
+            unsigned_entries: 0,
+            fully_signed: true,
         };
         let records = materialize_identity_records(&profile, &identity, &ledger);
         let selected = select_records_by_patterns(&records, &["identity/profile/*".to_string()]);
@@ -301,6 +592,9 @@ mod tests {
             total_entries: 0,
             head_hash: None,
             chain_valid: true,
+            signed_entries: 0,
+            unsigned_entries: 0,
+            fully_signed: true,
         };
         let records = materialize_identity_records(&profile, &identity, &ledger);
         let mut store = GrantStore::new();
@@ -321,5 +615,26 @@ mod tests {
         assert!(allowed
             .iter()
             .all(|r| r.key.starts_with("identity/profile/")));
+    }
+
+    #[test]
+    fn share_envelope_roundtrip_verifies() {
+        let profile = UserProfile::default();
+        let identity = IdentityConfig::default();
+        let ledger = LedgerProjection {
+            providers: vec![],
+            total_entries: 0,
+            head_hash: None,
+            chain_valid: true,
+            signed_entries: 0,
+            unsigned_entries: 0,
+            fully_signed: true,
+        };
+        let records = materialize_identity_records(&profile, &identity, &ledger);
+        let patterns = vec!["identity/*".to_string()];
+        let envelope =
+            build_share_envelope(&records, &ledger, &patterns, false, None).expect("build env");
+        let verify = verify_share_envelope(&envelope, &records, &ledger, &patterns, false, None);
+        assert!(verify.accepted, "envelope should verify: {verify:?}");
     }
 }

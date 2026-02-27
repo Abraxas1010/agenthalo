@@ -383,6 +383,19 @@ async fn mcp(
                     }
                 }),
                 json!({
+                    "name": "identity_tier_set",
+                    "description": "Persist identity safety tier (max-safe/less-safe/low-security) and append immutable ledger event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "tier": {"type": "string", "description": "Tier value: max-safe|less-safe|low-security."},
+                            "applied_by": {"type": "string", "description": "Audit source tag.", "default": "mcp"},
+                            "step_failures": {"type": "integer", "description": "Number of best-effort steps skipped during application.", "default": 0}
+                        },
+                        "required": ["tier"]
+                    }
+                }),
+                json!({
                     "name": "identity_social_connect",
                     "description": "Connect a social provider token, persist it securely, and append an immutable ledger event.",
                     "inputSchema": {
@@ -529,6 +542,7 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "halo_export" => tool_halo_export(arguments),
         "halo_capabilities" => tool_halo_capabilities(arguments),
         "identity_status" => tool_identity_status(arguments),
+        "identity_tier_set" => tool_identity_tier_set(arguments),
         "identity_social_connect" => tool_identity_social_connect(arguments),
         "identity_social_revoke" => tool_identity_social_revoke(arguments),
         "identity_super_secure_set" => tool_identity_super_secure_set(arguments),
@@ -595,6 +609,29 @@ fn mcp_supported_social_providers() -> &'static [&'static str] {
     ]
 }
 
+fn mcp_parse_identity_tier(input: &str) -> Option<nucleusdb::halo::identity::IdentitySecurityTier> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "max-safe" | "max_safe" | "maxsafe" => {
+            Some(nucleusdb::halo::identity::IdentitySecurityTier::MaxSafe)
+        }
+        "less-safe" | "less_safe" | "lesssafe" | "balanced" | "a_little_rebellious" => {
+            Some(nucleusdb::halo::identity::IdentitySecurityTier::LessSafe)
+        }
+        "low-security" | "low_security" | "low" | "why-bother" => {
+            Some(nucleusdb::halo::identity::IdentitySecurityTier::LowSecurity)
+        }
+        _ => None,
+    }
+}
+
+fn mcp_identity_tier_label(tier: &nucleusdb::halo::identity::IdentitySecurityTier) -> &'static str {
+    match tier {
+        nucleusdb::halo::identity::IdentitySecurityTier::MaxSafe => "max-safe",
+        nucleusdb::halo::identity::IdentitySecurityTier::LessSafe => "less-safe",
+        nucleusdb::halo::identity::IdentitySecurityTier::LowSecurity => "low-security",
+    }
+}
+
 fn mcp_is_supported_social_provider(provider: &str) -> bool {
     let normalized = nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
     mcp_supported_social_providers().contains(&normalized.as_str())
@@ -652,12 +689,52 @@ fn mcp_clear_social_token(provider: &str) -> Result<(), String> {
 fn tool_identity_status(_arguments: Value) -> Result<Value, String> {
     let profile = nucleusdb::halo::profile::load();
     let identity = nucleusdb::halo::identity::load();
-    let ledger = nucleusdb::halo::identity_ledger::project_social_status(now_unix_secs())?;
+    let ledger = nucleusdb::halo::identity_ledger::project_ledger_status(now_unix_secs())?;
     Ok(json!({
         "status": "ok",
         "profile": profile,
         "identity": identity,
         "ledger": ledger,
+    }))
+}
+
+fn tool_identity_tier_set(arguments: Value) -> Result<Value, String> {
+    let tier_raw = arguments
+        .get("tier")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "tier is required".to_string())?;
+    let tier = mcp_parse_identity_tier(tier_raw)
+        .ok_or_else(|| "tier must be one of: max-safe, less-safe, low-security".to_string())?;
+    let applied_by = arguments
+        .get("applied_by")
+        .and_then(|v| v.as_str())
+        .unwrap_or("mcp");
+    let step_failures = arguments
+        .get("step_failures")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    let mut cfg = nucleusdb::halo::identity::load();
+    let previous_cfg = cfg.clone();
+    cfg.version = Some(1);
+    cfg.security_tier = Some(tier.clone());
+    nucleusdb::halo::identity::save(&cfg)?;
+    if let Err(e) = nucleusdb::halo::identity_ledger::append_safety_tier_applied(
+        mcp_identity_tier_label(&tier),
+        applied_by,
+        step_failures,
+    ) {
+        let _ = nucleusdb::halo::identity::save(&previous_cfg);
+        return Err(format!(
+            "identity ledger append failed; tier update rolled back: {e}"
+        ));
+    }
+
+    Ok(json!({
+        "status": "ok",
+        "tier": mcp_identity_tier_label(&tier),
+        "applied_by": applied_by,
+        "step_failures": step_failures,
     }))
 }
 
@@ -836,7 +913,7 @@ fn load_grants_for_mcp() -> nucleusdb::pod::acl::GrantStore {
 fn tool_identity_pod_share(arguments: Value) -> Result<Value, String> {
     let profile = nucleusdb::halo::profile::load();
     let identity = nucleusdb::halo::identity::load();
-    let ledger = nucleusdb::halo::identity_ledger::project_social_status(now_unix_secs())?;
+    let ledger = nucleusdb::halo::identity_ledger::project_ledger_status(now_unix_secs())?;
 
     let mut records =
         nucleusdb::pod::identity_share::materialize_identity_records(&profile, &identity, &ledger);
@@ -872,6 +949,7 @@ fn tool_identity_pod_share(arguments: Value) -> Result<Value, String> {
 
     let (shared, denied_keys) = if require_grants || grantee_hex.is_some() {
         let hex = grantee_hex
+            .as_deref()
             .ok_or_else(|| "grantee_puf_hex is required when require_grants=true".to_string())?;
         let grantee = decode_hex_32_mcp(&hex)?;
         let grants = load_grants_for_mcp();
@@ -879,6 +957,21 @@ fn tool_identity_pod_share(arguments: Value) -> Result<Value, String> {
     } else {
         (selected, Vec::new())
     };
+    let proof_envelope = nucleusdb::pod::identity_share::build_share_envelope(
+        &shared,
+        &ledger,
+        &key_patterns,
+        require_grants,
+        grantee_hex.as_deref(),
+    )?;
+    let proof_verification = nucleusdb::pod::identity_share::verify_share_envelope(
+        &proof_envelope,
+        &shared,
+        &ledger,
+        &key_patterns,
+        require_grants,
+        grantee_hex.as_deref(),
+    );
 
     Ok(json!({
         "status": "ok",
@@ -888,6 +981,8 @@ fn tool_identity_pod_share(arguments: Value) -> Result<Value, String> {
         "record_count": shared.len(),
         "records": shared,
         "share_map": nucleusdb::pod::identity_share::records_to_json_map(&shared),
+        "proof_envelope": proof_envelope,
+        "proof_verification": proof_verification,
         "denied_keys": denied_keys,
     }))
 }
@@ -1812,6 +1907,35 @@ mod tests {
         }))
         .expect("social revoke");
         assert_eq!(revoke["status"], "ok");
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn identity_tool_tier_set_roundtrip() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_identity_tier_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let set = tool_identity_tier_set(json!({
+            "tier": "max-safe",
+            "applied_by": "mcp_test",
+            "step_failures": 0
+        }))
+        .expect("tier set");
+        assert_eq!(set["status"], "ok");
+        assert_eq!(set["tier"], "max-safe");
+
+        let status = tool_identity_status(json!({})).expect("identity status");
+        assert_eq!(status["status"], "ok");
+        assert_eq!(status["identity"]["security_tier"], "max-safe");
 
         std::env::remove_var("AGENTHALO_HOME");
         let _ = std::fs::remove_dir_all(&home);

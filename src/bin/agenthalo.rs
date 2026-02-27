@@ -1460,6 +1460,33 @@ fn parse_boolish(input: &str) -> Result<bool, String> {
     }
 }
 
+fn parse_identity_tier(input: &str) -> Option<nucleusdb::halo::identity::IdentitySecurityTier> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "max-safe" | "max_safe" | "maxsafe" => {
+            Some(nucleusdb::halo::identity::IdentitySecurityTier::MaxSafe)
+        }
+        "less-safe" | "less_safe" | "lesssafe" | "balanced" | "a_little_rebellious" => {
+            Some(nucleusdb::halo::identity::IdentitySecurityTier::LessSafe)
+        }
+        "low-security" | "low_security" | "low" | "why-bother" => {
+            Some(nucleusdb::halo::identity::IdentitySecurityTier::LowSecurity)
+        }
+        _ => None,
+    }
+}
+
+fn identity_tier_label(tier: &nucleusdb::halo::identity::IdentitySecurityTier) -> &'static str {
+    match tier {
+        nucleusdb::halo::identity::IdentitySecurityTier::MaxSafe => "max-safe",
+        nucleusdb::halo::identity::IdentitySecurityTier::LessSafe => "less-safe",
+        nucleusdb::halo::identity::IdentitySecurityTier::LowSecurity => "low-security",
+    }
+}
+
+fn default_identity_tier_label() -> &'static str {
+    nucleusdb::halo::identity::default_security_tier_str()
+}
+
 fn store_social_token(provider: &str, token: &str) -> Result<String, String> {
     use nucleusdb::halo::vault;
 
@@ -1519,7 +1546,7 @@ fn cmd_identity(args: &[String]) -> Result<(), String> {
             let profile = nucleusdb::halo::profile::load();
             let cfg = nucleusdb::halo::identity::load();
             let projection =
-                nucleusdb::halo::identity_ledger::project_social_status(now_unix_secs())?;
+                nucleusdb::halo::identity_ledger::project_ledger_status(now_unix_secs())?;
             let payload = serde_json::json!({
                 "profile": profile,
                 "identity": cfg,
@@ -1547,6 +1574,12 @@ fn cmd_identity(args: &[String]) -> Result<(), String> {
                         .unwrap_or(false)
                 );
                 println!(
+                    "  Security tier: {}",
+                    payload["identity"]["security_tier"]
+                        .as_str()
+                        .unwrap_or(default_identity_tier_label())
+                );
+                println!(
                     "  Social ledger: entries={} chain_valid={}",
                     payload["ledger"]["total_entries"].as_u64().unwrap_or(0),
                     payload["ledger"]["chain_valid"].as_bool().unwrap_or(false)
@@ -1567,6 +1600,87 @@ fn cmd_identity(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "tier" => {
+            let tier_sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+            match tier_sub {
+                "status" => {
+                    let cfg = nucleusdb::halo::identity::load();
+                    let tier = cfg
+                        .security_tier
+                        .as_ref()
+                        .map(identity_tier_label)
+                        .unwrap_or(default_identity_tier_label());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "tier": tier,
+                            "configured": cfg.security_tier.is_some(),
+                        }))
+                        .map_err(|e| format!("serialize identity tier status: {e}"))?
+                    );
+                    Ok(())
+                }
+                "set" => {
+                    let tier_raw = args.get(2).ok_or_else(|| {
+                        "usage: agenthalo identity tier set <max-safe|less-safe|low-security> [--by NAME] [--failures N]".to_string()
+                    })?;
+                    let tier = parse_identity_tier(tier_raw).ok_or_else(|| {
+                        "tier must be one of: max-safe, less-safe, low-security".to_string()
+                    })?;
+                    let mut applied_by = "cli".to_string();
+                    let mut step_failures = 0usize;
+                    let mut idx = 3usize;
+                    while idx < args.len() {
+                        match args[idx].as_str() {
+                            "--by" => {
+                                idx += 1;
+                                applied_by = args.get(idx).ok_or("--by requires a value")?.clone();
+                            }
+                            "--failures" => {
+                                idx += 1;
+                                let raw = args.get(idx).ok_or("--failures requires a value")?;
+                                step_failures = raw
+                                    .parse::<usize>()
+                                    .map_err(|_| "--failures must be an integer")?;
+                            }
+                            other => {
+                                return Err(format!("unknown flag for identity tier set: {other}"));
+                            }
+                        }
+                        idx += 1;
+                    }
+                    let mut cfg = nucleusdb::halo::identity::load();
+                    let previous_cfg = cfg.clone();
+                    cfg.version = Some(1);
+                    cfg.security_tier = Some(tier.clone());
+                    nucleusdb::halo::identity::save(&cfg)?;
+                    if let Err(e) = nucleusdb::halo::identity_ledger::append_safety_tier_applied(
+                        identity_tier_label(&tier),
+                        &applied_by,
+                        step_failures,
+                    ) {
+                        let _ = nucleusdb::halo::identity::save(&previous_cfg);
+                        return Err(format!(
+                            "identity ledger append failed; tier update rolled back: {e}"
+                        ));
+                    }
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "ok": true,
+                            "tier": identity_tier_label(&tier),
+                            "applied_by": applied_by,
+                            "step_failures": step_failures,
+                        }))
+                        .map_err(|e| format!("serialize identity tier set output: {e}"))?
+                    );
+                    Ok(())
+                }
+                _ => Err(
+                    "usage: agenthalo identity tier [status | set <max-safe|less-safe|low-security> [--by NAME] [--failures N]]".to_string()
+                ),
+            }
+        }
         "social" => {
             let social_sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
             match social_sub {
@@ -1574,7 +1688,7 @@ fn cmd_identity(args: &[String]) -> Result<(), String> {
                     let json_mode = args.iter().any(|a| a == "--json");
                     let cfg = nucleusdb::halo::identity::load();
                     let projection =
-                        nucleusdb::halo::identity_ledger::project_social_status(now_unix_secs())?;
+                        nucleusdb::halo::identity_ledger::project_ledger_status(now_unix_secs())?;
                     let payload = serde_json::json!({
                         "providers": cfg.social.providers,
                         "ledger": projection,
@@ -1883,7 +1997,7 @@ fn cmd_identity(args: &[String]) -> Result<(), String> {
             }
         }
         _ => Err(
-            "usage: agenthalo identity [status [--json] | social <...> | super-secure <...>]"
+            "usage: agenthalo identity [status [--json] | tier <...> | social <...> | super-secure <...>]"
                 .to_string(),
         ),
     }

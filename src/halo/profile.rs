@@ -6,6 +6,10 @@ pub struct UserProfile {
     pub display_name: Option<String>,
     pub avatar_type: Option<String>,
     pub avatar_data: Option<String>,
+    #[serde(default)]
+    pub name_locked: bool,
+    #[serde(default)]
+    pub name_revision: u64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }

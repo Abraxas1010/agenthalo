@@ -1152,6 +1152,57 @@ async fn profile_get_and_save_roundtrip() {
 }
 
 #[tokio::test]
+async fn profile_rename_requires_explicit_rename_flag() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_profile_rename_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("profile_rename_requires_flag");
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/profile",
+        json!({"display_name":"First Name","avatar_type":"initials"}),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "initial save should succeed: {v1}");
+
+    let (s2, v2) = api_post(
+        state.clone(),
+        "/profile",
+        json!({"display_name":"Second Name","avatar_type":"initials"}),
+    )
+    .await;
+    assert_eq!(
+        s2,
+        StatusCode::CONFLICT,
+        "rename without explicit flag should be rejected: {v2}"
+    );
+
+    let (s3, v3) = api_post(
+        state,
+        "/profile",
+        json!({"display_name":"Second Name","avatar_type":"initials","rename":true}),
+    )
+    .await;
+    assert_eq!(s3, StatusCode::OK, "rename with flag should succeed: {v3}");
+    assert_eq!(v3["display_name"], "Second Name");
+    assert_eq!(v3["name_locked"], true);
+    assert_eq!(v3["name_revision"], 1);
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn identity_anonymous_status_roundtrip() {
     let _guard = env_lock().lock().expect("lock env");
     let halo_home = std::env::temp_dir().join(format!(
@@ -1190,7 +1241,105 @@ async fn identity_anonymous_status_roundtrip() {
 }
 
 #[tokio::test]
+async fn identity_tier_roundtrip() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_identity_tier_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("identity_tier_roundtrip");
+    let (s1, v1) = api_get(state.clone(), "/identity/tier").await;
+    assert_eq!(s1, StatusCode::OK, "tier status should succeed: {v1}");
+    assert_eq!(
+        v1["default_tier"],
+        nucleusdb::halo::identity::default_security_tier_str(),
+        "tier endpoint should surface backend default tier: {v1}"
+    );
+
+    let (s2, v2) = api_post(
+        state.clone(),
+        "/identity/tier",
+        json!({"tier":"max-safe","applied_by":"test"}),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK, "tier update should succeed: {v2}");
+    assert_eq!(v2["tier"], "max-safe");
+
+    let (s3, v3) = api_get(state.clone(), "/identity/status").await;
+    assert_eq!(s3, StatusCode::OK, "identity status should succeed: {v3}");
+    assert_eq!(v3["security_tier"], "max-safe");
+
+    let (s4, v4) = api_get(state, "/identity/social").await;
+    assert_eq!(s4, StatusCode::OK, "social status should succeed: {v4}");
+    assert!(
+        v4["ledger"]["total_entries"].as_u64().unwrap_or(0) >= 1,
+        "tier update should append a ledger entry: {v4}"
+    );
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn identity_tier_rolls_back_when_ledger_append_fails() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_identity_tier_rollback_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let bad_ledger_path = nucleusdb::halo::config::identity_social_ledger_path();
+    std::fs::write(&bad_ledger_path, "{not-json}\n").expect("write corrupt ledger");
+
+    let (state, db_path) = test_state("identity_tier_rollback");
+    let (s1, v1) = api_post(state.clone(), "/identity/tier", json!({"tier":"max-safe"})).await;
+    assert_eq!(
+        s1,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "tier update should fail when ledger is corrupt: {v1}"
+    );
+
+    let (s2, v2) = api_get(state, "/identity/tier").await;
+    assert_eq!(s2, StatusCode::OK, "tier status should still succeed: {v2}");
+    assert_eq!(
+        v2["configured"], false,
+        "tier should remain unconfigured after rollback: {v2}"
+    );
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn identity_device_scan_and_save_roundtrip() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_identity_device_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
     let (state, db_path) = test_state("identity_device_roundtrip");
 
     let (s1, v1) = api_get(state.clone(), "/identity/device").await;
@@ -1223,6 +1372,76 @@ async fn identity_device_scan_and_save_roundtrip() {
     assert_eq!(s3, StatusCode::OK, "identity status should succeed: {v3}");
     assert_eq!(v3["device_configured"], true);
 
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn identity_network_configured_semantics_roundtrip() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_identity_network_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("identity_network_roundtrip");
+
+    let (s1, v1) = api_get(state.clone(), "/identity/status").await;
+    assert_eq!(s1, StatusCode::OK, "identity status should succeed: {v1}");
+    assert_eq!(
+        v1["network_configured"], false,
+        "network should start unconfigured"
+    );
+
+    // Saving an all-false network payload should not count as configured.
+    let (s2, v2) = api_post(
+        state.clone(),
+        "/identity/network",
+        json!({
+            "share_local_ip": false,
+            "share_public_ip": false,
+            "share_mac": false
+        }),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK, "network save should succeed: {v2}");
+
+    let (s3, v3) = api_get(state.clone(), "/identity/status").await;
+    assert_eq!(s3, StatusCode::OK, "identity status should succeed: {v3}");
+    assert_eq!(
+        v3["network_configured"], false,
+        "all-false network config should remain unconfigured"
+    );
+
+    // Enabling meaningful sharing should flip configured=true.
+    let (s4, v4) = api_post(
+        state.clone(),
+        "/identity/network",
+        json!({
+            "share_local_ip": true,
+            "share_public_ip": false,
+            "share_mac": false,
+            "local_ip": "10.0.0.7"
+        }),
+    )
+    .await;
+    assert_eq!(s4, StatusCode::OK, "network save should succeed: {v4}");
+
+    let (s5, v5) = api_get(state, "/identity/status").await;
+    assert_eq!(s5, StatusCode::OK, "identity status should succeed: {v5}");
+    assert_eq!(
+        v5["network_configured"], true,
+        "enabled network sharing should mark configured"
+    );
+
+    let _ = std::fs::remove_dir_all(&halo_home);
     let _ = std::fs::remove_file(&db_path);
 }
 
@@ -1389,6 +1608,26 @@ async fn identity_pod_share_filters_by_pattern() {
         }),
         "records should be filtered to identity/profile/*: {v1}"
     );
+    assert!(
+        v1.get("proof_envelope").is_some(),
+        "identity pod share should include proof envelope: {v1}"
+    );
+    assert_eq!(
+        v1["proof_verification"]["accepted"].as_bool(),
+        Some(true),
+        "proof envelope should verify: {v1}"
+    );
+    assert_eq!(
+        v1["proof_verification"]["signature_present"].as_bool(),
+        Some(v1["proof_envelope"]["signature"].is_object()),
+        "signature presence should match proof envelope signature material: {v1}"
+    );
+    if !v1["proof_envelope"]["signature"].is_object() {
+        assert!(
+            v1["proof_verification"]["signature_valid"].is_null(),
+            "unsigned envelope should report signature_valid=null: {v1}"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&halo_home);
     let _ = std::fs::remove_file(&db_path);
