@@ -1150,14 +1150,20 @@ async function renderSetup() {
 
     <!-- SECTION 1: Identity -->
     <div class="setup-card-v2 ${identityCardClass}" id="setup-identity">
+      <div class="identity-instruct-overlay" aria-hidden="true">
+        <img class="identity-instruct-img" src="img/agenthaloinstruct_cutout.png" alt="" onerror="this.style.display='none'">
+        <div class="identity-instruct-note">The more you know about me the easier it is to keep me under control allowing you and others to trust me.</div>
+      </div>
       <div class="card-header">
-        <div class="card-icon">&#128100;</div>
+          <div class="card-icon">
+            <img class="identity-card-icon-img" src="img/agenthaloicon_header.png" alt="Agent HALO icon" onerror="this.parentElement.textContent='🤖'">
+          </div>
         <div>
           <div class="card-title">
-            Your Identity
+            My Identity
             ${identityDone ? '<span class="setup-inline-status status-done">&#10003; Done</span>' : ''}
           </div>
-          <div class="card-desc">Set your name, avatar, and device fingerprint</div>
+          <div class="card-desc">Help me get to know myself</div>
         </div>
       </div>
 
@@ -1212,15 +1218,21 @@ async function renderSetup() {
         </div>
       </details>
 
-      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
-        <label style="display:flex;align-items:center;gap:10px;cursor:pointer" id="anon-mode-label">
-          <input type="checkbox" id="anonymous-mode-check"
-                 ${identityCfg.anonymous_mode ? 'checked' : ''}>
-          <span style="font-size:13px;font-weight:700;color:var(--text)">Total Anonymous Mode</span>
-        </label>
-        <p style="font-size:12px;color:var(--text-dim);margin-top:6px;margin-left:28px;line-height:1.5">
-          No device fingerprints, no network identifiers. Each session gets a random ephemeral ID.
-        </p>
+      <div class="anon-mode-shell ${identityCfg.anonymous_mode ? 'is-active' : ''}" id="anon-mode-shell">
+        <div class="anon-mode-avatar-wrap" aria-hidden="true">
+          <img class="anon-mode-avatar anon-avatar-open" src="img/agenthalohiding_mode.png" alt="" onerror="this.style.display='none'">
+          <img class="anon-mode-avatar anon-avatar-hidden" src="img/agenthalohidden_mode.png" alt="" onerror="this.style.display='none'">
+        </div>
+        <div class="anon-mode-copy">
+          <div class="anon-mode-title">Total Anonymous Mode</div>
+          <p class="anon-mode-desc">
+            No device fingerprints, no network identifiers. Each session gets a random ephemeral ID.
+          </p>
+        </div>
+        <button class="anonymous-launch-btn ${identityCfg.anonymous_mode ? 'is-armed' : ''}" type="button" id="anonymous-mode-launch-btn" aria-pressed="${identityCfg.anonymous_mode ? 'true' : 'false'}">
+          ${identityCfg.anonymous_mode ? 'Disengage' : 'Engage'}
+        </button>
+        <input type="checkbox" id="anonymous-mode-check" class="anon-mode-hidden-checkbox" ${identityCfg.anonymous_mode ? 'checked' : ''}>
       </div>
     </div>
 
@@ -1774,8 +1786,34 @@ async function renderSetup() {
   }
 
   const anonCheck = document.getElementById('anonymous-mode-check');
+  const anonShell = document.getElementById('anon-mode-shell');
+  const anonLaunchBtn = document.getElementById('anonymous-mode-launch-btn');
   if (anonCheck) {
+    const syncAnonUi = () => {
+      const enabled = !!anonCheck.checked;
+      if (anonShell) anonShell.classList.toggle('is-active', enabled);
+      if (anonLaunchBtn) {
+        anonLaunchBtn.classList.toggle('is-armed', enabled);
+        anonLaunchBtn.textContent = enabled ? 'Disengage' : 'Engage';
+        anonLaunchBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      }
+    };
+
+    syncAnonUi();
+    if (anonLaunchBtn) {
+      anonLaunchBtn.addEventListener('click', () => {
+        if (anonLaunchBtn.disabled) return;
+        anonCheck.checked = !anonCheck.checked;
+        syncAnonUi();
+        anonCheck.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    }
+
     anonCheck.addEventListener('change', async () => {
+      if (anonLaunchBtn) {
+        anonLaunchBtn.disabled = true;
+        anonLaunchBtn.classList.add('is-loading');
+      }
       try {
         await apiPost('/identity/anonymous', { enabled: anonCheck.checked });
         window._invalidateSetupState();
@@ -1785,6 +1823,12 @@ async function renderSetup() {
       } catch (e) {
         alert('Failed: ' + (e.message || e));
         anonCheck.checked = !anonCheck.checked;
+        syncAnonUi();
+      } finally {
+        if (anonLaunchBtn) {
+          anonLaunchBtn.disabled = false;
+          anonLaunchBtn.classList.remove('is-loading');
+        }
       }
     });
   }
