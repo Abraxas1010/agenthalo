@@ -5,6 +5,8 @@ import WalletManagerEvm from '@tetherto/wdk-wallet-evm';
 
 const PORT = parseInt(process.env.WDK_PORT || '7321', 10);
 const HOST = '127.0.0.1';
+const AUTH_TOKEN = String(process.env.WDK_AUTH_TOKEN || '').trim();
+const AUTH_HEADER = 'x-agenthalo-wdk-token';
 
 const EVM_CHAINS = {
   ethereum: {
@@ -31,7 +33,6 @@ const BTC_CONFIG = {
 };
 
 let initialized = false;
-let seedPhrase = null;
 let wdk = null;
 let btcWallet = null;
 let evmWallet = null;
@@ -64,8 +65,7 @@ function getRandomSeedPhrase() {
   if (WDK && typeof WDK.getRandomSeedPhrase === 'function') {
     return WDK.getRandomSeedPhrase(24);
   }
-  const fallback = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
-  return fallback;
+  throw new Error('WDK.getRandomSeedPhrase unavailable; refusing unsafe fallback');
 }
 
 function shortError(e) {
@@ -97,8 +97,7 @@ async function extractAddress(wallet, chain) {
     if (typeof fromAccount === 'string' && fromAccount) return fromAccount;
   }
 
-  if (chain === 'ethereum') return '0x0000000000000000000000000000000000000000';
-  return '';
+  return null;
 }
 
 async function extractBalance(wallet) {
@@ -134,6 +133,53 @@ async function initWallets(seed) {
   });
 }
 
+function isSupportedChain(chain) {
+  return chain === 'bitcoin' || chain === 'ethereum' || chain === 'polygon' || chain === 'arbitrum';
+}
+
+function isHex40(value) {
+  return typeof value === 'string' && /^[0-9a-fA-F]{40}$/.test(value);
+}
+
+function isLikelyBitcoinAddress(value) {
+  if (typeof value !== 'string') return false;
+  const addr = value.trim();
+  if (!addr) return false;
+  const bech32 = addr.startsWith('bc1') || addr.startsWith('tb1');
+  const legacy = /^[123mn2][A-Za-z0-9]{25,89}$/.test(addr);
+  return bech32 || legacy;
+}
+
+function isPositiveIntegerString(value) {
+  if (typeof value !== 'string') return false;
+  if (!/^[0-9]{1,80}$/.test(value.trim())) return false;
+  try {
+    return BigInt(value.trim()) > 0n;
+  } catch (_e) {
+    return false;
+  }
+}
+
+function validateTransferInput(chain, to, amount) {
+  if (!isSupportedChain(chain)) return `unsupported chain: ${chain}`;
+  if (!isPositiveIntegerString(amount)) return 'amount must be a positive integer string';
+  if (chain === 'bitcoin' && !isLikelyBitcoinAddress(to)) {
+    return 'invalid bitcoin address';
+  }
+  if (chain !== 'bitcoin') {
+    if (!String(to).startsWith('0x') || !isHex40(String(to).slice(2))) {
+      return `invalid ${chain} address`;
+    }
+  }
+  return null;
+}
+
+function isAuthorized(req) {
+  if (!AUTH_TOKEN) return false;
+  const token = String(req.headers[AUTH_HEADER] || '').trim();
+  return token === AUTH_TOKEN;
+}
+
 async function handleInit(req, res) {
   const body = await parseBody(req);
   const requested = String(body.seed || '').trim();
@@ -143,6 +189,7 @@ async function handleInit(req, res) {
     return;
   }
 
+  let seedPhrase = null;
   if (generate) {
     seedPhrase = getRandomSeedPhrase();
   } else if (requested) {
@@ -160,7 +207,6 @@ async function handleInit(req, res) {
     json(res, 200, payload);
   } catch (e) {
     initialized = false;
-    seedPhrase = null;
     wdk = null;
     btcWallet = null;
     evmWallet = null;
@@ -180,13 +226,17 @@ async function handleAccounts(res) {
   if (!(await requireInit(res))) return;
   const btcAddress = await extractAddress(btcWallet, 'bitcoin');
   const ethAddress = await extractAddress(evmWallet, 'ethereum');
+  const errors = [];
+  if (!btcAddress) errors.push('bitcoin address unavailable');
+  if (!ethAddress) errors.push('evm address unavailable');
   json(res, 200, {
     accounts: [
       { chain: 'bitcoin', label: 'Bitcoin', symbol: 'BTC', address: btcAddress || '' },
       { chain: 'ethereum', label: 'Ethereum', symbol: 'ETH', address: ethAddress || '' },
       { chain: 'polygon', label: 'Polygon', symbol: 'MATIC', address: ethAddress || '' },
       { chain: 'arbitrum', label: 'Arbitrum', symbol: 'ETH', address: ethAddress || '' }
-    ]
+    ],
+    address_errors: errors
   });
 }
 
@@ -207,10 +257,18 @@ async function handleBalances(res) {
 async function handleQuote(req, res) {
   if (!(await requireInit(res))) return;
   const body = await parseBody(req);
+  const chain = String(body.chain || '').trim().toLowerCase();
+  const to = String(body.to || '').trim();
+  const amount = String(body.amount || '').trim();
+  const validationError = validateTransferInput(chain, to, amount);
+  if (validationError) {
+    json(res, 400, { error: validationError });
+    return;
+  }
   json(res, 200, {
     ok: true,
     quote: {
-      chain: body.chain || 'unknown',
+      chain,
       fee: '0',
       note: 'fee estimation passthrough is pending WDK per-chain quote adapters'
     }
@@ -223,8 +281,9 @@ async function handleSend(req, res) {
   const chain = String(body.chain || '').trim().toLowerCase();
   const to = String(body.to || '').trim();
   const amount = String(body.amount || '').trim();
-  if (!chain || !to || !amount) {
-    json(res, 400, { error: 'chain, to, and amount are required' });
+  const validationError = validateTransferInput(chain, to, amount);
+  if (validationError) {
+    json(res, 400, { error: validationError });
     return;
   }
 
@@ -255,7 +314,6 @@ async function handleFees(res) {
 
 function destroy() {
   initialized = false;
-  seedPhrase = null;
   wdk = null;
   btcWallet = null;
   evmWallet = null;
@@ -263,8 +321,13 @@ function destroy() {
 
 const server = createServer(async (req, res) => {
   try {
-    if (req.socket.remoteAddress !== '127.0.0.1' && req.socket.remoteAddress !== '::1') {
+    const remote = req.socket.remoteAddress;
+    if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
       json(res, 403, { error: 'forbidden' });
+      return;
+    }
+    if (!isAuthorized(req)) {
+      json(res, 401, { error: 'unauthorized sidecar request' });
       return;
     }
 

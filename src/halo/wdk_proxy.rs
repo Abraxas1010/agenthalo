@@ -1,10 +1,13 @@
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use argon2::{Algorithm, Argon2, Params, Version};
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -17,6 +20,14 @@ pub struct EncryptedSeed {
     pub nonce: String,
     pub ciphertext: String,
     pub salt: String,
+    #[serde(default)]
+    pub kdf: Option<String>,
+    #[serde(default)]
+    pub kdf_memory_kib: Option<u32>,
+    #[serde(default)]
+    pub kdf_iterations: Option<u32>,
+    #[serde(default)]
+    pub kdf_parallelism: Option<u32>,
     pub created_at: String,
     pub chains: Vec<String>,
 }
@@ -24,13 +35,17 @@ pub struct EncryptedSeed {
 pub struct WdkManager {
     child: Option<Child>,
     port: u16,
+    auth_token: String,
 }
 
 impl WdkManager {
     pub fn new() -> Self {
+        let mut token = [0u8; 32];
+        OsRng.fill_bytes(&mut token);
         Self {
             child: None,
             port: WDK_PORT,
+            auth_token: hex::encode(token),
         }
     }
 
@@ -71,6 +86,10 @@ impl WdkManager {
         format!("http://127.0.0.1:{}{}", self.port, path)
     }
 
+    fn auth_header_name() -> &'static str {
+        "x-agenthalo-wdk-token"
+    }
+
     pub fn start(&mut self) -> Result<(), String> {
         if self.is_running() {
             return Ok(());
@@ -89,6 +108,7 @@ impl WdkManager {
             .arg("index.mjs")
             .current_dir(&sidecar_dir)
             .env("WDK_PORT", self.port.to_string())
+            .env("WDK_AUTH_TOKEN", &self.auth_token)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -115,11 +135,15 @@ impl WdkManager {
     }
 
     pub fn is_running(&self) -> bool {
-        ureq::get(&self.api_url("/status")).call().is_ok()
+        ureq::get(&self.api_url("/status"))
+            .header(Self::auth_header_name(), &self.auth_token)
+            .call()
+            .is_ok()
     }
 
     pub fn get(&self, path: &str) -> Result<Value, String> {
         let mut resp = ureq::get(&self.api_url(path))
+            .header(Self::auth_header_name(), &self.auth_token)
             .call()
             .map_err(|e| format!("WDK GET {} failed: {}", path, sanitize_error(&e)))?;
         resp.body_mut()
@@ -129,6 +153,7 @@ impl WdkManager {
 
     pub fn post(&self, path: &str, body: &Value) -> Result<Value, String> {
         let mut resp = ureq::post(&self.api_url(path))
+            .header(Self::auth_header_name(), &self.auth_token)
             .send_json(body)
             .map_err(|e| format!("WDK POST {} failed: {}", path, sanitize_error(&e)))?;
         resp.body_mut()
@@ -162,12 +187,47 @@ fn sanitize_error(err: &ureq::Error) -> String {
     msg
 }
 
-fn derive_key(passphrase: &[u8], salt: &[u8]) -> Result<[u8; 32], String> {
+const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
+const ARGON2_ITERATIONS: u32 = 3;
+const ARGON2_PARALLELISM: u32 = 1;
+const WDK_KDF_ARGON2ID_V1: &str = "argon2id-v1";
+const WDK_KDF_HKDF_LEGACY: &str = "hkdf-v1";
+
+fn derive_key_argon2(passphrase: &[u8], salt: &[u8]) -> Result<[u8; 32], String> {
+    let params = Params::new(
+        ARGON2_MEMORY_KIB,
+        ARGON2_ITERATIONS,
+        ARGON2_PARALLELISM,
+        Some(32),
+    )
+    .map_err(|e| format!("argon2 params: {e}"))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut key = [0u8; 32];
+    argon2
+        .hash_password_into(passphrase, salt, &mut key)
+        .map_err(|e| format!("argon2 derive failed: {e}"))?;
+    Ok(key)
+}
+
+fn derive_key_hkdf_legacy(passphrase: &[u8], salt: &[u8]) -> Result<[u8; 32], String> {
     let hk = Hkdf::<Sha256>::new(Some(salt), passphrase);
     let mut key = [0u8; 32];
     hk.expand(b"agenthalo.wdk.seed.v1", &mut key)
-        .map_err(|e| format!("HKDF expand failed: {e}"))?;
+        .map_err(|e| format!("legacy HKDF expand failed: {e}"))?;
     Ok(key)
+}
+
+fn try_decrypt_with_key(
+    key: &[u8; 32],
+    nonce_bytes: &[u8],
+    ciphertext: &[u8],
+) -> Result<String, String> {
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| format!("cipher init: {e}"))?;
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| "decryption failed — wrong passphrase or corrupted wallet".to_string())?;
+    String::from_utf8(plaintext).map_err(|e| format!("seed utf8 decode: {e}"))
 }
 
 pub fn encrypt_seed(seed: &str, passphrase: &str) -> Result<EncryptedSeed, String> {
@@ -179,7 +239,7 @@ pub fn encrypt_seed(seed: &str, passphrase: &str) -> Result<EncryptedSeed, Strin
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
 
-    let key = derive_key(passphrase.as_bytes(), &salt)?;
+    let key = derive_key_argon2(passphrase.as_bytes(), &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("cipher init: {e}"))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
@@ -190,6 +250,10 @@ pub fn encrypt_seed(seed: &str, passphrase: &str) -> Result<EncryptedSeed, Strin
         nonce: hex::encode(nonce_bytes),
         ciphertext: hex::encode(ciphertext),
         salt: hex::encode(salt),
+        kdf: Some(WDK_KDF_ARGON2ID_V1.to_string()),
+        kdf_memory_kib: Some(ARGON2_MEMORY_KIB),
+        kdf_iterations: Some(ARGON2_ITERATIONS),
+        kdf_parallelism: Some(ARGON2_PARALLELISM),
         created_at: chrono::Utc::now().to_rfc3339(),
         chains: vec![
             "bitcoin".to_string(),
@@ -205,13 +269,26 @@ pub fn decrypt_seed(encrypted: &EncryptedSeed, passphrase: &str) -> Result<Strin
     let nonce_bytes = hex::decode(&encrypted.nonce).map_err(|e| format!("nonce decode: {e}"))?;
     let ciphertext =
         hex::decode(&encrypted.ciphertext).map_err(|e| format!("ciphertext decode: {e}"))?;
-    let key = derive_key(passphrase.as_bytes(), &salt)?;
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("cipher init: {e}"))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext.as_slice())
-        .map_err(|_| "decryption failed — wrong passphrase or corrupted wallet".to_string())?;
-    String::from_utf8(plaintext).map_err(|e| format!("seed utf8 decode: {e}"))
+
+    // Default to Argon2id for current files; keep HKDF fallback for legacy wallets.
+    let use_legacy_first = encrypted.kdf.as_deref() == Some(WDK_KDF_HKDF_LEGACY);
+    let mut attempts: Vec<[u8; 32]> = Vec::new();
+    if use_legacy_first {
+        attempts.push(derive_key_hkdf_legacy(passphrase.as_bytes(), &salt)?);
+        attempts.push(derive_key_argon2(passphrase.as_bytes(), &salt)?);
+    } else {
+        attempts.push(derive_key_argon2(passphrase.as_bytes(), &salt)?);
+        attempts.push(derive_key_hkdf_legacy(passphrase.as_bytes(), &salt)?);
+    }
+
+    let mut last_err = None;
+    for key in attempts {
+        match try_decrypt_with_key(&key, &nonce_bytes, &ciphertext) {
+            Ok(seed) => return Ok(seed),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "decryption failed".to_string()))
 }
 
 pub fn encrypted_seed_path() -> PathBuf {
@@ -224,8 +301,34 @@ pub fn save_encrypted_seed(enc: &EncryptedSeed) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     let json =
         serde_json::to_vec_pretty(enc).map_err(|e| format!("serialize encrypted seed: {e}"))?;
-    std::fs::write(&tmp, json).map_err(|e| format!("write encrypted seed tmp: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("commit encrypted seed file: {e}"))
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&tmp)
+        .map_err(|e| format!("open encrypted seed tmp {}: {e}", tmp.display()))?;
+    file.write_all(&json)
+        .map_err(|e| format!("write encrypted seed tmp: {e}"))?;
+    file.flush()
+        .map_err(|e| format!("flush encrypted seed tmp: {e}"))?;
+    drop(file);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("set encrypted seed tmp permissions: {e}"))?;
+    }
+
+    std::fs::rename(&tmp, &path).map_err(|e| format!("commit encrypted seed file: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("set encrypted seed permissions: {e}"))?;
+    }
+    Ok(())
 }
 
 pub fn load_encrypted_seed() -> Option<EncryptedSeed> {
@@ -266,5 +369,35 @@ mod tests {
         .expect("encrypt");
         let err = decrypt_seed(&enc, "wrong-pass").expect_err("expected decrypt failure");
         assert!(err.to_ascii_lowercase().contains("decryption failed"));
+    }
+
+    #[test]
+    fn legacy_hkdf_decrypt_still_supported() {
+        let mut salt = [0u8; 32];
+        OsRng.fill_bytes(&mut salt);
+        let mut nonce_bytes = [0u8; 12];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let key = derive_key_hkdf_legacy(b"passphrase123", &salt).expect("legacy key");
+        let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher
+            .encrypt(
+                nonce,
+                b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".as_slice(),
+            )
+            .expect("encrypt");
+        let legacy = EncryptedSeed {
+            nonce: hex::encode(nonce_bytes),
+            ciphertext: hex::encode(ciphertext),
+            salt: hex::encode(salt),
+            kdf: Some(WDK_KDF_HKDF_LEGACY.to_string()),
+            kdf_memory_kib: None,
+            kdf_iterations: None,
+            kdf_parallelism: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            chains: vec!["bitcoin".to_string()],
+        };
+        let dec = decrypt_seed(&legacy, "passphrase123").expect("legacy decrypt");
+        assert!(dec.starts_with("abandon abandon"));
     }
 }

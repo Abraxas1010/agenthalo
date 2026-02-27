@@ -48,6 +48,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Html;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use bip39::{Language, Mnemonic};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::convert::Infallible;
@@ -493,6 +494,13 @@ pub struct WdkDeleteRequest {
     confirm: String,
 }
 
+#[derive(Deserialize)]
+pub struct WdkTransferRequest {
+    chain: String,
+    to: String,
+    amount: String,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -557,7 +565,89 @@ fn wdk_seed_word_count(seed: &str) -> usize {
 }
 
 fn wdk_is_valid_seed_phrase(seed: &str) -> bool {
-    matches!(wdk_seed_word_count(seed), 12 | 24)
+    let normalized = seed.trim();
+    if !matches!(wdk_seed_word_count(normalized), 12 | 24) {
+        return false;
+    }
+    Mnemonic::parse_in_normalized(Language::English, normalized).is_ok()
+}
+
+fn wdk_is_supported_chain(chain: &str) -> bool {
+    matches!(
+        chain.trim().to_ascii_lowercase().as_str(),
+        "bitcoin" | "ethereum" | "polygon" | "arbitrum"
+    )
+}
+
+fn wdk_is_hex_40(input: &str) -> bool {
+    if input.len() != 40 {
+        return false;
+    }
+    input.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn wdk_is_valid_address(chain: &str, address: &str) -> bool {
+    let chain = chain.trim().to_ascii_lowercase();
+    let address = address.trim();
+    if address.is_empty() {
+        return false;
+    }
+    if chain == "bitcoin" {
+        let len = address.len();
+        let bech32 = address.starts_with("bc1") || address.starts_with("tb1");
+        let legacy = (address.starts_with('1')
+            || address.starts_with('3')
+            || address.starts_with('m')
+            || address.starts_with('n')
+            || address.starts_with('2'))
+            && address.chars().all(|c| c.is_ascii_alphanumeric());
+        return (bech32 || legacy) && (26..=90).contains(&len);
+    }
+    if matches!(chain.as_str(), "ethereum" | "polygon" | "arbitrum") {
+        let Some(rest) = address.strip_prefix("0x") else {
+            return false;
+        };
+        return wdk_is_hex_40(rest);
+    }
+    false
+}
+
+fn wdk_is_valid_amount(chain: &str, amount: &str) -> bool {
+    let amount = amount.trim();
+    if amount.is_empty() || amount.len() > 80 || !amount.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let parsed = amount.parse::<u128>().ok().unwrap_or(0);
+    if parsed == 0 {
+        return false;
+    }
+    if chain.eq_ignore_ascii_case("bitcoin") {
+        parsed <= 21_000_000_u128.saturating_mul(100_000_000)
+    } else {
+        true
+    }
+}
+
+fn validate_wdk_transfer(req: &WdkTransferRequest) -> Result<(String, String, String), String> {
+    let chain = req.chain.trim().to_ascii_lowercase();
+    let to = req.to.trim().to_string();
+    let amount = req.amount.trim().to_string();
+    if !wdk_is_supported_chain(&chain) {
+        return Err("unsupported chain; expected bitcoin|ethereum|polygon|arbitrum".to_string());
+    }
+    if !wdk_is_valid_address(&chain, &to) {
+        return Err(format!("invalid recipient address for chain {chain}"));
+    }
+    if !wdk_is_valid_amount(&chain, &amount) {
+        return Err("amount must be a positive integer string within allowed range".to_string());
+    }
+    Ok((chain, to, amount))
+}
+
+fn wdk_unlock_delay_secs(failed_attempts: u32) -> u64 {
+    let exponent = failed_attempts.min(8);
+    let delay = 1u64.checked_shl(exponent).unwrap_or(u64::MAX);
+    delay.clamp(2, 300)
 }
 
 fn social_provider_specs() -> Vec<(&'static str, bool, &'static str)> {
@@ -2673,7 +2763,8 @@ async fn api_agentpmt_anonymous_wallet(
     })))
 }
 
-async fn api_wdk_available(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+async fn api_wdk_available(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
     Ok(Json(json!({
         "available": crate::halo::wdk_proxy::WdkManager::is_available(),
         "wallet_exists": crate::halo::wdk_proxy::wallet_exists(),
@@ -2681,6 +2772,7 @@ async fn api_wdk_available(AxumState(_state): AxumState<DashboardState>) -> ApiR
 }
 
 async fn api_wdk_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
     let wallet_exists = crate::halo::wdk_proxy::wallet_exists();
     let available = crate::halo::wdk_proxy::WdkManager::is_available();
     let mgr = lock_wdk_manager(&state)?;
@@ -2741,10 +2833,23 @@ async fn api_wdk_create(
         mgr.stop();
         return Err(internal_err(e));
     }
+    let (ledger_logged, ledger_error) = match crate::halo::identity_ledger::append_wallet_event(
+        crate::halo::identity_ledger::IdentityLedgerKind::WalletCreated,
+        "created",
+        json!({
+            "chains": encrypted.chains,
+            "kdf": encrypted.kdf,
+        }),
+    ) {
+        Ok(_) => (true, None::<String>),
+        Err(e) => (false, Some(e)),
+    };
     let accounts = mgr.get("/accounts").unwrap_or_else(|_| json!({}));
     Ok(Json(json!({
         "ok": true,
         "message": "wallet created and encrypted",
+        "ledger_logged": ledger_logged,
+        "ledger_error": ledger_error,
         "accounts": accounts.get("accounts").cloned().unwrap_or(Value::Array(Vec::new())),
     })))
 }
@@ -2758,7 +2863,7 @@ async fn api_wdk_import(
     if !wdk_is_valid_seed_phrase(seed) {
         return Err(api_err(
             StatusCode::BAD_REQUEST,
-            "seed phrase must be exactly 12 or 24 words",
+            "seed phrase must be a valid 12 or 24-word BIP-39 mnemonic",
         ));
     }
     if req.passphrase.trim().len() < 8 {
@@ -2780,20 +2885,39 @@ async fn api_wdk_import(
         ));
     }
 
-    let encrypted =
-        crate::halo::wdk_proxy::encrypt_seed(seed, &req.passphrase).map_err(internal_err)?;
-    crate::halo::wdk_proxy::save_encrypted_seed(&encrypted).map_err(internal_err)?;
-
     let mut mgr = lock_wdk_manager(&state)?;
     if !mgr.is_running() {
         mgr.start().map_err(internal_err)?;
     }
-    mgr.post("/init", &json!({"seed": seed}))
-        .map_err(internal_err)?;
+    if let Err(e) = mgr.post("/init", &json!({"seed": seed})) {
+        let _ = mgr.post("/destroy", &json!({}));
+        mgr.stop();
+        return Err(internal_err(e));
+    }
+    let encrypted =
+        crate::halo::wdk_proxy::encrypt_seed(seed, &req.passphrase).map_err(internal_err)?;
+    if let Err(e) = crate::halo::wdk_proxy::save_encrypted_seed(&encrypted) {
+        let _ = mgr.post("/destroy", &json!({}));
+        mgr.stop();
+        return Err(internal_err(e));
+    }
+    let (ledger_logged, ledger_error) = match crate::halo::identity_ledger::append_wallet_event(
+        crate::halo::identity_ledger::IdentityLedgerKind::WalletImported,
+        "imported",
+        json!({
+            "chains": encrypted.chains,
+            "kdf": encrypted.kdf,
+        }),
+    ) {
+        Ok(_) => (true, None::<String>),
+        Err(e) => (false, Some(e)),
+    };
     let accounts = mgr.get("/accounts").unwrap_or_else(|_| json!({}));
     Ok(Json(json!({
         "ok": true,
         "message": "wallet imported and encrypted",
+        "ledger_logged": ledger_logged,
+        "ledger_error": ledger_error,
         "accounts": accounts.get("accounts").cloned().unwrap_or(Value::Array(Vec::new())),
     })))
 }
@@ -2803,10 +2927,49 @@ async fn api_wdk_unlock(
     Json(req): Json<WdkPassphraseRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    let now = now_unix_secs();
+    {
+        let throttle = state
+            .wdk_unlock_state
+            .lock()
+            .map_err(|e| internal_err(format!("WDK unlock throttle lock poisoned: {e}")))?;
+        if throttle.locked_until_unix > now {
+            let retry_after = throttle.locked_until_unix.saturating_sub(now);
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": format!("too many failed unlock attempts; retry in {}s", retry_after),
+                    "retry_after_secs": retry_after,
+                })),
+            ));
+        }
+    }
     let encrypted = crate::halo::wdk_proxy::load_encrypted_seed()
         .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "no WDK wallet found"))?;
-    let seed = crate::halo::wdk_proxy::decrypt_seed(&encrypted, &req.passphrase)
-        .map_err(|e| api_err(StatusCode::UNAUTHORIZED, &e))?;
+    let seed = match crate::halo::wdk_proxy::decrypt_seed(&encrypted, &req.passphrase) {
+        Ok(seed) => {
+            if let Ok(mut throttle) = state.wdk_unlock_state.lock() {
+                throttle.failed_attempts = 0;
+                throttle.locked_until_unix = 0;
+            }
+            seed
+        }
+        Err(e) => {
+            let mut retry_after = 0;
+            if let Ok(mut throttle) = state.wdk_unlock_state.lock() {
+                throttle.failed_attempts = throttle.failed_attempts.saturating_add(1);
+                retry_after = wdk_unlock_delay_secs(throttle.failed_attempts);
+                throttle.locked_until_unix = now.saturating_add(retry_after);
+            }
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": e,
+                    "retry_after_secs": retry_after,
+                })),
+            ));
+        }
+    };
     let mut mgr = lock_wdk_manager(&state)?;
     if !mgr.is_running() {
         mgr.start().map_err(internal_err)?;
@@ -2814,9 +2977,21 @@ async fn api_wdk_unlock(
     let sidecar = mgr
         .post("/init", &json!({"seed": seed}))
         .map_err(internal_err)?;
+    let (ledger_logged, ledger_error) = match crate::halo::identity_ledger::append_wallet_event(
+        crate::halo::identity_ledger::IdentityLedgerKind::WalletUnlocked,
+        "unlocked",
+        json!({
+            "sidecar_initialized": sidecar.get("initialized").and_then(|v| v.as_bool()).unwrap_or(false),
+        }),
+    ) {
+        Ok(_) => (true, None::<String>),
+        Err(e) => (false, Some(e)),
+    };
     Ok(Json(json!({
         "ok": true,
         "sidecar": sidecar,
+        "ledger_logged": ledger_logged,
+        "ledger_error": ledger_error,
     })))
 }
 
@@ -2846,9 +3021,11 @@ async fn api_wdk_balances(AxumState(state): AxumState<DashboardState>) -> ApiRes
 
 async fn api_wdk_send(
     AxumState(state): AxumState<DashboardState>,
-    Json(body): Json<Value>,
+    Json(req): Json<WdkTransferRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    let (chain, to, amount) =
+        validate_wdk_transfer(&req).map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     let mgr = lock_wdk_manager(&state)?;
     if !mgr.is_running() {
         return Err(api_err(
@@ -2856,14 +3033,25 @@ async fn api_wdk_send(
             "wallet is locked; unlock it first",
         ));
     }
-    mgr.post("/send", &body).map(Json).map_err(internal_err)
+    mgr.post(
+        "/send",
+        &json!({
+            "chain": chain,
+            "to": to,
+            "amount": amount,
+        }),
+    )
+    .map(Json)
+    .map_err(internal_err)
 }
 
 async fn api_wdk_quote(
     AxumState(state): AxumState<DashboardState>,
-    Json(body): Json<Value>,
+    Json(req): Json<WdkTransferRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    let (chain, to, amount) =
+        validate_wdk_transfer(&req).map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     let mgr = lock_wdk_manager(&state)?;
     if !mgr.is_running() {
         return Err(api_err(
@@ -2871,7 +3059,16 @@ async fn api_wdk_quote(
             "wallet is locked; unlock it first",
         ));
     }
-    mgr.post("/quote", &body).map(Json).map_err(internal_err)
+    mgr.post(
+        "/quote",
+        &json!({
+            "chain": chain,
+            "to": to,
+            "amount": amount,
+        }),
+    )
+    .map(Json)
+    .map_err(internal_err)
 }
 
 async fn api_wdk_fees(AxumState(state): AxumState<DashboardState>) -> ApiResult {
@@ -2893,9 +3090,23 @@ async fn api_wdk_lock(AxumState(state): AxumState<DashboardState>) -> ApiResult 
         let _ = mgr.post("/destroy", &json!({}));
     }
     mgr.stop();
+    let (ledger_logged, ledger_error) = match crate::halo::identity_ledger::append_wallet_event(
+        crate::halo::identity_ledger::IdentityLedgerKind::WalletLocked,
+        "locked",
+        json!({}),
+    ) {
+        Ok(_) => (true, None::<String>),
+        Err(e) => (false, Some(e)),
+    };
+    if let Ok(mut throttle) = state.wdk_unlock_state.lock() {
+        throttle.failed_attempts = 0;
+        throttle.locked_until_unix = 0;
+    }
     Ok(Json(json!({
         "ok": true,
         "message": "wallet locked",
+        "ledger_logged": ledger_logged,
+        "ledger_error": ledger_error,
     })))
 }
 
@@ -2925,10 +3136,24 @@ async fn api_wdk_delete(
             ))
         })?;
     }
+    let (ledger_logged, ledger_error) = match crate::halo::identity_ledger::append_wallet_event(
+        crate::halo::identity_ledger::IdentityLedgerKind::WalletDeleted,
+        "deleted",
+        json!({}),
+    ) {
+        Ok(_) => (true, None::<String>),
+        Err(e) => (false, Some(e)),
+    };
+    if let Ok(mut throttle) = state.wdk_unlock_state.lock() {
+        throttle.failed_attempts = 0;
+        throttle.locked_until_unix = 0;
+    }
 
     Ok(Json(json!({
         "ok": true,
         "message": "wallet permanently deleted",
+        "ledger_logged": ledger_logged,
+        "ledger_error": ledger_error,
     })))
 }
 

@@ -32,10 +32,18 @@ pub struct DashboardState {
     pub key_store: Arc<crate::halo::api_keys::CustomerKeyStore>,
     /// WDK sidecar lifecycle + encrypted seed proxy.
     pub wdk_manager: Arc<StdMutex<crate::halo::wdk_proxy::WdkManager>>,
+    /// Unlock throttling state for WDK passphrase attempts.
+    pub wdk_unlock_state: Arc<StdMutex<WdkUnlockState>>,
     /// Proxy resale configuration (markup, rate limits).
     pub proxy_config: crate::halo::pricing::ProxyConfig,
     /// Pricing table for cost calculation.
     pub pricing_table: std::collections::HashMap<String, crate::halo::pricing::ModelPricing>,
+}
+
+#[derive(Debug, Default)]
+pub struct WdkUnlockState {
+    pub failed_attempts: u32,
+    pub locked_until_unix: u64,
 }
 
 fn default_grant_store_path(db_path: &Path) -> PathBuf {
@@ -98,6 +106,7 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         pty_manager: Arc::new(crate::cockpit::pty_manager::PtyManager::new(10)),
         key_store,
         wdk_manager: Arc::new(StdMutex::new(crate::halo::wdk_proxy::WdkManager::new())),
+        wdk_unlock_state: Arc::new(StdMutex::new(WdkUnlockState::default())),
         proxy_config,
         pricing_table,
     }

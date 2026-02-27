@@ -1757,6 +1757,78 @@ async fn agentpmt_enable_requires_auth() {
 }
 
 #[tokio::test]
+async fn wdk_status_requires_auth() {
+    let (state, db_path, creds_path) = test_state_unauth("wdk_status_auth");
+    let (status, val) = api_get(state, "/wdk/status").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(val["code"], "auth_required");
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn wdk_available_requires_auth() {
+    let (state, db_path, creds_path) = test_state_unauth("wdk_available_auth");
+    let (status, val) = api_get(state, "/wdk/available").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(val["code"], "auth_required");
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn wdk_import_rejects_invalid_bip39_seed() {
+    let (state, db_path) = test_state("wdk_import_invalid_seed");
+    let (status, val) = api_post(
+        state,
+        "/wdk/import",
+        json!({
+            "seed": "apple banana cherry dog elephant fish grape house igloo jelly kite lemon",
+            "passphrase": "testpass123"
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "invalid mnemonic should be rejected: {val}"
+    );
+    assert!(
+        val["error"].as_str().unwrap_or_default().contains("BIP-39"),
+        "error should mention BIP-39 validity: {val}"
+    );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn wdk_send_rejects_invalid_chain_before_sidecar_lookup() {
+    let (state, db_path) = test_state("wdk_send_invalid_chain");
+    let (status, val) = api_post(
+        state,
+        "/wdk/send",
+        json!({
+            "chain": "dogecoin",
+            "to": "D123456789",
+            "amount": "1000"
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "unsupported chain should fail: {val}"
+    );
+    assert!(
+        val["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unsupported chain"),
+        "should return chain validation message: {val}"
+    );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn agentpmt_enable_sets_enabled_in_config() {
     let _guard = env_lock().lock().expect("lock env");
     let halo_home = std::env::temp_dir().join(format!(

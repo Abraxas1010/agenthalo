@@ -16,6 +16,11 @@ pub enum IdentityLedgerKind {
     NetworkUpdated,
     AnonymousModeUpdated,
     SafetyTierApplied,
+    WalletCreated,
+    WalletImported,
+    WalletUnlocked,
+    WalletLocked,
+    WalletDeleted,
     SocialTokenConnected,
     SocialTokenRevoked,
     SuperSecureUpdated,
@@ -478,6 +483,38 @@ pub fn append_safety_tier_applied(
     append_entry(entry)
 }
 
+pub fn append_wallet_event(
+    kind: IdentityLedgerKind,
+    status: &str,
+    payload: Value,
+) -> Result<IdentityLedgerEntry, String> {
+    match kind {
+        IdentityLedgerKind::WalletCreated
+        | IdentityLedgerKind::WalletImported
+        | IdentityLedgerKind::WalletUnlocked
+        | IdentityLedgerKind::WalletLocked
+        | IdentityLedgerKind::WalletDeleted => {}
+        _ => {
+            return Err("append_wallet_event requires a wallet ledger kind".to_string());
+        }
+    }
+    let entry = IdentityLedgerEntry {
+        version: LEDGER_VERSION,
+        seq: 0,
+        timestamp: now_unix(),
+        kind,
+        provider: None,
+        token_ref_sha256: None,
+        expires_at: None,
+        status: status.to_string(),
+        payload,
+        prev_hash: None,
+        entry_hash: String::new(),
+        signature: None,
+    };
+    append_entry(entry)
+}
+
 /// Build the current immutable-ledger projection:
 /// per-provider social activity plus global chain/signing status.
 pub fn project_ledger_status(now: u64) -> Result<LedgerProjection, String> {
@@ -513,7 +550,12 @@ pub fn project_ledger_status(now: u64) -> Result<LedgerProjection, String> {
             | IdentityLedgerKind::DeviceUpdated
             | IdentityLedgerKind::NetworkUpdated
             | IdentityLedgerKind::AnonymousModeUpdated
-            | IdentityLedgerKind::SafetyTierApplied => {}
+            | IdentityLedgerKind::SafetyTierApplied
+            | IdentityLedgerKind::WalletCreated
+            | IdentityLedgerKind::WalletImported
+            | IdentityLedgerKind::WalletUnlocked
+            | IdentityLedgerKind::WalletLocked
+            | IdentityLedgerKind::WalletDeleted => {}
             IdentityLedgerKind::SocialTokenConnected => {
                 let expired = entry.expires_at.map(|exp| exp <= now).unwrap_or(false);
                 state.expired = expired;
