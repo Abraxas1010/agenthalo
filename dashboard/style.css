@@ -96,6 +96,24 @@ body { display: flex; }
 body.no-crt #crt-overlay { display: none; }
 
 /* ================================================================
+   GRAIN TEXTURE — Phosphor noise overlay (always on)
+   ================================================================
+   Light yellowish-green speckles on dark background.
+   Uses screen blend to ADD light (overlay is invisible on dark).
+   Sits below CRT scanlines (9998 < 9999).
+   ================================================================ */
+
+#grain-overlay {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 9998;
+  opacity: 0.08;
+  mix-blend-mode: screen;
+}
+
+/* ================================================================
    SIDEBAR
    ================================================================ */
 
