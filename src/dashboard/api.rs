@@ -77,6 +77,17 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/config", get(api_config))
         .route("/config/wrap", post(api_config_wrap))
         .route("/config/x402", post(api_config_x402))
+        .route("/profile", get(api_get_profile).post(api_save_profile))
+        .route(
+            "/identity/device",
+            get(api_identity_device_scan).post(api_identity_device_save),
+        )
+        .route(
+            "/identity/network",
+            get(api_identity_network).post(api_identity_network_save),
+        )
+        .route("/identity/anonymous", post(api_identity_anonymous))
+        .route("/identity/status", get(api_identity_status))
         .route("/agentpmt/tools", get(api_agentpmt_tools))
         .route("/agentpmt/refresh", post(api_agentpmt_refresh))
         .route("/agentpmt/enable", post(api_agentpmt_enable))
@@ -1192,6 +1203,266 @@ async fn api_costs_paid(AxumState(state): AxumState<DashboardState>) -> ApiResul
 // Configuration
 // ---------------------------------------------------------------------------
 
+async fn api_get_profile(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let profile = crate::halo::profile::load();
+    Ok(Json(serde_json::to_value(&profile).unwrap_or_default()))
+}
+
+async fn api_save_profile(
+    AxumState(_state): AxumState<DashboardState>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let mut profile = crate::halo::profile::load();
+    if let Some(name) = body.get("display_name").and_then(|v| v.as_str()) {
+        profile.display_name = Some(name.to_string());
+    }
+    if let Some(avatar_type) = body.get("avatar_type").and_then(|v| v.as_str()) {
+        profile.avatar_type = Some(avatar_type.to_string());
+    }
+    if let Some(avatar_data) = body.get("avatar_data").and_then(|v| v.as_str()) {
+        if avatar_data.len() > 512 * 1024 {
+            return Err(api_err(
+                StatusCode::BAD_REQUEST,
+                "Avatar data exceeds 512KB limit",
+            ));
+        }
+        profile.avatar_data = Some(avatar_data.to_string());
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    if profile.created_at.is_none() {
+        profile.created_at = Some(now.clone());
+    }
+    profile.updated_at = Some(now);
+
+    crate::halo::profile::save(&profile).map_err(internal_err)?;
+    Ok(Json(serde_json::to_value(&profile).unwrap_or_default()))
+}
+
+async fn api_identity_device_scan(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let tier = crate::puf::core::PufTier::detect();
+    let components: Vec<Value> = crate::puf::core::collect_auto()
+        .map(|result| {
+            result
+                .components
+                .iter()
+                .map(|c| {
+                    json!({
+                        "name": c.name,
+                        "entropy_bits": c.entropy_bits,
+                        "stable": c.stable,
+                        "value_preview": String::from_utf8_lossy(&c.value[..c.value.len().min(32)]).to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Json(json!({
+        "tier": format!("{tier:?}"),
+        "components": components,
+    })))
+}
+
+async fn api_identity_device_save(
+    AxumState(_state): AxumState<DashboardState>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let browser_fp = body
+        .get("browser_fingerprint")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let selected: Vec<String> = body
+        .get("selected_components")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut components = crate::puf::core::collect_auto()
+        .map(|result| result.components)
+        .unwrap_or_default();
+    if !selected.is_empty() {
+        components.retain(|c| selected.contains(&c.name));
+    }
+
+    let mut entropy_bits = components.iter().map(|c| c.entropy_bits).sum::<u32>();
+    if let Some(fp) = browser_fp.clone() {
+        components.push(crate::puf::core::PufComponent {
+            name: "browser_fingerprint".to_string(),
+            value: fp.into_bytes(),
+            entropy_bits: 32,
+            stable: true,
+        });
+        entropy_bits = entropy_bits.saturating_add(32);
+    }
+
+    if components.is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "no identity components selected",
+        ));
+    }
+
+    let digest = crate::puf::core::canonical_fingerprint(&components);
+    let hex = format!(
+        "sha256:{}",
+        crate::transparency::ct6962::hex_encode(&digest)
+    );
+
+    let mut cfg = crate::halo::identity::load();
+    cfg.version = Some(1);
+    cfg.device = Some(crate::halo::identity::DeviceIdentity {
+        enabled: true,
+        browser_fingerprint: browser_fp,
+        selected_components: selected,
+        composite_fingerprint_hex: Some(hex.clone()),
+        entropy_bits,
+        last_collected: Some(chrono::Utc::now().to_rfc3339()),
+    });
+    crate::halo::identity::save(&cfg).map_err(internal_err)?;
+
+    Ok(Json(json!({
+        "fingerprint_hex": hex,
+        "entropy_bits": entropy_bits,
+    })))
+}
+
+async fn api_identity_network(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let local_ip = (|| -> Option<String> {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        socket.connect("8.8.8.8:80").ok()?;
+        socket.local_addr().ok().map(|addr| addr.ip().to_string())
+    })();
+    let mac_address = mac_address::get_mac_address()
+        .ok()
+        .flatten()
+        .map(|mac| mac.to_string());
+
+    Ok(Json(json!({
+        "local_ip": local_ip,
+        "mac_address": mac_address,
+    })))
+}
+
+async fn api_identity_network_save(
+    AxumState(_state): AxumState<DashboardState>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let share_local_ip = body
+        .get("share_local_ip")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let share_public_ip = body
+        .get("share_public_ip")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let share_mac = body
+        .get("share_mac")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let local_ip_hash = if share_local_ip {
+        body.get("local_ip")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|ip| {
+                let mut h = sha2::Sha256::new();
+                use sha2::Digest;
+                h.update(ip.as_bytes());
+                format!(
+                    "sha256:{}",
+                    crate::transparency::ct6962::hex_encode(&h.finalize())
+                )
+            })
+    } else {
+        None
+    };
+
+    let public_ip_hash = if share_public_ip {
+        body.get("public_ip")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|ip| {
+                let mut h = sha2::Sha256::new();
+                use sha2::Digest;
+                h.update(ip.as_bytes());
+                format!(
+                    "sha256:{}",
+                    crate::transparency::ct6962::hex_encode(&h.finalize())
+                )
+            })
+    } else {
+        None
+    };
+
+    let mac_addresses: Vec<String> = if share_mac {
+        body.get("mac_addresses")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let mut cfg = crate::halo::identity::load();
+    cfg.version = Some(1);
+    cfg.network = Some(crate::halo::identity::NetworkIdentity {
+        share_local_ip,
+        share_public_ip,
+        share_mac,
+        local_ip_hash,
+        public_ip_hash,
+        mac_addresses,
+    });
+    crate::halo::identity::save(&cfg).map_err(internal_err)?;
+
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn api_identity_anonymous(
+    AxumState(_state): AxumState<DashboardState>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let enabled = body
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut cfg = crate::halo::identity::load();
+    cfg.version = Some(1);
+    cfg.anonymous_mode = enabled;
+    if enabled {
+        cfg.device = None;
+        cfg.network = None;
+    }
+    crate::halo::identity::save(&cfg).map_err(internal_err)?;
+    Ok(Json(json!({"anonymous_mode": enabled})))
+}
+
+async fn api_identity_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let profile = crate::halo::profile::load();
+    let identity = crate::halo::identity::load();
+    let profile_set = profile.has_name();
+    let anonymous_mode = identity.anonymous_mode;
+    let device_configured = identity.device.as_ref().map(|d| d.enabled).unwrap_or(false);
+    let identity_done = profile_set || anonymous_mode;
+
+    Ok(Json(json!({
+        "profile_set": profile_set,
+        "anonymous_mode": anonymous_mode,
+        "device_configured": device_configured,
+        "identity_done": identity_done,
+        "display_name": profile.display_name,
+        "avatar_type": profile.avatar_type,
+    })))
+}
+
 async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let creds_path = &state.credentials_path;
     let has_auth = is_authenticated(creds_path) || resolve_api_key(creds_path).is_some();
@@ -1210,7 +1481,10 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let pmt_auth = agentpmt::has_bearer_token();
     let (agentpmt_ok, pmt_tool_count) = resolve_agentpmt_setup_status(&pmt_cfg, pmt_auth);
     let has_pq = has_wallet();
-    let identity_ok = has_auth || has_pq;
+    let legacy_identity_ok = has_auth || has_pq;
+    let profile = crate::halo::profile::load();
+    let identity_cfg = crate::halo::identity::load();
+    let identity_ok = profile.has_name() || identity_cfg.anonymous_mode || legacy_identity_ok;
     let llm_ok = state
         .vault
         .as_ref()
@@ -1221,6 +1495,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .is_some();
+    let setup_complete = identity_ok && (agentpmt_ok || identity_cfg.anonymous_mode) && llm_ok;
 
     Ok(Json(json!({
         "authentication": {
@@ -1259,7 +1534,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "identity": identity_ok,
             "agentpmt": agentpmt_ok,
             "llm": llm_ok,
-            "complete": identity_ok && agentpmt_ok,
+            "complete": setup_complete,
         },
         "pq_wallet": has_pq,
         "vault": {

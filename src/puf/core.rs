@@ -337,7 +337,7 @@ pub fn collect_auto() -> Option<PufResult> {
                 None
             }
         }
-        PufTier::Consumer => None,
+        PufTier::Consumer => crate::puf::consumer::collect(),
     }
 }
 

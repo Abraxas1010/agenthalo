@@ -1109,6 +1109,121 @@ async fn config_includes_setup_complete_fields() {
 }
 
 #[tokio::test]
+async fn profile_get_and_save_roundtrip() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_profile_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("profile_roundtrip");
+    let (s1, v1) = api_get(state.clone(), "/profile").await;
+    assert_eq!(s1, StatusCode::OK, "get profile should succeed: {v1}");
+
+    let (s2, v2) = api_post(
+        state.clone(),
+        "/profile",
+        json!({"display_name":"Alice Test","avatar_type":"initials"}),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK, "save profile should succeed: {v2}");
+    assert_eq!(v2["display_name"], "Alice Test");
+
+    let (s3, v3) = api_get(state, "/profile").await;
+    assert_eq!(
+        s3,
+        StatusCode::OK,
+        "get profile after save should succeed: {v3}"
+    );
+    assert_eq!(v3["display_name"], "Alice Test");
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn identity_anonymous_status_roundtrip() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_identity_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("identity_roundtrip");
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/identity/anonymous",
+        json!({"enabled":true}),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "enable anonymous should succeed: {v1}");
+    assert_eq!(v1["anonymous_mode"], true);
+
+    let (s2, v2) = api_get(state.clone(), "/identity/status").await;
+    assert_eq!(s2, StatusCode::OK, "identity status should succeed: {v2}");
+    assert_eq!(v2["anonymous_mode"], true);
+    assert_eq!(v2["identity_done"], true);
+
+    let (s3, v3) = api_post(state, "/identity/anonymous", json!({"enabled":false})).await;
+    assert_eq!(s3, StatusCode::OK, "disable anonymous should succeed: {v3}");
+    assert_eq!(v3["anonymous_mode"], false);
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn identity_device_scan_and_save_roundtrip() {
+    let (state, db_path) = test_state("identity_device_roundtrip");
+
+    let (s1, v1) = api_get(state.clone(), "/identity/device").await;
+    assert_eq!(s1, StatusCode::OK, "device scan should succeed: {v1}");
+    assert!(
+        v1.get("components").and_then(|v| v.as_array()).is_some(),
+        "components should be an array: {v1}"
+    );
+    assert!(
+        v1.get("tier").and_then(|v| v.as_str()).is_some(),
+        "tier should be present: {v1}"
+    );
+
+    let (s2, v2) = api_post(
+        state.clone(),
+        "/identity/device",
+        json!({
+            "browser_fingerprint":"browser-fp-test",
+            "selected_components":[]
+        }),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK, "device save should succeed: {v2}");
+    assert!(
+        v2.get("fingerprint_hex").and_then(|v| v.as_str()).is_some(),
+        "fingerprint_hex should be present: {v2}"
+    );
+
+    let (s3, v3) = api_get(state, "/identity/status").await;
+    assert_eq!(s3, StatusCode::OK, "identity status should succeed: {v3}");
+    assert_eq!(v3["device_configured"], true);
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn config_agentpmt_setup_false_when_token_unverified() {
     let _guard = env_lock().lock().expect("lock env");
     let halo_home = std::env::temp_dir().join(format!(

@@ -1611,6 +1611,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hmac-sha256"
+version = "1.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec9d92d097f4749b64e8cc33d924d9f40a2d4eb91402b458014b781f5733d60f"
+
+[[package]]
 name = "home"
 version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2179,6 +2185,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mid"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0ab4b7ce393ddb4cab95c46e5585bc6283fdcf8f4f6a81be98e6cce9ee39624"
+dependencies = [
+ "hex",
+ "hmac-sha256",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2324,6 +2340,8 @@ dependencies = [
  "k256",
  "kzg-mini",
  "libc",
+ "mac_address",
+ "mid",
  "mime_guess",
  "ml-dsa",
  "num-bigint",

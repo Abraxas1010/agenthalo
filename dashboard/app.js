@@ -1107,26 +1107,36 @@ async function renderSetup() {
   const optionalStorage = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === 'storage');
   const optionalTooling = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === 'tooling');
 
+  // Identity profile/state
+  let savedProfile = { display_name: '', avatar_type: 'none' };
+  let identityCfg = { anonymous_mode: false };
+  try { savedProfile = await api('/profile'); } catch (_e) {}
+  try { identityCfg = (await api('/identity/status')) || identityCfg; } catch (_e) {}
+  const profileSet = !!(savedProfile.display_name && String(savedProfile.display_name).trim().length > 0);
+
   // Step states
   const step1Done = ss.agentpmt;
   const step2Done = ss.llm;
-  const identityDone = ss.identity;
+  const identityDone = profileSet || !!identityCfg.anonymous_mode || ss.identity;
+  const localIdentityDone = !!isAuthenticated || !!hasWallet;
   const allDone = ss.complete;
 
-  const pmtEnabled = cfg && cfg.agentpmt && cfg.agentpmt.enabled;
   const pmtAuth = cfg && cfg.agentpmt && cfg.agentpmt.auth_configured;
   const pmtToolCount = (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) || 0;
   const orStatus = providerStatus('openrouter');
 
-  // Stepper step classes
-  const s1c = step1Done ? 's-done' : 's-active';
-  const s2c = step1Done ? (step2Done ? 's-done' : 's-active') : '';
-  const s3c = allDone ? 's-done' : (step1Done && step2Done ? 's-active' : '');
-
   // Card classes
+  const identityCardClass = identityDone ? 'card-done' : 'card-active';
   const c1c = step1Done ? 'card-done' : 'card-active';
   const c2c = step1Done ? (step2Done ? 'card-done' : 'card-active') : 'card-locked';
   const c3c = allDone ? 'card-done card-celebrate' : 'card-locked';
+  const initials = (savedProfile.display_name || '?')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(w => w[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase() || '?';
 
   content.innerHTML = `
   <div class="setup-page-wrap">
@@ -1134,34 +1144,95 @@ async function renderSetup() {
     <!-- Hero -->
     <div class="setup-hero">
       <img class="setup-hero-img" src="img/agenthalo_ready.png" alt="Agent H.A.L.O." onerror="this.style.display='none'">
-      <h1>${allDone ? 'You\'re All Set!' : 'Welcome to Agent H.A.L.O.'}</h1>
-      <p>${allDone
-        ? 'Your dashboard is fully operational. Go build something amazing.'
-        : 'Get your agent economy running in just a couple of steps. It only takes a minute.'}</p>
+      <h1>Welcome, my name is Agent H.A.L.O.</h1>
+      <p>Let's get everything properly set up for you. Then, we can build something amazing together!</p>
     </div>
 
-    <!-- Stepper -->
-    <div class="setup-stepper">
-      <div class="setup-stepper-step ${s1c}">
-        <div class="setup-stepper-dot">${step1Done ? '&#10003;' : '1'}</div>
-        <div class="setup-stepper-label">Account</div>
+    <!-- SECTION 1: Identity -->
+    <div class="setup-card-v2 ${identityCardClass}" id="setup-identity">
+      <div class="card-header">
+        <div class="card-icon">&#128100;</div>
+        <div>
+          <div class="card-title">
+            Your Identity
+            ${identityDone ? '<span class="setup-inline-status status-done">&#10003; Done</span>' : ''}
+          </div>
+          <div class="card-desc">Set your name, avatar, and device fingerprint</div>
+        </div>
       </div>
-      <div class="setup-stepper-step ${s2c}">
-        <div class="setup-stepper-dot">${step2Done ? '&#10003;' : '2'}</div>
-        <div class="setup-stepper-label">LLM Key</div>
+
+      <div class="identity-subsection" id="identity-profile">
+        <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px">
+          Your Profile
+        </div>
+        <div class="identity-profile-row">
+          <div class="avatar-preview" id="avatar-preview">${esc(initials)}</div>
+          <div class="identity-profile-fields">
+            <input type="text" id="profile-name-input" class="setup-input"
+                   placeholder="What should agents call you?"
+                   value="${esc(savedProfile.display_name || '')}" maxlength="64">
+            <button class="btn btn-primary btn-sm" id="profile-save-btn"
+                    style="border-radius:6px;padding:8px 16px">Save Name</button>
+          </div>
+        </div>
       </div>
-      <div class="setup-stepper-step ${s3c}">
-        <div class="setup-stepper-dot">${allDone ? '&#10003;' : '3'}</div>
-        <div class="setup-stepper-label">Ready</div>
+
+      <details class="setup-alt-path" style="margin-top:16px">
+        <summary>Device Fingerprint (optional)</summary>
+        <div class="alt-body">
+          <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
+            Scan your device for unique hardware identifiers. This strengthens your
+            identity for trust scoring. All data stays local.
+          </p>
+          <button class="btn btn-primary btn-sm" id="device-scan-btn"
+                  style="border-radius:6px;padding:8px 16px;margin-bottom:12px">
+            Scan Device
+          </button>
+          <div id="device-scan-results" style="display:none">
+            <div id="device-components-list"></div>
+            <div id="device-entropy-bar" style="margin:12px 0"></div>
+            <button class="btn btn-primary btn-sm" id="device-save-btn"
+                    style="border-radius:6px;padding:8px 16px">
+              Save Device Identity
+            </button>
+          </div>
+          <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
+        </div>
+      </details>
+
+      <details class="setup-alt-path" id="setup-network-details" style="margin-top:12px">
+        <summary>Network Identity (optional)</summary>
+        <div class="alt-body">
+          <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
+            Optionally share network identifiers to strengthen your fingerprint.
+          </p>
+          <div id="network-info" style="font-size:13px;color:var(--text-dim)">
+            Loading network info...
+          </div>
+        </div>
+      </details>
+
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer" id="anon-mode-label">
+          <input type="checkbox" id="anonymous-mode-check"
+                 ${identityCfg.anonymous_mode ? 'checked' : ''}>
+          <span style="font-size:13px;font-weight:700;color:var(--text)">Total Anonymous Mode</span>
+        </label>
+        <p style="font-size:12px;color:var(--text-dim);margin-top:6px;margin-left:28px;line-height:1.5">
+          No device fingerprints, no network identifiers. Each session gets a random ephemeral ID.
+        </p>
       </div>
     </div>
 
-    <!-- STEP 1: Connect Your Account -->
-    <div class="setup-card-v2 ${c1c}" id="setup-step-1">
+    <!-- SECTION 2: Wallet -->
+    <div class="setup-card-v2 ${c1c}" id="setup-wallet">
       <div class="card-header">
         <img class="card-icon-logo" src="img/agentpmt-192.png" alt="AgentPMT" title="AgentPMT" onerror="this.outerHTML='<div class=\\'card-icon\\'>&#9883;</div>'">
         <div>
-          <div class="card-title">Verify Your Identity</div>
+          <div class="card-title">
+            Your Wallet
+            ${step1Done ? '<span class="setup-inline-status status-done">&#10003; Connected</span>' : ''}
+          </div>
           <div class="card-desc">Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and budget management</div>
         </div>
       </div>
@@ -1309,7 +1380,7 @@ async function renderSetup() {
                 : '<span class="badge badge-muted">Not created</span>'}
             </div>
           </div>
-          ${!identityDone ? `
+          ${!localIdentityDone ? `
             <div class="setup-cmd">
               <code>agenthalo keygen --pq</code>
               <button class="btn btn-sm" onclick="copySetupText('agenthalo keygen --pq')">Copy</button>
@@ -1321,19 +1392,22 @@ async function renderSetup() {
           ` : `
             <div class="setup-success-banner" style="font-size:12px">
               <span class="success-icon">&#10003;</span>
-              <span>Local identity configured.</span>
+              <span>Local PQ identity configured.</span>
             </div>
           `}
         </div>
       </details>
     </div>
 
-    <!-- STEP 2: OpenRouter LLM Key -->
-    <div class="setup-card-v2 ${c2c}" id="setup-step-2">
+    <!-- SECTION 3: OpenRouter LLM Key -->
+    <div class="setup-card-v2 ${c2c}" id="setup-llm">
       <div class="card-header">
         <img class="card-icon-logo-dark" src="img/openrouter-logo.svg" alt="OpenRouter" title="OpenRouter">
         <div>
-          <div class="card-title">Add Your LLM Key</div>
+          <div class="card-title">
+            Add Your LLM Key
+            ${step2Done ? '<span class="setup-inline-status status-done">&#10003; Verified</span>' : ''}
+          </div>
           <div class="card-desc">Power your agents with OpenRouter &mdash; one key for 200+ models</div>
         </div>
       </div>
@@ -1383,12 +1457,15 @@ async function renderSetup() {
       `}
     </div>
 
-    <!-- STEP 3: Dashboard Unlocked -->
-    <div class="setup-card-v2 ${c3c}" id="setup-step-3">
+    <!-- SECTION 4: Dashboard Unlocked -->
+    <div class="setup-card-v2 ${c3c}" id="setup-unlocked">
       <div class="card-header">
         <div class="card-icon">&#127919;</div>
         <div>
-          <div class="card-title">${allDone ? 'Dashboard Unlocked!' : 'Almost There'}</div>
+          <div class="card-title">
+            ${allDone ? 'Dashboard Unlocked!' : 'Almost There'}
+            ${allDone ? '<span class="setup-inline-status status-done">&#10003; Done</span>' : ''}
+          </div>
           <div class="card-desc">${allDone ? 'All systems go. Explore your dashboard.' : 'Complete the steps above to unlock everything.'}</div>
         </div>
       </div>
@@ -1566,6 +1643,201 @@ async function renderSetup() {
         if (anonWalletStatus) anonWalletStatus.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
         anonWalletBtn.disabled = false;
         anonWalletBtn.textContent = 'Create Anonymous Wallet';
+      }
+    });
+  }
+
+  // --- Identity handlers ---
+
+  const profileSaveBtn = document.getElementById('profile-save-btn');
+  const profileNameInput = document.getElementById('profile-name-input');
+  if (profileSaveBtn && profileNameInput) {
+    profileSaveBtn.addEventListener('click', async () => {
+      const name = (profileNameInput.value || '').trim();
+      if (!name) return;
+      profileSaveBtn.disabled = true;
+      profileSaveBtn.textContent = 'Saving...';
+      try {
+        await apiPost('/profile', { display_name: name, avatar_type: 'initials' });
+        window._invalidateSetupState();
+        await fetchSetupState(true);
+        await renderSetup();
+        updateNavLockState();
+      } catch (e) {
+        alert('Save failed: ' + (e.message || e));
+        profileSaveBtn.disabled = false;
+        profileSaveBtn.textContent = 'Save Name';
+      }
+    });
+  }
+
+  let lastDeviceScan = null;
+  const deviceScanBtn = document.getElementById('device-scan-btn');
+  if (deviceScanBtn) {
+    deviceScanBtn.addEventListener('click', async () => {
+      deviceScanBtn.disabled = true;
+      deviceScanBtn.textContent = 'Scanning...';
+      const statusNode = document.getElementById('device-scan-status');
+      try {
+        const resp = await api('/identity/device');
+        lastDeviceScan = resp;
+        const resultsNode = document.getElementById('device-scan-results');
+        const listNode = document.getElementById('device-components-list');
+        if (resultsNode && listNode) {
+          let html = '';
+          let totalEntropy = 0;
+          (resp.components || []).forEach(c => {
+            totalEntropy += Number(c.entropy_bits || 0);
+            html += `
+              <label class="hw-component" style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">
+                <input type="checkbox" name="hw-comp" value="${esc(c.name)}" checked>
+                <span style="color:var(--text);min-width:120px">${esc(c.name)}</span>
+                <span style="color:var(--text-dim);font-size:11px">${Number(c.entropy_bits || 0)} bits${c.stable ? '' : ' (unstable)'}</span>
+              </label>
+            `;
+          });
+
+          let browserFp = null;
+          const thumbmark = window.ThumbmarkJS;
+          if (thumbmark && typeof thumbmark.getFingerprint === 'function') {
+            try {
+              browserFp = await thumbmark.getFingerprint();
+            } catch (_e) {}
+          }
+
+          if (browserFp) {
+            html += `
+              <label class="hw-component" style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">
+                <input type="checkbox" name="hw-comp" value="browser_fingerprint" checked data-browser-fp="${esc(browserFp)}">
+                <span style="color:var(--text);min-width:120px">browser_fingerprint</span>
+                <span style="color:var(--text-dim);font-size:11px">32 bits</span>
+              </label>
+            `;
+            totalEntropy += 32;
+          }
+
+          listNode.innerHTML = html;
+          const barNode = document.getElementById('device-entropy-bar');
+          if (barNode) {
+            const pct = Math.max(0, Math.min(100, (totalEntropy / 256) * 100));
+            const color = pct > 60 ? 'var(--green)' : pct > 30 ? 'var(--yellow)' : 'var(--red)';
+            barNode.innerHTML = `
+              <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">Entropy: ${totalEntropy} bits</div>
+              <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+                <div style="width:${pct}%;height:100%;background:${color};border-radius:3px;transition:width 0.3s"></div>
+              </div>
+            `;
+          }
+          resultsNode.style.display = 'block';
+        }
+        if (statusNode) statusNode.innerHTML = `<span style="color:var(--green)">Found ${(resp.components || []).length} components (tier: ${esc(resp.tier || 'unknown')})</span>`;
+      } catch (e) {
+        if (statusNode) statusNode.innerHTML = `<span style="color:var(--red)">Scan failed: ${esc(String(e.message || e))}</span>`;
+      }
+      deviceScanBtn.disabled = false;
+      deviceScanBtn.textContent = 'Scan Device';
+    });
+  }
+
+  const deviceSaveBtn = document.getElementById('device-save-btn');
+  if (deviceSaveBtn) {
+    deviceSaveBtn.addEventListener('click', async () => {
+      deviceSaveBtn.disabled = true;
+      deviceSaveBtn.textContent = 'Saving...';
+      const checked = content.querySelectorAll('input[name="hw-comp"]:checked');
+      const selected = [];
+      let browserFp = null;
+      checked.forEach(cb => {
+        if (cb.value === 'browser_fingerprint') {
+          browserFp = cb.dataset.browserFp || null;
+        } else {
+          selected.push(cb.value);
+        }
+      });
+      try {
+        await apiPost('/identity/device', {
+          browser_fingerprint: browserFp,
+          selected_components: selected,
+        });
+        const statusNode = document.getElementById('device-scan-status');
+        if (statusNode) statusNode.innerHTML = '<span style="color:var(--green)">&#10003; Device identity saved.</span>';
+        window._invalidateSetupState();
+        await fetchSetupState(true);
+        await renderSetup();
+        updateNavLockState();
+      } catch (e) {
+        alert('Save failed: ' + (e.message || e));
+      }
+      deviceSaveBtn.disabled = false;
+      deviceSaveBtn.textContent = 'Save Device Identity';
+    });
+  }
+
+  const anonCheck = document.getElementById('anonymous-mode-check');
+  if (anonCheck) {
+    anonCheck.addEventListener('change', async () => {
+      try {
+        await apiPost('/identity/anonymous', { enabled: anonCheck.checked });
+        window._invalidateSetupState();
+        await fetchSetupState(true);
+        await renderSetup();
+        updateNavLockState();
+      } catch (e) {
+        alert('Failed: ' + (e.message || e));
+        anonCheck.checked = !anonCheck.checked;
+      }
+    });
+  }
+
+  const netDetails = document.getElementById('setup-network-details');
+  if (netDetails) {
+    netDetails.addEventListener('toggle', async () => {
+      if (!netDetails.open) return;
+      const infoNode = document.getElementById('network-info');
+      if (!infoNode || infoNode.dataset.loaded) return;
+      try {
+        const resp = await api('/identity/network');
+        infoNode.dataset.loaded = '1';
+        infoNode.innerHTML = `
+          <div style="margin-bottom:8px">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="share-local-ip">
+              <span>Local IP: <strong>${esc(resp.local_ip || 'not detected')}</strong></span>
+            </label>
+          </div>
+          <div style="margin-bottom:8px">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="share-mac">
+              <span>MAC: <strong>${esc(resp.mac_address || 'not detected')}</strong></span>
+            </label>
+          </div>
+          <button class="btn btn-sm btn-primary" id="network-save-btn" style="border-radius:6px;padding:8px 16px">Save Network Identity</button>
+          <p style="font-size:11px;color:var(--text-dim);margin-top:8px">
+            IPs are hashed before storage. Raw values shown here for your reference only.
+          </p>
+        `;
+        const networkSaveBtn = document.getElementById('network-save-btn');
+        if (networkSaveBtn) {
+          networkSaveBtn.addEventListener('click', async () => {
+            const shareLocalIp = !!document.getElementById('share-local-ip')?.checked;
+            const shareMac = !!document.getElementById('share-mac')?.checked;
+            const macAddresses = shareMac && resp.mac_address ? [resp.mac_address] : [];
+            try {
+              await apiPost('/identity/network', {
+                share_local_ip: shareLocalIp,
+                share_public_ip: false,
+                share_mac: shareMac,
+                local_ip: resp.local_ip || null,
+                mac_addresses: macAddresses,
+              });
+              infoNode.innerHTML += '<div style="margin-top:8px;color:var(--green);font-size:12px">&#10003; Network identity saved.</div>';
+            } catch (e) {
+              infoNode.innerHTML += `<div style="margin-top:8px;color:var(--red);font-size:12px">Failed to save: ${esc(String(e.message || e))}</div>`;
+            }
+          }, { once: true });
+        }
+      } catch (e) {
+        infoNode.innerHTML = `<span style="color:var(--red)">Failed to detect: ${esc(String(e.message || e))}</span>`;
       }
     });
   }

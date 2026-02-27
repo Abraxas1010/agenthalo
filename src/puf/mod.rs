@@ -1,3 +1,4 @@
+pub mod consumer;
 pub mod core;
 #[cfg(feature = "puf-dgx")]
 pub mod dgx;

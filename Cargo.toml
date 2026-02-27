@@ -89,6 +89,8 @@ portable-pty = "0.9"
 aes-gcm = "0.10"
 hkdf = "0.12"
 futures-util = "0.3"
+mid = "2"
+mac_address = "1"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"

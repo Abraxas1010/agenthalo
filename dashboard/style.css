@@ -519,6 +519,23 @@ body.no-crt #crt-overlay { display: none; }
   text-transform: none;
 }
 
+.setup-inline-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+.setup-inline-status.status-done {
+  color: var(--green);
+  border: 1px solid var(--green);
+  background: rgba(0, 255, 65, 0.06);
+  text-shadow: var(--glow-green);
+}
+
 .setup-card-v2 .card-desc {
   font-size: 13px;
   color: var(--text-muted);
@@ -735,6 +752,66 @@ body.no-crt #crt-overlay { display: none; }
 .setup-alt-path .alt-body {
   padding: 14px 18px 18px;
   border-top: 1px solid var(--border);
+}
+
+.identity-profile-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.avatar-preview {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--bg-hover);
+  border: 2px solid var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.identity-profile-fields {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.setup-input {
+  flex: 1;
+  min-width: 180px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-family: var(--font);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  outline: none;
+}
+
+.setup-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(255, 106, 0, 0.15);
+}
+
+.identity-subsection {
+  padding: 14px 0;
+}
+
+.hw-component {
+  border-bottom: 1px solid var(--border);
+}
+
+.hw-component:last-child {
+  border-bottom: none;
 }
 
 /* Optional integrations section */

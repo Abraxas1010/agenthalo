@@ -99,7 +99,7 @@ fn nvme_serials() -> Vec<String> {
     serials
 }
 
-fn timing_jitter_bytes() -> [u8; 32] {
+pub(crate) fn timing_jitter_bytes() -> [u8; 32] {
     let mut samples = [0u128; 64];
     for item in &mut samples {
         let start = Instant::now();
