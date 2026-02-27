@@ -10,6 +10,7 @@ use nucleusdb::halo::attest::{
 use nucleusdb::halo::audit::{
     audit_contract_file, audit_contract_source, save_audit_result, AuditRequest, AuditSize,
 };
+use nucleusdb::halo::auth::{load_credentials, save_credentials};
 use nucleusdb::halo::circuit::{
     load_or_setup_attestation_keys_with_policy, proof_words_json_array, prove_attestation,
     public_inputs_json_array, verify_attestation_proof,
@@ -373,6 +374,67 @@ async fn mcp(
                         "properties": {}
                     }
                 }),
+                json!({
+                    "name": "identity_status",
+                    "description": "Return profile identity, social-login projection, and super-secure state from the immutable identity category.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "identity_social_connect",
+                    "description": "Connect a social provider token, persist it securely, and append an immutable ledger event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "provider": {"type": "string", "description": "Provider: google|github|microsoft|discord|apple|facebook."},
+                            "token": {"type": "string", "description": "OAuth/provider token to store."},
+                            "expires_in_days": {"type": "integer", "description": "Token expiry horizon in days (1..365).", "default": 30},
+                            "selected": {"type": "boolean", "description": "Whether this provider is selected in identity preferences.", "default": true},
+                            "source": {"type": "string", "description": "Source tag for audit trail.", "default": "mcp"}
+                        },
+                        "required": ["provider", "token"]
+                    }
+                }),
+                json!({
+                    "name": "identity_social_revoke",
+                    "description": "Revoke a social provider token and append an immutable revoke event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "provider": {"type": "string", "description": "Provider to revoke."},
+                            "reason": {"type": "string", "description": "Reason stored in the immutable ledger.", "default": "operator_requested"}
+                        },
+                        "required": ["provider"]
+                    }
+                }),
+                json!({
+                    "name": "identity_super_secure_set",
+                    "description": "Set passkey/security-key/TOTP super-secure flags and append immutable identity ledger update.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "option": {"type": "string", "enum": ["passkey", "security_key", "totp"], "description": "Super-secure option key."},
+                            "enabled": {"type": "boolean", "description": "Enable or disable the option."},
+                            "label": {"type": "string", "description": "Optional TOTP label metadata."}
+                        },
+                        "required": ["option", "enabled"]
+                    }
+                }),
+                json!({
+                    "name": "identity_pod_share",
+                    "description": "Project identity attributes into POD keyspace and return selective share payloads by key pattern (optional grant enforcement).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key_patterns": {"type": "array", "items": {"type":"string"}, "description": "POD key patterns, e.g. ['identity/profile/*']."},
+                            "include_ledger": {"type": "boolean", "description": "Include identity/ledger/* metadata.", "default": false},
+                            "grantee_puf_hex": {"type": "string", "description": "32-byte hex grantee PUF used for grant enforcement."},
+                            "require_grants": {"type": "boolean", "description": "If true, only return keys granted to grantee_puf_hex.", "default": false}
+                        }
+                    }
+                }),
             ];
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
@@ -466,6 +528,11 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "halo_status" => tool_halo_status(arguments),
         "halo_export" => tool_halo_export(arguments),
         "halo_capabilities" => tool_halo_capabilities(arguments),
+        "identity_status" => tool_identity_status(arguments),
+        "identity_social_connect" => tool_identity_social_connect(arguments),
+        "identity_social_revoke" => tool_identity_social_revoke(arguments),
+        "identity_super_secure_set" => tool_identity_super_secure_set(arguments),
+        "identity_pod_share" => tool_identity_pod_share(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -514,6 +581,314 @@ fn tool_agentpmt_proxy(tool_name: &str, arguments: Value) -> Result<Value, Strin
         "proxied": true,
         "tool": proxied_tool,
         "result": proxied
+    }))
+}
+
+fn mcp_supported_social_providers() -> &'static [&'static str] {
+    &[
+        "google",
+        "github",
+        "microsoft",
+        "discord",
+        "apple",
+        "facebook",
+    ]
+}
+
+fn mcp_is_supported_social_provider(provider: &str) -> bool {
+    let normalized = nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
+    mcp_supported_social_providers().contains(&normalized.as_str())
+}
+
+fn mcp_store_social_token(provider: &str, token: &str) -> Result<String, String> {
+    use nucleusdb::halo::vault;
+
+    let normalized = nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
+    let vault_provider = format!("social_{normalized}");
+    let env_var = vault::provider_default_env_var(&vault_provider);
+    let pq_wallet_path = config::pq_wallet_path();
+    let vault_path = config::vault_path();
+
+    if pq_wallet_path.exists() {
+        if let Ok(v) = vault::Vault::open(&pq_wallet_path, &vault_path) {
+            v.set_key(&vault_provider, &env_var, token)?;
+            return Ok("vault".to_string());
+        }
+    }
+
+    let creds_path = config::credentials_path();
+    let mut creds = load_credentials(&creds_path).unwrap_or_default();
+    creds.oauth_provider = Some(normalized);
+    creds.oauth_token = Some(token.to_string());
+    creds.created_at = now_unix_secs();
+    save_credentials(&creds_path, &creds)?;
+    Ok("credentials".to_string())
+}
+
+fn mcp_clear_social_token(provider: &str) -> Result<(), String> {
+    use nucleusdb::halo::vault;
+
+    let normalized = nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
+    let vault_provider = format!("social_{normalized}");
+    let pq_wallet_path = config::pq_wallet_path();
+    let vault_path = config::vault_path();
+
+    if pq_wallet_path.exists() {
+        if let Ok(v) = vault::Vault::open(&pq_wallet_path, &vault_path) {
+            let _ = v.delete_key(&vault_provider);
+        }
+    }
+
+    let creds_path = config::credentials_path();
+    let mut creds = load_credentials(&creds_path).unwrap_or_default();
+    if creds.oauth_provider.as_deref() == Some(normalized.as_str()) {
+        creds.oauth_provider = None;
+        creds.oauth_token = None;
+        save_credentials(&creds_path, &creds)?;
+    }
+    Ok(())
+}
+
+fn tool_identity_status(_arguments: Value) -> Result<Value, String> {
+    let profile = nucleusdb::halo::profile::load();
+    let identity = nucleusdb::halo::identity::load();
+    let ledger = nucleusdb::halo::identity_ledger::project_social_status(now_unix_secs())?;
+    Ok(json!({
+        "status": "ok",
+        "profile": profile,
+        "identity": identity,
+        "ledger": ledger,
+    }))
+}
+
+fn tool_identity_social_connect(arguments: Value) -> Result<Value, String> {
+    let provider = arguments
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "provider is required".to_string())?;
+    let token = arguments
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "token is required".to_string())?;
+    if token.trim().is_empty() {
+        return Err("token must not be empty".to_string());
+    }
+    if !mcp_is_supported_social_provider(provider) {
+        return Err(format!(
+            "unsupported provider: {}. Supported: {}",
+            provider,
+            mcp_supported_social_providers().join(", ")
+        ));
+    }
+
+    let provider_norm = nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
+    let source = arguments
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("mcp");
+    let selected = arguments
+        .get("selected")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let expires_days = arguments
+        .get("expires_in_days")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(30)
+        .clamp(1, 365);
+    let now = now_unix_secs();
+    let expires_at = Some(now.saturating_add(expires_days.saturating_mul(86_400)));
+
+    let storage = mcp_store_social_token(&provider_norm, token.trim())?;
+    nucleusdb::halo::identity_ledger::append_social_connect(
+        nucleusdb::halo::identity_ledger::SocialConnectInput {
+            provider: &provider_norm,
+            token: token.trim(),
+            expires_at,
+            source,
+        },
+    )?;
+
+    let mut cfg = nucleusdb::halo::identity::load();
+    cfg.version = Some(1);
+    let st = cfg
+        .social
+        .providers
+        .entry(provider_norm.clone())
+        .or_default();
+    st.selected = selected;
+    st.expires_at = expires_at;
+    st.source = Some(source.to_string());
+    st.last_connected_at = Some(chrono::Utc::now().to_rfc3339());
+    cfg.social.last_updated = Some(chrono::Utc::now().to_rfc3339());
+    nucleusdb::halo::identity::save(&cfg)?;
+
+    Ok(json!({
+        "status": "ok",
+        "provider": provider_norm,
+        "storage": storage,
+        "selected": selected,
+        "expires_at": expires_at,
+    }))
+}
+
+fn tool_identity_social_revoke(arguments: Value) -> Result<Value, String> {
+    let provider = arguments
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "provider is required".to_string())?;
+    if !mcp_is_supported_social_provider(provider) {
+        return Err(format!(
+            "unsupported provider: {}. Supported: {}",
+            provider,
+            mcp_supported_social_providers().join(", ")
+        ));
+    }
+    let provider_norm = nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
+    let reason = arguments
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("operator_requested");
+
+    mcp_clear_social_token(&provider_norm)?;
+    nucleusdb::halo::identity_ledger::append_social_revoke(&provider_norm, Some(reason))?;
+
+    let mut cfg = nucleusdb::halo::identity::load();
+    if let Some(p) = cfg.social.providers.get_mut(&provider_norm) {
+        p.selected = false;
+        p.expires_at = None;
+        p.source = Some("revoked".to_string());
+    }
+    cfg.social.last_updated = Some(chrono::Utc::now().to_rfc3339());
+    nucleusdb::halo::identity::save(&cfg)?;
+
+    Ok(json!({
+        "status": "ok",
+        "provider": provider_norm,
+        "reason": reason,
+    }))
+}
+
+fn tool_identity_super_secure_set(arguments: Value) -> Result<Value, String> {
+    let option = arguments
+        .get("option")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "option is required".to_string())?
+        .trim()
+        .to_ascii_lowercase();
+    let enabled = arguments
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| "enabled boolean is required".to_string())?;
+    if option != "passkey" && option != "security_key" && option != "totp" {
+        return Err("option must be one of: passkey, security_key, totp".to_string());
+    }
+
+    let mut cfg = nucleusdb::halo::identity::load();
+    let mut metadata = json!({});
+    match option.as_str() {
+        "passkey" => cfg.super_secure.passkey_enabled = enabled,
+        "security_key" => cfg.super_secure.security_key_enabled = enabled,
+        "totp" => {
+            cfg.super_secure.totp_enabled = enabled;
+            if let Some(label) = arguments.get("label").and_then(|v| v.as_str()) {
+                cfg.super_secure.totp_label = Some(label.to_string());
+                metadata = json!({"label": label});
+            }
+        }
+        _ => {}
+    }
+    cfg.super_secure.last_updated = Some(chrono::Utc::now().to_rfc3339());
+    nucleusdb::halo::identity::save(&cfg)?;
+    nucleusdb::halo::identity_ledger::append_super_secure_update(&option, enabled, metadata)?;
+
+    Ok(json!({
+        "status": "ok",
+        "option": option,
+        "enabled": enabled,
+        "state": cfg.super_secure,
+    }))
+}
+
+fn decode_hex_32_mcp(input: &str) -> Result<[u8; 32], String> {
+    let raw = input.trim().strip_prefix("0x").unwrap_or(input.trim());
+    if raw.len() != 64 {
+        return Err("grantee_puf_hex must be exactly 64 hex chars".to_string());
+    }
+    let mut out = [0u8; 32];
+    for (idx, chunk) in raw.as_bytes().chunks_exact(2).enumerate() {
+        let pair = std::str::from_utf8(chunk).map_err(|_| "invalid hex".to_string())?;
+        out[idx] = u8::from_str_radix(pair, 16).map_err(|_| "invalid hex".to_string())?;
+    }
+    Ok(out)
+}
+
+fn load_grants_for_mcp() -> nucleusdb::pod::acl::GrantStore {
+    let path = config::db_path().with_extension("pod_grants.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(v) => v,
+        Err(_) => return nucleusdb::pod::acl::GrantStore::new(),
+    };
+    let parsed: Vec<nucleusdb::pod::acl::AccessGrant> =
+        serde_json::from_slice(&bytes).unwrap_or_default();
+    nucleusdb::pod::acl::GrantStore::from_grants(parsed)
+}
+
+fn tool_identity_pod_share(arguments: Value) -> Result<Value, String> {
+    let profile = nucleusdb::halo::profile::load();
+    let identity = nucleusdb::halo::identity::load();
+    let ledger = nucleusdb::halo::identity_ledger::project_social_status(now_unix_secs())?;
+
+    let mut records =
+        nucleusdb::pod::identity_share::materialize_identity_records(&profile, &identity, &ledger);
+    let include_ledger = arguments
+        .get("include_ledger")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !include_ledger {
+        records.retain(|r| !r.key.starts_with("identity/ledger/"));
+    }
+
+    let key_patterns: Vec<String> = arguments
+        .get("key_patterns")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(nucleusdb::pod::identity_share::default_identity_patterns);
+    let selected =
+        nucleusdb::pod::identity_share::select_records_by_patterns(&records, &key_patterns);
+
+    let require_grants = arguments
+        .get("require_grants")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let grantee_hex = arguments
+        .get("grantee_puf_hex")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let (shared, denied_keys) = if require_grants || grantee_hex.is_some() {
+        let hex = grantee_hex
+            .ok_or_else(|| "grantee_puf_hex is required when require_grants=true".to_string())?;
+        let grantee = decode_hex_32_mcp(&hex)?;
+        let grants = load_grants_for_mcp();
+        nucleusdb::pod::identity_share::filter_records_by_grants(&selected, &grants, &grantee)
+    } else {
+        (selected, Vec::new())
+    };
+
+    Ok(json!({
+        "status": "ok",
+        "patterns": key_patterns,
+        "include_ledger": include_ledger,
+        "require_grants": require_grants,
+        "record_count": shared.len(),
+        "records": shared,
+        "share_map": nucleusdb::pod::identity_share::records_to_json_map(&shared),
+        "denied_keys": denied_keys,
     }))
 }
 
@@ -1399,6 +1774,44 @@ mod tests {
         let out = tool_call_response("sync", json!({}));
         assert_eq!(out.get("isError").and_then(|v| v.as_bool()), Some(false));
         assert!(out.get("structuredContent").is_some());
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn identity_tools_social_roundtrip() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_identity_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let connect = tool_identity_social_connect(json!({
+            "provider": "google",
+            "token": "tok-test-123",
+            "expires_in_days": 30,
+            "selected": true,
+            "source": "mcp_test"
+        }))
+        .expect("social connect");
+        assert_eq!(connect["status"], "ok");
+        assert_eq!(connect["provider"], "google");
+
+        let status = tool_identity_status(json!({})).expect("identity status");
+        assert_eq!(status["status"], "ok");
+        assert_eq!(status["ledger"]["chain_valid"], true);
+
+        let revoke = tool_identity_social_revoke(json!({
+            "provider": "google",
+            "reason": "test_revoke"
+        }))
+        .expect("social revoke");
+        assert_eq!(revoke["status"], "ok");
 
         std::env::remove_var("AGENTHALO_HOME");
         let _ = std::fs::remove_dir_all(&home);

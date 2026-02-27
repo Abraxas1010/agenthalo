@@ -275,7 +275,11 @@ fn derive_master_key(pq_wallet_path: &Path) -> Result<(String, [u8; 32]), String
 }
 
 pub fn provider_default_env_var(provider: &str) -> String {
-    match normalize_provider(provider).as_str() {
+    let normalized = normalize_provider(provider);
+    if let Some(suffix) = normalized.strip_prefix("social_") {
+        return format!("SOCIAL_{}_TOKEN", suffix.to_ascii_uppercase());
+    }
+    match normalized.as_str() {
         "anthropic" => "ANTHROPIC_API_KEY".to_string(),
         "openai" => "OPENAI_API_KEY".to_string(),
         "google" => "GOOGLE_API_KEY".to_string(),
@@ -299,6 +303,12 @@ fn known_providers() -> Vec<&'static str> {
         "google",
         "openrouter",
         "agentpmt",
+        "social_google",
+        "social_github",
+        "social_microsoft",
+        "social_discord",
+        "social_apple",
+        "social_facebook",
         "pinata",
         "openclaw",
         "custom_1",

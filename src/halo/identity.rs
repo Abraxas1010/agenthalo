@@ -8,6 +8,10 @@ pub struct IdentityConfig {
     pub anonymous_mode: bool,
     pub device: Option<DeviceIdentity>,
     pub network: Option<NetworkIdentity>,
+    #[serde(default)]
+    pub social: SocialIdentityConfig,
+    #[serde(default)]
+    pub super_secure: SuperSecureIdentityConfig,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -35,6 +39,34 @@ pub struct NetworkIdentity {
     pub public_ip_hash: Option<String>,
     #[serde(default)]
     pub mac_addresses: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SocialIdentityConfig {
+    #[serde(default)]
+    pub providers: std::collections::BTreeMap<String, SocialProviderState>,
+    pub last_updated: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SocialProviderState {
+    #[serde(default)]
+    pub selected: bool,
+    pub expires_at: Option<u64>,
+    pub source: Option<String>,
+    pub last_connected_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SuperSecureIdentityConfig {
+    #[serde(default)]
+    pub passkey_enabled: bool,
+    #[serde(default)]
+    pub security_key_enabled: bool,
+    #[serde(default)]
+    pub totp_enabled: bool,
+    pub totp_label: Option<String>,
+    pub last_updated: Option<String>,
 }
 
 impl IdentityConfig {

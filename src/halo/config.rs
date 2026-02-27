@@ -76,6 +76,10 @@ pub fn identity_config_path() -> PathBuf {
     halo_dir().join("identity.json")
 }
 
+pub fn identity_social_ledger_path() -> PathBuf {
+    halo_dir().join("identity_social_ledger.jsonl")
+}
+
 pub fn ensure_halo_dir() -> Result<(), String> {
     std::fs::create_dir_all(halo_dir()).map_err(|e| format!("create halo dir: {e}"))
 }

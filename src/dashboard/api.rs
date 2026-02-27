@@ -17,7 +17,7 @@ use crate::halo::agentpmt;
 use crate::halo::attest::{
     attest_session, resolve_session_id, save_attestation, AttestationRequest,
 };
-use crate::halo::auth::{is_authenticated, resolve_api_key};
+use crate::halo::auth::{is_authenticated, load_credentials, resolve_api_key, save_credentials};
 use crate::halo::config;
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::pq::has_wallet;
@@ -45,6 +45,7 @@ use crate::VcBackend;
 use axum::extract::{Path, Query, State as AxumState};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::Html;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -88,6 +89,30 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         )
         .route("/identity/anonymous", post(api_identity_anonymous))
         .route("/identity/status", get(api_identity_status))
+        .route("/identity/social", get(api_identity_social_status))
+        .route(
+            "/identity/social/connect",
+            post(api_identity_social_connect),
+        )
+        .route("/identity/social/revoke", post(api_identity_social_revoke))
+        .route("/identity/pod-share", get(api_identity_pod_share_schema))
+        .route("/identity/pod-share", post(api_identity_pod_share))
+        .route(
+            "/identity/social/oauth/start/{provider}",
+            get(api_identity_social_oauth_start),
+        )
+        .route(
+            "/identity/social/oauth/callback",
+            get(api_identity_social_oauth_callback),
+        )
+        .route(
+            "/identity/super-secure",
+            get(api_identity_super_secure_status),
+        )
+        .route(
+            "/identity/super-secure",
+            post(api_identity_super_secure_update),
+        )
         .route("/agentpmt/tools", get(api_agentpmt_tools))
         .route("/agentpmt/refresh", post(api_agentpmt_refresh))
         .route("/agentpmt/enable", post(api_agentpmt_enable))
@@ -368,6 +393,64 @@ pub struct PinJsonApiRequest {
     metadata: Option<serde_json::Value>,
 }
 
+#[derive(Deserialize)]
+pub struct SocialConnectRequest {
+    provider: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    selected: Option<bool>,
+    #[serde(default)]
+    expires_in_days: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub struct SocialRevokeRequest {
+    provider: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct SocialOauthStartQuery {
+    #[serde(default)]
+    expires_in_days: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub struct SocialOauthCallbackQuery {
+    provider: String,
+    state: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    expires_in_days: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub struct SuperSecureUpdateRequest {
+    option: String,
+    enabled: bool,
+    #[serde(default)]
+    metadata: Option<Value>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct IdentityPodShareRequest {
+    #[serde(default)]
+    key_patterns: Vec<String>,
+    #[serde(default)]
+    include_ledger: bool,
+    #[serde(default)]
+    grantee_puf_hex: Option<String>,
+    #[serde(default)]
+    require_grants: Option<bool>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -380,6 +463,82 @@ fn api_err(code: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
 
 fn internal_err(msg: String) -> (StatusCode, Json<Value>) {
     api_err(StatusCode::INTERNAL_SERVER_ERROR, &msg)
+}
+
+fn social_provider_specs() -> Vec<(&'static str, bool, &'static str)> {
+    vec![
+        ("google", true, "https://accounts.google.com/"),
+        ("github", true, "https://github.com/login"),
+        ("microsoft", false, "https://login.live.com/"),
+        ("discord", false, "https://discord.com/login"),
+        ("apple", false, "https://appleid.apple.com/sign-in"),
+        ("facebook", false, "https://www.facebook.com/login/"),
+    ]
+}
+
+fn social_provider_supported(provider: &str) -> bool {
+    let needle = crate::halo::identity_ledger::normalize_social_provider(provider);
+    social_provider_specs()
+        .iter()
+        .any(|(name, _, _)| *name == needle)
+}
+
+fn social_provider_oauth_bridge(provider: &str) -> bool {
+    let needle = crate::halo::identity_ledger::normalize_social_provider(provider);
+    social_provider_specs()
+        .iter()
+        .find(|(name, _, _)| *name == needle)
+        .map(|(_, bridge, _)| *bridge)
+        .unwrap_or(false)
+}
+
+fn social_provider_login_url(provider: &str) -> String {
+    let needle = crate::halo::identity_ledger::normalize_social_provider(provider);
+    social_provider_specs()
+        .iter()
+        .find(|(name, _, _)| *name == needle)
+        .map(|(_, _, url)| (*url).to_string())
+        .unwrap_or_else(|| "https://agenthalo.dev".to_string())
+}
+
+fn oauth_state_secret(state: &DashboardState) -> String {
+    let mut h = sha2::Sha256::new();
+    use sha2::Digest;
+    h.update(
+        format!(
+            "agenthalo.identity.oauth.secret.v1:{}:{}",
+            state.credentials_path.display(),
+            state.db_path.display()
+        )
+        .as_bytes(),
+    );
+    crate::halo::util::hex_encode(&h.finalize())
+}
+
+fn clamp_social_expiry_days(days: Option<u64>) -> u64 {
+    let raw = days.unwrap_or(30);
+    raw.clamp(1, 365)
+}
+
+fn html_escape(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn url_encode(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{:02X}", b));
+        }
+    }
+    out
 }
 
 fn decode_hex_32(input: &str, field_name: &str) -> Result<[u8; 32], (StatusCode, Json<Value>)> {
@@ -1445,21 +1604,468 @@ async fn api_identity_anonymous(
     Ok(Json(json!({"anonymous_mode": enabled})))
 }
 
+fn persist_social_token_secret(
+    state: &DashboardState,
+    provider: &str,
+    token: &str,
+) -> Result<String, (StatusCode, Json<Value>)> {
+    let provider = crate::halo::identity_ledger::normalize_social_provider(provider);
+    let vault_provider = format!("social_{provider}");
+    let env_var = vault::provider_default_env_var(&vault_provider);
+    if let Some(vault) = state.vault.as_ref() {
+        vault
+            .set_key(&vault_provider, &env_var, token)
+            .map_err(internal_err)?;
+        return Ok("vault".to_string());
+    }
+
+    // Fallback for hosts without a PQ wallet/vault: credentials.json (0600).
+    let mut creds = load_credentials(&state.credentials_path).unwrap_or_default();
+    creds.oauth_token = Some(token.to_string());
+    creds.oauth_provider = Some(provider.clone());
+    creds.created_at = now_unix_secs();
+    save_credentials(&state.credentials_path, &creds).map_err(internal_err)?;
+    Ok("credentials".to_string())
+}
+
+fn persist_social_connection(
+    state: &DashboardState,
+    provider: &str,
+    token: &str,
+    source: &str,
+    expires_in_days: Option<u64>,
+    selected: bool,
+) -> Result<Value, (StatusCode, Json<Value>)> {
+    let provider = crate::halo::identity_ledger::normalize_social_provider(provider);
+    if !social_provider_supported(&provider) {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "unsupported social provider",
+        ));
+    }
+    if token.trim().is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "token must not be empty"));
+    }
+
+    let storage = persist_social_token_secret(state, &provider, token)?;
+    let now = now_unix_secs();
+    let expires_days = clamp_social_expiry_days(expires_in_days);
+    let expires_at = Some(now.saturating_add(expires_days.saturating_mul(86_400)));
+
+    crate::halo::identity_ledger::append_social_connect(
+        crate::halo::identity_ledger::SocialConnectInput {
+            provider: &provider,
+            token,
+            expires_at,
+            source,
+        },
+    )
+    .map_err(internal_err)?;
+
+    let mut cfg = crate::halo::identity::load();
+    cfg.version = Some(1);
+    let p = cfg.social.providers.entry(provider.clone()).or_default();
+    p.selected = selected;
+    p.expires_at = expires_at;
+    p.source = Some(source.to_string());
+    p.last_connected_at = Some(chrono::Utc::now().to_rfc3339());
+    cfg.social.last_updated = Some(chrono::Utc::now().to_rfc3339());
+    crate::halo::identity::save(&cfg).map_err(internal_err)?;
+
+    let projection =
+        crate::halo::identity_ledger::project_social_status(now).map_err(internal_err)?;
+    Ok(json!({
+        "ok": true,
+        "provider": provider,
+        "expires_at": expires_at,
+        "storage": storage,
+        "projection": projection,
+    }))
+}
+
 async fn api_identity_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let profile = crate::halo::profile::load();
     let identity = crate::halo::identity::load();
     let profile_set = profile.has_name();
     let anonymous_mode = identity.anonymous_mode;
     let device_configured = identity.device.as_ref().map(|d| d.enabled).unwrap_or(false);
+    let social_projection = crate::halo::identity_ledger::project_social_status(now_unix_secs())
+        .unwrap_or(crate::halo::identity_ledger::LedgerProjection {
+            providers: Vec::new(),
+            total_entries: 0,
+            head_hash: None,
+            chain_valid: false,
+        });
+    let social_active = social_projection
+        .providers
+        .iter()
+        .filter(|p| p.active)
+        .count();
     let identity_done = profile_set || anonymous_mode;
 
     Ok(Json(json!({
         "profile_set": profile_set,
         "anonymous_mode": anonymous_mode,
         "device_configured": device_configured,
+        "social_active_count": social_active,
+        "social_chain_valid": social_projection.chain_valid,
         "identity_done": identity_done,
         "display_name": profile.display_name,
         "avatar_type": profile.avatar_type,
+    })))
+}
+
+async fn api_identity_social_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let now = now_unix_secs();
+    let projection =
+        crate::halo::identity_ledger::project_social_status(now).map_err(internal_err)?;
+    let cfg = crate::halo::identity::load();
+    let providers: Vec<Value> = social_provider_specs()
+        .into_iter()
+        .map(|(name, bridge, login_url)| {
+            let state = cfg.social.providers.get(name).cloned().unwrap_or_default();
+            let projected = projection
+                .providers
+                .iter()
+                .find(|p| p.provider == name)
+                .cloned();
+            json!({
+                "provider": name,
+                "oauth_bridge_supported": bridge,
+                "login_url": login_url,
+                "selected": state.selected,
+                "configured_expires_at": state.expires_at,
+                "active": projected.as_ref().map(|p| p.active).unwrap_or(false),
+                "expired": projected.as_ref().map(|p| p.expired).unwrap_or(false),
+                "most_recent_seq": projected.as_ref().and_then(|p| p.most_recent_seq),
+                "most_recent_at": projected.as_ref().and_then(|p| p.most_recent_at),
+                "expires_at": projected.as_ref().and_then(|p| p.expires_at),
+                "active_token_ref_sha256": projected.as_ref().and_then(|p| p.active_token_ref_sha256.clone()),
+                "last_status": projected.as_ref().and_then(|p| p.last_status.clone()),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "providers": providers,
+        "ledger": {
+            "total_entries": projection.total_entries,
+            "head_hash": projection.head_hash,
+            "chain_valid": projection.chain_valid,
+        }
+    })))
+}
+
+async fn api_identity_social_connect(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<SocialConnectRequest>,
+) -> ApiResult {
+    let provider = crate::halo::identity_ledger::normalize_social_provider(&req.provider);
+    let token = req.token.as_deref().ok_or_else(|| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            "token is required for social connect",
+        )
+    })?;
+    let source = req.source.as_deref().unwrap_or("manual");
+    let selected = req.selected.unwrap_or(true);
+    let out = persist_social_connection(
+        &state,
+        &provider,
+        token,
+        source,
+        req.expires_in_days,
+        selected,
+    )?;
+    Ok(Json(out))
+}
+
+async fn api_identity_social_revoke(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<SocialRevokeRequest>,
+) -> ApiResult {
+    let provider = crate::halo::identity_ledger::normalize_social_provider(&req.provider);
+    if !social_provider_supported(&provider) {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "unsupported social provider",
+        ));
+    }
+
+    let vault_provider = format!("social_{provider}");
+    if let Some(vault) = state.vault.as_ref() {
+        let _ = vault.delete_key(&vault_provider);
+    } else if let Ok(mut creds) = load_credentials(&state.credentials_path) {
+        if creds.oauth_provider.as_deref() == Some(provider.as_str()) {
+            creds.oauth_token = None;
+            creds.oauth_provider = None;
+            let _ = save_credentials(&state.credentials_path, &creds);
+        }
+    }
+
+    crate::halo::identity_ledger::append_social_revoke(&provider, req.reason.as_deref())
+        .map_err(internal_err)?;
+    let mut cfg = crate::halo::identity::load();
+    if let Some(p) = cfg.social.providers.get_mut(&provider) {
+        p.selected = false;
+        p.expires_at = None;
+        p.source = Some("revoked".to_string());
+    }
+    cfg.social.last_updated = Some(chrono::Utc::now().to_rfc3339());
+    crate::halo::identity::save(&cfg).map_err(internal_err)?;
+    let projection = crate::halo::identity_ledger::project_social_status(now_unix_secs())
+        .map_err(internal_err)?;
+    Ok(Json(json!({
+        "ok": true,
+        "provider": provider,
+        "projection": projection,
+    })))
+}
+
+async fn api_identity_social_oauth_start(
+    AxumState(state): AxumState<DashboardState>,
+    Path(provider): Path<String>,
+    Query(query): Query<SocialOauthStartQuery>,
+) -> ApiResult {
+    let provider = crate::halo::identity_ledger::normalize_social_provider(&provider);
+    if !social_provider_supported(&provider) {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "unsupported social provider",
+        ));
+    }
+    let expires_days = clamp_social_expiry_days(query.expires_in_days);
+    let login_url = social_provider_login_url(&provider);
+    if !social_provider_oauth_bridge(&provider) {
+        return Ok(Json(json!({
+            "provider": provider,
+            "oauth_bridge_supported": false,
+            "manual_login_url": login_url,
+            "message": "This provider requires external OAuth setup. Complete auth externally, then connect with token."
+        })));
+    }
+
+    let now = now_unix_secs();
+    let secret = oauth_state_secret(&state);
+    let state_token = crate::halo::identity_ledger::encode_oauth_state(
+        &provider,
+        now.saturating_add(600),
+        &secret,
+    );
+    let callback = format!(
+        "http://127.0.0.1:3100/api/identity/social/oauth/callback?provider={provider}&expires_in_days={expires_days}"
+    );
+    let oauth_url = format!(
+        "https://agenthalo.dev/auth/{provider}?redirect={}&state={}",
+        url_encode(&callback),
+        url_encode(&state_token)
+    );
+    Ok(Json(json!({
+        "provider": provider,
+        "oauth_bridge_supported": true,
+        "oauth_url": oauth_url,
+        "state": state_token,
+        "expires_in_days": expires_days,
+    })))
+}
+
+async fn api_identity_social_oauth_callback(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<SocialOauthCallbackQuery>,
+) -> Html<String> {
+    let provider = crate::halo::identity_ledger::normalize_social_provider(&query.provider);
+    let token = query
+        .token
+        .clone()
+        .or(query.access_token.clone())
+        .unwrap_or_default();
+    let now = now_unix_secs();
+    let secret = oauth_state_secret(&state);
+    let validate =
+        crate::halo::identity_ledger::decode_oauth_state(&query.state, &provider, now, &secret);
+    let (ok, message) = if let Err(e) = validate {
+        (false, format!("OAuth callback rejected: {e}"))
+    } else if token.trim().is_empty() {
+        (false, "OAuth callback missing token".to_string())
+    } else {
+        match persist_social_connection(
+            &state,
+            &provider,
+            token.trim(),
+            "oauth_callback",
+            query.expires_in_days,
+            true,
+        ) {
+            Ok(_) => (true, format!("Connected {provider} successfully.")),
+            Err((_, body)) => {
+                let err = body
+                    .0
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                (false, format!("OAuth callback failed: {err}"))
+            }
+        }
+    };
+
+    let status = if ok { "ok" } else { "error" };
+    let escaped = html_escape(&message);
+    Html(format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>AgentHALO OAuth</title></head><body style=\"font-family:ui-monospace,monospace;background:#070a05;color:#7cff85;padding:20px\"><h2>AgentHALO Social Login</h2><p>{escaped}</p><script>(function(){{try{{if(window.opener)window.opener.postMessage({{type:'agenthalo-social-oauth',status:'{status}',provider:'{provider}',message:{msg}}},'*');}}catch(_e){{}}setTimeout(function(){{window.close();}},1200);}})();</script></body></html>",
+        msg = serde_json::to_string(&message).unwrap_or_else(|_| "\"\"".to_string()),
+    ))
+}
+
+async fn api_identity_super_secure_status(
+    AxumState(_state): AxumState<DashboardState>,
+) -> ApiResult {
+    let cfg = crate::halo::identity::load();
+    Ok(Json(json!({
+        "passkey_enabled": cfg.super_secure.passkey_enabled,
+        "security_key_enabled": cfg.super_secure.security_key_enabled,
+        "totp_enabled": cfg.super_secure.totp_enabled,
+        "totp_label": cfg.super_secure.totp_label,
+        "last_updated": cfg.super_secure.last_updated,
+    })))
+}
+
+async fn api_identity_super_secure_update(
+    AxumState(_state): AxumState<DashboardState>,
+    Json(req): Json<SuperSecureUpdateRequest>,
+) -> ApiResult {
+    let option = req.option.trim().to_ascii_lowercase();
+    if option != "passkey" && option != "security_key" && option != "totp" {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "option must be one of: passkey, security_key, totp",
+        ));
+    }
+    let mut cfg = crate::halo::identity::load();
+    match option.as_str() {
+        "passkey" => cfg.super_secure.passkey_enabled = req.enabled,
+        "security_key" => cfg.super_secure.security_key_enabled = req.enabled,
+        "totp" => {
+            cfg.super_secure.totp_enabled = req.enabled;
+            if let Some(label) = req
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("label"))
+                .and_then(|v| v.as_str())
+            {
+                cfg.super_secure.totp_label = Some(label.to_string());
+            }
+        }
+        _ => {}
+    }
+    cfg.super_secure.last_updated = Some(chrono::Utc::now().to_rfc3339());
+    crate::halo::identity::save(&cfg).map_err(internal_err)?;
+    crate::halo::identity_ledger::append_super_secure_update(
+        &option,
+        req.enabled,
+        req.metadata.unwrap_or(Value::Null),
+    )
+    .map_err(internal_err)?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "option": option,
+        "enabled": req.enabled,
+        "state": {
+            "passkey_enabled": cfg.super_secure.passkey_enabled,
+            "security_key_enabled": cfg.super_secure.security_key_enabled,
+            "totp_enabled": cfg.super_secure.totp_enabled,
+            "totp_label": cfg.super_secure.totp_label,
+            "last_updated": cfg.super_secure.last_updated,
+        }
+    })))
+}
+
+async fn api_identity_pod_share_schema(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    Ok(Json(json!({
+        "namespace": "identity/*",
+        "default_patterns": crate::pod::identity_share::default_identity_patterns(),
+        "notes": [
+            "Raw OAuth/social tokens are never shared.",
+            "Use key_patterns to constrain fields (e.g., identity/profile/*).",
+            "Set require_grants=true with grantee_puf_hex to enforce POD grants.",
+        ],
+        "examples": {
+            "profile_only": ["identity/profile/*"],
+            "social_only": ["identity/social/*"],
+            "high_assurance_only": ["identity/super_secure/*"],
+        }
+    })))
+}
+
+async fn api_identity_pod_share(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<IdentityPodShareRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let now = now_unix_secs();
+    let profile = crate::halo::profile::load();
+    let identity = crate::halo::identity::load();
+    let ledger = crate::halo::identity_ledger::project_social_status(now).map_err(internal_err)?;
+
+    let mut records =
+        crate::pod::identity_share::materialize_identity_records(&profile, &identity, &ledger);
+    if !req.include_ledger {
+        records.retain(|r| !r.key.starts_with("identity/ledger/"));
+    }
+
+    let patterns: Vec<String> = if req.key_patterns.is_empty() {
+        crate::pod::identity_share::default_identity_patterns()
+    } else {
+        req.key_patterns
+            .iter()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect()
+    };
+    let selected = crate::pod::identity_share::select_records_by_patterns(&records, &patterns);
+
+    let mut denied_keys: Vec<String> = Vec::new();
+    let require_grants = req.require_grants.unwrap_or(false);
+    let grantee_filter = req
+        .grantee_puf_hex
+        .as_ref()
+        .map(|hex| decode_hex_32(hex, "grantee_puf_hex"))
+        .transpose()?;
+
+    let shared = if require_grants || grantee_filter.is_some() {
+        let grantee = grantee_filter.ok_or_else(|| {
+            api_err(
+                StatusCode::BAD_REQUEST,
+                "grantee_puf_hex is required when require_grants is true",
+            )
+        })?;
+        let guard = state
+            .grant_store
+            .read()
+            .map_err(|e| internal_err(format!("grant store read lock poisoned: {e}")))?;
+        let (allowed, denied) =
+            crate::pod::identity_share::filter_records_by_grants(&selected, &guard, &grantee);
+        denied_keys = denied;
+        allowed
+    } else {
+        selected
+    };
+
+    Ok(Json(json!({
+        "ok": true,
+        "patterns": patterns,
+        "require_grants": require_grants,
+        "grantee_puf_hex": req.grantee_puf_hex,
+        "include_ledger": req.include_ledger,
+        "record_count": shared.len(),
+        "records": shared,
+        "share_map": crate::pod::identity_share::records_to_json_map(&shared),
+        "denied_keys": denied_keys,
+        "ledger": {
+            "total_entries": ledger.total_entries,
+            "head_hash": ledger.head_hash,
+            "chain_valid": ledger.chain_valid,
+        },
     })))
 }
 
@@ -3291,6 +3897,7 @@ async fn api_nucleusdb_history(AxumState(state): AxumState<DashboardState>) -> A
 // ---------------------------------------------------------------------------
 
 async fn api_capabilities(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    const MCP_NATIVE_TOOL_COUNT: usize = 22;
     let creds_path = &state.credentials_path;
     let has_auth = is_authenticated(creds_path) || resolve_api_key(creds_path).is_some();
     let pmt_cfg = agentpmt::load_or_default();
@@ -3317,8 +3924,8 @@ async fn api_capabilities(AxumState(state): AxumState<DashboardState>) -> ApiRes
             "p2pclaw": addons_cfg.p2pclaw_enabled,
             "agentpmt_workflows": addons_cfg.agentpmt_workflows_enabled,
         },
-        "mcp_tools": 18 + proxied_mcp_tools,
-        "mcp_native_tools": 18,
+        "mcp_tools": MCP_NATIVE_TOOL_COUNT + proxied_mcp_tools,
+        "mcp_native_tools": MCP_NATIVE_TOOL_COUNT,
         "mcp_proxied_tools": proxied_mcp_tools,
         "dashboard": true,
     })))

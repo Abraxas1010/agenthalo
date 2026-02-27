@@ -80,6 +80,8 @@ The HALO subsystem provides agent observability.
 | `auth` | `auth.rs` | Credentials management (`agenthalo auth`) |
 | `attest` | `attest.rs` | Cryptographic session attestations |
 | `vault` | `vault.rs` | AES-256-GCM encrypted API key vault (461 LOC) |
+| `identity` | `identity.rs` | Identity category state (profile/device/network/social/super-secure) |
+| `identity_ledger` | `identity_ledger.rs` | Append-only hash-chained social/super-secure ledger |
 | `proxy` | `proxy.rs` | OpenAI-compatible multi-provider API proxy (359 LOC) |
 | `config` | `config.rs` | Path helpers: `db_path()`, `vault_path()`, `pq_wallet_path()` |
 | `pq` | `pq.rs` | Post-quantum wallet management (ML-DSA-65 keypairs) |
@@ -298,6 +300,8 @@ See tables in CLAUDE.md § Cockpit API endpoints and § Vault + Proxy endpoints.
 | `~/.agenthalo/` | HALO data directory |
 | `~/.agenthalo/pq_wallet.json` | ML-DSA-65 keypair (PQ wallet) |
 | `~/.agenthalo/vault.enc` | Encrypted API key vault |
+| `~/.agenthalo/identity.json` | Identity category state |
+| `~/.agenthalo/identity_social_ledger.jsonl` | Immutable social/super-secure event ledger |
 | `~/.agenthalo/halo.db` | redb trace store |
 | `~/.agenthalo/credentials.json` | Auth credentials |
 

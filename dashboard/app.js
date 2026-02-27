@@ -1204,6 +1204,9 @@ async function renderSetup() {
           Why even bother?
         </button>
       </div>
+      <div class="identity-tier-control-row">
+        <div id="identity-tier-status" class="identity-tier-status" aria-live="polite"></div>
+      </div>
 
       <div class="identity-tech-options-title">Individual Technical Options</div>
 
@@ -1212,6 +1215,11 @@ async function renderSetup() {
         <div class="alt-body">
           <div class="device-fingerprint-layout">
             <div class="device-fingerprint-main">
+              <div class="identity-option-checklist">
+                <label class="identity-option-check"><input type="checkbox" id="tier-device-enable"> Enable device fingerprint</label>
+                <label class="identity-option-check"><input type="checkbox" id="tier-device-components"> Include hardware components</label>
+                <label class="identity-option-check"><input type="checkbox" id="tier-device-browser"> Include browser fingerprint</label>
+              </div>
               <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">
                 Scan your device for unique hardware identifiers. This strengthens your
                 identity for trust scoring. All data stays local.
@@ -1242,15 +1250,91 @@ async function renderSetup() {
         <div class="alt-body">
           <div class="network-identity-layout">
             <div class="network-identity-main">
+              <div class="identity-option-checklist">
+                <label class="identity-option-check"><input type="checkbox" id="share-local-ip"> Share local IP (hashed)</label>
+                <label class="identity-option-check"><input type="checkbox" id="share-mac"> Share MAC (hashed)</label>
+              </div>
               <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">
                 Optionally share network identifiers to strengthen your fingerprint.
               </p>
               <div id="network-info" style="font-size:13px;color:var(--text-dim);width:100%;max-width:460px">
                 Loading network info...
               </div>
+              <button class="btn btn-sm btn-primary" id="network-save-btn" style="border-radius:6px;padding:8px 16px;margin-top:10px">Save Network Identity</button>
+              <p style="font-size:11px;color:var(--text-dim);margin-top:8px;max-width:460px">
+                IP/MAC values are hashed before storage. Raw values shown here for your reference only.
+              </p>
             </div>
             <div class="network-identity-visual">
               <img src="img/agenthalonetworkidentity_panel.png" alt="Network identity visual" onerror="this.style.display='none'">
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <details class="setup-alt-path" id="setup-social-details" style="margin-top:12px">
+        <summary>Social Login & OAuth Tokens</summary>
+        <div class="alt-body">
+          <div class="social-identity-layout">
+            <div class="social-identity-main">
+              <div class="identity-option-checklist" id="social-provider-checklist">
+                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="google"> Google</label>
+                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="github"> GitHub</label>
+                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="microsoft"> Microsoft</label>
+                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="discord"> Discord</label>
+                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="apple"> Apple</label>
+                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="facebook"> Facebook</label>
+              </div>
+              <div class="social-connect-controls">
+                <label class="social-expiry-label" for="social-expiry-days">Token expiry (days)</label>
+                <input type="number" min="1" max="365" value="30" id="social-expiry-days" class="setup-input social-expiry-input">
+                <button class="btn btn-primary btn-sm" id="social-connect-selected-btn" style="border-radius:6px;padding:8px 16px">Connect Selected</button>
+                <button class="btn btn-sm" id="social-revoke-selected-btn" style="border-radius:6px;padding:8px 16px">Revoke Selected</button>
+              </div>
+              <div id="social-provider-status" class="social-provider-status">Loading social identity status...</div>
+            </div>
+            <div class="social-identity-visual">
+              <div class="super-secure-note">
+                <div class="super-secure-note-title">Immutable Token Record</div>
+                <p>Each connect/revoke event is appended to a hash-chained identity ledger with active/recent qualifiers and expiry tracking.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <div class="identity-super-secure-title">Super Secure Options</div>
+      <details class="setup-alt-path" id="setup-super-secure-details" style="margin-top:12px">
+        <summary>Advanced Verification Tracks</summary>
+        <div class="alt-body">
+          <div class="super-secure-layout">
+            <div class="super-secure-main">
+              <div class="super-secure-item">
+                <div class="super-secure-item-title">Passkey (WebAuthn)</div>
+                <p>Requires browser/device registration and an authenticator platform.</p>
+                <label class="identity-option-check"><input type="checkbox" id="super-passkey-enabled"> Enabled</label>
+                <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="passkey">Apply Passkey</button>
+              </div>
+              <div class="super-secure-item">
+                <div class="super-secure-item-title">Hardware Security Key</div>
+                <p>Requires a FIDO2 key (YubiKey/solo key) and physical touch verification.</p>
+                <label class="identity-option-check"><input type="checkbox" id="super-security-key-enabled"> Enabled</label>
+                <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="security_key">Apply Security Key</button>
+              </div>
+              <div class="super-secure-item">
+                <div class="super-secure-item-title">Two-Factor Auth (TOTP)</div>
+                <p>Requires a third-party authenticator app and rotating time-based codes.</p>
+                <label class="identity-option-check"><input type="checkbox" id="super-totp-enabled"> Enabled</label>
+                <input type="text" id="super-totp-label" class="setup-input" placeholder="Authenticator label (optional)">
+                <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="totp">Apply TOTP</button>
+              </div>
+            </div>
+            <div class="super-secure-visual">
+              <div class="super-secure-note">
+                <div class="super-secure-note-title">External Steps Required</div>
+                <p>These tracks raise assurance and are recorded immutably. Complete provider/device registration where applicable, then apply here.</p>
+                <div id="super-secure-status" class="social-provider-status" style="margin-top:10px"></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1723,10 +1807,373 @@ async function renderSetup() {
 
   const securityBadgeNode = document.getElementById('identity-security-badge');
   const securityTierButtons = Array.from(content.querySelectorAll('.security-tier-btn'));
+  const tierStatusNode = document.getElementById('identity-tier-status');
+  const tierDeviceEnable = document.getElementById('tier-device-enable');
+  const tierDeviceComponents = document.getElementById('tier-device-components');
+  const tierDeviceBrowser = document.getElementById('tier-device-browser');
+  const shareLocalIpInput = document.getElementById('share-local-ip');
+  const shareMacInput = document.getElementById('share-mac');
+  const socialProviderChecks = Array.from(content.querySelectorAll('.social-provider-check[data-provider]'));
+  const socialStatusNode = document.getElementById('social-provider-status');
+  const socialConnectSelectedBtn = document.getElementById('social-connect-selected-btn');
+  const socialRevokeSelectedBtn = document.getElementById('social-revoke-selected-btn');
+  const socialExpiryInput = document.getElementById('social-expiry-days');
+  const superPasskeyInput = document.getElementById('super-passkey-enabled');
+  const superSecurityKeyInput = document.getElementById('super-security-key-enabled');
+  const superTotpInput = document.getElementById('super-totp-enabled');
+  const superTotpLabelInput = document.getElementById('super-totp-label');
+  const superSecureStatusNode = document.getElementById('super-secure-status');
   let activeSecurityTier = initialSecurityTier;
+  let applyingTierPreset = false;
+  let cachedNetworkIdentity = null;
+  let cachedSocialStatus = null;
+  const setTierStatus = (message, tone = 'info') => {
+    if (!tierStatusNode) return;
+    tierStatusNode.textContent = message || '';
+    tierStatusNode.classList.remove('is-ok', 'is-warn', 'is-error');
+    if (tone === 'ok') tierStatusNode.classList.add('is-ok');
+    else if (tone === 'warn') tierStatusNode.classList.add('is-warn');
+    else if (tone === 'error') tierStatusNode.classList.add('is-error');
+  };
+  const applyTierCheckboxPreset = (tier) => {
+    if (tierDeviceEnable) tierDeviceEnable.checked = tier !== 'why-bother';
+    if (tierDeviceComponents) tierDeviceComponents.checked = tier !== 'why-bother';
+    if (tierDeviceBrowser) tierDeviceBrowser.checked = tier === 'max-safe';
+    if (shareLocalIpInput) shareLocalIpInput.checked = tier !== 'why-bother';
+    if (shareMacInput) shareMacInput.checked = tier === 'max-safe';
+    socialProviderChecks.forEach((cb) => {
+      const provider = cb.dataset.provider || '';
+      if (tier === 'max-safe') cb.checked = provider === 'google';
+      else if (tier === 'less-safe') cb.checked = provider === 'google' || provider === 'github';
+      else cb.checked = false;
+    });
+    if (superPasskeyInput) superPasskeyInput.checked = tier === 'max-safe';
+    if (superSecurityKeyInput) superSecurityKeyInput.checked = tier === 'max-safe';
+    if (superTotpInput) superTotpInput.checked = tier !== 'why-bother';
+    const scannedComponentChecks = content.querySelectorAll('input[name="hw-comp"]');
+    scannedComponentChecks.forEach((cb) => {
+      if (cb.value === 'browser_fingerprint') cb.checked = tier === 'max-safe';
+      else cb.checked = tier !== 'why-bother';
+    });
+  };
+  const ensureNetworkIdentityLoaded = async (forceRefresh = false) => {
+    if (cachedNetworkIdentity && !forceRefresh) return cachedNetworkIdentity;
+    const infoNode = document.getElementById('network-info');
+    if (infoNode) infoNode.textContent = 'Detecting network info...';
+    const resp = await api('/identity/network');
+    cachedNetworkIdentity = resp || {};
+    if (infoNode) {
+      infoNode.innerHTML = `
+        <div style="margin-bottom:6px">Local IP: <strong>${esc(resp.local_ip || 'not detected')}</strong></div>
+        <div>MAC: <strong>${esc(resp.mac_address || 'not detected')}</strong></div>
+      `;
+      infoNode.dataset.loaded = '1';
+    }
+    return cachedNetworkIdentity;
+  };
+  const setTierButtonsBusy = (busy) => {
+    securityTierButtons.forEach((btn) => { btn.disabled = busy; });
+    if (socialConnectSelectedBtn) socialConnectSelectedBtn.disabled = busy;
+    if (socialRevokeSelectedBtn) socialRevokeSelectedBtn.disabled = busy;
+  };
+  const setSocialStatus = (message, tone = 'ok') => {
+    if (!socialStatusNode) return;
+    socialStatusNode.innerHTML = `<span style="color:${tone === 'error' ? 'var(--red)' : tone === 'warn' ? 'var(--yellow)' : 'var(--green)'}">${esc(message)}</span>`;
+  };
+  const refreshSocialStatus = async () => {
+    try {
+      const resp = await api('/identity/social');
+      cachedSocialStatus = resp;
+      const providers = resp.providers || [];
+      const summaries = [];
+      socialProviderChecks.forEach((cb) => {
+        const provider = cb.dataset.provider || '';
+        const row = providers.find((p) => String(p.provider || '').toLowerCase() === provider);
+        if (!row) return;
+        cb.checked = !!row.selected;
+        const state = row.active ? 'active' : row.expired ? 'expired' : 'inactive';
+        summaries.push(`${provider}: ${state}`);
+      });
+      if (socialStatusNode) {
+        const valid = resp.ledger && resp.ledger.chain_valid;
+        const head = resp.ledger && resp.ledger.head_hash ? String(resp.ledger.head_hash).slice(0, 16) : 'none';
+        socialStatusNode.innerHTML = `
+          <div style="margin-bottom:6px">Chain: <strong style="color:${valid ? 'var(--green)' : 'var(--red)'}">${valid ? 'VALID' : 'INVALID'}</strong> | Head: <code>${esc(head)}</code></div>
+          <div style="font-size:12px;color:var(--text-dim)">${esc(summaries.join(' | ') || 'No social providers configured')}</div>
+        `;
+      }
+    } catch (e) {
+      setSocialStatus(`Failed to load social status: ${String(e.message || e)}`, 'error');
+    }
+  };
+  const startSocialOAuth = async (provider, expiresDays, fromTier = false, strict = false) => {
+    try {
+      const days = Number(expiresDays || 30);
+      const resp = await api(`/identity/social/oauth/start/${encodeURIComponent(provider)}?expires_in_days=${Math.max(1, Math.min(365, days))}`);
+      if (resp.oauth_bridge_supported && resp.oauth_url) {
+        const popup = window.open(resp.oauth_url, '_blank', 'noopener,noreferrer');
+        if (!popup) {
+          throw new Error('popup blocked');
+        }
+        setSocialStatus(`${provider} OAuth opened in new tab.`, 'ok');
+        if (fromTier) setTierStatus('Google OAuth flow opened automatically for max-safe mode.', 'ok');
+        return true;
+      } else {
+        const loginUrl = resp.manual_login_url || 'https://agenthalo.dev';
+        const popup = window.open(loginUrl, '_blank', 'noopener,noreferrer');
+        if (!popup) {
+          throw new Error('popup blocked');
+        }
+        const token = window.prompt(`Paste your ${provider} OAuth token to connect:`);
+        if (token && token.trim()) {
+          await apiPost('/identity/social/connect', {
+            provider,
+            token: token.trim(),
+            source: 'manual_popup',
+            selected: true,
+            expires_in_days: Math.max(1, Math.min(365, days)),
+          });
+          setSocialStatus(`${provider} connected.`, 'ok');
+          await refreshSocialStatus();
+          return true;
+        }
+        setSocialStatus(`${provider} login skipped.`, 'warn');
+        if (fromTier) setTierStatus(`${provider} login skipped; preset continued without it.`, 'warn');
+        return false;
+      }
+    } catch (e) {
+      setSocialStatus(`Failed to start ${provider} login: ${String(e.message || e)}`, 'error');
+      if (fromTier) setTierStatus(`${provider} login failed; preset continued without it.`, 'warn');
+      if (strict) throw e;
+      return false;
+    }
+  };
+  if (window.__haloSocialOauthListener) {
+    window.removeEventListener('message', window.__haloSocialOauthListener);
+  }
+  window.__haloSocialOauthListener = async (event) => {
+    const data = event && event.data;
+    if (!data || data.type !== 'agenthalo-social-oauth') return;
+    if (data.status === 'ok') {
+      setSocialStatus(data.message || 'OAuth login connected.', 'ok');
+      await refreshSocialStatus();
+      window._invalidateSetupState();
+      await fetchSetupState(true);
+      updateNavLockState();
+    } else {
+      setSocialStatus(data.message || 'OAuth login failed.', 'error');
+    }
+  };
+  window.addEventListener('message', window.__haloSocialOauthListener);
+  const refreshSuperSecureStatus = async () => {
+    try {
+      const resp = await api('/identity/super-secure');
+      if (superPasskeyInput) superPasskeyInput.checked = !!resp.passkey_enabled;
+      if (superSecurityKeyInput) superSecurityKeyInput.checked = !!resp.security_key_enabled;
+      if (superTotpInput) superTotpInput.checked = !!resp.totp_enabled;
+      if (superTotpLabelInput) superTotpLabelInput.value = resp.totp_label || '';
+      if (superSecureStatusNode) {
+        superSecureStatusNode.innerHTML = `<span style="color:var(--text-dim)">Passkey: ${resp.passkey_enabled ? 'on' : 'off'} | Security Key: ${resp.security_key_enabled ? 'on' : 'off'} | TOTP: ${resp.totp_enabled ? 'on' : 'off'}</span>`;
+      }
+    } catch (e) {
+      if (superSecureStatusNode) superSecureStatusNode.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
+    }
+  };
+  if (socialConnectSelectedBtn) {
+    socialConnectSelectedBtn.addEventListener('click', async () => {
+      const selected = socialProviderChecks.filter((cb) => cb.checked).map((cb) => cb.dataset.provider || '').filter(Boolean);
+      if (!selected.length) {
+        setSocialStatus('Select at least one provider.', 'warn');
+        return;
+      }
+      const days = Number(socialExpiryInput?.value || 30);
+      for (const provider of selected) {
+        await startSocialOAuth(provider, days, false);
+      }
+      await refreshSocialStatus();
+    });
+  }
+  if (socialRevokeSelectedBtn) {
+    socialRevokeSelectedBtn.addEventListener('click', async () => {
+      const selected = socialProviderChecks.filter((cb) => cb.checked).map((cb) => cb.dataset.provider || '').filter(Boolean);
+      if (!selected.length) {
+        setSocialStatus('Select providers to revoke.', 'warn');
+        return;
+      }
+      for (const provider of selected) {
+        try {
+          await apiPost('/identity/social/revoke', { provider, reason: 'dashboard_revoke' });
+        } catch (e) {
+          setSocialStatus(`Failed revoke for ${provider}: ${String(e.message || e)}`, 'error');
+        }
+      }
+      setSocialStatus('Selected social providers revoked.', 'ok');
+      await refreshSocialStatus();
+    });
+  }
+  content.querySelectorAll('.super-secure-save-btn[data-option]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const option = btn.dataset.option || '';
+      let enabled = false;
+      const metadata = {};
+      if (option === 'passkey') enabled = !!superPasskeyInput?.checked;
+      else if (option === 'security_key') enabled = !!superSecurityKeyInput?.checked;
+      else if (option === 'totp') {
+        enabled = !!superTotpInput?.checked;
+        if (superTotpLabelInput?.value) metadata.label = superTotpLabelInput.value.trim();
+      }
+      try {
+        await apiPost('/identity/super-secure', { option, enabled, metadata });
+        if (superSecureStatusNode) superSecureStatusNode.innerHTML = `<span style="color:var(--green)">${esc(option)} updated.</span>`;
+        await refreshSuperSecureStatus();
+      } catch (e) {
+        if (superSecureStatusNode) superSecureStatusNode.innerHTML = `<span style="color:var(--red)">Failed ${esc(option)}: ${esc(String(e.message || e))}</span>`;
+      }
+    });
+  });
+  const applyTierPreset = async (tier) => {
+    if (applyingTierPreset) return;
+    applyingTierPreset = true;
+    setTierButtonsBusy(true);
+    const stepFailures = [];
+    const bestEffort = async (label, fn) => {
+      try {
+        return await fn();
+      } catch (e) {
+        stepFailures.push(`${label}: ${String(e && e.message || e)}`);
+        return null;
+      }
+    };
+    try {
+      applyTierCheckboxPreset(tier);
+      if (tier === 'why-bother') {
+        if (anonCheck && !anonCheck.checked) {
+          await bestEffort('anonymous_mode_enable', async () => {
+            await apiPost('/identity/anonymous', { enabled: true });
+            anonCheck.checked = true;
+            if (anonShell) anonShell.classList.add('is-active');
+            if (anonLaunchBtn) {
+              anonLaunchBtn.classList.add('is-armed');
+              anonLaunchBtn.textContent = 'Disengage';
+              anonLaunchBtn.setAttribute('aria-pressed', 'true');
+            }
+          });
+        }
+        setTierStatus(
+          stepFailures.length
+            ? `Low-security preset applied with ${stepFailures.length} skipped step(s).`
+            : 'Low-security preset applied. Anonymous mode engaged.',
+          stepFailures.length ? 'warn' : 'warn',
+        );
+        await refreshSocialStatus();
+        window._invalidateSetupState();
+        await fetchSetupState(true);
+        updateNavLockState();
+        return;
+      }
+
+      if (anonCheck && anonCheck.checked) {
+        await bestEffort('anonymous_mode_disable', async () => {
+          await apiPost('/identity/anonymous', { enabled: false });
+          anonCheck.checked = false;
+          if (anonShell) anonShell.classList.remove('is-active');
+          if (anonLaunchBtn) {
+            anonLaunchBtn.classList.remove('is-armed');
+            anonLaunchBtn.textContent = 'Engage';
+            anonLaunchBtn.setAttribute('aria-pressed', 'false');
+          }
+        });
+      }
+
+      const enableDevice = !!tierDeviceEnable?.checked;
+      const includeComponents = !!tierDeviceComponents?.checked;
+      const includeBrowser = !!tierDeviceBrowser?.checked;
+      const shareLocalIp = !!shareLocalIpInput?.checked;
+      const shareMac = !!shareMacInput?.checked;
+
+      if (enableDevice) {
+        await bestEffort('device_identity_save', async () => {
+          const deviceMeta = await api('/identity/device');
+          const selectedComponents = includeComponents
+            ? (deviceMeta.components || []).map((c) => c.name).filter(Boolean)
+            : [];
+          let browserFp = null;
+          if (includeBrowser) {
+            const thumbmark = window.ThumbmarkJS;
+            if (thumbmark && typeof thumbmark.getFingerprint === 'function') {
+              try { browserFp = await thumbmark.getFingerprint(); } catch (_e) {}
+            }
+          }
+          await apiPost('/identity/device', {
+            browser_fingerprint: includeBrowser ? browserFp : null,
+            selected_components: selectedComponents,
+          });
+        });
+      }
+
+      await bestEffort('network_identity_save', async () => {
+        const networkMeta = await ensureNetworkIdentityLoaded(true);
+        await apiPost('/identity/network', {
+          share_local_ip: shareLocalIp,
+          share_public_ip: false,
+          share_mac: shareMac,
+          local_ip: shareLocalIp ? (networkMeta.local_ip || null) : null,
+          mac_addresses: shareMac && networkMeta.mac_address ? [networkMeta.mac_address] : [],
+        });
+      });
+
+      // Apply super-secure selections immediately to backend state.
+      await bestEffort(
+        'super_secure_passkey',
+        async () => apiPost('/identity/super-secure', { option: 'passkey', enabled: !!superPasskeyInput?.checked, metadata: {} }),
+      );
+      await bestEffort(
+        'super_secure_security_key',
+        async () => apiPost('/identity/super-secure', { option: 'security_key', enabled: !!superSecurityKeyInput?.checked, metadata: {} }),
+      );
+      await bestEffort(
+        'super_secure_totp',
+        async () => apiPost('/identity/super-secure', { option: 'totp', enabled: !!superTotpInput?.checked, metadata: { label: superTotpLabelInput?.value || '' } }),
+      );
+
+      if (tier === 'max-safe') {
+        const days = Number(socialExpiryInput?.value || 30);
+        await bestEffort('social_google_oauth', async () => {
+          const ok = await startSocialOAuth('google', days, true, true);
+          if (!ok) {
+            throw new Error('oauth not completed');
+          }
+        });
+        setTierStatus(
+          stepFailures.length
+            ? `Max-safe preset applied with ${stepFailures.length} skipped step(s).`
+            : 'Max-safe preset applied. Google social login launched automatically.',
+          stepFailures.length ? 'warn' : 'ok',
+        );
+      } else {
+        setTierStatus(
+          stepFailures.length
+            ? `Balanced preset applied with ${stepFailures.length} skipped step(s).`
+            : 'Balanced preset applied with automatic identity setup.',
+          stepFailures.length ? 'warn' : 'ok',
+        );
+      }
+      window._invalidateSetupState();
+      await fetchSetupState(true);
+      updateNavLockState();
+      await refreshSocialStatus();
+      await refreshSuperSecureStatus();
+    } catch (e) {
+      setTierStatus(`Preset continued with skipped step(s): ${String(e.message || e)}`, 'warn');
+    } finally {
+      applyingTierPreset = false;
+      setTierButtonsBusy(false);
+    }
+  };
   const setSecurityTier = (tier, persist = true) => {
     const nextSrc = securityTierImageByKey[tier];
     if (!nextSrc) return;
+    applyTierCheckboxPreset(tier);
     securityTierButtons.forEach(btn => btn.classList.toggle('is-selected', btn.dataset.tier === tier));
     if (persist) {
       try { localStorage.setItem('halo_identity_security_tier', tier); } catch (_e) {}
@@ -1752,8 +2199,14 @@ async function renderSetup() {
     }, 220);
   };
   securityTierButtons.forEach(btn => {
-    btn.addEventListener('click', () => setSecurityTier(btn.dataset.tier || '', true));
+    btn.addEventListener('click', async () => {
+      const tier = btn.dataset.tier || '';
+      setSecurityTier(tier, true);
+      await applyTierPreset(tier);
+    });
   });
+  await refreshSocialStatus();
+  await refreshSuperSecureStatus();
   setSecurityTier(initialSecurityTier, false);
 
   let lastDeviceScan = null;
@@ -1913,48 +2366,36 @@ async function renderSetup() {
       const infoNode = document.getElementById('network-info');
       if (!infoNode || infoNode.dataset.loaded) return;
       try {
-        const resp = await api('/identity/network');
-        infoNode.dataset.loaded = '1';
-        infoNode.innerHTML = `
-          <div style="margin-bottom:8px">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input type="checkbox" id="share-local-ip">
-              <span>Local IP: <strong>${esc(resp.local_ip || 'not detected')}</strong></span>
-            </label>
-          </div>
-          <div style="margin-bottom:8px">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input type="checkbox" id="share-mac">
-              <span>MAC: <strong>${esc(resp.mac_address || 'not detected')}</strong></span>
-            </label>
-          </div>
-          <button class="btn btn-sm btn-primary" id="network-save-btn" style="border-radius:6px;padding:8px 16px">Save Network Identity</button>
-          <p style="font-size:11px;color:var(--text-dim);margin-top:8px">
-            IPs are hashed before storage. Raw values shown here for your reference only.
-          </p>
-        `;
-        const networkSaveBtn = document.getElementById('network-save-btn');
-        if (networkSaveBtn) {
-          networkSaveBtn.addEventListener('click', async () => {
-            const shareLocalIp = !!document.getElementById('share-local-ip')?.checked;
-            const shareMac = !!document.getElementById('share-mac')?.checked;
-            const macAddresses = shareMac && resp.mac_address ? [resp.mac_address] : [];
-            try {
-              await apiPost('/identity/network', {
-                share_local_ip: shareLocalIp,
-                share_public_ip: false,
-                share_mac: shareMac,
-                local_ip: resp.local_ip || null,
-                mac_addresses: macAddresses,
-              });
-              infoNode.innerHTML += '<div style="margin-top:8px;color:var(--green);font-size:12px">&#10003; Network identity saved.</div>';
-            } catch (e) {
-              infoNode.innerHTML += `<div style="margin-top:8px;color:var(--red);font-size:12px">Failed to save: ${esc(String(e.message || e))}</div>`;
-            }
-          }, { once: true });
-        }
+        await ensureNetworkIdentityLoaded();
       } catch (e) {
         infoNode.innerHTML = `<span style="color:var(--red)">Failed to detect: ${esc(String(e.message || e))}</span>`;
+      }
+    });
+  }
+  const networkSaveBtn = document.getElementById('network-save-btn');
+  if (networkSaveBtn) {
+    networkSaveBtn.addEventListener('click', async () => {
+      networkSaveBtn.disabled = true;
+      networkSaveBtn.textContent = 'Saving...';
+      const infoNode = document.getElementById('network-info');
+      try {
+        const resp = await ensureNetworkIdentityLoaded();
+        const shareLocalIp = !!document.getElementById('share-local-ip')?.checked;
+        const shareMac = !!document.getElementById('share-mac')?.checked;
+        const macAddresses = shareMac && resp.mac_address ? [resp.mac_address] : [];
+        await apiPost('/identity/network', {
+          share_local_ip: shareLocalIp,
+          share_public_ip: false,
+          share_mac: shareMac,
+          local_ip: shareLocalIp ? (resp.local_ip || null) : null,
+          mac_addresses: macAddresses,
+        });
+        if (infoNode) infoNode.innerHTML += '<div style="margin-top:8px;color:var(--green);font-size:12px">&#10003; Network identity saved.</div>';
+      } catch (e) {
+        if (infoNode) infoNode.innerHTML += `<div style="margin-top:8px;color:var(--red);font-size:12px">Failed to save: ${esc(String(e.message || e))}</div>`;
+      } finally {
+        networkSaveBtn.disabled = false;
+        networkSaveBtn.textContent = 'Save Network Identity';
       }
     });
   }

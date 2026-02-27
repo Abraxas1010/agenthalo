@@ -11,6 +11,7 @@ pub mod config;
 pub mod detect;
 pub mod funding;
 pub mod identity;
+pub mod identity_ledger;
 pub mod onchain;
 pub mod pinata;
 pub mod pq;

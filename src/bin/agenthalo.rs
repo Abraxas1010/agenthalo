@@ -68,6 +68,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "addon" => cmd_addon(&args[2..]),
         "license" => cmd_license(&args[2..]),
         "vault" => cmd_vault(&args[2..]),
+        "identity" => cmd_identity(&args[2..]),
         "x402" => cmd_x402(&args[2..]),
         "wrap" => cmd_wrap(&args[2..]),
         "unwrap" => cmd_unwrap(&args[2..]),
@@ -1433,6 +1434,461 @@ fn cmd_vault(args: &[String]) -> Result<(), String> {
     }
 }
 
+fn supported_social_providers() -> &'static [&'static str] {
+    &[
+        "google",
+        "github",
+        "microsoft",
+        "discord",
+        "apple",
+        "facebook",
+    ]
+}
+
+fn is_supported_social_provider(provider: &str) -> bool {
+    let normalized = nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
+    supported_social_providers().contains(&normalized.as_str())
+}
+
+fn parse_boolish(input: &str) -> Result<bool, String> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" | "enabled" => Ok(true),
+        "0" | "false" | "no" | "off" | "disabled" => Ok(false),
+        other => Err(format!(
+            "invalid boolean value: {other} (expected true/false)"
+        )),
+    }
+}
+
+fn store_social_token(provider: &str, token: &str) -> Result<String, String> {
+    use nucleusdb::halo::vault;
+
+    let normalized = nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
+    let vault_provider = format!("social_{normalized}");
+    let env_var = vault::provider_default_env_var(&vault_provider);
+    let pq_wallet_path = config::pq_wallet_path();
+    let vault_path = config::vault_path();
+
+    if pq_wallet_path.exists() {
+        if let Ok(v) = vault::Vault::open(&pq_wallet_path, &vault_path) {
+            v.set_key(&vault_provider, &env_var, token)?;
+            return Ok("vault".to_string());
+        }
+    }
+
+    // Fallback for environments without PQ wallet/vault.
+    let creds_path = config::credentials_path();
+    let mut creds = load_credentials(&creds_path).unwrap_or_default();
+    creds.oauth_provider = Some(normalized);
+    creds.oauth_token = Some(token.to_string());
+    creds.created_at = now_unix_secs();
+    save_credentials(&creds_path, &creds)?;
+    Ok("credentials".to_string())
+}
+
+fn clear_social_token(provider: &str) -> Result<(), String> {
+    use nucleusdb::halo::vault;
+
+    let normalized = nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
+    let vault_provider = format!("social_{normalized}");
+    let pq_wallet_path = config::pq_wallet_path();
+    let vault_path = config::vault_path();
+
+    if pq_wallet_path.exists() {
+        if let Ok(v) = vault::Vault::open(&pq_wallet_path, &vault_path) {
+            let _ = v.delete_key(&vault_provider);
+        }
+    }
+
+    let creds_path = config::credentials_path();
+    let mut creds = load_credentials(&creds_path).unwrap_or_default();
+    if creds.oauth_provider.as_deref() == Some(normalized.as_str()) {
+        creds.oauth_provider = None;
+        creds.oauth_token = None;
+        save_credentials(&creds_path, &creds)?;
+    }
+    Ok(())
+}
+
+fn cmd_identity(args: &[String]) -> Result<(), String> {
+    config::ensure_halo_dir()?;
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "status" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let profile = nucleusdb::halo::profile::load();
+            let cfg = nucleusdb::halo::identity::load();
+            let projection =
+                nucleusdb::halo::identity_ledger::project_social_status(now_unix_secs())?;
+            let payload = serde_json::json!({
+                "profile": profile,
+                "identity": cfg,
+                "ledger": projection,
+            });
+            if json_mode {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload)
+                        .map_err(|e| format!("serialize identity status: {e}"))?
+                );
+            } else {
+                println!("Identity status");
+                println!(
+                    "  Name: {}",
+                    payload["profile"]["display_name"]
+                        .as_str()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or("(not set)")
+                );
+                println!(
+                    "  Anonymous mode: {}",
+                    payload["identity"]["anonymous_mode"]
+                        .as_bool()
+                        .unwrap_or(false)
+                );
+                println!(
+                    "  Social ledger: entries={} chain_valid={}",
+                    payload["ledger"]["total_entries"].as_u64().unwrap_or(0),
+                    payload["ledger"]["chain_valid"].as_bool().unwrap_or(false)
+                );
+                println!(
+                    "  Super secure: passkey={} security_key={} totp={}",
+                    payload["identity"]["super_secure"]["passkey_enabled"]
+                        .as_bool()
+                        .unwrap_or(false),
+                    payload["identity"]["super_secure"]["security_key_enabled"]
+                        .as_bool()
+                        .unwrap_or(false),
+                    payload["identity"]["super_secure"]["totp_enabled"]
+                        .as_bool()
+                        .unwrap_or(false)
+                );
+                println!("  Use `agenthalo identity status --json` for full details.");
+            }
+            Ok(())
+        }
+        "social" => {
+            let social_sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+            match social_sub {
+                "status" => {
+                    let json_mode = args.iter().any(|a| a == "--json");
+                    let cfg = nucleusdb::halo::identity::load();
+                    let projection =
+                        nucleusdb::halo::identity_ledger::project_social_status(now_unix_secs())?;
+                    let payload = serde_json::json!({
+                        "providers": cfg.social.providers,
+                        "ledger": projection,
+                    });
+                    if json_mode {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&payload)
+                                .map_err(|e| format!("serialize social status: {e}"))?
+                        );
+                    } else {
+                        println!("Social providers");
+                        let providers = payload["ledger"]["providers"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default();
+                        if providers.is_empty() {
+                            println!("  (none configured)");
+                        } else {
+                            for p in providers {
+                                let provider = p["provider"].as_str().unwrap_or("unknown");
+                                let state = if p["active"].as_bool().unwrap_or(false) {
+                                    "active"
+                                } else if p["expired"].as_bool().unwrap_or(false) {
+                                    "expired"
+                                } else {
+                                    "inactive"
+                                };
+                                println!("  {provider:<10} {state}");
+                            }
+                        }
+                        println!(
+                            "  Chain valid: {}",
+                            payload["ledger"]["chain_valid"].as_bool().unwrap_or(false)
+                        );
+                    }
+                    Ok(())
+                }
+                "connect" => {
+                    let provider = args.get(2).ok_or_else(|| {
+                        "usage: agenthalo identity social connect <provider> [token] [--expires-days N] [--source NAME] [--selected true|false]".to_string()
+                    })?;
+                    if !is_supported_social_provider(provider) {
+                        return Err(format!(
+                            "unsupported provider: {provider}. Supported: {}",
+                            supported_social_providers().join(", ")
+                        ));
+                    }
+
+                    let mut idx = 3usize;
+                    let mut token = String::new();
+                    if let Some(candidate) = args.get(idx) {
+                        if !candidate.starts_with("--") {
+                            token = candidate.clone();
+                            idx += 1;
+                        }
+                    }
+                    if token.trim().is_empty() {
+                        print!("Enter token for {provider}: ");
+                        io::stdout()
+                            .flush()
+                            .map_err(|e| format!("flush stdout: {e}"))?;
+                        token = read_line_trimmed()?;
+                    }
+                    if token.trim().is_empty() {
+                        return Err("token must not be empty".to_string());
+                    }
+
+                    let mut expires_days: u64 = 30;
+                    let mut source = "cli".to_string();
+                    let mut selected = true;
+                    while idx < args.len() {
+                        match args[idx].as_str() {
+                            "--expires-days" => {
+                                idx += 1;
+                                let raw = args.get(idx).ok_or("--expires-days requires a value")?;
+                                expires_days = raw
+                                    .parse::<u64>()
+                                    .map_err(|_| "--expires-days must be an integer")?
+                                    .clamp(1, 365);
+                            }
+                            "--source" => {
+                                idx += 1;
+                                source = args.get(idx).ok_or("--source requires a value")?.clone();
+                            }
+                            "--selected" => {
+                                idx += 1;
+                                selected = parse_boolish(
+                                    args.get(idx).ok_or("--selected requires a value")?,
+                                )?;
+                            }
+                            other => {
+                                return Err(format!(
+                                    "unknown flag for identity social connect: {other}"
+                                ));
+                            }
+                        }
+                        idx += 1;
+                    }
+
+                    let provider_norm =
+                        nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
+                    let storage = store_social_token(&provider_norm, token.trim())?;
+                    let now = now_unix_secs();
+                    let expires_at = Some(now.saturating_add(expires_days.saturating_mul(86_400)));
+                    nucleusdb::halo::identity_ledger::append_social_connect(
+                        nucleusdb::halo::identity_ledger::SocialConnectInput {
+                            provider: &provider_norm,
+                            token: token.trim(),
+                            expires_at,
+                            source: &source,
+                        },
+                    )?;
+                    let mut cfg = nucleusdb::halo::identity::load();
+                    cfg.version = Some(1);
+                    let st = cfg.social.providers.entry(provider_norm.clone()).or_default();
+                    st.selected = selected;
+                    st.expires_at = expires_at;
+                    st.source = Some(source.clone());
+                    st.last_connected_at = Some(chrono::Utc::now().to_rfc3339());
+                    cfg.social.last_updated = Some(chrono::Utc::now().to_rfc3339());
+                    nucleusdb::halo::identity::save(&cfg)?;
+
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "ok": true,
+                            "provider": provider_norm,
+                            "storage": storage,
+                            "expires_at": expires_at,
+                            "selected": selected,
+                        }))
+                        .map_err(|e| format!("serialize social connect output: {e}"))?
+                    );
+                    Ok(())
+                }
+                "revoke" => {
+                    let provider = args.get(2).ok_or_else(|| {
+                        "usage: agenthalo identity social revoke <provider> [--reason TEXT]"
+                            .to_string()
+                    })?;
+                    if !is_supported_social_provider(provider) {
+                        return Err(format!(
+                            "unsupported provider: {provider}. Supported: {}",
+                            supported_social_providers().join(", ")
+                        ));
+                    }
+                    let mut reason = "operator_requested".to_string();
+                    let mut idx = 3usize;
+                    while idx < args.len() {
+                        match args[idx].as_str() {
+                            "--reason" => {
+                                idx += 1;
+                                reason = args.get(idx).ok_or("--reason requires a value")?.clone();
+                            }
+                            other => {
+                                return Err(format!(
+                                    "unknown flag for identity social revoke: {other}"
+                                ));
+                            }
+                        }
+                        idx += 1;
+                    }
+                    let provider_norm =
+                        nucleusdb::halo::identity_ledger::normalize_social_provider(provider);
+                    clear_social_token(&provider_norm)?;
+                    nucleusdb::halo::identity_ledger::append_social_revoke(
+                        &provider_norm,
+                        Some(reason.as_str()),
+                    )?;
+                    let mut cfg = nucleusdb::halo::identity::load();
+                    if let Some(p) = cfg.social.providers.get_mut(&provider_norm) {
+                        p.selected = false;
+                        p.expires_at = None;
+                        p.source = Some("revoked".to_string());
+                    }
+                    cfg.social.last_updated = Some(chrono::Utc::now().to_rfc3339());
+                    nucleusdb::halo::identity::save(&cfg)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "ok": true,
+                            "provider": provider_norm,
+                            "reason": reason,
+                        }))
+                        .map_err(|e| format!("serialize social revoke output: {e}"))?
+                    );
+                    Ok(())
+                }
+                _ => Err(
+                    "usage: agenthalo identity social [status [--json] | connect <provider> [token] [--expires-days N] [--source NAME] [--selected true|false] | revoke <provider> [--reason TEXT]]".to_string()
+                ),
+            }
+        }
+        "super-secure" | "super_secure" => {
+            let super_sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+            match super_sub {
+                "status" => {
+                    let json_mode = args.iter().any(|a| a == "--json");
+                    let cfg = nucleusdb::halo::identity::load();
+                    let payload = serde_json::json!({
+                        "passkey_enabled": cfg.super_secure.passkey_enabled,
+                        "security_key_enabled": cfg.super_secure.security_key_enabled,
+                        "totp_enabled": cfg.super_secure.totp_enabled,
+                        "totp_label": cfg.super_secure.totp_label,
+                        "last_updated": cfg.super_secure.last_updated,
+                    });
+                    if json_mode {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&payload)
+                                .map_err(|e| format!("serialize super-secure status: {e}"))?
+                        );
+                    } else {
+                        println!("Super-secure status");
+                        println!(
+                            "  passkey={} security_key={} totp={}",
+                            payload["passkey_enabled"].as_bool().unwrap_or(false),
+                            payload["security_key_enabled"].as_bool().unwrap_or(false),
+                            payload["totp_enabled"].as_bool().unwrap_or(false)
+                        );
+                        if let Some(label) = payload["totp_label"].as_str() {
+                            if !label.trim().is_empty() {
+                                println!("  totp_label={label}");
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                "set" => {
+                    let option = args.get(2).ok_or_else(|| {
+                        "usage: agenthalo identity super-secure set <passkey|security_key|totp> <true|false> [--label TEXT]".to_string()
+                    })?;
+                    let enabled_raw = args.get(3).ok_or_else(|| {
+                        "usage: agenthalo identity super-secure set <passkey|security_key|totp> <true|false> [--label TEXT]".to_string()
+                    })?;
+                    let enabled = parse_boolish(enabled_raw)?;
+                    let option_norm = option.trim().to_ascii_lowercase();
+                    if option_norm != "passkey"
+                        && option_norm != "security_key"
+                        && option_norm != "totp"
+                    {
+                        return Err(
+                            "option must be one of: passkey, security_key, totp".to_string()
+                        );
+                    }
+                    let mut label: Option<String> = None;
+                    let mut idx = 4usize;
+                    while idx < args.len() {
+                        match args[idx].as_str() {
+                            "--label" => {
+                                idx += 1;
+                                label = Some(args.get(idx).ok_or("--label requires a value")?.clone());
+                            }
+                            other => {
+                                return Err(format!(
+                                    "unknown flag for identity super-secure set: {other}"
+                                ));
+                            }
+                        }
+                        idx += 1;
+                    }
+
+                    let mut cfg = nucleusdb::halo::identity::load();
+                    match option_norm.as_str() {
+                        "passkey" => cfg.super_secure.passkey_enabled = enabled,
+                        "security_key" => cfg.super_secure.security_key_enabled = enabled,
+                        "totp" => {
+                            cfg.super_secure.totp_enabled = enabled;
+                            if let Some(l) = label.clone() {
+                                cfg.super_secure.totp_label = Some(l);
+                            }
+                        }
+                        _ => {}
+                    }
+                    cfg.super_secure.last_updated = Some(chrono::Utc::now().to_rfc3339());
+                    nucleusdb::halo::identity::save(&cfg)?;
+                    let metadata = if option_norm == "totp" {
+                        serde_json::json!({"label": label.clone().unwrap_or_default()})
+                    } else {
+                        serde_json::json!({})
+                    };
+                    nucleusdb::halo::identity_ledger::append_super_secure_update(
+                        &option_norm,
+                        enabled,
+                        metadata,
+                    )?;
+
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "ok": true,
+                            "option": option_norm,
+                            "enabled": enabled,
+                            "totp_label": cfg.super_secure.totp_label,
+                            "last_updated": cfg.super_secure.last_updated,
+                        }))
+                        .map_err(|e| format!("serialize super-secure set output: {e}"))?
+                    );
+                    Ok(())
+                }
+                _ => Err(
+                    "usage: agenthalo identity super-secure [status [--json] | set <passkey|security_key|totp> <true|false> [--label TEXT]]"
+                        .to_string(),
+                ),
+            }
+        }
+        _ => Err(
+            "usage: agenthalo identity [status [--json] | social <...> | super-secure <...>]"
+                .to_string(),
+        ),
+    }
+}
+
 fn cmd_x402(args: &[String]) -> Result<(), String> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
     match sub {
@@ -1906,6 +2362,6 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault & credentials:\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault & credentials:\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
     );
 }

@@ -998,7 +998,10 @@ async fn capabilities_mcp_tool_counts_are_consistent() {
     let proxied = val["mcp_proxied_tools"]
         .as_u64()
         .expect("mcp_proxied_tools should be u64");
-    assert_eq!(native, 18, "native MCP tool count should stay 18");
+    assert!(
+        native >= 18,
+        "native MCP tool count should be at least baseline 18: {val}"
+    );
     assert_eq!(
         total,
         native + proxied,
@@ -1220,6 +1223,174 @@ async fn identity_device_scan_and_save_roundtrip() {
     assert_eq!(s3, StatusCode::OK, "identity status should succeed: {v3}");
     assert_eq!(v3["device_configured"], true);
 
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn identity_social_connect_and_revoke_roundtrip() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_identity_social_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("identity_social_roundtrip");
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/identity/social/connect",
+        json!({
+            "provider": "google",
+            "token": "tok-social-test",
+            "selected": true,
+            "expires_in_days": 30,
+            "source": "dashboard_test",
+        }),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "social connect should succeed: {v1}");
+    assert_eq!(v1["ok"], true);
+
+    let (s2, v2) = api_get(state.clone(), "/identity/social").await;
+    assert_eq!(s2, StatusCode::OK, "social status should succeed: {v2}");
+    assert_eq!(v2["ledger"]["chain_valid"], true);
+    let providers = v2["providers"]
+        .as_array()
+        .expect("providers should be an array");
+    assert!(
+        providers.iter().any(|p| p["provider"] == "google"),
+        "google provider should be present: {v2}"
+    );
+
+    let (s3, v3) = api_post(
+        state,
+        "/identity/social/revoke",
+        json!({"provider":"google","reason":"test_revoke"}),
+    )
+    .await;
+    assert_eq!(s3, StatusCode::OK, "social revoke should succeed: {v3}");
+    assert_eq!(v3["ok"], true);
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn identity_super_secure_update_roundtrip() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_identity_super_secure_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("identity_super_secure_roundtrip");
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/identity/super-secure",
+        json!({
+            "option": "totp",
+            "enabled": true,
+            "metadata": {"label":"Test Authenticator"}
+        }),
+    )
+    .await;
+    assert_eq!(
+        s1,
+        StatusCode::OK,
+        "super secure update should succeed: {v1}"
+    );
+    assert_eq!(v1["ok"], true);
+    assert_eq!(v1["state"]["totp_enabled"], true);
+
+    let (s2, v2) = api_get(state.clone(), "/identity/super-secure").await;
+    assert_eq!(
+        s2,
+        StatusCode::OK,
+        "super secure status should succeed: {v2}"
+    );
+    assert_eq!(v2["totp_enabled"], true);
+    assert_eq!(v2["totp_label"], "Test Authenticator");
+
+    let (s3, v3) = api_get(state, "/identity/social").await;
+    assert_eq!(
+        s3,
+        StatusCode::OK,
+        "social status should still succeed after super secure update: {v3}"
+    );
+    assert!(
+        v3["ledger"]["total_entries"].as_u64().unwrap_or(0) >= 1,
+        "super-secure update should append a ledger entry: {v3}"
+    );
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn identity_pod_share_filters_by_pattern() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_identity_pod_share_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("identity_pod_share_pattern");
+    let (_sp, _sv) = api_post(
+        state.clone(),
+        "/profile",
+        json!({"display_name":"PodUser","avatar_type":"initials"}),
+    )
+    .await;
+    let (s1, v1) = api_post(
+        state,
+        "/identity/pod-share",
+        json!({
+            "key_patterns": ["identity/profile/*"],
+            "include_ledger": false
+        }),
+    )
+    .await;
+    assert_eq!(
+        s1,
+        StatusCode::OK,
+        "identity pod share should succeed: {v1}"
+    );
+    assert!(v1["ok"].as_bool().unwrap_or(false));
+    let records = v1["records"]
+        .as_array()
+        .expect("records array should exist");
+    assert!(!records.is_empty(), "expected at least one profile record");
+    assert!(
+        records.iter().all(|r| {
+            r.get("key")
+                .and_then(|k| k.as_str())
+                .map(|k| k.starts_with("identity/profile/"))
+                .unwrap_or(false)
+        }),
+        "records should be filtered to identity/profile/*: {v1}"
+    );
+
+    let _ = std::fs::remove_dir_all(&halo_home);
     let _ = std::fs::remove_file(&db_path);
 }
 

@@ -1,6 +1,7 @@
 pub mod acl;
 pub mod discovery;
 pub mod envelope;
+pub mod identity_share;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

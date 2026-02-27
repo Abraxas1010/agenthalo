@@ -327,6 +327,8 @@ The `GenericAdapter` captures every stdout line as a `RawOutput` event. No struc
 | Add-ons config | `~/.agenthalo/addons.json` | p2pclaw, agentpmt-workflows toggles |
 | On-chain config | `~/.agenthalo/onchain.json` | RPC URL, contract address, signer mode |
 | PQ wallet | `~/.agenthalo/pq_wallet.json` | ML-DSA-65 keypair (mode 0600) |
+| Identity config | `~/.agenthalo/identity.json` | Identity category state (device/network/social/super-secure) |
+| Identity social ledger | `~/.agenthalo/identity_social_ledger.jsonl` | Append-only hash-chained social + super-secure events |
 | Attestations | `~/.agenthalo/attestations/` | Saved attestation results |
 | Audits | `~/.agenthalo/audits/` | Saved audit results |
 | Signatures | `~/.agenthalo/signatures/` | Saved PQ signature envelopes |
@@ -394,9 +396,29 @@ agenthalo export sess-17...
 
 Produces a complete `agenthalo-export-v1` JSON document with session metadata, summary, and full event timeline.
 
+### Identity Commands
+
+```bash
+# Full identity snapshot (profile + config + social ledger projection)
+agenthalo identity status --json
+
+# Social providers
+agenthalo identity social status
+agenthalo identity social connect google <token> --expires-days 30
+agenthalo identity social revoke google --reason rotate_token
+
+# Super-secure flags
+agenthalo identity super-secure status
+agenthalo identity super-secure set passkey true
+agenthalo identity super-secure set totp true --label "My Authenticator"
+```
+
+All social connect/revoke and super-secure updates are appended to
+`identity_social_ledger.jsonl` with SHA-256 hash chaining for immutable auditability.
+
 ### MCP Observability Tools
 
-The MCP server exposes 18 native tools (all with `inputSchema` for parameter discovery):
+The MCP server exposes 22 native tools (all with `inputSchema` for parameter discovery):
 
 | Tool | Description |
 |------|-------------|
@@ -418,6 +440,10 @@ The MCP server exposes 18 native tools (all with `inputSchema` for parameter dis
 | `halo_status` | Auth state, session count, total cost, latest session |
 | `halo_export` | Full session export as JSON |
 | `halo_capabilities` | Discover enabled features, add-ons, and configuration status |
+| `identity_status` | Return profile identity, social projection, and super-secure state |
+| `identity_social_connect` | Connect social token, persist secret, append immutable ledger entry |
+| `identity_social_revoke` | Revoke social token and append immutable revoke event |
+| `identity_super_secure_set` | Set passkey/security-key/TOTP flags with immutable ledger update |
 
 ### Model Auto-Detection
 

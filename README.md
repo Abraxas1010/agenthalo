@@ -165,6 +165,27 @@ agenthalo dashboard          # opens http://localhost:3100
 
 No external dependencies, no cloud service, no account required. The entire system — CLI, web dashboard, embedded assets — compiles to a single 9.5MB binary.
 
+### Identity Category (CLI + MCP)
+
+```bash
+# Inspect full identity state
+agenthalo identity status --json
+
+# Social provider lifecycle (immutable ledger-backed)
+agenthalo identity social connect google <token> --expires-days 30
+agenthalo identity social revoke google --reason rotate_token
+
+# Super-secure controls
+agenthalo identity super-secure set passkey true
+agenthalo identity super-secure set totp true --label "My Authenticator"
+```
+
+These actions are recorded in an append-only hash-chained ledger at
+`~/.agenthalo/identity_social_ledger.jsonl`. The same identity surface is
+available to agents through MCP tools: `identity_status`,
+`identity_social_connect`, `identity_social_revoke`, and
+`identity_super_secure_set`.
+
 ---
 
 ## Web Dashboard
