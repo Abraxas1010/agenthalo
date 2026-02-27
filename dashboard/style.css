@@ -67,11 +67,13 @@ html, body {
 body::before {
   content: '';
   position: fixed;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
+  top: 0;
+  left: var(--sidebar-w);
+  width: calc(100vw - var(--sidebar-w));
+  height: 100vh;
   pointer-events: none;
   z-index: 0;
-  opacity: 0.35;
+  opacity: 0.26;
   /* Coarse camo blobs — large, slow-rolling organic shapes */
   background-image:
     url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='c' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.008' numOctaves='5' seed='42' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.07' intercept='0.03'/%3E%3CfeFuncG type='linear' slope='0.12' intercept='0.04'/%3E%3CfeFuncB type='linear' slope='0.03' intercept='0.01'/%3E%3CfeFuncA type='linear' slope='0.8' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23c)'/%3E%3C/svg%3E"),
@@ -89,7 +91,10 @@ body { display: flex; }
 
 #crt-overlay {
   position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
+  top: 0;
+  left: var(--sidebar-w);
+  width: calc(100vw - var(--sidebar-w));
+  height: 100vh;
   pointer-events: none;
   z-index: 9999;
 }
@@ -132,11 +137,13 @@ body.no-crt #crt-overlay { display: none; }
 
 #grain-overlay {
   position: fixed;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
+  top: 0;
+  left: var(--sidebar-w);
+  width: calc(100vw - var(--sidebar-w));
+  height: 100vh;
   pointer-events: none;
   z-index: 9998;
-  opacity: 0.06;
+  opacity: 0.05;
   background-repeat: repeat;
   background-size: 256px 256px;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='1' intercept='0'/%3E%3CfeFuncG type='linear' slope='1' intercept='0'/%3E%3CfeFuncB type='linear' slope='0.3' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
@@ -237,6 +244,7 @@ body.no-crt #crt-overlay { display: none; }
   display: flex;
   align-items: center;
   gap: 10px;
+  position: relative;
   padding: 10px 16px;
   color: var(--text-muted);
   text-decoration: none;
@@ -256,22 +264,21 @@ body.no-crt #crt-overlay { display: none; }
 .nav-link.active {
   color: var(--accent);
   background: var(--bg-hover);
-  border-left: 6px solid var(--accent);
+  border-left: 12px solid var(--accent);
   font-weight: 600;
   text-shadow: var(--glow-amber);
-  filter: url(#rough-border);
-  /* Exponential diffusion glow radiating from the orange border:
-     each layer doubles in blur radius and halves in opacity */
+  /* Linear diffusion glow from the active orange border */
   box-shadow:
-    inset  2px 0  2px rgba(255, 106, 0, 0.40),
-    inset  4px 0  4px rgba(255, 106, 0, 0.25),
-    inset  8px 0  8px rgba(255, 106, 0, 0.14),
-    inset 16px 0 16px rgba(255, 106, 0, 0.07),
-    inset 32px 0 32px rgba(255, 106, 0, 0.03),
-    /* Outward glow on the left edge */
-    -2px 0  3px rgba(255, 106, 0, 0.30),
-    -4px 0  6px rgba(255, 106, 0, 0.15),
-    -8px 0 12px rgba(255, 106, 0, 0.06);
+    inset  2px 0  2px rgba(255, 106, 0, 0.42),
+    inset  4px 0  4px rgba(255, 106, 0, 0.34),
+    inset  6px 0  6px rgba(255, 106, 0, 0.26),
+    inset  8px 0  8px rgba(255, 106, 0, 0.18),
+    inset 10px 0 10px rgba(255, 106, 0, 0.10),
+    inset 12px 0 12px rgba(255, 106, 0, 0.05),
+    -2px 0  3px rgba(255, 106, 0, 0.28),
+    -4px 0  6px rgba(255, 106, 0, 0.20),
+    -6px 0  9px rgba(255, 106, 0, 0.13),
+    -8px 0 12px rgba(255, 106, 0, 0.08);
 }
 
 .nav-icon { font-size: 16px; width: 20px; text-align: center; line-height: 1; }
@@ -1189,11 +1196,28 @@ body.no-crt #crt-overlay { display: none; }
 #content {
   margin-left: var(--sidebar-w);
   flex: 1;
+  position: relative;
   padding: 24px 32px;
   height: 100vh;
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  background-color: var(--bg);
+  /* Army-camo + fractal floral field between --bg and --border tones */
+  background-image:
+    radial-gradient(1200px 720px at 8% 12%, rgba(32, 66, 24, 0.22) 0%, rgba(8, 12, 5, 0) 62%),
+    radial-gradient(980px 620px at 84% 16%, rgba(26, 51, 18, 0.26) 0%, rgba(8, 12, 5, 0) 68%),
+    radial-gradient(880px 560px at 50% 86%, rgba(22, 44, 16, 0.22) 0%, rgba(8, 12, 5, 0) 66%),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 480 480' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='army' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.013' numOctaves='5' seed='19' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.11' intercept='0.02'/%3E%3CfeFuncG type='linear' slope='0.16' intercept='0.03'/%3E%3CfeFuncB type='linear' slope='0.06' intercept='0.01'/%3E%3CfeFuncA type='linear' slope='0.58' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23army)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 320 320' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='floral' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.047' numOctaves='6' seed='53' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.08' intercept='0.02'/%3E%3CfeFuncG type='linear' slope='0.14' intercept='0.03'/%3E%3CfeFuncB type='linear' slope='0.04' intercept='0.01'/%3E%3CfeFuncA type='linear' slope='0.42' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23floral)'/%3E%3C/svg%3E");
+  background-size:
+    auto,
+    auto,
+    auto,
+    480px 480px,
+    320px 320px;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat;
+  background-blend-mode: normal, normal, normal, screen, soft-light;
 }
 
 /* Scrollbar styling */
@@ -2445,6 +2469,12 @@ input:focus, select:focus, textarea:focus {
    ================================================================ */
 
 @media (max-width: 768px) {
+  body::before,
+  #grain-overlay,
+  #crt-overlay {
+    left: 60px;
+    width: calc(100vw - 60px);
+  }
   #sidebar { width: 60px; }
   #sidebar .logo-sub, #sidebar .nav-link span:not(.nav-icon),
   #sidebar .sidebar-footer .version { display: none; }
