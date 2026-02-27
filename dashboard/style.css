@@ -689,6 +689,20 @@ body.no-crt #crt-overlay { display: none; }
   pointer-events: none;
 }
 
+.identity-security-badge {
+  position: absolute;
+  top: 21px;
+  right: 56px;
+  width: 56px;
+  height: 36px;
+  object-fit: cover;
+  border-radius: 7px;
+  border: 1px solid rgba(151, 182, 124, 0.55);
+  box-shadow:
+    0 3px 8px rgba(0, 0, 0, 0.36),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
 .identity-instruct-img {
   display: block;
   width: 112px;
@@ -799,7 +813,7 @@ body.no-crt #crt-overlay { display: none; }
 /* Missile-launch style action button */
 .anonymous-launch-btn {
   appearance: none;
-  border: 2px solid #723414;
+  border: 2px solid #9f450f;
   border-radius: 9px;
   padding: 10px 16px;
   min-width: 120px;
@@ -808,28 +822,31 @@ body.no-crt #crt-overlay { display: none; }
   font-weight: 700;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  color: #ffe6cc;
+  color: #f0b37e;
   background:
-    linear-gradient(180deg, #ff7840 0%, #cd3f14 52%, #8e2308 100%);
+    linear-gradient(180deg, #1a1a1a 0%, #0d0d0d 56%, #020202 100%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 210, 180, 0.4),
-    inset 0 -3px 0 rgba(60, 10, 3, 0.55),
-    0 4px 0 #3b1608,
+    inset 0 1px 0 rgba(255, 173, 114, 0.22),
+    inset 0 -3px 0 rgba(12, 12, 12, 0.85),
+    0 4px 0 #321204,
     0 8px 14px rgba(0, 0, 0, 0.35);
   cursor: pointer;
-  transition: transform 120ms ease, box-shadow 120ms ease, filter 140ms ease, background 180ms ease;
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 140ms ease, background 180ms ease, color 120ms ease;
 }
 
 .anonymous-launch-btn:hover {
-  filter: brightness(1.05);
+  filter: brightness(1.08);
+  border-color: #c25a1c;
 }
 
 .anonymous-launch-btn:active {
   transform: translateY(3px);
+  color: rgba(0, 0, 0, 0.88);
+  text-shadow: none;
   box-shadow:
-    inset 0 1px 0 rgba(255, 210, 180, 0.35),
-    inset 0 -2px 0 rgba(60, 10, 3, 0.6),
-    0 1px 0 #3b1608,
+    inset 0 1px 0 rgba(255, 173, 114, 0.18),
+    inset 0 -2px 0 rgba(8, 8, 8, 0.86),
+    0 1px 0 #321204,
     0 4px 10px rgba(0, 0, 0, 0.28);
 }
 
@@ -848,6 +865,65 @@ body.no-crt #crt-overlay { display: none; }
 .anonymous-launch-btn.is-loading {
   opacity: 0.7;
   cursor: wait;
+}
+
+.identity-security-tier-shell {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.security-tier-btn {
+  appearance: none;
+  border: 2px solid #2a5522;
+  border-radius: 10px;
+  padding: 11px 10px;
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.35px;
+  line-height: 1.2;
+  color: #e7ffe4;
+  text-transform: none;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 0 -3px 0 rgba(7, 21, 9, 0.6),
+    0 4px 0 rgba(7, 21, 9, 0.7),
+    0 8px 14px rgba(0, 0, 0, 0.28);
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 140ms ease;
+}
+
+.security-tier-btn:hover {
+  filter: brightness(1.06) saturate(1.03);
+}
+
+.security-tier-btn:active {
+  transform: translateY(3px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -2px 0 rgba(7, 21, 9, 0.62),
+    0 1px 0 rgba(7, 21, 9, 0.7),
+    0 4px 10px rgba(0, 0, 0, 0.22);
+}
+
+.security-tier-btn.tier-safe {
+  border-color: #2c7b34;
+  background: linear-gradient(180deg, #56d66d 0%, #2fa845 56%, #1d6f2e 100%);
+  color: #f1fff1;
+}
+
+.security-tier-btn.tier-caution {
+  border-color: #a24712;
+  background: linear-gradient(180deg, #ff8a3a 0%, #d8601c 56%, #a84311 100%);
+  color: #fff1e8;
+}
+
+.security-tier-btn.tier-low {
+  border-color: #5a3a22;
+  background: linear-gradient(180deg, #7a5638 0%, #5a3d29 56%, #3a2618 100%);
+  color: #f2e2d4;
 }
 
 .setup-card-v2.card-done .card-icon {
@@ -2782,6 +2858,9 @@ input:focus, select:focus, textarea:focus {
   .anon-mode-avatar { padding: 6px; }
   .anon-mode-copy { margin-left: 0; }
   .anon-mode-desc { font-size: 11px; }
+  .identity-security-badge { top: 13px; right: 40px; width: 40px; height: 26px; border-radius: 5px; }
+  .identity-security-tier-shell { grid-template-columns: 1fr; gap: 8px; }
+  .security-tier-btn { width: 100%; font-size: 11px; padding: 10px 10px; }
   .anonymous-launch-btn {
     grid-column: 1 / -1;
     width: 100%;

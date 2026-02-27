@@ -1151,6 +1151,7 @@ async function renderSetup() {
     <!-- SECTION 1: Identity -->
     <div class="setup-card-v2 ${identityCardClass}" id="setup-identity">
       <div class="identity-instruct-overlay" aria-hidden="true">
+        <img class="identity-security-badge" src="img/agenthalolowsecurity_badge.png" alt="Low security state" onerror="this.style.display='none'">
         <img class="identity-instruct-img" src="img/agenthaloinstruct_cutout.png" alt="" onerror="this.style.display='none'">
         <div class="identity-instruct-note">The more you know about me the easier it is to keep me under control allowing you and others to trust me.</div>
       </div>
@@ -1183,7 +1184,19 @@ async function renderSetup() {
         </div>
       </div>
 
-      <details class="setup-alt-path" style="margin-top:16px">
+      <div class="identity-security-tier-shell" aria-label="Identity safety tier">
+        <button type="button" class="security-tier-btn tier-safe" data-tier="max-safe">
+          As Safe as Possible
+        </button>
+        <button type="button" class="security-tier-btn tier-caution" data-tier="less-safe">
+          Less Safe then I would like
+        </button>
+        <button type="button" class="security-tier-btn tier-low" data-tier="why-bother">
+          Why even bother?
+        </button>
+      </div>
+
+      <details class="setup-alt-path" style="margin-top:12px">
         <summary>Device Fingerprint (optional)</summary>
         <div class="alt-body">
           <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
