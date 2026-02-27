@@ -129,6 +129,17 @@ async fn api_get(state: DashboardState, path: &str) -> (StatusCode, Value) {
     (status, val)
 }
 
+async fn api_get_raw(state: DashboardState, path: &str) -> (StatusCode, String) {
+    let app = api_router(state.clone()).with_state(state);
+    let req = Request::builder().uri(path).body(Body::empty()).unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&body).to_string())
+}
+
 async fn api_post(state: DashboardState, path: &str, body: Value) -> (StatusCode, Value) {
     let app = api_router(state.clone()).with_state(state);
     let req = Request::builder()
@@ -1826,6 +1837,128 @@ async fn wdk_send_rejects_invalid_chain_before_sidecar_lookup() {
         "should return chain validation message: {val}"
     );
     let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn auth_set_key_bootstraps_dashboard_auth_without_cli() {
+    let (state, db_path, creds_path) = test_state_unauth("auth_set_key_bootstrap");
+    let (status, val) = api_post(
+        state.clone(),
+        "/auth/set-key",
+        json!({"api_key":"agenthalo-local-test-key-123456"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "auth set key should succeed: {val}");
+    assert_eq!(val["ok"], true);
+    assert_eq!(val["authenticated"], true);
+
+    let (cfg_status, cfg_val) = api_get(state, "/config").await;
+    assert_eq!(
+        cfg_status,
+        StatusCode::OK,
+        "config should succeed: {cfg_val}"
+    );
+    assert_eq!(cfg_val["authentication"]["authenticated"], true);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn auth_set_key_rejects_short_key() {
+    let (state, db_path, creds_path) = test_state_unauth("auth_set_key_short");
+    let (status, val) = api_post(state, "/auth/set-key", json!({"api_key":"short"})).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "short key should be rejected: {val}"
+    );
+    assert!(
+        val["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("at least 8"),
+        "error should mention minimum length: {val}"
+    );
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn auth_oauth_start_returns_bridge_url_for_supported_provider() {
+    let (state, db_path, creds_path) = test_state_unauth("auth_oauth_start");
+    let (status, val) = api_get(state, "/auth/oauth/start/github?expires_in_minutes=5").await;
+    assert_eq!(status, StatusCode::OK, "oauth start should succeed: {val}");
+    assert_eq!(val["ok"], true);
+    assert_eq!(val["provider"], "github");
+    let oauth_url = val["oauth_url"].as_str().unwrap_or_default();
+    assert!(
+        oauth_url.starts_with("https://agenthalo.dev/auth/github?"),
+        "oauth url should target bridge: {oauth_url}"
+    );
+    assert!(
+        oauth_url.contains("state="),
+        "oauth url should include signed state: {oauth_url}"
+    );
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn auth_oauth_callback_persists_credentials() {
+    let (state, db_path, creds_path) = test_state_unauth("auth_oauth_callback");
+    let (start_status, start_val) = api_get(
+        state.clone(),
+        "/auth/oauth/start/github?expires_in_minutes=5",
+    )
+    .await;
+    assert_eq!(
+        start_status,
+        StatusCode::OK,
+        "oauth start should succeed: {start_val}"
+    );
+    let oauth_url = start_val["oauth_url"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let state_param = oauth_url
+        .split("state=")
+        .nth(1)
+        .map(|s| s.split('&').next().unwrap_or_default().to_string())
+        .unwrap_or_default();
+    assert!(
+        !state_param.is_empty(),
+        "state param should be present in oauth_url"
+    );
+
+    let callback_path = format!(
+        "/auth/oauth/callback?provider=github&state={state}&token=test-oauth-token-123",
+        state = state_param
+    );
+    let (cb_status, cb_body) = api_get_raw(state.clone(), &callback_path).await;
+    assert_eq!(
+        cb_status,
+        StatusCode::OK,
+        "oauth callback should return HTML success"
+    );
+    assert!(
+        cb_body.contains("agenthalo-auth-oauth"),
+        "callback page should postMessage back to opener"
+    );
+
+    let (cfg_status, cfg_val) = api_get(state, "/config").await;
+    assert_eq!(
+        cfg_status,
+        StatusCode::OK,
+        "config should load after oauth callback: {cfg_val}"
+    );
+    assert_eq!(
+        cfg_val["authentication"]["authenticated"], true,
+        "oauth callback should mark dashboard authenticated: {cfg_val}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
 }
 
 #[tokio::test]

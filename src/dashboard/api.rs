@@ -79,6 +79,9 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/config", get(api_config))
         .route("/config/wrap", post(api_config_wrap))
         .route("/config/x402", post(api_config_x402))
+        .route("/auth/set-key", post(api_auth_set_key))
+        .route("/auth/oauth/start/{provider}", get(api_auth_oauth_start))
+        .route("/auth/oauth/callback", get(api_auth_oauth_callback))
         .route("/profile", get(api_get_profile).post(api_save_profile))
         .route(
             "/identity/device",
@@ -501,6 +504,31 @@ pub struct WdkTransferRequest {
     amount: String,
 }
 
+#[derive(Deserialize)]
+pub struct AuthSetKeyRequest {
+    api_key: String,
+}
+
+#[derive(Deserialize, Default)]
+pub struct AuthOauthStartQuery {
+    #[serde(default)]
+    expires_in_minutes: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub struct AuthOauthCallbackQuery {
+    provider: String,
+    state: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    sub: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -659,6 +687,17 @@ fn social_provider_specs() -> Vec<(&'static str, bool, &'static str)> {
         ("apple", false, "https://appleid.apple.com/sign-in"),
         ("facebook", false, "https://www.facebook.com/login/"),
     ]
+}
+
+fn auth_oauth_provider_supported(provider: &str) -> bool {
+    matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "github" | "google"
+    )
+}
+
+fn clamp_auth_oauth_expiry_minutes(minutes: Option<u64>) -> u64 {
+    minutes.unwrap_or(10).clamp(1, 30)
 }
 
 fn social_provider_supported(provider: &str) -> bool {
@@ -3155,6 +3194,144 @@ async fn api_wdk_delete(
         "ledger_logged": ledger_logged,
         "ledger_error": ledger_error,
     })))
+}
+
+async fn api_auth_set_key(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<AuthSetKeyRequest>,
+) -> ApiResult {
+    let key = req.api_key.trim();
+    if key.len() < 8 {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "api_key must be at least 8 characters",
+        ));
+    }
+
+    let mut creds = load_credentials(&state.credentials_path).unwrap_or_default();
+    creds.api_key = Some(key.to_string());
+    if creds.created_at == 0 {
+        creds.created_at = now_unix_secs();
+    }
+    save_credentials(&state.credentials_path, &creds).map_err(internal_err)?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "authenticated": true,
+        "message": "dashboard API key saved",
+    })))
+}
+
+async fn api_auth_oauth_start(
+    AxumState(state): AxumState<DashboardState>,
+    Path(provider): Path<String>,
+    Query(query): Query<AuthOauthStartQuery>,
+) -> ApiResult {
+    let provider = provider.trim().to_ascii_lowercase();
+    if !auth_oauth_provider_supported(&provider) {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "unsupported provider; expected github|google",
+        ));
+    }
+    let expires_minutes = clamp_auth_oauth_expiry_minutes(query.expires_in_minutes);
+    let expires_at = now_unix_secs().saturating_add(expires_minutes.saturating_mul(60));
+    let secret = oauth_state_secret(&state);
+    let state_token =
+        crate::halo::identity_ledger::encode_oauth_state(&provider, expires_at, &secret);
+    let redirect = format!("http://127.0.0.1:3100/api/auth/oauth/callback?provider={provider}");
+    let oauth_url = format!(
+        "https://agenthalo.dev/auth/{provider}?redirect={}&state={}",
+        url_encode(&redirect),
+        url_encode(&state_token)
+    );
+
+    Ok(Json(json!({
+        "ok": true,
+        "provider": provider,
+        "oauth_url": oauth_url,
+        "expires_in_minutes": expires_minutes,
+    })))
+}
+
+async fn api_auth_oauth_callback(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<AuthOauthCallbackQuery>,
+) -> Result<Html<String>, (StatusCode, Json<Value>)> {
+    let provider = query.provider.trim().to_ascii_lowercase();
+    if !auth_oauth_provider_supported(&provider) {
+        return Ok(Html(
+            "<!doctype html><html><body>Unsupported OAuth provider.</body></html>".to_string(),
+        ));
+    }
+
+    let now = now_unix_secs();
+    let secret = oauth_state_secret(&state);
+    let state_ok =
+        crate::halo::identity_ledger::decode_oauth_state(&query.state, &provider, now, &secret);
+    if let Err(e) = state_ok {
+        let message = html_escape(&format!("OAuth state rejected: {e}"));
+        return Ok(Html(format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>AgentHALO OAuth</title></head><body style=\"font-family:ui-monospace,monospace;background:#070a05;color:#ff6b6b;padding:20px\"><h2>AgentHALO Auth</h2><p>{message}</p><script>(function(){{try{{if(window.opener)window.opener.postMessage({{type:'agenthalo-auth-oauth',status:'error',provider:'{provider}',message:{msg}}},'*');}}catch(_e){{}}setTimeout(function(){{window.close();}},1800);}})();</script></body></html>",
+            msg = serde_json::to_string(&format!("OAuth state rejected: {e}")).unwrap_or_else(|_| "\"OAuth state rejected\"".to_string())
+        )));
+    }
+
+    let token = query
+        .token
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+        .or_else(|| {
+            query
+                .access_token
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| v.trim().to_string())
+        });
+    let Some(token) = token else {
+        let message = "OAuth callback missing token/access_token";
+        let escaped = html_escape(message);
+        return Ok(Html(format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>AgentHALO OAuth</title></head><body style=\"font-family:ui-monospace,monospace;background:#070a05;color:#ff6b6b;padding:20px\"><h2>AgentHALO Auth</h2><p>{escaped}</p><script>(function(){{try{{if(window.opener)window.opener.postMessage({{type:'agenthalo-auth-oauth',status:'error',provider:'{provider}',message:{msg}}},'*');}}catch(_e){{}}setTimeout(function(){{window.close();}},1800);}})();</script></body></html>",
+            msg = serde_json::to_string(message).unwrap_or_else(|_| "\"OAuth callback missing token\"".to_string())
+        )));
+    };
+
+    let mut creds = load_credentials(&state.credentials_path).unwrap_or_default();
+    creds.oauth_provider = Some(provider.clone());
+    creds.oauth_token = Some(token);
+    let user_id = query
+        .user_id
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+        .or_else(|| {
+            query
+                .sub
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| v.trim().to_string())
+        });
+    if let Some(uid) = user_id {
+        creds.user_id = Some(uid);
+    }
+    if creds.created_at == 0 {
+        creds.created_at = now_unix_secs();
+    }
+
+    if let Err(e) = save_credentials(&state.credentials_path, &creds) {
+        let message = html_escape(&format!("Failed to persist credentials: {e}"));
+        return Ok(Html(format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>AgentHALO OAuth</title></head><body style=\"font-family:ui-monospace,monospace;background:#070a05;color:#ff6b6b;padding:20px\"><h2>AgentHALO Auth</h2><p>{message}</p><script>(function(){{try{{if(window.opener)window.opener.postMessage({{type:'agenthalo-auth-oauth',status:'error',provider:'{provider}',message:{msg}}},'*');}}catch(_e){{}}setTimeout(function(){{window.close();}},1800);}})();</script></body></html>",
+            msg = serde_json::to_string(&format!("Failed to persist credentials: {e}")).unwrap_or_else(|_| "\"Failed to persist credentials\"".to_string())
+        )));
+    }
+
+    Ok(Html(format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>AgentHALO OAuth</title></head><body style=\"font-family:ui-monospace,monospace;background:#070a05;color:#7cff85;padding:20px\"><h2>AgentHALO Auth</h2><p>OAuth login successful for {provider}. You can close this window.</p><script>(function(){{try{{if(window.opener)window.opener.postMessage({{type:'agenthalo-auth-oauth',status:'ok',provider:'{provider}',message:{msg}}},'*');}}catch(_e){{}}setTimeout(function(){{window.close();}},1200);}})();</script></body></html>",
+        msg = serde_json::to_string("OAuth login successful").unwrap_or_else(|_| "\"OAuth login successful\"".to_string())
+    )))
 }
 
 /// Allowed agent names for shell wrapping — prevents shell RC injection.

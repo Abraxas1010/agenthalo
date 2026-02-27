@@ -1058,6 +1058,78 @@ function formatWdkBalance(raw, decimals, symbol) {
   }
 }
 
+function renderWdkAuthGate(container, message) {
+  const note = message || 'Authenticate first to manage the self-custodial wallet.';
+  container.innerHTML = `
+    <div class="setup-info-box" style="border-color:var(--yellow)">
+      <span class="info-icon">&#9888;</span>
+      <span>${esc(note)}</span>
+    </div>
+    <div style="margin-top:10px">
+      <label for="wdk-auth-api-key" style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">
+        AgentHALO API Key
+      </label>
+      <div class="setup-token-row">
+        <input id="wdk-auth-api-key" type="password" class="setup-input" placeholder="Paste your AGENTHALO_API_KEY">
+        <button class="btn btn-primary btn-sm" id="wdk-auth-save-btn" style="border-radius:6px;padding:8px 14px">
+          Save & Authenticate
+        </button>
+      </div>
+      <div id="wdk-auth-status" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
+    </div>
+    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Or continue with OAuth:</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-sm" id="wdk-auth-oauth-github">Continue with GitHub</button>
+        <button class="btn btn-sm" id="wdk-auth-oauth-google">Continue with Google</button>
+      </div>
+    </div>
+  `;
+
+  const saveBtn = document.getElementById('wdk-auth-save-btn');
+  const input = document.getElementById('wdk-auth-api-key');
+  const statusEl = document.getElementById('wdk-auth-status');
+  saveBtn?.addEventListener('click', async () => {
+    const apiKey = (input?.value || '').trim();
+    if (apiKey.length < 8) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Enter a valid API key.</span>';
+      return;
+    }
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Saving key and refreshing auth state...</span>';
+    try {
+      await apiPost('/auth/set-key', { api_key: apiKey });
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated. Loading wallet status...</span>';
+      window._invalidateSetupState();
+      await fetchSetupState(true);
+      await renderSetup();
+      updateNavLockState();
+    } catch (e) {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Auth failed: ${esc(String(e.message || e))}</span>`;
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save & Authenticate';
+    }
+  });
+
+  const launchOauth = async (provider) => {
+    if (statusEl) statusEl.innerHTML = `<span style="color:var(--text-dim)">Opening ${esc(provider)} OAuth...</span>`;
+    try {
+      const resp = await api(`/auth/oauth/start/${encodeURIComponent(provider)}?expires_in_minutes=10`);
+      const popup = window.open(resp.oauth_url, '_blank', 'noopener,noreferrer,width=540,height=760');
+      if (!popup) {
+        throw new Error('Popup blocked by browser');
+      }
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">OAuth window opened. Complete login and return here.</span>`;
+    } catch (e) {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">OAuth start failed: ${esc(String(e.message || e))}</span>`;
+    }
+  };
+
+  document.getElementById('wdk-auth-oauth-github')?.addEventListener('click', () => launchOauth('github'));
+  document.getElementById('wdk-auth-oauth-google')?.addEventListener('click', () => launchOauth('google'));
+}
+
 async function refreshWdkBalances() {
   const balEl = document.getElementById('wdk-balances-list');
   if (!balEl) return;
@@ -2219,8 +2291,29 @@ async function renderSetup() {
 
   // WDK wallet state + handlers
   const wdkContainer = document.getElementById('wdk-state-container');
+  if (window.__haloDashboardAuthOauthListener) {
+    window.removeEventListener('message', window.__haloDashboardAuthOauthListener);
+  }
+  window.__haloDashboardAuthOauthListener = async (event) => {
+    const data = event && event.data;
+    if (!data || data.type !== 'agenthalo-auth-oauth') return;
+    if (data.status === 'ok') {
+      window._invalidateSetupState();
+      await fetchSetupState(true);
+      await renderSetup();
+      updateNavLockState();
+    } else {
+      alert(data.message || 'OAuth login failed.');
+    }
+  };
+  window.addEventListener('message', window.__haloDashboardAuthOauthListener);
+
   if (wdkContainer) {
     (async () => {
+      if (!isAuthenticated) {
+        renderWdkAuthGate(wdkContainer, 'Authenticate to manage the self-custodial wallet.');
+        return;
+      }
       try {
         const status = await api('/wdk/status');
         if (!status.available) {
@@ -2242,6 +2335,13 @@ async function renderSetup() {
           renderWdkCreate(wdkContainer);
         }
       } catch (e) {
+        const authRequired = Number(e && e.status) === 401
+          || String(e && e.message || '').toLowerCase().includes('authentication required')
+          || (e && e.body && e.body.code === 'auth_required');
+        if (authRequired) {
+          renderWdkAuthGate(wdkContainer, 'Your session is not authenticated for wallet operations yet.');
+          return;
+        }
         wdkContainer.innerHTML = `<div style="font-size:12px;color:var(--red)">WDK status check failed: ${esc(String(e.message || e))}</div>`;
       }
     })();
