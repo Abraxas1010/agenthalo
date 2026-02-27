@@ -1137,6 +1137,15 @@ async function renderSetup() {
     .join('')
     .slice(0, 2)
     .toUpperCase() || '?';
+  let savedSecurityTier = '';
+  try { savedSecurityTier = localStorage.getItem('halo_identity_security_tier') || ''; } catch (_e) {}
+  const securityTierImageByKey = {
+    'max-safe': 'img/agenthalosafe_badge.png',
+    'less-safe': 'img/agenthalomediumsecurity_badge.png',
+    'why-bother': 'img/agenthalobrownsecurity_badge.png',
+    'low-security': 'img/agenthalolowsecurity_badge.png',
+  };
+  const initialSecurityTier = securityTierImageByKey[savedSecurityTier] ? savedSecurityTier : 'low-security';
 
   content.innerHTML = `
   <div class="setup-page-wrap">
@@ -1151,7 +1160,7 @@ async function renderSetup() {
     <!-- SECTION 1: Identity -->
     <div class="setup-card-v2 ${identityCardClass}" id="setup-identity">
       <div class="identity-instruct-overlay" aria-hidden="true">
-        <img class="identity-security-badge" src="img/agenthalolowsecurity_badge.png" alt="Low security state" onerror="this.style.display='none'">
+        <img class="identity-security-badge" id="identity-security-badge" src="${securityTierImageByKey[initialSecurityTier]}" alt="Current security state" onerror="this.style.display='none'">
         <img class="identity-instruct-img" src="img/agenthaloinstruct_cutout.png" alt="" onerror="this.style.display='none'">
         <div class="identity-instruct-note">The more you know about me the easier it is to keep me under control allowing you and others to trust me.</div>
       </div>
@@ -1162,7 +1171,6 @@ async function renderSetup() {
         <div>
           <div class="card-title">
             My Identity
-            ${identityDone ? '<span class="setup-inline-status status-done">&#10003; Done</span>' : ''}
           </div>
           <div class="card-desc">Help me get to know myself</div>
         </div>
@@ -1176,7 +1184,7 @@ async function renderSetup() {
           <div class="avatar-preview" id="avatar-preview">${esc(initials)}</div>
           <div class="identity-profile-fields">
             <input type="text" id="profile-name-input" class="setup-input"
-                   placeholder="What should agents call you?"
+                   placeholder="What do you want to name me?"
                    value="${esc(savedProfile.display_name || '')}" maxlength="64">
             <button class="btn btn-primary btn-sm" id="profile-save-btn"
                     style="border-radius:6px;padding:8px 16px">Save Name</button>
@@ -1184,49 +1192,66 @@ async function renderSetup() {
         </div>
       </div>
 
+      <div class="identity-safety-intent-label">I Want To Be</div>
       <div class="identity-security-tier-shell" aria-label="Identity safety tier">
-        <button type="button" class="security-tier-btn tier-safe" data-tier="max-safe">
+        <button type="button" class="security-tier-btn tier-safe ${initialSecurityTier === 'max-safe' ? 'is-selected' : ''}" data-tier="max-safe">
           As Safe as Possible
         </button>
-        <button type="button" class="security-tier-btn tier-caution" data-tier="less-safe">
+        <button type="button" class="security-tier-btn tier-caution ${initialSecurityTier === 'less-safe' ? 'is-selected' : ''}" data-tier="less-safe">
           Less Safe then I would like
         </button>
-        <button type="button" class="security-tier-btn tier-low" data-tier="why-bother">
+        <button type="button" class="security-tier-btn tier-low ${initialSecurityTier === 'why-bother' ? 'is-selected' : ''}" data-tier="why-bother">
           Why even bother?
         </button>
       </div>
 
-      <details class="setup-alt-path" style="margin-top:12px">
-        <summary>Device Fingerprint (optional)</summary>
+      <div class="identity-tech-options-title">Individual Technical Options</div>
+
+      <details class="setup-alt-path" id="setup-device-details" style="margin-top:12px">
+        <summary>Device Fingerprint</summary>
         <div class="alt-body">
-          <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
-            Scan your device for unique hardware identifiers. This strengthens your
-            identity for trust scoring. All data stays local.
-          </p>
-          <button class="btn btn-primary btn-sm" id="device-scan-btn"
-                  style="border-radius:6px;padding:8px 16px;margin-bottom:12px">
-            Scan Device
-          </button>
-          <div id="device-scan-results" style="display:none">
-            <div id="device-components-list"></div>
-            <div id="device-entropy-bar" style="margin:12px 0"></div>
-            <button class="btn btn-primary btn-sm" id="device-save-btn"
-                    style="border-radius:6px;padding:8px 16px">
-              Save Device Identity
-            </button>
+          <div class="device-fingerprint-layout">
+            <div class="device-fingerprint-main">
+              <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">
+                Scan your device for unique hardware identifiers. This strengthens your
+                identity for trust scoring. All data stays local.
+              </p>
+              <button class="btn btn-primary btn-sm" id="device-scan-btn"
+                      style="border-radius:6px;padding:8px 16px;margin-bottom:12px">
+                Scan Device
+              </button>
+              <div id="device-scan-results" style="display:none;width:100%;max-width:460px">
+                <div id="device-components-list"></div>
+                <div id="device-entropy-bar" style="margin:12px 0"></div>
+                <button class="btn btn-primary btn-sm" id="device-save-btn"
+                        style="border-radius:6px;padding:8px 16px">
+                  Save Device Identity
+                </button>
+              </div>
+              <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
+            </div>
+            <div class="device-fingerprint-visual">
+              <img src="img/agenthalofingerprint_panel.png" alt="Fingerprint security visual" onerror="this.style.display='none'">
+            </div>
           </div>
-          <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
         </div>
       </details>
 
       <details class="setup-alt-path" id="setup-network-details" style="margin-top:12px">
-        <summary>Network Identity (optional)</summary>
+        <summary>Network Identity</summary>
         <div class="alt-body">
-          <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
-            Optionally share network identifiers to strengthen your fingerprint.
-          </p>
-          <div id="network-info" style="font-size:13px;color:var(--text-dim)">
-            Loading network info...
+          <div class="network-identity-layout">
+            <div class="network-identity-main">
+              <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">
+                Optionally share network identifiers to strengthen your fingerprint.
+              </p>
+              <div id="network-info" style="font-size:13px;color:var(--text-dim);width:100%;max-width:460px">
+                Loading network info...
+              </div>
+            </div>
+            <div class="network-identity-visual">
+              <img src="img/agenthalonetworkidentity_panel.png" alt="Network identity visual" onerror="this.style.display='none'">
+            </div>
           </div>
         </div>
       </details>
@@ -1695,6 +1720,41 @@ async function renderSetup() {
       }
     });
   }
+
+  const securityBadgeNode = document.getElementById('identity-security-badge');
+  const securityTierButtons = Array.from(content.querySelectorAll('.security-tier-btn'));
+  let activeSecurityTier = initialSecurityTier;
+  const setSecurityTier = (tier, persist = true) => {
+    const nextSrc = securityTierImageByKey[tier];
+    if (!nextSrc) return;
+    securityTierButtons.forEach(btn => btn.classList.toggle('is-selected', btn.dataset.tier === tier));
+    if (persist) {
+      try { localStorage.setItem('halo_identity_security_tier', tier); } catch (_e) {}
+    }
+    if (!securityBadgeNode) {
+      activeSecurityTier = tier;
+      return;
+    }
+    if (activeSecurityTier === tier && securityBadgeNode.getAttribute('src') === nextSrc) return;
+    activeSecurityTier = tier;
+    securityBadgeNode.classList.add('is-swapping');
+    window.setTimeout(() => {
+      securityBadgeNode.onload = () => {
+        securityBadgeNode.classList.remove('is-swapping');
+        securityBadgeNode.onload = null;
+      };
+      securityBadgeNode.onerror = () => {
+        securityBadgeNode.classList.remove('is-swapping');
+        securityBadgeNode.onerror = null;
+      };
+      securityBadgeNode.setAttribute('src', nextSrc);
+      window.setTimeout(() => securityBadgeNode.classList.remove('is-swapping'), 520);
+    }, 220);
+  };
+  securityTierButtons.forEach(btn => {
+    btn.addEventListener('click', () => setSecurityTier(btn.dataset.tier || '', true));
+  });
+  setSecurityTier(initialSecurityTier, false);
 
   let lastDeviceScan = null;
   const deviceScanBtn = document.getElementById('device-scan-btn');
