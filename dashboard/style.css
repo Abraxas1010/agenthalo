@@ -1209,15 +1209,20 @@ body.no-crt #crt-overlay { display: none; }
     radial-gradient(980px 620px at 84% 16%, rgba(26, 51, 18, 0.26) 0%, rgba(8, 12, 5, 0) 68%),
     radial-gradient(880px 560px at 50% 86%, rgba(22, 44, 16, 0.22) 0%, rgba(8, 12, 5, 0) 66%),
     url("data:image/svg+xml,%3Csvg viewBox='0 0 480 480' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='army' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.013' numOctaves='5' seed='19' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.11' intercept='0.02'/%3E%3CfeFuncG type='linear' slope='0.16' intercept='0.03'/%3E%3CfeFuncB type='linear' slope='0.06' intercept='0.01'/%3E%3CfeFuncA type='linear' slope='0.58' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23army)'/%3E%3C/svg%3E"),
-    url("data:image/svg+xml,%3Csvg viewBox='0 0 320 320' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='floral' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.047' numOctaves='6' seed='53' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.08' intercept='0.02'/%3E%3CfeFuncG type='linear' slope='0.14' intercept='0.03'/%3E%3CfeFuncB type='linear' slope='0.04' intercept='0.01'/%3E%3CfeFuncA type='linear' slope='0.42' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23floral)'/%3E%3C/svg%3E");
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 320 320' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='floral' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.047' numOctaves='6' seed='53' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.08' intercept='0.02'/%3E%3CfeFuncG type='linear' slope='0.14' intercept='0.03'/%3E%3CfeFuncB type='linear' slope='0.04' intercept='0.01'/%3E%3CfeFuncA type='linear' slope='0.42' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23floral)'/%3E%3C/svg%3E"),
+    /* Subtle rusty-orange fuzz to break visible tiling squares */
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 224 224' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='rustA' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.19' numOctaves='2' seed='11' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.34' intercept='0.08'/%3E%3CfeFuncG type='linear' slope='0.17' intercept='0.03'/%3E%3CfeFuncB type='linear' slope='0.07' intercept='0.01'/%3E%3CfeFuncA type='linear' slope='0.20' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23rustA)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 311 311' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='rustB' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.53' numOctaves='1' seed='71' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='0.28' intercept='0.06'/%3E%3CfeFuncG type='linear' slope='0.14' intercept='0.02'/%3E%3CfeFuncB type='linear' slope='0.05' intercept='0.01'/%3E%3CfeFuncA type='linear' slope='0.14' intercept='0'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23rustB)'/%3E%3C/svg%3E");
   background-size:
     auto,
     auto,
     auto,
     480px 480px,
-    320px 320px;
-  background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat;
-  background-blend-mode: normal, normal, normal, screen, soft-light;
+    320px 320px,
+    224px 224px,
+    311px 311px;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, repeat, repeat;
+  background-blend-mode: normal, normal, normal, screen, soft-light, multiply, overlay;
 }
 
 /* Scrollbar styling */

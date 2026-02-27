@@ -1144,7 +1144,7 @@ async function renderSetup() {
     <!-- Hero -->
     <div class="setup-hero">
       <img class="setup-hero-img" src="img/agenthalo_ready.png" alt="Agent H.A.L.O." onerror="this.style.display='none'">
-      <h1>Welcome, my name is Agent H.A.L.O.</h1>
+      <h1>Welcome, my name is Agent H.A.L.O., but you can just call me Hal :)</h1>
       <p>Let's get everything properly set up for you. Then, we can build something amazing together!</p>
     </div>
 
