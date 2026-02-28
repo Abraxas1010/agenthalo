@@ -17,7 +17,7 @@ use crate::halo::agentpmt;
 use crate::halo::attest::{
     attest_session, resolve_session_id, save_attestation, AttestationRequest,
 };
-use crate::halo::auth::{is_authenticated, load_credentials, save_credentials};
+use crate::halo::auth::{is_dashboard_authenticated, load_credentials, save_credentials};
 use crate::halo::config;
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::pq::has_wallet;
@@ -838,7 +838,7 @@ fn configured_vault(
 }
 
 fn require_sensitive_access(state: &DashboardState) -> Result<(), (StatusCode, Json<Value>)> {
-    let authenticated = is_authenticated(&state.credentials_path);
+    let authenticated = is_dashboard_authenticated(&state.credentials_path);
     if authenticated {
         Ok(())
     } else {
@@ -1290,7 +1290,7 @@ async fn flush_cockpit_trace_if_done(
 async fn api_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let db_path = &state.db_path;
     let creds_path = &state.credentials_path;
-    let has_auth = is_authenticated(creds_path);
+    let has_auth = is_dashboard_authenticated(creds_path);
     let pmt_cfg = agentpmt::load_or_default();
     let x402_cfg = x402::load_x402_config();
 
@@ -2531,7 +2531,7 @@ async fn api_identity_pod_share(
 
 async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let creds_path = &state.credentials_path;
-    let has_auth = is_authenticated(creds_path);
+    let has_auth = is_dashboard_authenticated(creds_path);
     let pmt_cfg = agentpmt::load_or_default();
     let addons_cfg = addons::load_or_default();
     let x402_cfg = x402::load_x402_config();
@@ -4894,7 +4894,7 @@ async fn api_nucleusdb_history(AxumState(state): AxumState<DashboardState>) -> A
 async fn api_capabilities(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     const MCP_NATIVE_TOOL_COUNT: usize = 22;
     let creds_path = &state.credentials_path;
-    let has_auth = is_authenticated(creds_path);
+    let has_auth = is_dashboard_authenticated(creds_path);
     let pmt_cfg = agentpmt::load_or_default();
     let proxied_mcp_tools = if pmt_cfg.enabled {
         agentpmt::proxied_tools_for_listing().len()

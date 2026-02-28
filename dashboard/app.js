@@ -810,7 +810,7 @@ async function renderConfig() {
         <div class="config-row">
           <div>
             <div class="config-label">Status</div>
-            <div class="config-desc">OAuth or API key authentication</div>
+            <div class="config-desc">Local mode (auth optional) or OAuth-authenticated (enforced mode)</div>
           </div>
           ${cfg.authentication.authenticated
             ? '<span class="badge badge-ok">Authenticated</span>'
@@ -1081,11 +1081,15 @@ function renderWdkAuthGate(container, message) {
     if (statusEl) statusEl.innerHTML = `<span style="color:var(--text-dim)">Opening ${esc(provider)} OAuth...</span>`;
     try {
       const resp = await api(`/auth/oauth/start/${encodeURIComponent(provider)}?expires_in_minutes=10`);
-      const popup = window.open(resp.oauth_url, '_blank', 'noopener,noreferrer,width=540,height=760');
-      if (!popup) {
-        throw new Error('Popup blocked by browser');
+      const popup = window.open('', '_blank', 'width=540,height=760');
+      if (popup && !popup.closed) {
+        try { popup.opener = null; } catch (_e) {}
+        popup.location.href = resp.oauth_url;
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">OAuth window opened. Complete login and return here.</span>`;
+      } else {
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--yellow)">Popup blocked. Redirecting this tab to OAuth...</span>';
+        window.location.href = resp.oauth_url;
       }
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">OAuth window opened. Complete login and return here.</span>`;
     } catch (e) {
       if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">OAuth start failed: ${esc(String(e.message || e))}</span>`;
     }
@@ -1994,7 +1998,7 @@ async function renderSetup() {
             </div>
             <div class="setup-info-box" style="margin-top:8px">
               <span class="info-icon">&#9432;</span>
-              <span>Dashboard authentication is handled above with GitHub/Google OAuth.</span>
+              <span>Dashboard auth is optional in local mode; if enforcement is enabled, use GitHub/Google OAuth above.</span>
             </div>
           ` : `
             <div class="setup-success-banner" style="font-size:12px">
@@ -2465,12 +2469,17 @@ async function renderSetup() {
       const days = Number(expiresDays || 30);
       const resp = await api(`/identity/social/oauth/start/${encodeURIComponent(provider)}?expires_in_days=${Math.max(1, Math.min(365, days))}`);
       if (resp.oauth_bridge_supported && resp.oauth_url) {
-        const popup = window.open(resp.oauth_url, '_blank', 'noopener,noreferrer');
-        if (!popup) {
-          throw new Error('popup blocked');
+        const popup = window.open('', '_blank', 'width=540,height=760');
+        if (popup && !popup.closed) {
+          try { popup.opener = null; } catch (_e) {}
+          popup.location.href = resp.oauth_url;
+          setSocialStatus(`${provider} OAuth opened in new tab.`, 'ok');
+          if (fromTier) setTierStatus('Google OAuth flow opened automatically for max-safe mode.', 'ok');
+          return true;
         }
-        setSocialStatus(`${provider} OAuth opened in new tab.`, 'ok');
-        if (fromTier) setTierStatus('Google OAuth flow opened automatically for max-safe mode.', 'ok');
+        setSocialStatus(`Popup blocked. Redirecting this tab to ${provider} OAuth.`, 'warn');
+        if (fromTier) setTierStatus('Popup blocked; redirecting this tab to OAuth.', 'warn');
+        window.location.href = resp.oauth_url;
         return true;
       } else {
         const loginUrl = resp.manual_login_url || 'https://agenthalo.dev';

@@ -86,6 +86,39 @@ pub fn is_authenticated(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            let s = v.trim().to_ascii_lowercase();
+            matches!(s.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+/// Dashboard auth is optional by default for localhost-only UX simplicity.
+/// Set AGENTHALO_REQUIRE_DASHBOARD_AUTH=1 to enforce OAuth authentication.
+pub fn dashboard_auth_required() -> bool {
+    env_truthy("AGENTHALO_REQUIRE_DASHBOARD_AUTH")
+}
+
+/// Authentication predicate used by dashboard-sensitive endpoints.
+/// - Default mode: returns true (no separate dashboard login required).
+/// - Enforced mode: requires a stored OAuth token.
+pub fn is_dashboard_authenticated(path: &Path) -> bool {
+    if !dashboard_auth_required() {
+        return true;
+    }
+    load_credentials(path)
+        .map(|c| {
+            c.oauth_token
+                .as_ref()
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
 pub fn resolve_api_key(creds_path: &Path) -> Option<String> {
     std::env::var("AGENTHALO_API_KEY")
         .ok()

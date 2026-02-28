@@ -1,7 +1,7 @@
 use crate::cockpit::pty_manager::SessionEvent;
 use crate::cockpit::session::SessionStatus;
 use crate::dashboard::DashboardState;
-use crate::halo::auth::is_authenticated;
+use crate::halo::auth::is_dashboard_authenticated;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -28,7 +28,7 @@ pub async fn ws_handler(
     Path(session_id): Path<String>,
     State(state): State<DashboardState>,
 ) -> Response {
-    if !is_authenticated(&state.credentials_path) {
+    if !is_dashboard_authenticated(&state.credentials_path) {
         // Browser WebSocket clients don't expose failed-upgrade bodies directly,
         // but we keep this JSON payload consistent with REST auth errors for
         // scripts and future non-browser clients.

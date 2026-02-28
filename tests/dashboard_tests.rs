@@ -57,9 +57,9 @@ fn test_state(tag: &str) -> (DashboardState, PathBuf) {
     let _ = save_credentials(
         &creds,
         &Credentials {
-            api_key: Some("test-local-api-key".to_string()),
-            oauth_token: None,
-            oauth_provider: None,
+            api_key: None,
+            oauth_token: Some("test-oauth-token".to_string()),
+            oauth_provider: Some("github".to_string()),
             user_id: Some("dashboard-tests".to_string()),
             created_at: now_unix_secs(),
         },
@@ -1737,6 +1737,8 @@ async fn config_agentpmt_setup_false_when_token_unverified() {
 
 #[tokio::test]
 async fn agentpmt_refresh_requires_auth() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("agentpmt_refresh_auth");
     let (status, val) = api_post(state, "/agentpmt/refresh", json!({})).await;
     assert_eq!(
@@ -1753,6 +1755,8 @@ async fn agentpmt_refresh_requires_auth() {
 
 #[tokio::test]
 async fn agentpmt_enable_requires_auth() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("agentpmt_enable_auth");
     let (status, val) = api_post(state, "/agentpmt/enable", json!({})).await;
     assert_eq!(
@@ -1769,6 +1773,8 @@ async fn agentpmt_enable_requires_auth() {
 
 #[tokio::test]
 async fn wdk_status_requires_auth() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("wdk_status_auth");
     let (status, val) = api_get(state, "/wdk/status").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -1779,6 +1785,8 @@ async fn wdk_status_requires_auth() {
 
 #[tokio::test]
 async fn wdk_available_requires_auth() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("wdk_available_auth");
     let (status, val) = api_get(state, "/wdk/available").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -1850,6 +1858,8 @@ async fn auth_set_key_route_removed() {
 
 #[tokio::test]
 async fn auth_oauth_start_returns_bridge_url_for_supported_provider() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("auth_oauth_start");
     let (status, val) = api_get(state, "/auth/oauth/start/github?expires_in_minutes=5").await;
     assert_eq!(status, StatusCode::OK, "oauth start should succeed: {val}");
@@ -1870,6 +1880,8 @@ async fn auth_oauth_start_returns_bridge_url_for_supported_provider() {
 
 #[tokio::test]
 async fn auth_oauth_callback_persists_credentials() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("auth_oauth_callback");
     let (start_status, start_val) = api_get(
         state.clone(),
@@ -1959,6 +1971,8 @@ async fn agentpmt_enable_sets_enabled_in_config() {
 
 #[tokio::test]
 async fn cockpit_create_requires_auth_and_returns_setup_payload() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("cockpit_auth_required");
     let (status, val) = api_post(
         state,
