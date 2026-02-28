@@ -81,7 +81,15 @@ pub fn identity_social_ledger_path() -> PathBuf {
 }
 
 pub fn ensure_halo_dir() -> Result<(), String> {
-    std::fs::create_dir_all(halo_dir()).map_err(|e| format!("create halo dir: {e}"))
+    let dir = halo_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create halo dir: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("set halo dir permissions: {e}"))?;
+    }
+    Ok(())
 }
 
 pub fn ensure_attestations_dir() -> Result<(), String> {

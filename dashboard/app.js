@@ -1460,7 +1460,9 @@ async function renderSetup() {
 
   let cfg = null;
   try { cfg = await api('/config'); } catch (_e) {}
-  const isAuthenticated = cfg && cfg.authentication && cfg.authentication.authenticated;
+  const authCfg = (cfg && cfg.authentication) || {};
+  const isAuthenticated = !!authCfg.authenticated;
+  const dashboardAuthRequired = !!authCfg.required;
   const hasWallet = cfg && cfg.pq_wallet;
   const ss = (cfg && cfg.setup_complete) || { identity: false, wallet: false, agentpmt: false, llm: false, complete: false };
   const walletStatus = (cfg && cfg.wallet_status) || {};
@@ -1538,6 +1540,7 @@ async function renderSetup() {
   const walletPath = agentpmtConnected
     ? 'agentpmt'
     : (wdkWalletExists ? 'wdk' : (anonymousWalletConnected ? 'anonymous' : 'none'));
+  const hasAnyWallet = walletPath !== 'none';
   const walletCardDesc = walletPath === 'wdk'
     ? 'Self-custodial multi-chain wallet active on this machine'
     : (walletPath === 'anonymous'
@@ -1590,6 +1593,24 @@ async function renderSetup() {
       <img class="setup-hero-img" src="img/agenthalo_ready.png" alt="Agent H.A.L.O." onerror="this.style.display='none'">
       <h1>Welcome, my name is Agent H.A.L.O., but you can just call me Hal :)</h1>
       <p>Let's get everything properly set up for you. Then, we can build something amazing together!</p>
+    </div>
+
+    <div class="setup-info-box" style="margin-top:14px">
+      <span class="info-icon">&#9432;</span>
+      <span><strong>How this page works:</strong> complete Identity, connect a Wallet, then add an LLM key. After that, all tabs are fully unlocked.</span>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-top:10px;background:rgba(4,14,8,0.45)">
+      <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Quick Start</div>
+      <ol class="setup-steps-friendly" style="margin:0">
+        <li><span class="step-circle">1</span><span>Set your identity and safety preference in <strong>My Identity</strong>.</span></li>
+        <li><span class="step-circle">2</span><span>Choose one wallet path: AgentPMT account, anonymous wallet, or self-custodial WDK wallet.</span></li>
+        <li><span class="step-circle">3</span><span>Add your OpenRouter key in <strong>Add Your LLM Key</strong>.</span></li>
+      </ol>
+      <div style="margin-top:10px;font-size:12px;color:var(--text-dim)">
+        ${dashboardAuthRequired
+          ? 'Sign-in mode is enabled on this instance. You must authenticate with GitHub/Google where prompted.'
+          : 'Local mode is enabled on this instance. GitHub/Google sign-in is optional, so those buttons may be hidden.'}
+      </div>
     </div>
 
     <!-- SECTION 1: Identity -->
@@ -1811,9 +1832,22 @@ async function renderSetup() {
         <div>
           <div class="card-title">
             Your Wallet
-            ${step1Done ? '<span class="setup-inline-status status-done">&#10003; Connected</span>' : ''}
+            ${step1Done
+              ? '<span class="setup-inline-status status-done">&#10003; Connected</span>'
+              : '<span class="setup-inline-status status-missing">&#10007; Not Connected</span>'}
           </div>
           <div class="card-desc">${walletCardDesc}</div>
+          <div class="setup-wallet-summary">
+            <span class="setup-wallet-chip ${hasAnyWallet ? 'ok' : 'bad'}">
+              ${hasAnyWallet ? '&#10003;' : '&#10007;'} Wallet Presence
+            </span>
+            <span class="setup-wallet-chip ${agentpmtConnected ? 'ok' : 'bad'}">
+              ${agentpmtConnected ? '&#10003;' : '&#10007;'} AgentPMT
+            </span>
+            <span class="setup-wallet-chip ${wdkWalletExists ? 'ok' : 'bad'}">
+              ${wdkWalletExists ? '&#10003;' : '&#10007;'} Self-Custody WDK
+            </span>
+          </div>
         </div>
       </div>
 
@@ -1926,7 +1960,7 @@ async function renderSetup() {
 
       <!-- Path C: Self-custodial wallet (always available) -->
       <details class="setup-alt-path" style="margin-top:16px" id="wdk-wallet-section">
-        <summary>Self-Custodial Multi-Chain Wallet (Bitcoin, Ethereum, Polygon, Arbitrum)</summary>
+        <summary>Self-Custodial Tether Multi-Chain Wallet (Bitcoin, Ethereum, Polygon, Arbitrum)</summary>
         <div class="alt-body">
           <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
             Private keys stay on this machine and are encrypted at rest with your passphrase.

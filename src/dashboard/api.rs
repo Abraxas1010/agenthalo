@@ -17,7 +17,9 @@ use crate::halo::agentpmt;
 use crate::halo::attest::{
     attest_session, resolve_session_id, save_attestation, AttestationRequest,
 };
-use crate::halo::auth::{is_dashboard_authenticated, load_credentials, save_credentials};
+use crate::halo::auth::{
+    dashboard_auth_required, is_dashboard_authenticated, load_credentials, save_credentials,
+};
 use crate::halo::config;
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::pq::has_wallet;
@@ -2584,6 +2586,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     Ok(Json(json!({
         "authentication": {
             "authenticated": has_auth,
+            "required": dashboard_auth_required(),
         },
         "wrapping": {
             "claude": wrap_status("claude"),

@@ -1460,6 +1460,46 @@ body.no-crt #crt-overlay { display: none; }
   text-shadow: var(--glow-green);
 }
 
+.setup-inline-status.status-missing {
+  color: var(--red);
+  border: 1px solid var(--red);
+  background: rgba(255, 99, 71, 0.08);
+  text-shadow: 0 0 8px rgba(255, 99, 71, 0.25);
+}
+
+.setup-wallet-summary {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.setup-wallet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  background: rgba(6, 14, 10, 0.55);
+}
+
+.setup-wallet-chip.ok {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(0, 255, 65, 0.07);
+}
+
+.setup-wallet-chip.bad {
+  color: var(--red);
+  border-color: var(--red);
+  background: rgba(255, 99, 71, 0.09);
+}
+
 .setup-card-v2 .card-desc {
   font-size: 13px;
   color: var(--text-muted);

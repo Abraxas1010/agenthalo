@@ -972,6 +972,13 @@ async fn config_includes_agentpmt_endpoint_auth_and_tool_count() {
     let (state, db_path) = test_state("cfg_agentpmt_fields");
     let (status, val) = api_get(state, "/config").await;
     assert_eq!(status, StatusCode::OK, "config route should succeed: {val}");
+    assert!(
+        val.get("authentication")
+            .and_then(|a| a.get("required"))
+            .and_then(|v| v.as_bool())
+            .is_some(),
+        "authentication.required should be present and boolean: {val}"
+    );
 
     let pmt = &val["agentpmt"];
     assert!(
@@ -1733,6 +1740,34 @@ async fn config_agentpmt_setup_false_when_token_unverified() {
 
     let _ = std::fs::remove_dir_all(&halo_home);
     let _ = std::fs::remove_file(&db_path);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ensure_halo_dir_enforces_owner_only_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_halo_dir_perms_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    nucleusdb::halo::config::ensure_halo_dir().expect("ensure halo dir");
+    let mode = std::fs::metadata(&halo_home)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700, "halo dir should be owner-only");
+
+    let _ = std::fs::remove_dir_all(&halo_home);
 }
 
 #[tokio::test]
