@@ -1156,18 +1156,26 @@ async fn config_includes_setup_complete_fields() {
         "wallet_status.anonymous_wallet_connected should be a boolean: {ws}"
     );
     assert!(
-        ws.get("wdk_available").and_then(|v| v.as_bool()).is_some(),
-        "wallet_status.wdk_available should be a boolean: {ws}"
-    );
-    assert!(
-        ws.get("wdk_wallet_exists")
+        ws.get("agentaddress_connected")
             .and_then(|v| v.as_bool())
             .is_some(),
-        "wallet_status.wdk_wallet_exists should be a boolean: {ws}"
+        "wallet_status.agentaddress_connected should be a boolean: {ws}"
     );
     assert!(
-        ws.get("wdk_unlocked").and_then(|v| v.as_bool()).is_some(),
-        "wallet_status.wdk_unlocked should be a boolean: {ws}"
+        ws.get("agentaddress_address").is_some(),
+        "wallet_status.agentaddress_address should be present: {ws}"
+    );
+    assert!(
+        ws.get("wdk_available").is_none(),
+        "wallet_status should not expose WDK state in active setup flow: {ws}"
+    );
+    assert!(
+        ws.get("wdk_wallet_exists").is_none(),
+        "wallet_status should not expose WDK state in active setup flow: {ws}"
+    );
+    assert!(
+        ws.get("wdk_unlocked").is_none(),
+        "wallet_status should not expose WDK state in active setup flow: {ws}"
     );
     assert!(
         ws.get("wallet_complete")
@@ -1824,6 +1832,45 @@ async fn wdk_available_requires_auth() {
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("wdk_available_auth");
     let (status, val) = api_get(state, "/wdk/available").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(val["code"], "auth_required");
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn agentaddress_status_and_chains_routes_work() {
+    let (state, db_path) = test_state("agentaddress_status");
+    let (status_a, val_a) = api_get(state.clone(), "/agentaddress/status").await;
+    assert_eq!(
+        status_a,
+        StatusCode::OK,
+        "agentaddress status should be available: {val_a}"
+    );
+    assert!(
+        val_a["connected"].as_bool().is_some(),
+        "connected should be bool: {val_a}"
+    );
+
+    let (status_c, val_c) = api_get(state, "/agentaddress/chains").await;
+    assert_eq!(
+        status_c,
+        StatusCode::OK,
+        "agentaddress chains should be available: {val_c}"
+    );
+    assert!(
+        val_c["chains"].is_array(),
+        "chains should be an array: {val_c}"
+    );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn agentaddress_generate_requires_auth() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
+    let (state, db_path, creds_path) = test_state_unauth("agentaddress_generate_auth");
+    let (status, val) = api_post(state, "/agentaddress/generate", json!({})).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(val["code"], "auth_required");
     let _ = std::fs::remove_file(&db_path);

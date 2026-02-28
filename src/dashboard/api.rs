@@ -130,6 +130,13 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
             "/agentpmt/anonymous-wallet",
             post(api_agentpmt_anonymous_wallet),
         )
+        .route("/agentaddress/status", get(api_agentaddress_status))
+        .route("/agentaddress/chains", get(api_agentaddress_chains))
+        .route("/agentaddress/generate", post(api_agentaddress_generate))
+        .route(
+            "/agentaddress/disconnect",
+            post(api_agentaddress_disconnect),
+        )
         // WDK wallet
         .route("/wdk/available", get(api_wdk_available))
         .route("/wdk/status", get(api_wdk_status))
@@ -506,6 +513,12 @@ pub struct WdkTransferRequest {
 }
 
 #[derive(Deserialize, Default)]
+pub struct AgentAddressGenerateRequest {
+    #[serde(default)]
+    persist_public_address: Option<bool>,
+}
+
+#[derive(Deserialize, Default)]
 pub struct AuthOauthStartQuery {
     #[serde(default)]
     expires_in_minutes: Option<u64>,
@@ -572,6 +585,54 @@ fn rollback_profile(previous: &crate::halo::profile::UserProfile) -> Result<(), 
 
 fn rollback_identity(previous: &crate::halo::identity::IdentityConfig) -> Result<(), String> {
     crate::halo::identity::save(previous).map_err(|e| format!("identity rollback failed: {e}"))
+}
+
+fn agentaddress_api_base() -> String {
+    std::env::var("AGENTHALO_AGENTADDRESS_API_BASE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "https://www.agentpmt.com".to_string())
+}
+
+fn agentaddress_supported_chains() -> Vec<&'static str> {
+    vec![
+        "Ethereum",
+        "Base",
+        "Arbitrum",
+        "Optimism",
+        "Polygon",
+        "BNB Chain",
+        "Avalanche",
+        "zkSync",
+        "Linea",
+        "Scroll",
+        "Blast",
+        "Mantle",
+        "Fantom",
+        "Gnosis",
+        "Cronos",
+        "Celo",
+        "Moonbeam",
+        "Harmony",
+        "Zora",
+        "Metis",
+        "Aurora",
+        "Taiko",
+        "Sei",
+        "Sepolia",
+        "Holesky",
+        "Base Sepolia",
+        "Arbitrum Sepolia",
+        "OP Sepolia",
+    ]
+}
+
+fn is_evm_address(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    let Some(hex) = trimmed.strip_prefix("0x") else {
+        return false;
+    };
+    hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn lock_wdk_manager<'a>(
@@ -2551,23 +2612,12 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let pmt_auth = agentpmt::has_bearer_token();
     let (agentpmt_ok, pmt_tool_count) = resolve_agentpmt_setup_status(&pmt_cfg, pmt_auth);
     let anonymous_wallet_connected = identity_cfg.anonymous_mode;
-    let wdk_available = crate::halo::wdk_proxy::WdkManager::is_available();
-    let wdk_wallet_exists = crate::halo::wdk_proxy::wallet_exists();
-    let wdk_unlocked = state
-        .wdk_manager
-        .lock()
-        .ok()
-        .map(|mgr| {
-            if !mgr.is_running() {
-                return false;
-            }
-            mgr.get("/status")
-                .ok()
-                .and_then(|v| v.get("initialized").and_then(|x| x.as_bool()))
-                .unwrap_or(false)
-        })
-        .unwrap_or(false);
-    let wallet_complete = agentpmt_ok || anonymous_wallet_connected || wdk_wallet_exists;
+    let agentaddress_connected = identity_cfg.agent_address.is_some();
+    let agentaddress_address = identity_cfg
+        .agent_address
+        .as_ref()
+        .map(|a| a.evm_address.clone());
+    let wallet_complete = agentpmt_ok || anonymous_wallet_connected || agentaddress_connected;
     let has_pq = has_wallet();
     let legacy_identity_ok = has_auth || has_pq;
     let identity_ok = profile.has_name() || identity_cfg.anonymous_mode || legacy_identity_ok;
@@ -2611,9 +2661,8 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "agentpmt_connected": agentpmt_ok,
             "agentpmt_auth_configured": pmt_auth,
             "anonymous_wallet_connected": anonymous_wallet_connected,
-            "wdk_available": wdk_available,
-            "wdk_wallet_exists": wdk_wallet_exists,
-            "wdk_unlocked": wdk_unlocked,
+            "agentaddress_connected": agentaddress_connected,
+            "agentaddress_address": agentaddress_address,
             "wallet_complete": wallet_complete,
         },
         "onchain": {
@@ -2795,6 +2844,131 @@ async fn api_agentpmt_anonymous_wallet(
         "ok": true,
         "token_saved": token_saved,
         "result": result,
+    })))
+}
+
+async fn api_agentaddress_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let identity = crate::halo::identity::load();
+    let entry = identity.agent_address.clone();
+    Ok(Json(json!({
+        "ok": true,
+        "connected": entry.is_some(),
+        "agent_address": entry.as_ref().map(|a| a.evm_address.clone()),
+        "generated_at": entry.as_ref().map(|a| a.generated_at.clone()),
+        "source": entry.as_ref().and_then(|a| a.source.clone()),
+    })))
+}
+
+async fn api_agentaddress_chains(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let chains = agentaddress_supported_chains();
+    Ok(Json(json!({
+        "ok": true,
+        "count": chains.len(),
+        "chains": chains,
+        "note": "+30 more EVM-compatible networks are supported by AgentAddress.",
+    })))
+}
+
+async fn api_agentaddress_generate(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<AgentAddressGenerateRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+
+    let base = agentaddress_api_base();
+    let endpoint = format!("{}/api/external/agentaddress", base.trim_end_matches('/'));
+    let resp = ureq::post(&endpoint)
+        .header("Content-Type", "application/json")
+        .send_json(json!({}))
+        .map_err(|e| {
+            api_err(
+                StatusCode::BAD_GATEWAY,
+                &format!("AgentAddress request failed: {e}"),
+            )
+        })?;
+    let payload: Value = resp.into_body().read_json().map_err(|e| {
+        api_err(
+            StatusCode::BAD_GATEWAY,
+            &format!("parse AgentAddress response: {e}"),
+        )
+    })?;
+    let data = payload
+        .get("data")
+        .cloned()
+        .unwrap_or_else(|| payload.clone());
+    let address = data
+        .get("evmAddress")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| data.get("evm_address").and_then(serde_json::Value::as_str))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !is_evm_address(&address) {
+        return Err(api_err(
+            StatusCode::BAD_GATEWAY,
+            "AgentAddress response missing a valid evmAddress",
+        ));
+    }
+
+    let persist_public = req.persist_public_address.unwrap_or(true);
+    let mut ledger_logged = false;
+    let mut ledger_error = None::<String>;
+    if persist_public {
+        let mut identity = crate::halo::identity::load();
+        identity.agent_address = Some(crate::halo::identity::AgentAddressIdentity {
+            evm_address: address.clone(),
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            source: Some("agentpmt_external_noauth".to_string()),
+        });
+        crate::halo::identity::save(&identity).map_err(internal_err)?;
+        match crate::halo::identity_ledger::append_wallet_event(
+            crate::halo::identity_ledger::IdentityLedgerKind::WalletImported,
+            "agent_address_generated",
+            json!({
+                "provider": "agentaddress",
+                "evm_address": address,
+            }),
+        ) {
+            Ok(_) => {
+                ledger_logged = true;
+            }
+            Err(e) => {
+                ledger_error = Some(e);
+            }
+        }
+    }
+
+    Ok(Json(json!({
+        "ok": true,
+        "provider": "AgentAddress",
+        "endpoint": endpoint,
+        "persist_public_address": persist_public,
+        "ledger_logged": ledger_logged,
+        "ledger_error": ledger_error,
+        "data": data,
+    })))
+}
+
+async fn api_agentaddress_disconnect(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mut identity = crate::halo::identity::load();
+    let prev = identity.agent_address.take();
+    crate::halo::identity::save(&identity).map_err(internal_err)?;
+    let address = prev
+        .as_ref()
+        .map(|x| x.evm_address.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = crate::halo::identity_ledger::append_wallet_event(
+        crate::halo::identity_ledger::IdentityLedgerKind::WalletDeleted,
+        "agent_address_disconnected",
+        json!({
+            "provider": "agentaddress",
+            "evm_address": address,
+        }),
+    );
+    Ok(Json(json!({
+        "ok": true,
+        "disconnected": prev.is_some(),
     })))
 }
 

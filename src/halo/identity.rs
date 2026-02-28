@@ -49,6 +49,8 @@ pub struct IdentityConfig {
     pub social: SocialIdentityConfig,
     #[serde(default)]
     pub super_secure: SuperSecureIdentityConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_address: Option<AgentAddressIdentity>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -108,6 +110,14 @@ pub struct SuperSecureIdentityConfig {
     pub totp_enabled: bool,
     pub totp_label: Option<String>,
     pub last_updated: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AgentAddressIdentity {
+    pub evm_address: String,
+    pub generated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl IdentityConfig {

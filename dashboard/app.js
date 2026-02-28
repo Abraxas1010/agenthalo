@@ -1044,408 +1044,6 @@ function providerDefaultEnv(provider) {
   return (PROVIDER_INFO[key] && PROVIDER_INFO[key].envVar) || `${key.toUpperCase()}_API_KEY`;
 }
 
-function formatWdkBalance(raw, decimals, symbol) {
-  if (!raw || raw === '0') return `0 ${symbol}`;
-  try {
-    const n = BigInt(raw);
-    const d = BigInt(10) ** BigInt(decimals || 0);
-    const whole = n / d;
-    const frac = n % d;
-    const fracStr = frac.toString().padStart(decimals || 0, '0').slice(0, 6);
-    return `${whole}.${fracStr} ${symbol}`;
-  } catch (_e) {
-    return `${raw} ${symbol}`;
-  }
-}
-
-function renderWdkAuthGate(container, message) {
-  const note = message || 'Sign in first to manage the self-custodial wallet.';
-  container.innerHTML = `
-    <div class="setup-info-box" style="border-color:var(--yellow)">
-      <span class="info-icon">&#9888;</span>
-      <span>${esc(note)}</span>
-    </div>
-    <div style="margin-top:12px">
-      <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Continue with OAuth:</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-sm" id="wdk-auth-oauth-github">Continue with GitHub</button>
-        <button class="btn btn-sm" id="wdk-auth-oauth-google">Continue with Google</button>
-      </div>
-      <div id="wdk-auth-status" style="font-size:12px;color:var(--text-dim);margin-top:8px"></div>
-    </div>
-  `;
-
-  const statusEl = document.getElementById('wdk-auth-status');
-
-  const launchOauth = async (provider) => {
-    if (statusEl) statusEl.innerHTML = `<span style="color:var(--text-dim)">Opening ${esc(provider)} OAuth...</span>`;
-    try {
-      const resp = await api(`/auth/oauth/start/${encodeURIComponent(provider)}?expires_in_minutes=10`);
-      const popup = window.open('', '_blank', 'width=540,height=760');
-      if (popup && !popup.closed) {
-        try { popup.opener = null; } catch (_e) {}
-        popup.location.href = resp.oauth_url;
-        if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">OAuth window opened. Complete login and return here.</span>`;
-      } else {
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--yellow)">Popup blocked. Redirecting this tab to OAuth...</span>';
-        window.location.href = resp.oauth_url;
-      }
-    } catch (e) {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">OAuth start failed: ${esc(String(e.message || e))}</span>`;
-    }
-  };
-
-  document.getElementById('wdk-auth-oauth-github')?.addEventListener('click', () => launchOauth('github'));
-  document.getElementById('wdk-auth-oauth-google')?.addEventListener('click', () => launchOauth('google'));
-}
-
-async function refreshWdkBalances() {
-  const balEl = document.getElementById('wdk-balances-list');
-  if (!balEl) return;
-  balEl.innerHTML = '<div style="font-size:12px;color:var(--text-dim)">Refreshing balances...</div>';
-  try {
-    const resp = await api('/wdk/balances');
-    const balances = Array.isArray(resp.balances) ? resp.balances : [];
-    balEl.innerHTML = balances.map((b) => {
-      const hasError = !!b.error;
-      return `
-        <div class="wdk-balance-row">
-          <span class="wdk-chain-badge">${esc(b.symbol || b.chain || '?')}</span>
-          <span class="wdk-balance-value ${hasError ? 'wdk-balance-error' : ''}">
-            ${esc(hasError ? 'unavailable' : formatWdkBalance(b.balance, b.decimals, b.symbol || ''))}
-          </span>
-          ${hasError ? `<span class="wdk-balance-error-msg" title="${esc(String(b.error))}">&#9888;</span>` : ''}
-        </div>
-      `;
-    }).join('') || '<div style="font-size:12px;color:var(--text-dim)">No balances yet.</div>';
-  } catch (e) {
-    balEl.innerHTML = `<div style="font-size:12px;color:var(--red)">Failed to load balances: ${esc(String(e.message || e))}</div>`;
-  }
-}
-
-function renderWdkCreate(container) {
-  container.innerHTML = `
-    <div class="wdk-block-title">Create New Wallet</div>
-    <div class="identity-profile-fields" style="margin-bottom:12px">
-      <input type="password" id="wdk-create-pass" class="setup-input"
-             placeholder="Choose a passphrase (min 8 chars)" minlength="8"
-             style="flex:1;min-width:200px">
-      <input type="password" id="wdk-create-pass-confirm" class="setup-input"
-             placeholder="Confirm passphrase" minlength="8"
-             style="flex:1;min-width:200px">
-    </div>
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
-      <button class="btn btn-primary btn-sm" id="wdk-create-btn" style="border-radius:6px;padding:8px 16px">
-        Create Wallet
-      </button>
-      <span id="wdk-create-status" style="font-size:12px;color:var(--text-dim)"></span>
-    </div>
-
-    <details class="setup-alt-path" style="margin-top:12px">
-      <summary style="font-size:12px">Import existing seed phrase</summary>
-      <div class="alt-body">
-        <textarea id="wdk-import-seed" class="setup-input"
-                  placeholder="Enter your 12 or 24-word seed phrase..."
-                  rows="3" style="width:100%;resize:vertical;margin-bottom:10px"></textarea>
-        <div class="identity-profile-fields" style="margin-bottom:12px">
-          <input type="password" id="wdk-import-pass" class="setup-input"
-                 placeholder="Choose a passphrase (min 8 chars)" minlength="8"
-                 style="flex:1;min-width:200px">
-        </div>
-        <button class="btn btn-sm" id="wdk-import-btn" style="border-radius:6px;padding:8px 16px">
-          Import &amp; Encrypt
-        </button>
-        <span id="wdk-import-status" style="font-size:12px;color:var(--text-dim);margin-left:8px"></span>
-      </div>
-    </details>
-  `;
-
-  const createBtn = document.getElementById('wdk-create-btn');
-  createBtn?.addEventListener('click', async () => {
-    const pass = document.getElementById('wdk-create-pass')?.value || '';
-    const confirm = document.getElementById('wdk-create-pass-confirm')?.value || '';
-    const statusEl = document.getElementById('wdk-create-status');
-    if (pass.length < 8) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Passphrase must be at least 8 characters.</span>';
-      return;
-    }
-    if (pass !== confirm) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Passphrases do not match.</span>';
-      return;
-    }
-
-    createBtn.disabled = true;
-    createBtn.textContent = 'Creating...';
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Generating wallet keys...</span>';
-    try {
-      await apiPost('/wdk/create', { passphrase: pass });
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Wallet created.</span>';
-      window._invalidateSetupState();
-      await fetchSetupState(true);
-      await renderSetup();
-      updateNavLockState();
-    } catch (e) {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Create failed: ${esc(String(e.message || e))}</span>`;
-      createBtn.disabled = false;
-      createBtn.textContent = 'Create Wallet';
-    }
-  });
-
-  const importBtn = document.getElementById('wdk-import-btn');
-  importBtn?.addEventListener('click', async () => {
-    const seed = (document.getElementById('wdk-import-seed')?.value || '').trim();
-    const pass = document.getElementById('wdk-import-pass')?.value || '';
-    const statusEl = document.getElementById('wdk-import-status');
-    const wordCount = seed ? seed.split(/\s+/).length : 0;
-
-    if (!(wordCount === 12 || wordCount === 24)) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Seed phrase must be exactly 12 or 24 words.</span>';
-      return;
-    }
-    if (pass.length < 8) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Passphrase must be at least 8 characters.</span>';
-      return;
-    }
-
-    importBtn.disabled = true;
-    importBtn.textContent = 'Importing...';
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Encrypting and importing wallet...</span>';
-    try {
-      await apiPost('/wdk/import', { seed, passphrase: pass });
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Wallet imported.</span>';
-      window._invalidateSetupState();
-      await fetchSetupState(true);
-      await renderSetup();
-      updateNavLockState();
-    } catch (e) {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Import failed: ${esc(String(e.message || e))}</span>`;
-      importBtn.disabled = false;
-      importBtn.textContent = 'Import & Encrypt';
-    }
-  });
-}
-
-function renderWdkLocked(container) {
-  container.innerHTML = `
-    <div class="setup-success-banner" style="background:rgba(255,159,42,0.06);border-color:rgba(255,159,42,0.2)">
-      <span class="success-icon" style="color:var(--yellow)">&#128274;</span>
-      <span style="color:var(--yellow)">Wallet exists but is locked. Enter your passphrase to unlock.</span>
-    </div>
-    <div class="identity-profile-fields" style="margin-top:12px;margin-bottom:12px">
-      <input type="password" id="wdk-unlock-pass" class="setup-input"
-             placeholder="Enter your passphrase" style="flex:1;min-width:200px">
-      <button class="btn btn-primary btn-sm" id="wdk-unlock-btn" style="border-radius:6px;padding:8px 16px">
-        Unlock
-      </button>
-    </div>
-    <span id="wdk-unlock-status" style="font-size:12px;color:var(--text-dim)"></span>
-    <div style="margin-top:12px">
-      <button class="btn btn-sm" id="wdk-delete-btn"
-              style="border-color:var(--red);color:var(--red);border-radius:6px;padding:6px 12px;font-size:11px">
-        Delete Wallet Permanently
-      </button>
-    </div>
-  `;
-
-  const unlockBtn = document.getElementById('wdk-unlock-btn');
-  unlockBtn?.addEventListener('click', async () => {
-    const pass = document.getElementById('wdk-unlock-pass')?.value || '';
-    const statusEl = document.getElementById('wdk-unlock-status');
-    if (!pass) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Enter your passphrase.</span>';
-      return;
-    }
-    unlockBtn.disabled = true;
-    unlockBtn.textContent = 'Unlocking...';
-    try {
-      await apiPost('/wdk/unlock', { passphrase: pass });
-      window._invalidateSetupState();
-      await fetchSetupState(true);
-      await renderSetup();
-      updateNavLockState();
-    } catch (e) {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Unlock failed: ${esc(String(e.message || e))}</span>`;
-      unlockBtn.disabled = false;
-      unlockBtn.textContent = 'Unlock';
-    }
-  });
-
-  document.getElementById('wdk-unlock-pass')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') unlockBtn?.click();
-  });
-
-  document.getElementById('wdk-delete-btn')?.addEventListener('click', async () => {
-    const ok = confirm('Delete this wallet permanently? This removes the encrypted seed and cannot be undone.');
-    if (!ok) return;
-    try {
-      await apiPost('/wdk/delete', { confirm: 'DELETE' });
-      window._invalidateSetupState();
-      await fetchSetupState(true);
-      await renderSetup();
-      updateNavLockState();
-    } catch (e) {
-      alert(`Delete failed: ${String(e.message || e)}`);
-    }
-  });
-}
-
-async function renderWdkUnlocked(container) {
-  container.innerHTML = `
-    <div class="setup-success-banner">
-      <span class="success-icon">&#128275;</span>
-      <span>Self-custodial wallet unlocked and active.</span>
-    </div>
-    <div id="wdk-accounts-list" style="margin-top:12px">
-      <div style="font-size:12px;color:var(--text-dim)">Loading accounts...</div>
-    </div>
-    <div id="wdk-balances-list" style="margin-top:12px">
-      <div style="font-size:12px;color:var(--text-dim)">Loading balances...</div>
-    </div>
-    <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
-      <button class="btn btn-sm" id="wdk-refresh-btn" style="border-radius:6px;padding:6px 12px;font-size:11px">
-        Refresh Balances
-      </button>
-      <button class="btn btn-sm" id="wdk-send-toggle"
-              style="border-radius:6px;padding:6px 12px;font-size:11px;border-color:var(--accent);color:var(--accent)">
-        Send Transaction
-      </button>
-      <button class="btn btn-sm" id="wdk-lock-btn"
-              style="border-radius:6px;padding:6px 12px;font-size:11px;border-color:var(--yellow);color:var(--yellow)">
-        Lock Wallet
-      </button>
-    </div>
-    <div id="wdk-send-panel" style="display:none;margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:8px">
-      <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px">Send Transaction</div>
-      <div style="display:flex;flex-direction:column;gap:8px">
-        <select id="wdk-send-chain" class="setup-input" style="max-width:220px">
-          <option value="bitcoin">Bitcoin (BTC)</option>
-          <option value="ethereum">Ethereum (ETH)</option>
-          <option value="polygon">Polygon (MATIC)</option>
-          <option value="arbitrum">Arbitrum (ETH)</option>
-        </select>
-        <input type="text" id="wdk-send-to" class="setup-input" placeholder="Recipient address">
-        <input type="text" id="wdk-send-amount" class="setup-input" placeholder="Amount (satoshis for BTC, wei for EVM)">
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button class="btn btn-primary btn-sm" id="wdk-send-btn" style="border-radius:6px;padding:8px 16px">
-            Send
-          </button>
-          <button class="btn btn-sm" id="wdk-quote-btn" style="border-radius:6px;padding:8px 12px;font-size:11px">
-            Estimate Fee
-          </button>
-          <span id="wdk-send-status" style="font-size:12px"></span>
-        </div>
-      </div>
-    </div>
-  `;
-
-  try {
-    const acctResp = await api('/wdk/accounts');
-    const accounts = Array.isArray(acctResp.accounts) ? acctResp.accounts : [];
-    const accountsEl = document.getElementById('wdk-accounts-list');
-    if (accountsEl) {
-      if (!accounts.length) {
-        accountsEl.innerHTML = '<div style="font-size:12px;color:var(--text-dim)">No accounts returned by sidecar.</div>';
-      } else {
-        accountsEl.innerHTML = accounts.map((a, idx) => {
-          const address = String(a.address || '');
-          const short = address.length > 20 ? `${address.slice(0, 10)}...${address.slice(-6)}` : address;
-          return `
-            <div class="wdk-account-row">
-              <span class="wdk-chain-badge">${esc(a.symbol || a.chain || '?')}</span>
-              <span class="wdk-chain-label">${esc(a.label || a.chain || 'Chain')}</span>
-              <code class="wdk-address" title="${esc(address)}">${esc(short)}</code>
-              <button class="btn-copy-sm" data-copy-address="${esc(address)}" data-copy-idx="${idx}" title="Copy address">&#128203;</button>
-            </div>
-          `;
-        }).join('');
-      }
-    }
-    container.querySelectorAll('button[data-copy-address]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const addr = btn.getAttribute('data-copy-address') || '';
-        if (!addr) return;
-        try {
-          await navigator.clipboard.writeText(addr);
-          btn.textContent = '✓';
-          window.setTimeout(() => { btn.textContent = '\uD83D\uDCC3'; }, 800);
-        } catch (_e) {}
-      });
-    });
-  } catch (e) {
-    const el = document.getElementById('wdk-accounts-list');
-    if (el) el.innerHTML = `<div style="font-size:12px;color:var(--red)">Failed to load accounts: ${esc(String(e.message || e))}</div>`;
-  }
-
-  await refreshWdkBalances();
-
-  document.getElementById('wdk-refresh-btn')?.addEventListener('click', refreshWdkBalances);
-  document.getElementById('wdk-lock-btn')?.addEventListener('click', async () => {
-    try {
-      await apiPost('/wdk/lock', {});
-      window._invalidateSetupState();
-      await fetchSetupState(true);
-      await renderSetup();
-      updateNavLockState();
-    } catch (e) {
-      alert(`Lock failed: ${String(e.message || e)}`);
-    }
-  });
-
-  document.getElementById('wdk-send-toggle')?.addEventListener('click', () => {
-    const panel = document.getElementById('wdk-send-panel');
-    if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-  });
-
-  document.getElementById('wdk-send-btn')?.addEventListener('click', async () => {
-    const chain = document.getElementById('wdk-send-chain')?.value;
-    const to = (document.getElementById('wdk-send-to')?.value || '').trim();
-    const amount = (document.getElementById('wdk-send-amount')?.value || '').trim();
-    const statusEl = document.getElementById('wdk-send-status');
-    if (!chain || !to || !amount) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Fill recipient and amount.</span>';
-      return;
-    }
-    if (!confirm(`Send ${amount} on ${chain} to ${to}?`)) return;
-    const btn = document.getElementById('wdk-send-btn');
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = 'Sending...';
-    }
-    try {
-      const resp = await apiPost('/wdk/send', { chain, to, amount });
-      if (resp.ok) {
-        if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">&#10003; Submitted${resp.hash ? ` (${esc(String(resp.hash))})` : ''}</span>`;
-        await refreshWdkBalances();
-      } else if (statusEl) {
-        statusEl.innerHTML = `<span style="color:var(--red)">${esc(resp.error || 'Send failed')}</span>`;
-      }
-    } catch (e) {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Send failed: ${esc(String(e.message || e))}</span>`;
-    }
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = 'Send';
-    }
-  });
-
-  document.getElementById('wdk-quote-btn')?.addEventListener('click', async () => {
-    const chain = document.getElementById('wdk-send-chain')?.value;
-    const to = (document.getElementById('wdk-send-to')?.value || '').trim();
-    const amount = (document.getElementById('wdk-send-amount')?.value || '').trim();
-    const statusEl = document.getElementById('wdk-send-status');
-    if (!chain || !to || !amount) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Fill recipient and amount first.</span>';
-      return;
-    }
-    try {
-      const resp = await apiPost('/wdk/quote', { chain, to, amount });
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--text-muted)">Estimated fee: ${esc(JSON.stringify(resp.quote || resp.fees || {}))}</span>`;
-    } catch (e) {
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Quote failed: ${esc(String(e.message || e))}</span>`;
-    }
-  });
-}
-
 async function renderSetup() {
   const ctx = consumeSetupContext();
 
@@ -1534,15 +1132,14 @@ async function renderSetup() {
   const pmtToolCount = (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) || 0;
   const agentpmtConnected = !!walletStatus.agentpmt_connected;
   const anonymousWalletConnected = !!walletStatus.anonymous_wallet_connected;
-  const wdkAvailable = !!walletStatus.wdk_available;
-  const wdkWalletExists = !!walletStatus.wdk_wallet_exists;
-  const wdkUnlocked = !!walletStatus.wdk_unlocked;
+  const agentaddressConnected = !!walletStatus.agentaddress_connected;
+  const agentaddressAddress = String(walletStatus.agentaddress_address || '');
   const walletPath = agentpmtConnected
     ? 'agentpmt'
-    : (wdkWalletExists ? 'wdk' : (anonymousWalletConnected ? 'anonymous' : 'none'));
+    : (agentaddressConnected ? 'agentaddress' : (anonymousWalletConnected ? 'anonymous' : 'none'));
   const hasAnyWallet = walletPath !== 'none';
-  const walletCardDesc = walletPath === 'wdk'
-    ? 'Self-custodial multi-chain wallet active on this machine'
+  const walletCardDesc = walletPath === 'agentaddress'
+    ? 'AgentAddress identity generated and ready for autonomous agents'
     : (walletPath === 'anonymous'
       ? 'Anonymous agent wallet active'
       : `Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and budget management`);
@@ -1603,7 +1200,7 @@ async function renderSetup() {
       <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Quick Start</div>
       <ol class="setup-steps-friendly" style="margin:0">
         <li><span class="step-circle">1</span><span>Set your identity and safety preference in <strong>My Identity</strong>.</span></li>
-        <li><span class="step-circle">2</span><span>Choose one wallet path: AgentPMT account, anonymous wallet, or self-custodial WDK wallet.</span></li>
+        <li><span class="step-circle">2</span><span>Choose one wallet path: AgentPMT account, anonymous wallet, or AgentAddress generator.</span></li>
         <li><span class="step-circle">3</span><span>Add your OpenRouter key in <strong>Add Your LLM Key</strong>.</span></li>
       </ol>
       <div style="margin-top:10px;font-size:12px;color:var(--text-dim)">
@@ -1844,8 +1441,8 @@ async function renderSetup() {
             <span class="setup-wallet-chip ${agentpmtConnected ? 'ok' : 'bad'}">
               ${agentpmtConnected ? '&#10003;' : '&#10007;'} AgentPMT
             </span>
-            <span class="setup-wallet-chip ${wdkWalletExists ? 'ok' : 'bad'}">
-              ${wdkWalletExists ? '&#10003;' : '&#10007;'} Self-Custody WDK
+            <span class="setup-wallet-chip ${agentaddressConnected ? 'ok' : 'bad'}">
+              ${agentaddressConnected ? '&#10003;' : '&#10007;'} AgentAddress
             </span>
           </div>
         </div>
@@ -1858,8 +1455,8 @@ async function renderSetup() {
           <span>
             ${walletPath === 'agentpmt'
               ? `AgentPMT connected${pmtToolCount > 0 ? ' &mdash; <strong>' + pmtToolCount + ' tools</strong> ready to use' : ''}`
-              : (walletPath === 'wdk'
-                ? `Self-custodial wallet configured${wdkUnlocked ? ' &mdash; unlocked' : ' &mdash; locked'}`
+              : (walletPath === 'agentaddress'
+                ? `AgentAddress connected${agentaddressAddress ? ` &mdash; <code>${esc(agentaddressAddress)}</code>` : ''}`
                 : 'Anonymous wallet connected')}
           </span>
         </div>
@@ -1881,6 +1478,10 @@ async function renderSetup() {
             AgentPMT is your gateway to 100+ third-party tools, budget controls, and workflow automation.
             Create a free account (or sign in), then grab your Bearer Token.
           </p>
+          <div class="setup-info-box" style="margin-top:0;margin-bottom:12px">
+            <span class="info-icon">&#9432;</span>
+            <span>Dashboard quick-connect uses a Bearer Token. Fully autonomous mode uses wallet signatures + credits (see <a href="https://www.agentpmt.com/autonomous-agents" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Autonomous Agents</a>).</span>
+          </div>
 
           <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
             <a class="setup-cta-big" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" id="setup-agentpmt-signup">
@@ -1941,12 +1542,12 @@ async function renderSetup() {
           <summary>Skip signup &mdash; create an anonymous agent wallet instead</summary>
           <div class="alt-body">
             <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
-              Don't want to create an account right now? We can generate an anonymous agent wallet via the AgentPMT API.
+              Don't want to create an account right now? We can generate an anonymous <strong>AgentPMT-managed wallet identity</strong> via API.
               You'll get a bearer token automatically &mdash; no email or signup required.
             </p>
             <div class="setup-info-box" style="margin-top:0;margin-bottom:14px">
               <span class="info-icon">&#9432;</span>
-              <span>Anonymous wallets have limited budgets. You can upgrade to a full account anytime.</span>
+              <span>This is <strong>not</strong> AgentAddress. Anonymous wallets have limited budgets and can be upgraded later.</span>
             </div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
               <button class="btn btn-primary" id="setup-create-anon-wallet" style="border-radius:6px;padding:10px 20px;font-size:13px">
@@ -1958,32 +1559,78 @@ async function renderSetup() {
         </details>
       `}
 
-      <!-- Path C: Self-custodial wallet (always available) -->
-      <details class="setup-alt-path" style="margin-top:16px" id="wdk-wallet-section">
-        <summary>Self-Custodial Tether Multi-Chain Wallet (Bitcoin, Ethereum, Polygon, Arbitrum)</summary>
+      <!-- Path C: AgentAddress (always available) -->
+      <details class="setup-alt-path" style="margin-top:16px" id="agentaddress-section">
+        <summary>AgentAddress Generator &amp; Control Panel</summary>
         <div class="alt-body">
-          <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
-            Private keys stay on this machine and are encrypted at rest with your passphrase.
-            Use this wallet path if you want direct self-custodial control instead of marketplace custody.
+          <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px">
+            AgentAddress is a universal, verifiable identity for autonomous agents. Generate one identity,
+            use it across supported EVM networks, and invoke tools/workflows with signed requests.
           </p>
-          <div class="setup-info-box" style="margin-top:0;margin-bottom:14px">
-            <span class="info-icon">&#9762;</span>
-            <span><strong>Self-custodial:</strong> if you lose the passphrase and seed phrase, funds cannot be recovered.</span>
+          <div class="setup-info-box" style="margin-top:0;margin-bottom:10px">
+            <span class="info-icon">&#9432;</span>
+            <span>This flow is generated from the AgentAddress endpoint. Store private key + mnemonic securely on your side.</span>
           </div>
-          <div id="wdk-state-container">
-            <div style="font-size:12px;color:var(--text-dim)">Checking wallet status...</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px">
+            Repo:
+            <a href="https://github.com/Apoth3osis-ai/agent-address" target="_blank" rel="noopener noreferrer">github.com/Apoth3osis-ai/agent-address</a>
+            &middot;
+            AgentPMT workflows:
+            <a href="https://www.agentpmt.com/autonomous-agents" target="_blank" rel="noopener noreferrer">/autonomous-agents</a>
+            &middot;
+            API docs:
+            <a href="https://www.agentpmt.com/external-agent-api" target="_blank" rel="noopener noreferrer">/external-agent-api</a>
           </div>
-          ${!wdkAvailable ? `
-            <div style="margin-top:10px;font-size:11px;color:var(--yellow)">
-              Node.js/WDK sidecar not detected. Run <code>cd wdk-sidecar && npm install</code> to enable this path.
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+            <button class="btn btn-primary btn-sm" id="agentaddress-generate-btn" style="border-radius:6px;padding:8px 16px">
+              Generate New Agent Address
+            </button>
+            <button class="btn btn-sm" id="agentaddress-disconnect-btn" style="border-radius:6px;padding:8px 16px;border-color:var(--red);color:var(--red)">
+              Clear Saved Address
+            </button>
+            <span id="agentaddress-status" style="font-size:12px;color:var(--text-dim)"></span>
+          </div>
+          <div id="agentaddress-output" style="display:none;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;background:rgba(4,14,8,0.45)">
+            <div style="font-size:12px;color:var(--green);margin-bottom:8px">&#10003; AgentAddress generated</div>
+            <div style="display:grid;gap:8px">
+              <div><strong style="font-size:12px">Address</strong><div><code id="agentaddress-evm-address"></code></div></div>
+              <div><strong style="font-size:12px">Private Key</strong><div><code id="agentaddress-private-key"></code></div></div>
+              <div><strong style="font-size:12px">Mnemonic</strong><div><code id="agentaddress-mnemonic"></code></div></div>
             </div>
-          ` : ''}
+          </div>
+          <details class="setup-alt-path" style="margin-top:8px">
+            <summary>Autonomous Agent Model (Wallet Identity + Credits)</summary>
+            <div class="alt-body" style="font-size:12px;color:var(--text-dim);line-height:1.55">
+              <ol class="setup-steps-friendly" style="margin:0 0 8px 0">
+                <li><span class="step-circle">1</span><span>Identity is an EVM wallet address + signatures (EIP-191).</span></li>
+                <li><span class="step-circle">2</span><span>If no wallet exists yet, generate one with AgentAddress.</span></li>
+                <li><span class="step-circle">3</span><span>Buy credits via x402 ("PAYMENT-REQUIRED" / "PAYMENT-SIGNATURE").</span></li>
+                <li><span class="step-circle">4</span><span>Invoke tools/workflows with signed requests.</span></li>
+              </ol>
+              <div style="margin-top:6px">
+                Pattern A: agent wallet pays itself. Pattern B: human sponsor wallet pays, credits assigned to agent wallet.
+              </div>
+            </div>
+          </details>
+          <details class="setup-alt-path" style="margin-top:8px">
+            <summary>Supported EVM Chains</summary>
+            <div class="alt-body" id="agentaddress-chains-list" style="font-size:12px;color:var(--text-dim)">Loading chain list...</div>
+          </details>
+          <details class="setup-alt-path" style="margin-top:8px">
+            <summary>Programmatic No-Auth Endpoint</summary>
+            <div class="alt-body">
+              <div class="setup-cmd">
+                <code>POST https://www.agentpmt.com/api/external/agentaddress</code>
+                <button class="btn btn-sm" onclick="copySetupText('POST https://www.agentpmt.com/api/external/agentaddress')">Copy</button>
+              </div>
+            </div>
+          </details>
         </div>
       </details>
 
       <!-- Identity options (always visible) -->
       <details class="setup-alt-path" style="margin-top:16px">
-        <summary>${step1Done ? 'Manage identity &mdash; anonymous wallet or local PQ wallet' : 'Advanced: Use local PQ wallet identity instead'}</summary>
+        <summary>${step1Done ? 'Manage identity &mdash; AgentPMT anonymous wallet or local PQ wallet' : 'Advanced: Use local PQ wallet identity instead'}</summary>
         <div class="alt-body">
           ${!step1Done ? '' : `
             <!-- Anonymous wallet creation (when connected, allows creating additional wallets) -->
@@ -2292,62 +1939,92 @@ async function renderSetup() {
     });
   }
 
-  // WDK wallet state + handlers
-  const wdkContainer = document.getElementById('wdk-state-container');
-  if (window.__haloDashboardAuthOauthListener) {
-    window.removeEventListener('message', window.__haloDashboardAuthOauthListener);
-  }
-  window.__haloDashboardAuthOauthListener = async (event) => {
-    const data = event && event.data;
-    if (!data || data.type !== 'agenthalo-auth-oauth') return;
-    if (data.status === 'ok') {
-      window._invalidateSetupState();
-      await fetchSetupState(true);
-      await renderSetup();
-      updateNavLockState();
-    } else {
-      alert(data.message || 'OAuth login failed.');
-    }
+  // AgentAddress state + handlers
+  const agentAddressGenerateBtn = document.getElementById('agentaddress-generate-btn');
+  const agentAddressDisconnectBtn = document.getElementById('agentaddress-disconnect-btn');
+  const agentAddressStatus = document.getElementById('agentaddress-status');
+  const agentAddressOutput = document.getElementById('agentaddress-output');
+  const agentAddressField = (id, val) => {
+    const node = document.getElementById(id);
+    if (node) node.textContent = val || '';
   };
-  window.addEventListener('message', window.__haloDashboardAuthOauthListener);
+  const setAgentAddressOutput = (payload) => {
+    const address = String(payload.evmAddress || payload.evm_address || '');
+    const privateKey = String(payload.evmPrivateKey || payload.evm_private_key || '');
+    const mnemonic = String(payload.mnemonic || '');
+    if (agentAddressOutput) {
+      const shouldShow = !!(address || privateKey || mnemonic);
+      agentAddressOutput.style.display = shouldShow ? 'block' : 'none';
+    }
+    agentAddressField('agentaddress-evm-address', address);
+    agentAddressField('agentaddress-private-key', privateKey);
+    agentAddressField('agentaddress-mnemonic', mnemonic);
+  };
 
-  if (wdkContainer) {
-    (async () => {
-      if (!isAuthenticated) {
-        renderWdkAuthGate(wdkContainer, 'Authenticate to manage the self-custodial wallet.');
-        return;
-      }
+  const chainsNode = document.getElementById('agentaddress-chains-list');
+  if (chainsNode) {
+    try {
+      const resp = await api('/agentaddress/chains');
+      const chains = Array.isArray(resp.chains) ? resp.chains : [];
+      chainsNode.innerHTML = `
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${chains.map((c) => `<span class="setup-wallet-chip ok" style="font-size:10px">${esc(String(c))}</span>`).join('')}
+        </div>
+        <div style="margin-top:8px">${esc(String(resp.note || ''))}</div>
+      `;
+    } catch (e) {
+      chainsNode.innerHTML = `<span style="color:var(--red)">Failed to load chain list: ${esc(String(e.message || e))}</span>`;
+    }
+  }
+
+  if (agentaddressConnected && agentAddressStatus) {
+    agentAddressStatus.innerHTML = `<span style="color:var(--green)">Connected${agentaddressAddress ? `: ${esc(agentaddressAddress)}` : ''}</span>`;
+  }
+  if (agentaddressConnected && agentaddressAddress) {
+    setAgentAddressOutput({ evmAddress: agentaddressAddress });
+  }
+
+  if (agentAddressGenerateBtn) {
+    agentAddressGenerateBtn.addEventListener('click', async () => {
+      agentAddressGenerateBtn.disabled = true;
+      agentAddressGenerateBtn.textContent = 'Generating...';
+      if (agentAddressStatus) agentAddressStatus.innerHTML = '<span style="color:var(--text-dim)">Requesting AgentAddress...</span>';
       try {
-        const status = await api('/wdk/status');
-        if (!status.available) {
-          wdkContainer.innerHTML = `
-            <div class="setup-info-box" style="border-color:var(--yellow)">
-              <span class="info-icon">&#9888;</span>
-              <span>Node.js not detected or WDK sidecar dependencies missing.
-              Run <code>cd wdk-sidecar && npm install</code> to enable.</span>
-            </div>
-          `;
-          return;
+        const resp = await apiPost('/agentaddress/generate', { persist_public_address: true });
+        const data = resp && resp.data ? resp.data : {};
+        setAgentAddressOutput(data);
+        if (agentAddressStatus) {
+          const addr = String(data.evmAddress || data.evm_address || '');
+          agentAddressStatus.innerHTML = `<span style="color:var(--green)">&#10003; Generated${addr ? `: ${esc(addr)}` : ''}</span>`;
         }
-        const initialized = !!(status.sidecar && status.sidecar.initialized);
-        if (status.wallet_exists && status.sidecar_running && initialized) {
-          await renderWdkUnlocked(wdkContainer);
-        } else if (status.wallet_exists) {
-          renderWdkLocked(wdkContainer);
-        } else {
-          renderWdkCreate(wdkContainer);
-        }
+        window._invalidateSetupState();
+        await fetchSetupState(true);
+        updateNavLockState();
       } catch (e) {
-        const authRequired = Number(e && e.status) === 401
-          || String(e && e.message || '').toLowerCase().includes('authentication required')
-          || (e && e.body && e.body.code === 'auth_required');
-        if (authRequired) {
-          renderWdkAuthGate(wdkContainer, 'Your session is not authenticated for wallet operations yet.');
-          return;
-        }
-        wdkContainer.innerHTML = `<div style="font-size:12px;color:var(--red)">WDK status check failed: ${esc(String(e.message || e))}</div>`;
+        if (agentAddressStatus) agentAddressStatus.innerHTML = `<span style="color:var(--red)">Generation failed: ${esc(String(e.message || e))}</span>`;
       }
-    })();
+      agentAddressGenerateBtn.disabled = false;
+      agentAddressGenerateBtn.textContent = 'Generate New Agent Address';
+    });
+  }
+
+  if (agentAddressDisconnectBtn) {
+    agentAddressDisconnectBtn.addEventListener('click', async () => {
+      if (!confirm('Clear saved AgentAddress from local setup status? This does not revoke remote credentials.')) return;
+      agentAddressDisconnectBtn.disabled = true;
+      try {
+        await apiPost('/agentaddress/disconnect', {});
+        setAgentAddressOutput({});
+        if (agentAddressStatus) agentAddressStatus.innerHTML = '<span style="color:var(--yellow)">Saved address cleared.</span>';
+        window._invalidateSetupState();
+        await fetchSetupState(true);
+        await renderSetup();
+        updateNavLockState();
+      } catch (e) {
+        if (agentAddressStatus) agentAddressStatus.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
+      }
+      agentAddressDisconnectBtn.disabled = false;
+    });
   }
 
   // --- Identity handlers ---

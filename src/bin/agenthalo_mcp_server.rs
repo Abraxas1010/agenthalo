@@ -2,6 +2,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use bip39::{Language, Mnemonic};
 use nucleusdb::halo::addons;
 use nucleusdb::halo::agentpmt;
 use nucleusdb::halo::attest::{
@@ -29,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone)]
 struct AppState {
@@ -448,6 +449,117 @@ async fn mcp(
                         }
                     }
                 }),
+                json!({
+                    "name": "wallet_status",
+                    "description": "Return WDK wallet availability, encrypted-seed presence, sidecar state, and lightweight status for agent use.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "wallet_create",
+                    "description": "Create a new self-custodial WDK wallet, encrypt seed-at-rest with passphrase, and append immutable wallet-created ledger event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "passphrase": {"type": "string", "description": "Local encryption passphrase (min length 8)."}
+                        },
+                        "required": ["passphrase"]
+                    }
+                }),
+                json!({
+                    "name": "wallet_import",
+                    "description": "Import a BIP-39 mnemonic into WDK, encrypt seed-at-rest with passphrase, and append immutable wallet-imported ledger event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "seed": {"type": "string", "description": "12 or 24-word BIP-39 seed phrase."},
+                            "passphrase": {"type": "string", "description": "Local encryption passphrase (min length 8)."}
+                        },
+                        "required": ["seed", "passphrase"]
+                    }
+                }),
+                json!({
+                    "name": "wallet_unlock",
+                    "description": "Decrypt local encrypted seed, initialize WDK sidecar session, and append immutable wallet-unlocked event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "passphrase": {"type": "string", "description": "Local encryption passphrase used for seed decryption."}
+                        },
+                        "required": ["passphrase"]
+                    }
+                }),
+                json!({
+                    "name": "wallet_accounts",
+                    "description": "List derived wallet accounts for supported chains (bitcoin/ethereum/polygon/arbitrum). Wallet must be unlocked.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "wallet_balances",
+                    "description": "Query wallet balances for supported chains. Wallet must be unlocked.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "wallet_quote",
+                    "description": "Estimate transfer quote/fees for a chain, destination address, and amount. Wallet must be unlocked.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "chain": {"type": "string", "description": "bitcoin|ethereum|polygon|arbitrum"},
+                            "to": {"type": "string", "description": "Recipient address for the selected chain."},
+                            "amount": {"type": "string", "description": "Positive integer amount in chain base units."}
+                        },
+                        "required": ["chain", "to", "amount"]
+                    }
+                }),
+                json!({
+                    "name": "wallet_send",
+                    "description": "Broadcast a wallet transfer on the selected chain. Wallet must be unlocked.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "chain": {"type": "string", "description": "bitcoin|ethereum|polygon|arbitrum"},
+                            "to": {"type": "string", "description": "Recipient address for the selected chain."},
+                            "amount": {"type": "string", "description": "Positive integer amount in chain base units."}
+                        },
+                        "required": ["chain", "to", "amount"]
+                    }
+                }),
+                json!({
+                    "name": "wallet_fees",
+                    "description": "Return current fee model snapshot from WDK sidecar for supported chains. Wallet must be unlocked.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "wallet_lock",
+                    "description": "Destroy active WDK sidecar wallet session and append immutable wallet-locked event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "wallet_delete",
+                    "description": "Permanently delete encrypted local wallet seed and append immutable wallet-deleted event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "confirm": {"type": "string", "description": "Must be exactly DELETE."}
+                        },
+                        "required": ["confirm"]
+                    }
+                }),
             ];
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
@@ -547,6 +659,17 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "identity_social_revoke" => tool_identity_social_revoke(arguments),
         "identity_super_secure_set" => tool_identity_super_secure_set(arguments),
         "identity_pod_share" => tool_identity_pod_share(arguments),
+        "wallet_status" => tool_wallet_status(arguments),
+        "wallet_create" => tool_wallet_create(arguments),
+        "wallet_import" => tool_wallet_import(arguments),
+        "wallet_unlock" => tool_wallet_unlock(arguments),
+        "wallet_accounts" => tool_wallet_accounts(arguments),
+        "wallet_balances" => tool_wallet_balances(arguments),
+        "wallet_quote" => tool_wallet_quote(arguments),
+        "wallet_send" => tool_wallet_send(arguments),
+        "wallet_fees" => tool_wallet_fees(arguments),
+        "wallet_lock" => tool_wallet_lock(arguments),
+        "wallet_delete" => tool_wallet_delete(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -985,6 +1108,450 @@ fn tool_identity_pod_share(arguments: Value) -> Result<Value, String> {
         "proof_verification": proof_verification,
         "denied_keys": denied_keys,
     }))
+}
+
+fn wdk_manager_mutex() -> &'static Mutex<nucleusdb::halo::wdk_proxy::WdkManager> {
+    static WDK_MANAGER: OnceLock<Mutex<nucleusdb::halo::wdk_proxy::WdkManager>> = OnceLock::new();
+    WDK_MANAGER.get_or_init(|| Mutex::new(nucleusdb::halo::wdk_proxy::WdkManager::new()))
+}
+
+fn with_wdk_manager<T>(
+    f: impl FnOnce(&mut nucleusdb::halo::wdk_proxy::WdkManager) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = wdk_manager_mutex()
+        .lock()
+        .map_err(|e| format!("WDK manager lock poisoned: {e}"))?;
+    f(&mut guard)
+}
+
+fn mcp_wallet_ledger_event(
+    kind: nucleusdb::halo::identity_ledger::IdentityLedgerKind,
+    status: &str,
+    payload: Value,
+) -> (bool, Option<String>) {
+    match nucleusdb::halo::identity_ledger::append_wallet_event(kind, status, payload) {
+        Ok(_) => (true, None),
+        Err(e) => (false, Some(e)),
+    }
+}
+
+fn wdk_seed_word_count(seed: &str) -> usize {
+    seed.split_whitespace().count()
+}
+
+fn wdk_is_valid_seed_phrase(seed: &str) -> bool {
+    let normalized = seed.trim();
+    if !matches!(wdk_seed_word_count(normalized), 12 | 24) {
+        return false;
+    }
+    Mnemonic::parse_in_normalized(Language::English, normalized).is_ok()
+}
+
+fn wdk_is_supported_chain(chain: &str) -> bool {
+    matches!(
+        chain.trim().to_ascii_lowercase().as_str(),
+        "bitcoin" | "ethereum" | "polygon" | "arbitrum"
+    )
+}
+
+fn wdk_is_hex_40(input: &str) -> bool {
+    if input.len() != 40 {
+        return false;
+    }
+    input.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn wdk_is_valid_address(chain: &str, address: &str) -> bool {
+    let chain = chain.trim().to_ascii_lowercase();
+    let address = address.trim();
+    if address.is_empty() {
+        return false;
+    }
+    if chain == "bitcoin" {
+        let len = address.len();
+        let bech32 = address.starts_with("bc1") || address.starts_with("tb1");
+        let legacy = (address.starts_with('1')
+            || address.starts_with('3')
+            || address.starts_with('m')
+            || address.starts_with('n')
+            || address.starts_with('2'))
+            && address.chars().all(|c| c.is_ascii_alphanumeric());
+        return (bech32 || legacy) && (26..=90).contains(&len);
+    }
+    if matches!(chain.as_str(), "ethereum" | "polygon" | "arbitrum") {
+        let Some(rest) = address.strip_prefix("0x") else {
+            return false;
+        };
+        return wdk_is_hex_40(rest);
+    }
+    false
+}
+
+fn wdk_is_valid_amount(chain: &str, amount: &str) -> bool {
+    let amount = amount.trim();
+    if amount.is_empty() || amount.len() > 80 || !amount.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let parsed = amount.parse::<u128>().ok().unwrap_or(0);
+    if parsed == 0 {
+        return false;
+    }
+    if chain.eq_ignore_ascii_case("bitcoin") {
+        parsed <= 21_000_000_u128.saturating_mul(100_000_000)
+    } else {
+        true
+    }
+}
+
+fn validate_wdk_transfer(
+    chain: &str,
+    to: &str,
+    amount: &str,
+) -> Result<(String, String, String), String> {
+    let chain = chain.trim().to_ascii_lowercase();
+    let to = to.trim().to_string();
+    let amount = amount.trim().to_string();
+    if !wdk_is_supported_chain(&chain) {
+        return Err("unsupported chain; expected bitcoin|ethereum|polygon|arbitrum".to_string());
+    }
+    if !wdk_is_valid_address(&chain, &to) {
+        return Err(format!("invalid recipient address for chain {chain}"));
+    }
+    if !wdk_is_valid_amount(&chain, &amount) {
+        return Err("amount must be a positive integer string within allowed range".to_string());
+    }
+    Ok((chain, to, amount))
+}
+
+fn tool_wallet_status(_arguments: Value) -> Result<Value, String> {
+    let available = nucleusdb::halo::wdk_proxy::WdkManager::is_available();
+    let wallet_exists = nucleusdb::halo::wdk_proxy::wallet_exists();
+    if !available {
+        return Ok(json!({
+            "status": "ok",
+            "available": false,
+            "wallet_exists": wallet_exists,
+            "sidecar_running": false,
+            "sidecar": null,
+        }));
+    }
+    with_wdk_manager(|mgr| {
+        let sidecar_running = mgr.is_running();
+        let sidecar = if sidecar_running {
+            mgr.get("/status")
+                .unwrap_or_else(|e| json!({"status":"error","message": e}))
+        } else {
+            json!({"running": false})
+        };
+        Ok(json!({
+            "status": "ok",
+            "available": true,
+            "wallet_exists": wallet_exists,
+            "sidecar_running": sidecar_running,
+            "sidecar": sidecar,
+        }))
+    })
+}
+
+fn tool_wallet_create(arguments: Value) -> Result<Value, String> {
+    let passphrase = arguments
+        .get("passphrase")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "passphrase is required".to_string())?;
+    if passphrase.trim().len() < 8 {
+        return Err("passphrase must be at least 8 characters".to_string());
+    }
+    if nucleusdb::halo::wdk_proxy::wallet_exists() {
+        return Err("wallet already exists; unlock or delete it first".to_string());
+    }
+    if !nucleusdb::halo::wdk_proxy::WdkManager::is_available() {
+        return Err(
+            "WDK sidecar unavailable; install with `cd wdk-sidecar && npm install`".to_string(),
+        );
+    }
+
+    with_wdk_manager(|mgr| {
+        if !mgr.is_running() {
+            mgr.start()?;
+        }
+        let init_resp = mgr.post("/init", &json!({"generate": true}))?;
+        let seed = init_resp
+            .get("seed")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "WDK sidecar did not return a seed phrase".to_string())?;
+        let encrypted = nucleusdb::halo::wdk_proxy::encrypt_seed(seed, passphrase)?;
+        if let Err(e) = nucleusdb::halo::wdk_proxy::save_encrypted_seed(&encrypted) {
+            let _ = mgr.post("/destroy", &json!({}));
+            mgr.stop();
+            return Err(e);
+        }
+        let (ledger_logged, ledger_error) = mcp_wallet_ledger_event(
+            nucleusdb::halo::identity_ledger::IdentityLedgerKind::WalletCreated,
+            "created",
+            json!({
+                "chains": encrypted.chains,
+                "kdf": encrypted.kdf,
+            }),
+        );
+        let accounts = mgr.get("/accounts").unwrap_or_else(|_| json!({}));
+        Ok(json!({
+            "status": "ok",
+            "message": "wallet created and encrypted",
+            "ledger_logged": ledger_logged,
+            "ledger_error": ledger_error,
+            "accounts": accounts.get("accounts").cloned().unwrap_or(Value::Array(Vec::new())),
+        }))
+    })
+}
+
+fn tool_wallet_import(arguments: Value) -> Result<Value, String> {
+    let seed = arguments
+        .get("seed")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "seed is required".to_string())?;
+    let passphrase = arguments
+        .get("passphrase")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "passphrase is required".to_string())?;
+    if !wdk_is_valid_seed_phrase(seed) {
+        return Err("seed phrase must be a valid 12 or 24-word BIP-39 mnemonic".to_string());
+    }
+    if passphrase.trim().len() < 8 {
+        return Err("passphrase must be at least 8 characters".to_string());
+    }
+    if nucleusdb::halo::wdk_proxy::wallet_exists() {
+        return Err("wallet already exists; delete it first to import a new seed".to_string());
+    }
+    if !nucleusdb::halo::wdk_proxy::WdkManager::is_available() {
+        return Err(
+            "WDK sidecar unavailable; install with `cd wdk-sidecar && npm install`".to_string(),
+        );
+    }
+
+    with_wdk_manager(|mgr| {
+        if !mgr.is_running() {
+            mgr.start()?;
+        }
+        if let Err(e) = mgr.post("/init", &json!({"seed": seed.trim()})) {
+            let _ = mgr.post("/destroy", &json!({}));
+            mgr.stop();
+            return Err(e);
+        }
+        let encrypted = nucleusdb::halo::wdk_proxy::encrypt_seed(seed.trim(), passphrase)?;
+        if let Err(e) = nucleusdb::halo::wdk_proxy::save_encrypted_seed(&encrypted) {
+            let _ = mgr.post("/destroy", &json!({}));
+            mgr.stop();
+            return Err(e);
+        }
+        let (ledger_logged, ledger_error) = mcp_wallet_ledger_event(
+            nucleusdb::halo::identity_ledger::IdentityLedgerKind::WalletImported,
+            "imported",
+            json!({
+                "chains": encrypted.chains,
+                "kdf": encrypted.kdf,
+            }),
+        );
+        let accounts = mgr.get("/accounts").unwrap_or_else(|_| json!({}));
+        Ok(json!({
+            "status": "ok",
+            "message": "wallet imported and encrypted",
+            "ledger_logged": ledger_logged,
+            "ledger_error": ledger_error,
+            "accounts": accounts.get("accounts").cloned().unwrap_or(Value::Array(Vec::new())),
+        }))
+    })
+}
+
+fn tool_wallet_unlock(arguments: Value) -> Result<Value, String> {
+    let passphrase = arguments
+        .get("passphrase")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "passphrase is required".to_string())?;
+    let encrypted = nucleusdb::halo::wdk_proxy::load_encrypted_seed()
+        .ok_or_else(|| "no WDK wallet found".to_string())?;
+    let seed = nucleusdb::halo::wdk_proxy::decrypt_seed(&encrypted, passphrase)?;
+    with_wdk_manager(|mgr| {
+        if !mgr.is_running() {
+            mgr.start()?;
+        }
+        let sidecar = mgr.post("/init", &json!({"seed": seed}))?;
+        let (ledger_logged, ledger_error) = mcp_wallet_ledger_event(
+            nucleusdb::halo::identity_ledger::IdentityLedgerKind::WalletUnlocked,
+            "unlocked",
+            json!({
+                "sidecar_initialized": sidecar.get("initialized").and_then(|v| v.as_bool()).unwrap_or(false),
+            }),
+        );
+        Ok(json!({
+            "status": "ok",
+            "sidecar": sidecar,
+            "ledger_logged": ledger_logged,
+            "ledger_error": ledger_error,
+        }))
+    })
+}
+
+fn tool_wallet_accounts(_arguments: Value) -> Result<Value, String> {
+    with_wdk_manager(|mgr| {
+        if !mgr.is_running() {
+            return Err("wallet is locked; unlock it first".to_string());
+        }
+        let out = mgr.get("/accounts")?;
+        Ok(json!({
+            "status": "ok",
+            "accounts": out.get("accounts").cloned().unwrap_or(Value::Array(Vec::new())),
+            "raw": out,
+        }))
+    })
+}
+
+fn tool_wallet_balances(_arguments: Value) -> Result<Value, String> {
+    with_wdk_manager(|mgr| {
+        if !mgr.is_running() {
+            return Err("wallet is locked; unlock it first".to_string());
+        }
+        let out = mgr.get("/balances")?;
+        Ok(json!({
+            "status": "ok",
+            "balances": out.get("balances").cloned().unwrap_or(Value::Array(Vec::new())),
+            "raw": out,
+        }))
+    })
+}
+
+fn tool_wallet_quote(arguments: Value) -> Result<Value, String> {
+    let chain = arguments
+        .get("chain")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "chain is required".to_string())?;
+    let to = arguments
+        .get("to")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "to is required".to_string())?;
+    let amount = arguments
+        .get("amount")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "amount is required".to_string())?;
+    let (chain, to, amount) = validate_wdk_transfer(chain, to, amount)?;
+    with_wdk_manager(|mgr| {
+        if !mgr.is_running() {
+            return Err("wallet is locked; unlock it first".to_string());
+        }
+        let out = mgr.post(
+            "/quote",
+            &json!({
+                "chain": chain,
+                "to": to,
+                "amount": amount,
+            }),
+        )?;
+        Ok(json!({
+            "status": "ok",
+            "quote": out,
+        }))
+    })
+}
+
+fn tool_wallet_send(arguments: Value) -> Result<Value, String> {
+    let chain = arguments
+        .get("chain")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "chain is required".to_string())?;
+    let to = arguments
+        .get("to")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "to is required".to_string())?;
+    let amount = arguments
+        .get("amount")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "amount is required".to_string())?;
+    let (chain, to, amount) = validate_wdk_transfer(chain, to, amount)?;
+    with_wdk_manager(|mgr| {
+        if !mgr.is_running() {
+            return Err("wallet is locked; unlock it first".to_string());
+        }
+        let out = mgr.post(
+            "/send",
+            &json!({
+                "chain": chain,
+                "to": to,
+                "amount": amount,
+            }),
+        )?;
+        Ok(json!({
+            "status": "ok",
+            "transfer": out,
+        }))
+    })
+}
+
+fn tool_wallet_fees(_arguments: Value) -> Result<Value, String> {
+    with_wdk_manager(|mgr| {
+        if !mgr.is_running() {
+            return Err("wallet is locked; unlock it first".to_string());
+        }
+        let out = mgr.get("/fees")?;
+        Ok(json!({
+            "status": "ok",
+            "fees": out,
+        }))
+    })
+}
+
+fn tool_wallet_lock(_arguments: Value) -> Result<Value, String> {
+    with_wdk_manager(|mgr| {
+        if mgr.is_running() {
+            let _ = mgr.post("/destroy", &json!({}));
+        }
+        mgr.stop();
+        let (ledger_logged, ledger_error) = mcp_wallet_ledger_event(
+            nucleusdb::halo::identity_ledger::IdentityLedgerKind::WalletLocked,
+            "locked",
+            json!({}),
+        );
+        Ok(json!({
+            "status": "ok",
+            "message": "wallet locked",
+            "ledger_logged": ledger_logged,
+            "ledger_error": ledger_error,
+        }))
+    })
+}
+
+fn tool_wallet_delete(arguments: Value) -> Result<Value, String> {
+    let confirm = arguments
+        .get("confirm")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "confirm is required and must be DELETE".to_string())?;
+    if confirm.trim() != "DELETE" {
+        return Err("confirm must be exactly DELETE".to_string());
+    }
+    with_wdk_manager(|mgr| {
+        if mgr.is_running() {
+            let _ = mgr.post("/destroy", &json!({}));
+        }
+        mgr.stop();
+        let seed_path = nucleusdb::halo::wdk_proxy::encrypted_seed_path();
+        if seed_path.exists() {
+            std::fs::remove_file(&seed_path).map_err(|e| {
+                format!(
+                    "failed to delete encrypted seed at {}: {e}",
+                    seed_path.display()
+                )
+            })?;
+        }
+        let (ledger_logged, ledger_error) = mcp_wallet_ledger_event(
+            nucleusdb::halo::identity_ledger::IdentityLedgerKind::WalletDeleted,
+            "deleted",
+            json!({}),
+        );
+        Ok(json!({
+            "status": "ok",
+            "message": "wallet permanently deleted",
+            "ledger_logged": ledger_logged,
+            "ledger_error": ledger_error,
+        }))
+    })
 }
 
 fn tool_attest(arguments: Value) -> Result<Value, String> {
@@ -1939,6 +2506,38 @@ mod tests {
 
         std::env::remove_var("AGENTHALO_HOME");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn wallet_status_tool_returns_non_error_payload() {
+        let out = tool_call_response("wallet_status", json!({}));
+        assert_eq!(out.get("isError").and_then(|v| v.as_bool()), Some(false));
+        let payload = out
+            .get("structuredContent")
+            .and_then(|v| v.as_object())
+            .expect("structuredContent object");
+        assert_eq!(payload.get("status").and_then(|v| v.as_str()), Some("ok"));
+        assert!(payload.contains_key("available"));
+        assert!(payload.contains_key("wallet_exists"));
+    }
+
+    #[test]
+    fn wallet_import_rejects_invalid_mnemonic() {
+        let err = tool_wallet_import(json!({
+            "seed": "apple banana cherry dog elephant fish grape house igloo jelly kite lemon",
+            "passphrase": "passphrase123"
+        }))
+        .expect_err("invalid mnemonic should fail");
+        assert!(err.to_ascii_lowercase().contains("bip-39"));
+    }
+
+    #[test]
+    fn wallet_create_rejects_short_passphrase() {
+        let err = tool_wallet_create(json!({
+            "passphrase": "short"
+        }))
+        .expect_err("short passphrase should fail");
+        assert!(err.to_ascii_lowercase().contains("at least 8"));
     }
 
     #[test]
