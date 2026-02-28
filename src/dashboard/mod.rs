@@ -75,19 +75,27 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         eprintln!("warning: failed to load POD grants: {e}");
     }
 
-    let vault = if crate::halo::config::pq_wallet_path().exists() {
-        match crate::halo::vault::Vault::open(
-            &crate::halo::config::pq_wallet_path(),
-            &crate::halo::config::vault_path(),
-        ) {
-            Ok(v) => Some(Arc::new(v)),
+    // Auto-create PQ wallet if it doesn't exist — this gives us a vault from first launch.
+    if !crate::halo::config::pq_wallet_path().exists() {
+        match crate::halo::pq::keygen_pq(false) {
+            Ok(result) => {
+                eprintln!("info: auto-created PQ wallet (key_id: {})", result.key_id);
+            }
             Err(e) => {
-                eprintln!("warning: failed to initialize vault: {e}");
-                None
+                eprintln!("warning: failed to auto-create PQ wallet: {e}");
             }
         }
-    } else {
-        None
+    }
+
+    let vault = match crate::halo::vault::Vault::open(
+        &crate::halo::config::pq_wallet_path(),
+        &crate::halo::config::vault_path(),
+    ) {
+        Ok(v) => Some(Arc::new(v)),
+        Err(e) => {
+            eprintln!("warning: failed to initialize vault: {e}");
+            None
+        }
     };
 
     let key_store = Arc::new(crate::halo::api_keys::CustomerKeyStore::open(

@@ -133,6 +133,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/agentaddress/status", get(api_agentaddress_status))
         .route("/agentaddress/chains", get(api_agentaddress_chains))
         .route("/agentaddress/generate", post(api_agentaddress_generate))
+        .route("/agentaddress/credentials", post(api_agentaddress_credentials))
         .route(
             "/agentaddress/disconnect",
             post(api_agentaddress_disconnect),
@@ -2913,6 +2914,55 @@ async fn api_agentaddress_generate(
     let persist_public = req.persist_public_address.unwrap_or(true);
     let mut ledger_logged = false;
     let mut ledger_error = None::<String>;
+    let mut vault_stored = false;
+    let mut vault_error = None::<String>;
+
+    // Store private key and mnemonic in the encrypted vault (AES-256-GCM at rest).
+    let private_key = data
+        .get("evmPrivateKey")
+        .or_else(|| data.get("evm_private_key"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let mnemonic = data
+        .get("mnemonic")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if let Some(ref vault) = state.vault {
+        let mut all_ok = true;
+        if !private_key.is_empty() {
+            if let Err(e) = vault.set_key(
+                "agent_wallet_private_key",
+                "AGENT_WALLET_PRIVATE_KEY",
+                &private_key,
+            ) {
+                vault_error = Some(format!("store private key: {e}"));
+                all_ok = false;
+            }
+        }
+        if !mnemonic.is_empty() {
+            if let Err(e) = vault.set_key(
+                "agent_wallet_mnemonic",
+                "AGENT_WALLET_MNEMONIC",
+                &mnemonic,
+            ) {
+                let msg = format!("store mnemonic: {e}");
+                vault_error = Some(match vault_error {
+                    Some(prev) => format!("{prev}; {msg}"),
+                    None => msg,
+                });
+                all_ok = false;
+            }
+        }
+        vault_stored = all_ok && (!private_key.is_empty() || !mnemonic.is_empty());
+    } else {
+        vault_error = Some("vault not available — credentials shown but not stored".to_string());
+    }
+
     if persist_public {
         let mut identity = crate::halo::identity::load();
         identity.agent_address = Some(crate::halo::identity::AgentAddressIdentity {
@@ -2927,6 +2977,7 @@ async fn api_agentaddress_generate(
             json!({
                 "provider": "agentaddress",
                 "evm_address": address,
+                "vault_stored": vault_stored,
             }),
         ) {
             Ok(_) => {
@@ -2938,14 +2989,55 @@ async fn api_agentaddress_generate(
         }
     }
 
+    // Strip sensitive fields from the response if vault storage succeeded —
+    // the frontend can still display the address but doesn't need the raw secrets.
+    let safe_data = if vault_stored {
+        let mut d = data.clone();
+        if let Some(obj) = d.as_object_mut() {
+            obj.remove("evmPrivateKey");
+            obj.remove("evm_private_key");
+            obj.remove("mnemonic");
+        }
+        d
+    } else {
+        // Vault unavailable — let the frontend show them so the user can back up manually.
+        data.clone()
+    };
+
     Ok(Json(json!({
         "ok": true,
         "provider": "AgentAddress",
         "endpoint": endpoint,
         "persist_public_address": persist_public,
+        "vault_stored": vault_stored,
+        "vault_error": vault_error,
         "ledger_logged": ledger_logged,
         "ledger_error": ledger_error,
-        "data": data,
+        "data": safe_data,
+    })))
+}
+
+async fn api_agentaddress_credentials(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let identity = crate::halo::identity::load();
+    let address = identity
+        .agent_address
+        .as_ref()
+        .map(|a| a.evm_address.clone())
+        .unwrap_or_default();
+    let vault = state
+        .vault
+        .as_ref()
+        .ok_or_else(|| api_err(StatusCode::SERVICE_UNAVAILABLE, "vault not available"))?;
+    let private_key = vault.get_key("agent_wallet_private_key").ok();
+    let mnemonic = vault.get_key("agent_wallet_mnemonic").ok();
+    Ok(Json(json!({
+        "ok": true,
+        "address": address,
+        "has_private_key": private_key.is_some(),
+        "private_key": private_key,
+        "has_mnemonic": mnemonic.is_some(),
+        "mnemonic": mnemonic,
     })))
 }
 

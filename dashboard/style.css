@@ -739,7 +739,7 @@ body.no-crt #crt-overlay { display: none; }
   box-shadow:
     0 3px 8px rgba(0, 0, 0, 0.36),
     inset 0 0 0 1px rgba(255, 255, 255, 0.1);
-  transition: opacity 420ms ease, filter 420ms ease, transform 420ms ease;
+  transition: opacity 140ms ease, filter 140ms ease, transform 140ms ease;
 }
 
 .identity-security-badge.is-swapping {
@@ -951,13 +951,13 @@ body.no-crt #crt-overlay { display: none; }
   padding-right: 22px;
   display: flex;
   justify-content: center;
-  align-items: center;
-  gap: 56px;
+  align-items: stretch;
+  gap: 20px;
 }
 
 .identity-security-tier-shell.two-options .security-tier-btn {
-  width: 264px;
-  max-width: 100%;
+  flex: 1;
+  max-width: 320px;
 }
 
 .identity-safety-intent-label {
@@ -973,16 +973,15 @@ body.no-crt #crt-overlay { display: none; }
   appearance: none;
   border: 2px solid #2a5522;
   border-radius: 10px;
-  padding: 11px 10px;
+  padding: 16px 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
   font-family: var(--font);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.35px;
-  line-height: 1.2;
+  letter-spacing: 0.5px;
+  line-height: 1.3;
   color: #e7ffe4;
   text-transform: none;
   cursor: pointer;
@@ -1135,7 +1134,9 @@ body.no-crt #crt-overlay { display: none; }
 #setup-device-details,
 #setup-network-details,
 #setup-social-details,
-#setup-super-secure-details {
+#setup-super-secure-details,
+#agentaddress-section,
+#anonymous-agentwallet-section {
   max-width: 760px;
   margin-left: auto;
   margin-right: auto;
@@ -1242,6 +1243,172 @@ body.no-crt #crt-overlay { display: none; }
 }
 
 .network-identity-visual img {
+  display: block;
+  width: 100%;
+  max-width: 258px;
+  height: auto;
+  object-fit: contain;
+  border-radius: 16px;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.36));
+}
+
+.agentaddress-layout,
+.anonymous-wallet-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.agentaddress-main code {
+  font-size: 9px;
+  letter-spacing: -0.3px;
+  word-break: break-all;
+}
+
+.wallet-creds-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.wallet-cred-row {
+  display: grid;
+  grid-template-columns: 78px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.wallet-cred-row strong {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.wallet-cred-row .btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.agentaddress-main,
+.anonymous-wallet-main {
+  min-height: 246px;
+  border: 1px solid rgba(42, 85, 34, 0.9);
+  border-radius: 10px;
+  background: #0f170d;
+  box-shadow: inset 0 0 0 1px rgba(53, 255, 62, 0.06);
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.agentaddress-visual,
+.anonymous-wallet-visual {
+  min-height: 246px;
+  border: 1px solid rgba(42, 85, 34, 0.9);
+  border-radius: 10px;
+  background: #10180d;
+  box-shadow: inset 0 0 0 1px rgba(53, 255, 62, 0.06);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 12px 10px;
+  gap: 6px;
+  overflow: visible;
+}
+
+/* Chain logo carousel — paginated 2-row grid */
+.chain-carousel-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 0 2px;
+}
+
+.chain-carousel-track {
+  flex: 1;
+  min-width: 0;
+}
+
+.chain-carousel-page {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: auto auto;
+  gap: 10px 12px;
+  justify-items: center;
+  padding: 4px 0;
+}
+
+.chain-logo-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chain-logo-item img {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid rgba(53, 255, 62, 0.15);
+  background: #0a0f08;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.chain-logo-item img:hover {
+  transform: scale(1.18);
+  border-color: rgba(53, 255, 62, 0.5);
+}
+
+.chain-carousel-arrow {
+  background: none;
+  border: 1px solid rgba(53, 255, 62, 0.2);
+  border-radius: 50%;
+  color: var(--green);
+  font-size: 16px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.chain-carousel-arrow:hover {
+  background: rgba(53, 255, 62, 0.08);
+  border-color: rgba(53, 255, 62, 0.4);
+}
+
+.chain-carousel-dots {
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 4px;
+}
+
+.chain-carousel-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(53, 255, 62, 0.2);
+  transition: background 0.15s ease;
+}
+
+.chain-carousel-dot.active {
+  background: var(--green);
+}
+
+.agentaddress-visual > img,
+.anonymous-wallet-visual > img {
   display: block;
   width: 100%;
   max-width: 258px;
@@ -3507,16 +3674,24 @@ input:focus, select:focus, textarea:focus {
   .identity-safety-intent-label { margin-top: 20px; font-size: 12px; }
   .device-fingerprint-layout { grid-template-columns: 1fr; gap: 10px; }
   .network-identity-layout { grid-template-columns: 1fr; gap: 10px; }
+  .agentaddress-layout { grid-template-columns: 1fr; gap: 10px; }
+  .anonymous-wallet-layout { grid-template-columns: 1fr; gap: 10px; }
   .social-identity-layout { grid-template-columns: 1fr; gap: 10px; }
   .super-secure-layout { grid-template-columns: 1fr; }
   .device-fingerprint-main,
   .device-fingerprint-visual,
   .network-identity-main,
   .network-identity-visual,
+  .agentaddress-main,
+  .agentaddress-visual,
+  .anonymous-wallet-main,
+  .anonymous-wallet-visual,
   .social-identity-main,
   .social-identity-visual { min-height: 0; }
   .device-fingerprint-visual img { max-width: 210px; }
   .network-identity-visual img { max-width: 210px; }
+  .agentaddress-visual img { max-width: 210px; }
+  .anonymous-wallet-visual img { max-width: 210px; }
   .anonymous-launch-btn {
     grid-column: 1 / -1;
     width: 100%;

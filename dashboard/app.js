@@ -1131,18 +1131,15 @@ async function renderSetup() {
   const pmtAuth = cfg && cfg.agentpmt && cfg.agentpmt.auth_configured;
   const pmtToolCount = (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) || 0;
   const agentpmtConnected = !!walletStatus.agentpmt_connected;
-  const anonymousWalletConnected = !!walletStatus.anonymous_wallet_connected;
   const agentaddressConnected = !!walletStatus.agentaddress_connected;
   const agentaddressAddress = String(walletStatus.agentaddress_address || '');
   const walletPath = agentpmtConnected
     ? 'agentpmt'
-    : (agentaddressConnected ? 'agentaddress' : (anonymousWalletConnected ? 'anonymous' : 'none'));
+    : (agentaddressConnected ? 'agentaddress' : 'none');
   const hasAnyWallet = walletPath !== 'none';
   const walletCardDesc = walletPath === 'agentaddress'
-    ? 'AgentAddress identity generated and ready for autonomous agents'
-    : (walletPath === 'anonymous'
-      ? 'Anonymous agent wallet active'
-      : `Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and budget management`);
+    ? 'Agent identity &amp; wallet ready for autonomous agents'
+    : `Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and budget management`;
   const orStatus = providerStatus('openrouter');
 
   // Card classes
@@ -1170,7 +1167,7 @@ async function renderSetup() {
   const deferIdentityRoadmapTracks = true;
   const backendDefaultTier = securityTierImageByKey[String(tierCfg.default_tier || '').trim()]
     ? String(tierCfg.default_tier).trim()
-    : 'less-safe';
+    : 'max-safe';
   const serverTier = String(tierCfg.tier || '').trim();
   const preferredTier = securityTierImageByKey[serverTier] ? serverTier : savedSecurityTier;
   const appliedSecurityTier = securityTierImageByKey[serverTier] ? serverTier : '';
@@ -1200,7 +1197,7 @@ async function renderSetup() {
       <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Quick Start</div>
       <ol class="setup-steps-friendly" style="margin:0">
         <li><span class="step-circle">1</span><span>Set your identity and safety preference in <strong>My Identity</strong>.</span></li>
-        <li><span class="step-circle">2</span><span>Choose one wallet path: AgentPMT account, anonymous wallet, or AgentAddress generator.</span></li>
+        <li><span class="step-circle">2</span><span>Set up your agent identity &amp; wallet.</span></li>
         <li><span class="step-circle">3</span><span>Add your OpenRouter key in <strong>Add Your LLM Key</strong>.</span></li>
       </ol>
       <div style="margin-top:10px;font-size:12px;color:var(--text-dim)">
@@ -1248,13 +1245,11 @@ async function renderSetup() {
 
       <div class="identity-safety-intent-label">I Want To Be</div>
       <div class="identity-security-tier-shell ${showLowSafetyTierOption ? '' : 'two-options'}" aria-label="Identity safety tier">
-        <button type="button" class="security-tier-btn tier-safe ${initialSecurityTier === 'max-safe' ? 'is-selected' : ''} ${appliedSecurityTier === 'max-safe' ? 'is-complete' : ''}" data-tier="max-safe">
-          <span>As Safe as Possible</span>
-          <span class="tier-complete-mark" aria-hidden="true">&#10003;</span>
+        <button type="button" class="security-tier-btn tier-safe ${initialSecurityTier === 'max-safe' ? 'is-selected' : ''}" data-tier="max-safe">
+          As Safe as Possible
         </button>
-        <button type="button" class="security-tier-btn tier-caution ${initialSecurityTier === 'less-safe' ? 'is-selected' : ''} ${appliedSecurityTier === 'less-safe' ? 'is-complete' : ''}" data-tier="less-safe">
-          <span>A Little Rebellious</span>
-          <span class="tier-complete-mark" aria-hidden="true">&#10003;</span>
+        <button type="button" class="security-tier-btn tier-caution ${initialSecurityTier === 'less-safe' ? 'is-selected' : ''}" data-tier="less-safe">
+          A Little Rebellious
         </button>
       </div>
       <div class="identity-tier-control-row">
@@ -1395,10 +1390,102 @@ async function renderSetup() {
         </div>
       </details>
       ${deferIdentityRoadmapTracks ? `
-      <div class="setup-deferred-note">
-        Social Login, Super Secure Options, and Advanced Verification Tracks are saved as deferred roadmap features.
-        They are intentionally hidden in the live flow for now and can be re-enabled later without rework.
-      </div>
+      <!-- Moved up from Wallet section per UX request -->
+      <details class="setup-alt-path" style="margin-top:14px" id="agentaddress-section">
+        <summary>Agent Identity &amp; Wallet</summary>
+        <div class="alt-body">
+          <div class="agentaddress-layout">
+            <div class="agentaddress-main">
+              <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px">
+                Your agent identity &amp; wallet is auto-generated on first launch. It provides a universal, verifiable
+                address for autonomous agent operations.
+              </p>
+              <div style="margin-top:0;margin-bottom:12px">
+                <button type="button" id="wallet-info-toggle" style="background:none;border:1px solid var(--border);border-radius:5px;color:var(--text-muted);font-size:11px;padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+                  <span class="info-icon" style="font-size:13px">&#9432;</span> More Info
+                </button>
+                <div id="wallet-info-detail" class="setup-info-box" style="display:none;margin-top:8px">
+                  <span>Your private key and recovery phrase are encrypted and stored automatically in the local vault (AES-256-GCM).
+                    Use the <strong>Show Credentials</strong> button below to retrieve them if needed.</span>
+                </div>
+              </div>
+              <div id="agentaddress-status" style="font-size:12px;color:var(--text-dim);margin-bottom:10px"></div>
+              <div id="agentaddress-output" style="display:none;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:0;background:rgba(4,14,8,0.45)">
+                <div style="font-size:12px;color:var(--green);margin-bottom:8px">&#10003; Agent identity &amp; wallet ready</div>
+                <div class="wallet-creds-grid">
+                  <div class="wallet-cred-row">
+                    <strong>Address</strong>
+                    <code id="agentaddress-evm-address"></code>
+                    <button class="btn btn-sm agentaddress-copy-btn" type="button" data-copy-target="agentaddress-evm-address">Copy</button>
+                  </div>
+                  <div class="wallet-cred-row" id="agentaddress-privkey-row" style="display:none">
+                    <strong>Private Key</strong>
+                    <code id="agentaddress-private-key"></code>
+                    <button class="btn btn-sm agentaddress-copy-btn" type="button" data-copy-target="agentaddress-private-key">Copy</button>
+                  </div>
+                  <div class="wallet-cred-row" id="agentaddress-mnemonic-row" style="display:none">
+                    <strong>Mnemonic</strong>
+                    <code id="agentaddress-mnemonic"></code>
+                    <button class="btn btn-sm agentaddress-copy-btn" type="button" data-copy-target="agentaddress-mnemonic">Copy</button>
+                  </div>
+                </div>
+                <div style="margin-top:10px">
+                  <button class="btn btn-sm" id="agentaddress-show-credentials-btn" type="button"
+                          style="font-size:11px;padding:6px 14px;border-radius:5px">Show Credentials</button>
+                  <span id="agentaddress-credentials-status" style="font-size:11px;color:var(--text-dim);margin-left:8px"></span>
+                </div>
+              </div>
+            </div>
+            <div class="agentaddress-visual">
+              ${(function() {
+                const chains = [
+                  { name:'Ethereum',  img:'https://icons.llamao.fi/icons/chains/rsz_ethereum.jpg' },
+                  { name:'Polygon',   img:'https://icons.llamao.fi/icons/chains/rsz_polygon.jpg' },
+                  { name:'Arbitrum',  img:'https://icons.llamao.fi/icons/chains/rsz_arbitrum.jpg' },
+                  { name:'Optimism',  img:'https://icons.llamao.fi/icons/chains/rsz_optimism.jpg' },
+                  { name:'Base',      img:'https://icons.llamao.fi/icons/chains/rsz_base.jpg' },
+                  { name:'Avalanche', img:'https://icons.llamao.fi/icons/chains/rsz_avalanche.jpg' },
+                  { name:'BNB Chain', img:'https://icons.llamao.fi/icons/chains/rsz_binance.jpg' },
+                  { name:'Fantom',    img:'https://icons.llamao.fi/icons/chains/rsz_fantom.jpg' },
+                  { name:'Gnosis',    img:'https://icons.llamao.fi/icons/chains/rsz_xdai.jpg' },
+                  { name:'zkSync',    img:'https://icons.llamao.fi/icons/chains/rsz_zksync%20era.jpg' },
+                  { name:'Linea',     img:'https://icons.llamao.fi/icons/chains/rsz_linea.jpg' },
+                  { name:'Scroll',    img:'https://icons.llamao.fi/icons/chains/rsz_scroll.jpg' },
+                  { name:'Mantle',    img:'https://icons.llamao.fi/icons/chains/rsz_mantle.jpg' },
+                  { name:'Celo',      img:'https://icons.llamao.fi/icons/chains/rsz_celo.jpg' },
+                  { name:'Cronos',    img:'https://icons.llamao.fi/icons/chains/rsz_cronos.jpg' },
+                  { name:'Moonbeam',  img:'https://icons.llamao.fi/icons/chains/rsz_moonbeam.jpg' },
+                  { name:'Aurora',    img:'https://icons.llamao.fi/icons/chains/rsz_aurora.jpg' },
+                  { name:'Harmony',   img:'https://icons.llamao.fi/icons/chains/rsz_harmony.jpg' },
+                  { name:'Metis',     img:'https://icons.llamao.fi/icons/chains/rsz_metis.jpg' },
+                  { name:'Kava',      img:'https://icons.llamao.fi/icons/chains/rsz_kava.jpg' },
+                  { name:'Blast',     img:'https://icons.llamao.fi/icons/chains/rsz_blast.jpg' },
+                  { name:'Mode',      img:'https://icons.llamao.fi/icons/chains/rsz_mode.jpg' },
+                  { name:'Boba',      img:'https://icons.llamao.fi/icons/chains/rsz_boba.jpg' },
+                  { name:'Canto',     img:'https://icons.llamao.fi/icons/chains/rsz_canto.jpg' },
+                ];
+                const perPage = 6;
+                const pages = [];
+                for (let i = 0; i < chains.length; i += perPage) pages.push(chains.slice(i, i + perPage));
+                const pagesHtml = pages.map((pg, pi) =>
+                  `<div class="chain-carousel-page" data-page="${pi}" style="${pi > 0 ? 'display:none' : ''}">` +
+                  pg.map(c => `<div class="chain-logo-item" title="${c.name}"><img src="${c.img}" alt="${c.name}" onerror="this.parentElement.style.display='none'"></div>`).join('') +
+                  `</div>`
+                ).join('');
+                const dots = pages.map((_, i) => `<div class="chain-carousel-dot${i === 0 ? ' active' : ''}" data-dot="${i}"></div>`).join('');
+                return `<div class="chain-carousel-wrap">
+                  <button class="chain-carousel-arrow chain-carousel-left" type="button" aria-label="Previous">&#8249;</button>
+                  <div class="chain-carousel-track" id="chain-carousel-track">${pagesHtml}</div>
+                  <button class="chain-carousel-arrow chain-carousel-right" type="button" aria-label="Next">&#8250;</button>
+                </div>
+                <div class="chain-carousel-dots" id="chain-carousel-dots">${dots}</div>`;
+              })()}
+              <div style="text-align:center;font-size:9px;color:var(--text-dim);margin-top:2px">Works on all EVM-compatible chains</div>
+              <img src="img/agenthaloidentity.png" alt="Agent identity and wallet visual" onerror="this.style.display='none'">
+            </div>
+          </div>
+        </div>
+      </details>
       ` : ''}
 
       <div class="anon-mode-shell ${identityCfg.anonymous_mode ? 'is-active' : ''}" id="anon-mode-shell">
@@ -1442,7 +1529,7 @@ async function renderSetup() {
               ${agentpmtConnected ? '&#10003;' : '&#10007;'} AgentPMT
             </span>
             <span class="setup-wallet-chip ${agentaddressConnected ? 'ok' : 'bad'}">
-              ${agentaddressConnected ? '&#10003;' : '&#10007;'} AgentAddress
+              ${agentaddressConnected ? '&#10003;' : '&#10007;'} Agent Wallet
             </span>
           </div>
         </div>
@@ -1455,9 +1542,7 @@ async function renderSetup() {
           <span>
             ${walletPath === 'agentpmt'
               ? `AgentPMT connected${pmtToolCount > 0 ? ' &mdash; <strong>' + pmtToolCount + ' tools</strong> ready to use' : ''}`
-              : (walletPath === 'agentaddress'
-                ? `AgentAddress connected${agentaddressAddress ? ` &mdash; <code>${esc(agentaddressAddress)}</code>` : ''}`
-                : 'Anonymous wallet connected')}
+              : `Agent wallet connected${agentaddressAddress ? ` &mdash; <code>${esc(agentaddressAddress)}</code>` : ''}`}
           </span>
         </div>
         ${walletPath === 'agentpmt' ? `
@@ -1537,21 +1622,17 @@ async function renderSetup() {
           </div>
         </div>
 
-        <!-- Path B: Anonymous Agent Wallet -->
+        <!-- Path B: Quick connect without signup -->
         <details class="setup-alt-path" style="margin-top:16px">
-          <summary>Skip signup &mdash; create an anonymous agent wallet instead</summary>
+          <summary>Skip signup &mdash; connect without an account</summary>
           <div class="alt-body">
             <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
-              Don't want to create an account right now? We can generate an anonymous <strong>AgentPMT-managed wallet identity</strong> via API.
-              You'll get a bearer token automatically &mdash; no email or signup required.
+              Don't want to create an account right now? We can request an API token directly &mdash;
+              no email or signup required. Limited budget; can be upgraded later.
             </p>
-            <div class="setup-info-box" style="margin-top:0;margin-bottom:14px">
-              <span class="info-icon">&#9432;</span>
-              <span>This is <strong>not</strong> AgentAddress. Anonymous wallets have limited budgets and can be upgraded later.</span>
-            </div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
               <button class="btn btn-primary" id="setup-create-anon-wallet" style="border-radius:6px;padding:10px 20px;font-size:13px">
-                Create Anonymous Wallet
+                Connect Without Account
               </button>
               <span id="setup-anon-wallet-status" style="font-size:12px;color:var(--text-dim)"></span>
             </div>
@@ -1559,136 +1640,6 @@ async function renderSetup() {
         </details>
       `}
 
-      <!-- Path C: AgentAddress (always available) -->
-      <details class="setup-alt-path" style="margin-top:16px" id="agentaddress-section">
-        <summary>AgentAddress Generator &amp; Control Panel</summary>
-        <div class="alt-body">
-          <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px">
-            AgentAddress is a universal, verifiable identity for autonomous agents. Generate one identity,
-            use it across supported EVM networks, and invoke tools/workflows with signed requests.
-          </p>
-          <div class="setup-info-box" style="margin-top:0;margin-bottom:10px">
-            <span class="info-icon">&#9432;</span>
-            <span>This flow is generated from the AgentAddress endpoint. Store private key + mnemonic securely on your side.</span>
-          </div>
-          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px">
-            Repo:
-            <a href="https://github.com/Apoth3osis-ai/agent-address" target="_blank" rel="noopener noreferrer">github.com/Apoth3osis-ai/agent-address</a>
-            &middot;
-            AgentPMT workflows:
-            <a href="https://www.agentpmt.com/autonomous-agents" target="_blank" rel="noopener noreferrer">/autonomous-agents</a>
-            &middot;
-            API docs:
-            <a href="https://www.agentpmt.com/external-agent-api" target="_blank" rel="noopener noreferrer">/external-agent-api</a>
-          </div>
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-            <button class="btn btn-primary btn-sm" id="agentaddress-generate-btn" style="border-radius:6px;padding:8px 16px">
-              Generate New Agent Address
-            </button>
-            <button class="btn btn-sm" id="agentaddress-disconnect-btn" style="border-radius:6px;padding:8px 16px;border-color:var(--red);color:var(--red)">
-              Clear Saved Address
-            </button>
-            <span id="agentaddress-status" style="font-size:12px;color:var(--text-dim)"></span>
-          </div>
-          <div id="agentaddress-output" style="display:none;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;background:rgba(4,14,8,0.45)">
-            <div style="font-size:12px;color:var(--green);margin-bottom:8px">&#10003; AgentAddress generated</div>
-            <div style="display:grid;gap:8px">
-              <div><strong style="font-size:12px">Address</strong><div><code id="agentaddress-evm-address"></code></div></div>
-              <div><strong style="font-size:12px">Private Key</strong><div><code id="agentaddress-private-key"></code></div></div>
-              <div><strong style="font-size:12px">Mnemonic</strong><div><code id="agentaddress-mnemonic"></code></div></div>
-            </div>
-          </div>
-          <details class="setup-alt-path" style="margin-top:8px">
-            <summary>Autonomous Agent Model (Wallet Identity + Credits)</summary>
-            <div class="alt-body" style="font-size:12px;color:var(--text-dim);line-height:1.55">
-              <ol class="setup-steps-friendly" style="margin:0 0 8px 0">
-                <li><span class="step-circle">1</span><span>Identity is an EVM wallet address + signatures (EIP-191).</span></li>
-                <li><span class="step-circle">2</span><span>If no wallet exists yet, generate one with AgentAddress.</span></li>
-                <li><span class="step-circle">3</span><span>Buy credits via x402 ("PAYMENT-REQUIRED" / "PAYMENT-SIGNATURE").</span></li>
-                <li><span class="step-circle">4</span><span>Invoke tools/workflows with signed requests.</span></li>
-              </ol>
-              <div style="margin-top:6px">
-                Pattern A: agent wallet pays itself. Pattern B: human sponsor wallet pays, credits assigned to agent wallet.
-              </div>
-            </div>
-          </details>
-          <details class="setup-alt-path" style="margin-top:8px">
-            <summary>Supported EVM Chains</summary>
-            <div class="alt-body" id="agentaddress-chains-list" style="font-size:12px;color:var(--text-dim)">Loading chain list...</div>
-          </details>
-          <details class="setup-alt-path" style="margin-top:8px">
-            <summary>Programmatic No-Auth Endpoint</summary>
-            <div class="alt-body">
-              <div class="setup-cmd">
-                <code>POST https://www.agentpmt.com/api/external/agentaddress</code>
-                <button class="btn btn-sm" onclick="copySetupText('POST https://www.agentpmt.com/api/external/agentaddress')">Copy</button>
-              </div>
-            </div>
-          </details>
-        </div>
-      </details>
-
-      <!-- Identity options (always visible) -->
-      <details class="setup-alt-path" style="margin-top:16px">
-        <summary>${step1Done ? 'Manage identity &mdash; AgentPMT anonymous wallet or local PQ wallet' : 'Advanced: Use local PQ wallet identity instead'}</summary>
-        <div class="alt-body">
-          ${!step1Done ? '' : `
-            <!-- Anonymous wallet creation (when connected, allows creating additional wallets) -->
-            <div style="margin-bottom:18px">
-              <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Anonymous Agent Wallet</div>
-              <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
-                Create an anonymous agent wallet via the AgentPMT API &mdash; no email or signup required.
-                Useful for testing or running isolated agent instances.
-              </p>
-              <div class="setup-info-box" style="margin-top:0;margin-bottom:14px">
-                <span class="info-icon">&#9432;</span>
-                <span>Anonymous wallets have limited budgets. You can upgrade to a full account anytime.</span>
-              </div>
-              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-                <button class="btn btn-primary" id="setup-create-anon-wallet" style="border-radius:6px;padding:10px 20px;font-size:13px">
-                  Create Anonymous Wallet
-                </button>
-                <span id="setup-anon-wallet-status" style="font-size:12px;color:var(--text-dim)"></span>
-              </div>
-            </div>
-            <div style="border-top:1px solid var(--border);margin:16px 0;"></div>
-          `}
-          <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Local PQ Wallet</div>
-          <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin-bottom:12px">
-            Creates a local cryptographic identity for vault storage and dashboard auth.
-            Does <strong>not</strong> provide marketplace access &mdash; for tools and workflows, use AgentPMT above.
-          </p>
-          <div style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-              <span style="font-size:13px;color:var(--text)">Dashboard auth</span>
-              ${isAuthenticated
-                ? '<span class="badge badge-ok">Authenticated</span>'
-                : '<span class="badge badge-muted">Not set up</span>'}
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:center">
-              <span style="font-size:13px;color:var(--text)">PQ wallet</span>
-              ${hasWallet
-                ? '<span class="badge badge-ok">Present</span>'
-                : '<span class="badge badge-muted">Not created</span>'}
-            </div>
-          </div>
-          ${!localIdentityDone ? `
-            <div class="setup-cmd">
-              <code>agenthalo keygen --pq</code>
-              <button class="btn btn-sm" onclick="copySetupText('agenthalo keygen --pq')">Copy</button>
-            </div>
-            <div class="setup-info-box" style="margin-top:8px">
-              <span class="info-icon">&#9432;</span>
-              <span>Dashboard auth is optional in local mode; if enforcement is enabled, use GitHub/Google OAuth above.</span>
-            </div>
-          ` : `
-            <div class="setup-success-banner" style="font-size:12px">
-              <span class="success-icon">&#10003;</span>
-              <span>Local PQ identity configured.</span>
-            </div>
-          `}
-        </div>
-      </details>
     </div>
 
     <!-- SECTION 3: OpenRouter LLM Key -->
@@ -1910,38 +1861,44 @@ async function renderSetup() {
     });
   }
 
-  // Anonymous wallet creation
+  // Quick-connect (no signup) handler
   const anonWalletBtn = document.getElementById('setup-create-anon-wallet');
   const anonWalletStatus = document.getElementById('setup-anon-wallet-status');
   if (anonWalletBtn) {
     anonWalletBtn.addEventListener('click', async () => {
       anonWalletBtn.disabled = true;
-      anonWalletBtn.textContent = 'Creating wallet...';
-      if (anonWalletStatus) anonWalletStatus.innerHTML = '<span style="color:var(--text-muted)">Requesting anonymous wallet from AgentPMT...</span>';
+      anonWalletBtn.textContent = 'Connecting...';
+      if (anonWalletStatus) {
+        anonWalletStatus.innerHTML = '<span style="color:var(--text-dim)">Requesting API token...</span>';
+      }
       try {
         const resp = await apiPost('/agentpmt/anonymous-wallet', {});
-        if (resp.token_saved) {
-          if (anonWalletStatus) anonWalletStatus.innerHTML = '<span style="color:var(--green)">&#10003; Wallet created and connected!</span>';
+        if (resp && resp.token_saved) {
+          if (anonWalletStatus) {
+            anonWalletStatus.innerHTML = '<span style="color:var(--green)">&#10003; Connected!</span>';
+          }
           window._invalidateSetupState();
           await fetchSetupState(true);
           await renderSetup();
           updateNavLockState();
         } else {
-          if (anonWalletStatus) anonWalletStatus.innerHTML = '<span style="color:var(--yellow)">Wallet created but no token was returned. You may need to enter it manually.</span>';
+          if (anonWalletStatus) {
+            anonWalletStatus.innerHTML = '<span style="color:var(--yellow)">Request succeeded but no token was returned.</span>';
+          }
           anonWalletBtn.disabled = false;
-          anonWalletBtn.textContent = 'Create Anonymous Wallet';
+          anonWalletBtn.textContent = 'Connect Without Account';
         }
       } catch (e) {
-        if (anonWalletStatus) anonWalletStatus.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
+        if (anonWalletStatus) {
+          anonWalletStatus.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
+        }
         anonWalletBtn.disabled = false;
-        anonWalletBtn.textContent = 'Create Anonymous Wallet';
+        anonWalletBtn.textContent = 'Connect Without Account';
       }
     });
   }
 
   // AgentAddress state + handlers
-  const agentAddressGenerateBtn = document.getElementById('agentaddress-generate-btn');
-  const agentAddressDisconnectBtn = document.getElementById('agentaddress-disconnect-btn');
   const agentAddressStatus = document.getElementById('agentaddress-status');
   const agentAddressOutput = document.getElementById('agentaddress-output');
   const agentAddressField = (id, val) => {
@@ -1957,73 +1914,198 @@ async function renderSetup() {
       agentAddressOutput.style.display = shouldShow ? 'block' : 'none';
     }
     agentAddressField('agentaddress-evm-address', address);
-    agentAddressField('agentaddress-private-key', privateKey);
-    agentAddressField('agentaddress-mnemonic', mnemonic);
+    // Private key and mnemonic are now vault-stored; only show via "Show Credentials" button.
+    // But if passed directly (vault unavailable fallback), populate them.
+    if (privateKey) {
+      agentAddressField('agentaddress-private-key', privateKey);
+      const pkRow = document.getElementById('agentaddress-privkey-row');
+      if (pkRow) pkRow.style.display = '';
+    }
+    if (mnemonic) {
+      agentAddressField('agentaddress-mnemonic', mnemonic);
+      const mnRow = document.getElementById('agentaddress-mnemonic-row');
+      if (mnRow) mnRow.style.display = '';
+    }
+    if (address || privateKey || mnemonic) {
+      window.__haloGeneratedAgentAddress = Object.assign(
+        window.__haloGeneratedAgentAddress || {},
+        { evmAddress: address || (window.__haloGeneratedAgentAddress || {}).evmAddress },
+        privateKey ? { evmPrivateKey: privateKey } : {},
+        mnemonic ? { mnemonic } : {}
+      );
+    }
   };
 
-  const chainsNode = document.getElementById('agentaddress-chains-list');
-  if (chainsNode) {
-    try {
-      const resp = await api('/agentaddress/chains');
-      const chains = Array.isArray(resp.chains) ? resp.chains : [];
-      chainsNode.innerHTML = `
-        <div style="display:flex;flex-wrap:wrap;gap:6px">
-          ${chains.map((c) => `<span class="setup-wallet-chip ok" style="font-size:10px">${esc(String(c))}</span>`).join('')}
-        </div>
-        <div style="margin-top:8px">${esc(String(resp.note || ''))}</div>
-      `;
-    } catch (e) {
-      chainsNode.innerHTML = `<span style="color:var(--red)">Failed to load chain list: ${esc(String(e.message || e))}</span>`;
-    }
-  }
-
   if (agentaddressConnected && agentAddressStatus) {
-    agentAddressStatus.innerHTML = `<span style="color:var(--green)">Connected${agentaddressAddress ? `: ${esc(agentaddressAddress)}` : ''}</span>`;
+    agentAddressStatus.innerHTML = '<span style="color:var(--green)">&#10003; Wallet generated and secured.</span>';
+  } else if (agentAddressStatus) {
+    agentAddressStatus.innerHTML = '<span style="color:var(--text-dim)">Provisioning agent wallet...</span>';
   }
-  if (agentaddressConnected && agentaddressAddress) {
+  if (window.__haloGeneratedAgentAddress && typeof window.__haloGeneratedAgentAddress === 'object') {
+    setAgentAddressOutput(window.__haloGeneratedAgentAddress);
+  } else if (agentaddressConnected && agentaddressAddress) {
     setAgentAddressOutput({ evmAddress: agentaddressAddress });
   }
 
-  if (agentAddressGenerateBtn) {
-    agentAddressGenerateBtn.addEventListener('click', async () => {
-      agentAddressGenerateBtn.disabled = true;
-      agentAddressGenerateBtn.textContent = 'Generating...';
-      if (agentAddressStatus) agentAddressStatus.innerHTML = '<span style="color:var(--text-dim)">Requesting AgentAddress...</span>';
-      try {
-        const resp = await apiPost('/agentaddress/generate', { persist_public_address: true });
-        const data = resp && resp.data ? resp.data : {};
-        setAgentAddressOutput(data);
-        if (agentAddressStatus) {
-          const addr = String(data.evmAddress || data.evm_address || '');
-          agentAddressStatus.innerHTML = `<span style="color:var(--green)">&#10003; Generated${addr ? `: ${esc(addr)}` : ''}</span>`;
-        }
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        updateNavLockState();
-      } catch (e) {
-        if (agentAddressStatus) agentAddressStatus.innerHTML = `<span style="color:var(--red)">Generation failed: ${esc(String(e.message || e))}</span>`;
+  const autoProvisionState = window.__haloIdentityAutoProvision
+    || (window.__haloIdentityAutoProvision = { inFlight: false, attempted: false });
+  const needsAddress = !agentaddressConnected;
+
+  if (needsAddress && !autoProvisionState.inFlight && !autoProvisionState.attempted) {
+    autoProvisionState.inFlight = true;
+    autoProvisionState.attempted = true;
+    try {
+      if (agentAddressStatus) {
+        agentAddressStatus.innerHTML = '<span style="color:var(--text-dim)">Generating agent wallet...</span>';
       }
-      agentAddressGenerateBtn.disabled = false;
-      agentAddressGenerateBtn.textContent = 'Generate New Agent Address';
+      const resp = await apiPost('/agentaddress/generate', { persist_public_address: true });
+      const generatedAddress = resp && resp.data ? resp.data : null;
+      if (generatedAddress) {
+        setAgentAddressOutput(generatedAddress);
+        if (agentAddressStatus) {
+          agentAddressStatus.innerHTML = '<span style="color:var(--green)">&#10003; Wallet generated and secured.</span>';
+        }
+      }
+      window._invalidateSetupState();
+      await fetchSetupState(true);
+      await renderSetup();
+      updateNavLockState();
+    } catch (e) {
+      if (agentAddressStatus) {
+        agentAddressStatus.innerHTML = `<span style="color:var(--red)">Wallet generation failed: ${esc(String(e.message || e))}</span>`;
+      }
+    } finally {
+      autoProvisionState.inFlight = false;
+    }
+  }
+
+  // --- More Info toggle for wallet info box ---
+  const walletInfoToggle = document.getElementById('wallet-info-toggle');
+  const walletInfoDetail = document.getElementById('wallet-info-detail');
+  if (walletInfoToggle && walletInfoDetail) {
+    walletInfoToggle.addEventListener('click', () => {
+      const showing = walletInfoDetail.style.display !== 'none';
+      walletInfoDetail.style.display = showing ? 'none' : 'block';
+      walletInfoToggle.innerHTML = showing
+        ? '<span class="info-icon" style="font-size:13px">&#9432;</span> More Info'
+        : '<span class="info-icon" style="font-size:13px">&#9432;</span> Less Info';
     });
   }
 
-  if (agentAddressDisconnectBtn) {
-    agentAddressDisconnectBtn.addEventListener('click', async () => {
-      if (!confirm('Clear saved AgentAddress from local setup status? This does not revoke remote credentials.')) return;
-      agentAddressDisconnectBtn.disabled = true;
-      try {
-        await apiPost('/agentaddress/disconnect', {});
-        setAgentAddressOutput({});
-        if (agentAddressStatus) agentAddressStatus.innerHTML = '<span style="color:var(--yellow)">Saved address cleared.</span>';
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        if (agentAddressStatus) agentAddressStatus.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
+  // --- Chain carousel pagination ---
+  const chainTrack = document.getElementById('chain-carousel-track');
+  const chainDots = document.getElementById('chain-carousel-dots');
+  if (chainTrack) {
+    const pages = chainTrack.querySelectorAll('.chain-carousel-page');
+    const dots = chainDots ? chainDots.querySelectorAll('.chain-carousel-dot') : [];
+    let currentPage = 0;
+    const showPage = (idx) => {
+      if (idx < 0 || idx >= pages.length) return;
+      pages.forEach((p, i) => { p.style.display = i === idx ? '' : 'none'; });
+      dots.forEach((d, i) => { d.classList.toggle('active', i === idx); });
+      currentPage = idx;
+    };
+    const wrap = chainTrack.parentElement;
+    const leftBtn = wrap.querySelector('.chain-carousel-left');
+    const rightBtn = wrap.querySelector('.chain-carousel-right');
+    if (leftBtn) leftBtn.addEventListener('click', () => showPage((currentPage - 1 + pages.length) % pages.length));
+    if (rightBtn) rightBtn.addEventListener('click', () => showPage((currentPage + 1) % pages.length));
+    dots.forEach(d => d.addEventListener('click', () => showPage(parseInt(d.dataset.dot, 10))));
+  }
+
+  // --- Copy buttons for wallet credentials ---
+  for (const btn of $$('.agentaddress-copy-btn')) {
+    btn.addEventListener('click', () => {
+      const targetId = btn.dataset.copyTarget;
+      const el = document.getElementById(targetId);
+      if (el && el.textContent) {
+        navigator.clipboard.writeText(el.textContent).then(() => {
+          const orig = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = orig; }, 1500);
+        }).catch(() => {});
       }
-      agentAddressDisconnectBtn.disabled = false;
+    });
+  }
+
+  // --- Show Credentials (retrieve from vault, fallback to browser memory) ---
+  const showCredsBtn = document.getElementById('agentaddress-show-credentials-btn');
+  const credsStatus = document.getElementById('agentaddress-credentials-status');
+  if (showCredsBtn) {
+    showCredsBtn.addEventListener('click', async () => {
+      // Toggle hide if already revealed
+      if (showCredsBtn._revealed) {
+        const pkRow = document.getElementById('agentaddress-privkey-row');
+        const mnRow = document.getElementById('agentaddress-mnemonic-row');
+        if (pkRow) pkRow.style.display = 'none';
+        if (mnRow) mnRow.style.display = 'none';
+        showCredsBtn.textContent = 'Show Credentials';
+        showCredsBtn._revealed = false;
+        if (credsStatus) credsStatus.textContent = '';
+        return;
+      }
+      showCredsBtn.disabled = true;
+      if (credsStatus) credsStatus.textContent = 'Retrieving...';
+      let loaded = false;
+      try {
+        const resp = await apiPost('/agentaddress/credentials', {});
+        if (resp && resp.private_key) {
+          agentAddressField('agentaddress-private-key', resp.private_key);
+          const pkRow = document.getElementById('agentaddress-privkey-row');
+          if (pkRow) pkRow.style.display = '';
+          loaded = true;
+        }
+        if (resp && resp.mnemonic) {
+          agentAddressField('agentaddress-mnemonic', resp.mnemonic);
+          const mnRow = document.getElementById('agentaddress-mnemonic-row');
+          if (mnRow) mnRow.style.display = '';
+          loaded = true;
+        }
+        if (loaded && credsStatus) {
+          credsStatus.innerHTML = '<span style="color:var(--green)">&#10003; From vault</span>';
+        }
+      } catch (_vaultErr) {
+        // Vault unavailable — try browser session memory
+      }
+      if (!loaded) {
+        const mem = window.__haloGeneratedAgentAddress || {};
+        // Try browser session memory first (survives re-renders)
+        if (mem.evmPrivateKey) {
+          agentAddressField('agentaddress-private-key', mem.evmPrivateKey);
+          const pkRow = document.getElementById('agentaddress-privkey-row');
+          if (pkRow) pkRow.style.display = '';
+          loaded = true;
+        }
+        if (mem.mnemonic) {
+          agentAddressField('agentaddress-mnemonic', mem.mnemonic);
+          const mnRow = document.getElementById('agentaddress-mnemonic-row');
+          if (mnRow) mnRow.style.display = '';
+          loaded = true;
+        }
+        // Last resort: check if DOM elements were populated by setAgentAddressOutput
+        if (!loaded) {
+          const pk = document.getElementById('agentaddress-private-key');
+          const mn = document.getElementById('agentaddress-mnemonic');
+          if (pk && pk.textContent) {
+            const pkRow = document.getElementById('agentaddress-privkey-row');
+            if (pkRow) pkRow.style.display = '';
+            loaded = true;
+          }
+          if (mn && mn.textContent) {
+            const mnRow = document.getElementById('agentaddress-mnemonic-row');
+            if (mnRow) mnRow.style.display = '';
+            loaded = true;
+          }
+        }
+        if (loaded && credsStatus) {
+          credsStatus.innerHTML = '<span style="color:var(--yellow)">Shown from current session. Set up a PQ wallet to enable encrypted vault storage.</span>';
+        } else if (credsStatus) {
+          credsStatus.innerHTML = '<span style="color:var(--yellow)">Credentials not available. Wallet may need to be regenerated.</span>';
+        }
+      }
+      showCredsBtn.textContent = 'Hide Credentials';
+      showCredsBtn._revealed = true;
+      showCredsBtn.disabled = false;
     });
   }
 
@@ -2459,8 +2541,8 @@ async function renderSetup() {
         securityBadgeNode.onerror = null;
       };
       securityBadgeNode.setAttribute('src', nextSrc);
-      window.setTimeout(() => securityBadgeNode.classList.remove('is-swapping'), 520);
-    }, 220);
+      window.setTimeout(() => securityBadgeNode.classList.remove('is-swapping'), 200);
+    }, 45);
   };
   securityTierButtons.forEach(btn => {
     btn.addEventListener('click', async () => {
