@@ -58,12 +58,17 @@ const PROVIDER_INFO = {
 // -- Routing ------------------------------------------------------------------
 const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
+  identification: renderIdentificationPage,
   trust: renderTrust, nucleusdb: renderNucleusDB, cockpit: renderCockpit, deploy: renderDeploy };
 
-// Genesis + Overview hub pages — rendering logic in genesis-docs.js (loaded after app.js)
+// Genesis + Overview hub + Identification pages — rendering logic in genesis-docs.js (loaded after app.js)
 function renderGenesisPage() {
   if (typeof renderGenesis === 'function') renderGenesis();
   else content.innerHTML = '<div class="loading">Genesis docs module not loaded.</div>';
+}
+function renderIdentificationPage() {
+  if (typeof renderIdentification === 'function') renderIdentification();
+  else content.innerHTML = '<div class="loading">Identification docs module not loaded.</div>';
 }
 function renderOverviewHub() {
   if (typeof renderDocsOverview === 'function') renderDocsOverview();
@@ -79,6 +84,9 @@ let _genesisComplete = null;
 let _genesisStatusFetchedAt = 0;
 let _genesisCeremonyRunning = false;
 const GENESIS_CACHE_MS = 3000;
+let _cryptoStatus = null;
+let _cryptoStatusFetchedAt = 0;
+const CRYPTO_CACHE_MS = 2000;
 const GENESIS_STAGES = [
   { id: 'hw', label: 'Hardware Detection', stub: true },
   { id: 'curby', label: 'Quantum Entropy', stub: false },
@@ -209,6 +217,131 @@ async function fetchGenesisStatus(force) {
   }
   _genesisStatusFetchedAt = now;
   return _genesisComplete;
+}
+
+async function fetchCryptoStatus(force) {
+  const now = Date.now();
+  if (!force && _cryptoStatus && (now - _cryptoStatusFetchedAt) < CRYPTO_CACHE_MS) {
+    return _cryptoStatus;
+  }
+  try {
+    const status = await api('/crypto/status');
+    _cryptoStatus = status || {};
+  } catch (e) {
+    _cryptoStatus = {
+      locked: false,
+      password_protected: false,
+      migration_status: 'unknown',
+      active_scopes: [],
+      retry_after_secs: 0,
+      error: String(e && e.message || e),
+    };
+  }
+  _cryptoStatusFetchedAt = now;
+  return _cryptoStatus;
+}
+
+function hideCryptoOverlay() {
+  const overlay = $('#crypto-lock-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function lockTitle(status) {
+  if (!status.password_protected || status.migration_status === 'needs_password_creation' || status.migration_status === 'fresh') {
+    return 'Create a password to protect your identity';
+  }
+  return 'Enter password to unlock';
+}
+
+function lockHint(status) {
+  if (!status.password_protected || status.migration_status === 'needs_password_creation' || status.migration_status === 'fresh') {
+    return 'This password protects local cryptographic scopes (sign, vault, wallet, identity, genesis).';
+  }
+  if (Number(status.retry_after_secs || 0) > 0) {
+    return `Too many failed attempts. Retry in ${Number(status.retry_after_secs)}s.`;
+  }
+  return 'Unlock to access encrypted identity, vault, and wallet operations.';
+}
+
+function renderCryptoOverlay(status) {
+  const overlay = $('#crypto-lock-overlay');
+  if (!overlay) return;
+  const needsCreate = !status.password_protected || status.migration_status === 'needs_password_creation' || status.migration_status === 'fresh';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `
+    <div class="crypto-lock-card">
+      <div class="crypto-lock-title">${esc(lockTitle(status))}</div>
+      <div class="crypto-lock-subtitle">${esc(lockHint(status))}</div>
+      ${needsCreate ? `
+        <div class="crypto-lock-row">
+          <input id="crypto-create-password" type="password" class="input" placeholder="Create password">
+        </div>
+        <div class="crypto-lock-row">
+          <input id="crypto-create-confirm" type="password" class="input" placeholder="Confirm password">
+        </div>
+        <div class="crypto-lock-actions">
+          <button id="crypto-create-btn" class="btn btn-primary">Create Password</button>
+        </div>
+      ` : `
+        <div class="crypto-lock-row">
+          <input id="crypto-unlock-password" type="password" class="input" placeholder="Password">
+        </div>
+        <div class="crypto-lock-actions">
+          <button id="crypto-unlock-btn" class="btn btn-primary">Unlock</button>
+        </div>
+      `}
+      <div class="crypto-lock-meta">Scopes in session: ${(status.active_scopes || []).map(esc).join(', ') || 'none'}</div>
+      <div id="crypto-lock-error" class="crypto-lock-error"></div>
+    </div>
+  `;
+  if (needsCreate) {
+    const createBtn = $('#crypto-create-btn', overlay);
+    if (createBtn) {
+      createBtn.onclick = async () => {
+        const password = String($('#crypto-create-password', overlay)?.value || '');
+        const confirm = String($('#crypto-create-confirm', overlay)?.value || '');
+        const errorEl = $('#crypto-lock-error', overlay);
+        try {
+          createBtn.disabled = true;
+          await apiPost('/crypto/create-password', { password, confirm });
+          _cryptoStatus = null;
+          await ensureCryptoUnlocked(true);
+        } catch (e) {
+          if (errorEl) errorEl.textContent = String(e && e.message || e);
+        } finally {
+          createBtn.disabled = false;
+        }
+      };
+    }
+  } else {
+    const unlockBtn = $('#crypto-unlock-btn', overlay);
+    if (unlockBtn) {
+      unlockBtn.onclick = async () => {
+        const password = String($('#crypto-unlock-password', overlay)?.value || '');
+        const errorEl = $('#crypto-lock-error', overlay);
+        try {
+          unlockBtn.disabled = true;
+          await apiPost('/crypto/unlock', { password });
+          _cryptoStatus = null;
+          await ensureCryptoUnlocked(true);
+        } catch (e) {
+          if (errorEl) errorEl.textContent = String(e && e.message || e);
+        } finally {
+          unlockBtn.disabled = false;
+        }
+      };
+    }
+  }
+}
+
+async function ensureCryptoUnlocked(force) {
+  const status = await fetchCryptoStatus(force);
+  if (status && status.locked) {
+    renderCryptoOverlay(status);
+    return false;
+  }
+  hideCryptoOverlay();
+  return true;
 }
 
 function genesisStageById(id) {
@@ -450,6 +583,9 @@ async function route() {
   }
   if (overlay) overlay.style.display = 'none';
 
+  const cryptoReady = await ensureCryptoUnlocked();
+  if (!cryptoReady) return;
+
   const hash = location.hash.replace('#/', '') || 'setup';
   const page = hash.split('/')[0];
   const arg = hash.split('/').slice(1).join('/');
@@ -495,7 +631,14 @@ if (localStorage.getItem('crt') === 'off') {
 // -- API helpers --------------------------------------------------------------
 async function api(path) {
   const res = await fetch('/api' + path);
-  if (!res.ok) throw await toApiError(res, path);
+  if (!res.ok) {
+    const err = await toApiError(res, path);
+    if (Number(err.status) === 423 && !String(path).startsWith('/crypto/')) {
+      _cryptoStatus = null;
+      ensureCryptoUnlocked(true);
+    }
+    throw err;
+  }
   return res.json();
 }
 
@@ -503,13 +646,27 @@ async function apiPost(path, body) {
   const res = await fetch('/api' + path, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
   });
-  if (!res.ok) throw await toApiError(res, path);
+  if (!res.ok) {
+    const err = await toApiError(res, path);
+    if (Number(err.status) === 423 && !String(path).startsWith('/crypto/')) {
+      _cryptoStatus = null;
+      ensureCryptoUnlocked(true);
+    }
+    throw err;
+  }
   return res.json();
 }
 
 async function apiDelete(path) {
   const res = await fetch('/api' + path, { method: 'DELETE' });
-  if (!res.ok) throw await toApiError(res, path);
+  if (!res.ok) {
+    const err = await toApiError(res, path);
+    if (Number(err.status) === 423 && !String(path).startsWith('/crypto/')) {
+      _cryptoStatus = null;
+      ensureCryptoUnlocked(true);
+    }
+    throw err;
+  }
   return res.json();
 }
 
@@ -1102,6 +1259,14 @@ async function renderConfig() {
   content.innerHTML = '<div class="loading">Loading config...</div>';
   try {
     const cfg = await api('/config');
+    let crypto = { locked: false, migration_status: 'unknown', active_scopes: [], password_protected: false };
+    try {
+      crypto = await api('/crypto/status');
+    } catch (_e) {}
+    let agentsResp = { agents: [] };
+    try {
+      agentsResp = await api('/agents/list');
+    } catch (_e) {}
     let vaultResp = { keys: [] };
     let vaultKeysAuthRequired = false;
     try {
@@ -1132,6 +1297,54 @@ async function renderConfig() {
             ? '<span class="badge badge-ok">Authenticated</span>'
             : '<span class="badge badge-warn">Not Authenticated</span>'}
         </div>
+      </div>
+
+      <div class="section-header">Crypto Lock</div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+        <div class="config-row">
+          <div>
+            <div class="config-label">Session</div>
+            <div class="config-desc">
+              ${crypto.locked ? 'Locked' : 'Unlocked'}
+              · status: ${esc(String(crypto.migration_status || 'unknown'))}
+              · scopes: ${esc((crypto.active_scopes || []).join(', ') || 'none')}
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="btn btn-sm" onclick="forceCryptoLock()">Lock Now</button>
+            <button class="btn btn-sm btn-primary" onclick="ensureCryptoUnlocked(true)">Unlock</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-header">Authorized Agents</div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+        <div class="config-row">
+          <div>
+            <div class="config-label">Agent Credentials</div>
+            <div class="config-desc">Per-scope ML-KEM credentials for autonomous agents.</div>
+          </div>
+          <button class="btn btn-sm btn-primary" onclick="authorizeAgentPrompt()">Authorize New Agent</button>
+        </div>
+        ${(agentsResp.agents || []).length ? (agentsResp.agents || []).map(agent => `
+          <div class="config-row">
+            <div>
+              <div class="config-label">${esc(agent.label || agent.agent_id)}</div>
+              <div class="config-desc">
+                ${esc(agent.agent_id)} · scopes: ${esc((agent.scopes || []).join(', '))}
+                ${agent.expires_at ? ' · expires: ' + esc(new Date(agent.expires_at * 1000).toISOString()) : ''}
+              </div>
+            </div>
+            <button class="btn btn-sm" onclick="revokeAgent('${esc(agent.agent_id)}')">Revoke</button>
+          </div>
+        `).join('') : `
+          <div class="config-row">
+            <div>
+              <div class="config-label">No authorized agents</div>
+              <div class="config-desc">Create an agent credential to enable scoped autonomous access.</div>
+            </div>
+          </div>
+        `}
       </div>
 
       <div class="section-header">Agent Wrapping</div>
@@ -1352,6 +1565,48 @@ window.refreshAgentPmtCatalog = async function refreshAgentPmtCatalog() {
     renderConfig();
   } catch (e) {
     alert(`AgentPMT refresh failed: ${String(e && e.message || e)}`);
+  }
+};
+
+window.forceCryptoLock = async function forceCryptoLock() {
+  try {
+    await apiPost('/crypto/lock', {});
+    _cryptoStatus = null;
+    await ensureCryptoUnlocked(true);
+    await renderConfig();
+  } catch (e) {
+    alert(`Lock failed: ${String(e && e.message || e)}`);
+  }
+};
+
+window.authorizeAgentPrompt = async function authorizeAgentPrompt() {
+  const label = prompt('Agent label', 'Automation Agent');
+  if (!label) return;
+  const scopesRaw = prompt('Scopes (comma-separated): sign,vault,wallet,identity', 'sign,vault');
+  if (!scopesRaw) return;
+  const expiresRaw = prompt('Expiry days (empty for no expiry)', '90');
+  const scopes = scopesRaw.split(',').map(s => s.trim()).filter(Boolean);
+  const expires_days = expiresRaw && expiresRaw.trim() ? Number(expiresRaw) : null;
+  try {
+    const resp = await apiPost('/agents/authorize', {
+      label,
+      scopes,
+      expires_days: Number.isFinite(expires_days) ? expires_days : null,
+    });
+    alert(`Agent authorized.\n\nAgent ID: ${resp.agent_id}\n\nSecret key (shown once):\n${resp.agent_sk}`);
+    await renderConfig();
+  } catch (e) {
+    alert(`Authorize failed: ${String(e && e.message || e)}`);
+  }
+};
+
+window.revokeAgent = async function revokeAgent(agent_id) {
+  if (!confirm(`Revoke agent ${agent_id}?`)) return;
+  try {
+    await apiPost('/agents/revoke', { agent_id });
+    await renderConfig();
+  } catch (e) {
+    alert(`Revoke failed: ${String(e && e.message || e)}`);
   }
 };
 
@@ -1761,11 +2016,15 @@ async function renderSetup() {
           <div class="agentaddress-layout">
             <div class="agentaddress-main">
               <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px">
-                Your agent identity is auto-generated on first launch. It provides a universal, verifiable
-                address for autonomous agent operations.
+                Your agent identity is auto-generated on first launch. When a genesis seed is available,
+                it is derived locally from that seed; otherwise it falls back to external generation.
               </p>
               <div id="agentaddress-status" style="font-size:12px;color:var(--text-dim);margin-bottom:10px"></div>
               <div style="margin-bottom:10px">
+                <button class="btn btn-sm btn-primary" id="agentidentity-genesis-btn" type="button"
+                        style="display:none;font-size:11px;padding:6px 14px;border-radius:5px">
+                  Generate from Genesis
+                </button>
                 <button class="btn btn-sm" id="agentidentity-retry-btn" type="button"
                         style="display:none;font-size:11px;padding:6px 14px;border-radius:5px">
                   Retry Auto Setup
@@ -2258,6 +2517,7 @@ async function renderSetup() {
   };
 
   const autoRetryBtn = document.getElementById('agentidentity-retry-btn');
+  const genesisGenerateBtn = document.getElementById('agentidentity-genesis-btn');
   if (agentaddressConnected && agentAddressStatus) {
     agentAddressStatus.innerHTML = '<span style="color:var(--green)">&#10003; Identity ready and secured.</span>';
   } else if (agentAddressStatus) {
@@ -2278,7 +2538,12 @@ async function renderSetup() {
     autoRetryBtn.style.display = show ? '' : 'none';
   };
 
-  const runAutoProvision = async (force = false) => {
+  const maybeShowGenesisGenerate = (show) => {
+    if (!genesisGenerateBtn) return;
+    genesisGenerateBtn.style.display = show ? '' : 'none';
+  };
+
+  const runAutoProvision = async (force = false, preferredSource = null) => {
     if (autoProvisionState.inFlight) return;
     if (!needsAddress && !force) return;
     if (!needsAddress || (!force && autoProvisionState.attempted)) return;
@@ -2290,12 +2555,19 @@ async function renderSetup() {
       if (agentAddressStatus) {
         agentAddressStatus.innerHTML = '<span style="color:var(--text-dim)">Generating agent identity...</span>';
       }
-      const resp = await apiPost('/agentaddress/generate', { persist_public_address: true });
+      const genesisReady = await fetchGenesisStatus();
+      const source = preferredSource || (genesisReady ? 'genesis' : 'external');
+      maybeShowGenesisGenerate(!agentaddressConnected && genesisReady);
+      const resp = await apiPost('/agentaddress/generate', {
+        persist_public_address: true,
+        source
+      });
       const generatedAddress = resp && resp.data ? resp.data : null;
       if (generatedAddress) {
         setAgentAddressOutput(generatedAddress);
         if (agentAddressStatus) {
-          agentAddressStatus.innerHTML = '<span style="color:var(--green)">&#10003; Identity ready and secured.</span>';
+          const mode = source === 'genesis' ? ' (genesis-derived)' : '';
+          agentAddressStatus.innerHTML = `<span style="color:var(--green)">&#10003; Identity ready and secured${mode}.</span>`;
         }
       }
       window._invalidateSetupState();
@@ -2317,6 +2589,18 @@ async function renderSetup() {
       autoProvisionState.attempted = false;
       await runAutoProvision(true);
     });
+  }
+  if (genesisGenerateBtn) {
+    genesisGenerateBtn.addEventListener('click', async () => {
+      autoProvisionState.attempted = false;
+      await runAutoProvision(true, 'genesis');
+    });
+  }
+  try {
+    const genesisReady = await fetchGenesisStatus();
+    maybeShowGenesisGenerate(!agentaddressConnected && genesisReady);
+  } catch (_e) {
+    maybeShowGenesisGenerate(false);
   }
   await runAutoProvision(false);
 

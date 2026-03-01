@@ -2185,6 +2185,18 @@ async fn wdk_available_requires_auth() {
 }
 
 #[tokio::test]
+async fn agents_list_requires_auth() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
+    let (state, db_path, creds_path) = test_state_unauth("agents_list_auth");
+    let (status, val) = api_get(state, "/agents/list").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(val["code"], "auth_required");
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
 async fn agentaddress_status_and_chains_routes_work() {
     let (state, db_path) = test_state("agentaddress_status");
     let (status_a, val_a) = api_get(state.clone(), "/agentaddress/status").await;
@@ -2221,6 +2233,173 @@ async fn agentaddress_generate_requires_auth() {
     assert_eq!(val["code"], "auth_required");
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn agentaddress_generate_genesis_requires_seed() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_agentaddress_genesis_requires_seed_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _fixture_guard = EnvVarGuard::set("AGENTHALO_GENESIS_TEST_MODE", None);
+
+    let (state, db_path) = test_state("agentaddress_genesis_requires_seed");
+    let (status, val) = api_post(
+        state,
+        "/agentaddress/generate",
+        json!({"source":"genesis","persist_public_address":true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "genesis source should require completed seed: {val}"
+    );
+    assert!(
+        val["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("genesis seed not available"),
+        "error should describe missing genesis precondition: {val}"
+    );
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn agentaddress_generate_genesis_is_deterministic_and_persists_source() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_agentaddress_genesis_deterministic_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _fixture_guard = EnvVarGuard::set("AGENTHALO_GENESIS_TEST_MODE", Some("success"));
+
+    let (state, db_path) = test_state("agentaddress_genesis_deterministic");
+    let (harvest_status, harvest_val) =
+        api_post(state.clone(), "/genesis/harvest", json!({})).await;
+    assert_eq!(
+        harvest_status,
+        StatusCode::OK,
+        "genesis harvest should succeed before wallet derivation: {harvest_val}"
+    );
+
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/agentaddress/generate",
+        json!({"source":"genesis","persist_public_address":true}),
+    )
+    .await;
+    assert_eq!(
+        s1,
+        StatusCode::OK,
+        "first genesis generate should succeed: {v1}"
+    );
+    let addr1 = v1["data"]["evmAddress"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        addr1.starts_with("0x") && addr1.len() == 42,
+        "first generated address should be EVM-shaped: {v1}"
+    );
+    assert_eq!(v1["source"], "genesis");
+
+    let (_sd, _vd) = api_post(state.clone(), "/agentaddress/disconnect", json!({})).await;
+    let (s2, v2) = api_post(
+        state.clone(),
+        "/agentaddress/generate",
+        json!({"source":"genesis","persist_public_address":true}),
+    )
+    .await;
+    assert_eq!(
+        s2,
+        StatusCode::OK,
+        "second genesis generate should succeed: {v2}"
+    );
+    let addr2 = v2["data"]["evmAddress"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        addr1, addr2,
+        "genesis-derived address should be deterministic for fixed seed"
+    );
+
+    let (ss, sv) = api_get(state, "/agentaddress/status").await;
+    assert_eq!(
+        ss,
+        StatusCode::OK,
+        "agentaddress status should succeed: {sv}"
+    );
+    assert_eq!(sv["source"], "genesis_derived");
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn agentaddress_generate_genesis_requires_wallet_scope_when_locked() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_agentaddress_genesis_scope_lock_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("agentaddress_genesis_scope_lock");
+    let (create_status, create_val) = api_post(
+        state.clone(),
+        "/crypto/create-password",
+        json!({
+            "password": "CorrectHorseBatteryStaple123!",
+            "confirm": "CorrectHorseBatteryStaple123!"
+        }),
+    )
+    .await;
+    assert_eq!(
+        create_status,
+        StatusCode::OK,
+        "password creation should succeed: {create_val}"
+    );
+    let (_lock_status, _lock_val) = api_post(state.clone(), "/crypto/lock", json!({})).await;
+
+    let (status, val) = api_post(
+        state,
+        "/agentaddress/generate",
+        json!({"source":"genesis","persist_public_address":true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::LOCKED,
+        "locked session should require wallet scope: {val}"
+    );
+    assert_eq!(val["code"], "crypto_locked");
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
 }
 
 #[tokio::test]
@@ -2283,6 +2462,99 @@ async fn wdk_create_requires_genesis_seed() {
             .contains("genesis seed not available"),
         "error should indicate missing genesis seed precondition: {val}"
     );
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn crypto_unlock_rejects_wrong_password_after_creation() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_crypto_unlock_wrong_password_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("crypto_unlock_wrong_password");
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/crypto/create-password",
+        json!({
+            "password": "CorrectHorseBatteryStaple123!",
+            "confirm": "CorrectHorseBatteryStaple123!"
+        }),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "create password should succeed: {v1}");
+
+    let (s2, v2) = api_post(state.clone(), "/crypto/lock", json!({})).await;
+    assert_eq!(s2, StatusCode::OK, "lock should succeed: {v2}");
+
+    let (s3, v3) = api_post(
+        state,
+        "/crypto/unlock",
+        json!({"password": "wrong-password"}),
+    )
+    .await;
+    assert_eq!(
+        s3,
+        StatusCode::UNAUTHORIZED,
+        "unlock with wrong password must fail: {v3}"
+    );
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn crypto_change_password_rejects_wrong_current_password() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_crypto_change_password_wrong_current_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("crypto_change_password_wrong_current");
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/crypto/create-password",
+        json!({
+            "password": "CorrectHorseBatteryStaple123!",
+            "confirm": "CorrectHorseBatteryStaple123!"
+        }),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "create password should succeed: {v1}");
+
+    let (s2, v2) = api_post(
+        state,
+        "/crypto/change-password",
+        json!({
+            "current_password": "incorrect-current",
+            "new_password": "EvenStrongerPass123!",
+            "confirm": "EvenStrongerPass123!"
+        }),
+    )
+    .await;
+    assert_eq!(
+        s2,
+        StatusCode::UNAUTHORIZED,
+        "change-password with wrong current password must fail: {v2}"
+    );
+
     let _ = std::fs::remove_dir_all(&halo_home);
     let _ = std::fs::remove_file(&db_path);
 }

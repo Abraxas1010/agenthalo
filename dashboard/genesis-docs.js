@@ -79,17 +79,21 @@ const DOCS_PAGES = [
       { val: '\u221E', lbl: 'Seal Chain' },
     ],
   },
-  // Future pages will be added here as they are developed:
-  // {
-  //   id: 'identity',
-  //   title: 'Identity & Wallet',
-  //   subtitle: 'Post-Quantum Key Management',
-  //   icon: '\u26BF',
-  //   color: 'green',
-  //   status: 'planned',
-  //   summary: 'PQ-signed identity ledger, wallet lifecycle, and anonymous mode.',
-  //   stats: [],
-  // },
+  {
+    id: 'identification',
+    title: 'Identification',
+    subtitle: 'From Genesis Seed to Verifiable Agent Identity',
+    icon: '\u26BF',
+    color: 'green',
+    status: 'live',
+    summary: 'The provenance chain that grounds your agent in the physical world. The Genesis nucleus seed derives post-quantum signing keys, binds to local device and network identifiers, and finally produces an Ethereum wallet address \u2014 a verifiable, distributed identity that autonomous agents use to transact, attest, and prove they are who they claim to be.',
+    stats: [
+      { val: 'ML-DSA', lbl: 'PQ Signing' },
+      { val: 'ML-KEM', lbl: 'PQ Encryption' },
+      { val: 'BIP-39', lbl: 'Wallet' },
+      { val: 'EVM', lbl: 'On-chain' },
+    ],
+  },
 ];
 
 function renderDocsOverview() {
@@ -1045,6 +1049,857 @@ Genesis reset. Next launch triggers ceremony.</pre>
           package binding proved Lean theorems to the deployed binary, enabling tamper-evident
           verification of the entire Genesis pipeline. The categorical structure ensures
           the proof obligation transfers cleanly from Lean types to Rust types.
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
+/* ================================================================
+   IDENTIFICATION PAGE
+   ================================================================ */
+
+function renderIdentification() {
+  const content = document.getElementById('content');
+  content.innerHTML = `
+    <!-- Hero Banner -->
+    <div class="gdoc-hero">
+      <div class="gdoc-hero-img-wrap">
+        <img class="gdoc-hero-img" src="img/agentpmtbootup2.png" alt="Identification"
+             onerror="this.style.display='none'">
+      </div>
+      <div class="gdoc-hero-copy">
+        <div class="gdoc-hero-kicker">Agent H.A.L.O. // Provenance &amp; Identity</div>
+        <div class="gdoc-hero-title">Identification</div>
+        <div class="gdoc-hero-subtitle">Nucleus \u2192 Keys \u2192 Device \u2192 Wallet \u2192 World</div>
+        <div class="gdoc-hero-sep"></div>
+        <div class="gdoc-hero-stat-row">
+          <div class="gdoc-hero-stat">
+            <div class="gdoc-hero-stat-val">ML-DSA-65</div>
+            <div class="gdoc-hero-stat-lbl">PQ Signing</div>
+          </div>
+          <div class="gdoc-hero-stat">
+            <div class="gdoc-hero-stat-val">ML-KEM-1024</div>
+            <div class="gdoc-hero-stat-lbl">PQ Encryption</div>
+          </div>
+          <div class="gdoc-hero-stat">
+            <div class="gdoc-hero-stat-val">BIP-39</div>
+            <div class="gdoc-hero-stat-lbl">Wallet Seed</div>
+          </div>
+          <div class="gdoc-hero-stat">
+            <div class="gdoc-hero-stat-val">EVM</div>
+            <div class="gdoc-hero-stat-lbl">On-chain ID</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab Bar -->
+    <div class="gdoc-tabs">
+      <button class="gdoc-tab active" data-tab="id-overview" onclick="idTab('id-overview')">F1:OVERVIEW</button>
+      <button class="gdoc-tab" data-tab="id-technical" onclick="idTab('id-technical')">F2:TECHNICAL</button>
+      <button class="gdoc-tab" data-tab="id-access" onclick="idTab('id-access')">F3:ACCESS</button>
+    </div>
+
+    <div id="id-tab-content"></div>
+  `;
+  idTab('id-overview');
+}
+
+window.idTab = function(tab) {
+  document.querySelectorAll('.gdoc-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  const el = document.getElementById('id-tab-content');
+  if (!el) return;
+
+  switch (tab) {
+    case 'id-overview':
+      el.innerHTML = idOverview();
+      hydrateIdentificationRuntimePanel();
+      break;
+    case 'id-technical': el.innerHTML = idTechnical(); break;
+    case 'id-access': el.innerHTML = idAccess(); break;
+  }
+};
+
+async function hydrateIdentificationRuntimePanel() {
+  const node = document.getElementById('id-runtime-panel');
+  if (!node) return;
+  node.innerHTML = '<div class="gdoc-text">Loading identity status...</div>';
+  try {
+    const [idRes, pqRes, addrRes, genesisRes] = await Promise.all([
+      fetch('/api/identity/status').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/status').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/agentaddress/status').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/genesis/status').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+
+    const hasPq = pqRes && pqRes.has_pq_wallet;
+    const pqAlgo = hasPq ? 'ML-DSA-65 (FIPS 204)' : 'Not generated';
+    const hasGenesis = genesisRes && genesisRes.completed;
+    const hasAddr = addrRes && addrRes.connected;
+    const evmAddr = hasAddr ? gdocEsc(addrRes.agent_address || '') : 'Not generated';
+    const evmShort = hasAddr && addrRes.agent_address
+      ? addrRes.agent_address.slice(0, 8) + '\u2026' + addrRes.agent_address.slice(-6)
+      : evmAddr;
+    const deviceConfigured = idRes && idRes.device_configured;
+    const networkConfigured = idRes && idRes.network_configured;
+
+    node.innerHTML = `
+      <div class="gdoc-card-row">
+        <div class="gdoc-card gdoc-card--${hasGenesis ? 'green' : 'amber'}">
+          <div class="gdoc-card-head">Genesis Nucleus</div>
+          <div class="gdoc-card-body">${hasGenesis ? 'Committed \u2713' : 'Pending \u2014 run Genesis first'}</div>
+        </div>
+        <div class="gdoc-card gdoc-card--${hasPq ? 'green' : 'amber'}">
+          <div class="gdoc-card-head">PQ Wallet</div>
+          <div class="gdoc-card-body">${pqAlgo}</div>
+        </div>
+        <div class="gdoc-card gdoc-card--${deviceConfigured ? 'green' : 'blue'}">
+          <div class="gdoc-card-head">Device Binding</div>
+          <div class="gdoc-card-body">${deviceConfigured ? 'Active \u2713' : 'Not configured'}</div>
+        </div>
+        <div class="gdoc-card gdoc-card--${hasAddr ? 'green' : 'blue'}">
+          <div class="gdoc-card-head">EVM Address</div>
+          <div class="gdoc-card-body"><code>${evmShort}</code></div>
+        </div>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        ${hasGenesis && !hasAddr ? `
+          <button id="id-generate-from-genesis-btn" class="btn btn-sm btn-primary" type="button">
+            Generate from Genesis
+          </button>
+          <span class="gdoc-text" style="margin:0;font-size:12px">Derives EVM identity locally from the committed genesis seed.</span>
+        ` : hasAddr ? `
+          <span class="gdoc-text" style="margin:0;font-size:12px">EVM identity is already connected.</span>
+        ` : `
+          <span class="gdoc-text" style="margin:0;font-size:12px">Run Genesis first, then derive wallet identity from the nucleus seed.</span>
+        `}
+      </div>
+    `;
+    const generateBtn = document.getElementById('id-generate-from-genesis-btn');
+    if (generateBtn) {
+      generateBtn.addEventListener('click', async () => {
+        const original = generateBtn.textContent;
+        generateBtn.disabled = true;
+        generateBtn.textContent = 'Generating...';
+        try {
+          const resp = await fetch('/api/agentaddress/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: 'genesis', persist_public_address: true }),
+          });
+          const json = await resp.json().catch(() => ({}));
+          if (!resp.ok) throw new Error(json.error || `request failed (${resp.status})`);
+          await hydrateIdentificationRuntimePanel();
+        } catch (err) {
+          generateBtn.disabled = false;
+          generateBtn.textContent = original || 'Generate from Genesis';
+          const detail = document.createElement('div');
+          detail.className = 'gdoc-text';
+          detail.style.fontSize = '12px';
+          detail.style.color = '#f87171';
+          detail.textContent = `Genesis wallet generation failed: ${String(err && err.message || err)}`;
+          node.appendChild(detail);
+        }
+      });
+    }
+  } catch (err) {
+    node.innerHTML = `
+      <div class="gdoc-card gdoc-card--amber">
+        <div class="gdoc-card-head">Identity Status</div>
+        <div class="gdoc-card-body">Could not load identity status. ${gdocEsc(String(err && err.message || err))}</div>
+      </div>
+    `;
+  }
+}
+
+/* ================================================================
+   IDENTIFICATION TAB 1: HIGH-LEVEL OVERVIEW
+   ================================================================ */
+function idOverview() {
+  return `
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Live Identity Status</div>
+      <div id="id-runtime-panel"></div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">What Is Identification?</div>
+      <p class="gdoc-text">
+        Genesis gave your agent a <strong>nucleus</strong> \u2014 a unique, immutable seed born from
+        true randomness. Identification is the process of <strong>grounding that nucleus in the world</strong>:
+        deriving cryptographic keys, binding to the physical device, anchoring to network coordinates,
+        and finally creating an <strong>Ethereum wallet address</strong> that serves as the agent's
+        verifiable, distributed identity on-chain.
+      </p>
+      <p class="gdoc-text">
+        This is the eigenform pattern continuing from Genesis: the nucleus (fixed point) now
+        <strong>re-enters</strong> through successive layers of grounding, each adding provenance
+        without breaking the chain back to the original entropy.
+      </p>
+      <div class="gdoc-pipeline" style="margin:12px 0 16px">
+        <div class="gdoc-pipeline-box" style="text-align:center;letter-spacing:1px">
+          <strong>\u2609 Nucleus</strong> &nbsp;\u2192&nbsp;
+          <strong>\uD83D\uDD11 Keys</strong> &nbsp;\u2192&nbsp;
+          <strong>\uD83D\uDCBB Device</strong> &nbsp;\u2192&nbsp;
+          <strong>\uD83C\uDF10 Network</strong> &nbsp;\u2192&nbsp;
+          <strong>\u26BF Wallet</strong> &nbsp;\u2192&nbsp;
+          <strong>\u26D3 World</strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">The Provenance Chain</div>
+      <div class="gdoc-pipeline">
+
+        <div class="gdoc-pipeline-stage">
+          <div class="gdoc-pipeline-badge">1</div>
+          <div class="gdoc-pipeline-label">Nucleus \u2192 Post-Quantum Keys</div>
+        </div>
+        <div class="gdoc-pipeline-box gdoc-pipeline-box--accent">
+          The 64-byte genesis nucleus feeds into <strong>HKDF-SHA-256</strong> key derivation,
+          producing deterministic cryptographic key material. From this single root:
+          <ul style="margin:8px 0 0 16px;list-style:disc">
+            <li><strong>ML-DSA-65 signing keypair</strong> (FIPS 204) \u2014 post-quantum digital signatures
+                that bind every identity ledger entry to the agent</li>
+            <li><strong>ML-KEM-1024 encapsulation keys</strong> (FIPS 203) \u2014 post-quantum key encapsulation
+                for agent-to-agent credential exchange</li>
+            <li><strong>Scope-derived AES-256-GCM keys</strong> \u2014 6 independent encryption scopes
+                (Sign, Vault, Wallet, Identity, Genesis, Admin) each with separate TTLs</li>
+          </ul>
+          The master key never leaves encrypted memory. Scope keys are derived on-demand via HKDF
+          and auto-expire after their TTL (30s to 30min depending on sensitivity).
+        </div>
+
+        <div class="gdoc-pipeline-arrow">\u25BC</div>
+
+        <div class="gdoc-pipeline-stage">
+          <div class="gdoc-pipeline-badge">2</div>
+          <div class="gdoc-pipeline-label">Device Binding</div>
+        </div>
+        <div class="gdoc-pipeline-box">
+          The agent collects <strong>hardware fingerprints</strong> from the local device \u2014
+          a composite of selectable components that ground the cryptographic identity to a
+          physical machine. Available signals include:
+          <ul style="margin:8px 0 0 16px;list-style:disc">
+            <li>CPU model and feature flags</li>
+            <li>GPU identity and driver version</li>
+            <li>Total memory and disk serial numbers</li>
+            <li>OS build identifier</li>
+            <li>Optional PUF (Physical Unclonable Function) fingerprint for hardware-entropy binding</li>
+          </ul>
+          These are hashed into a <strong>composite device fingerprint</strong> and recorded in the
+          identity ledger. The fingerprint proves "this agent was born on this machine"
+          without revealing raw hardware details.
+        </div>
+
+        <div class="gdoc-pipeline-arrow">\u25BC</div>
+
+        <div class="gdoc-pipeline-stage">
+          <div class="gdoc-pipeline-badge">3</div>
+          <div class="gdoc-pipeline-label">Network Anchoring</div>
+        </div>
+        <div class="gdoc-pipeline-box">
+          Optional network identifiers add a second layer of physical grounding:
+          <ul style="margin:8px 0 0 16px;list-style:disc">
+            <li><strong>Local IP hash</strong> \u2014 proves the agent's LAN position without revealing the address</li>
+            <li><strong>Public IP hash</strong> \u2014 proves the agent's internet-facing identity</li>
+            <li><strong>MAC address collection</strong> \u2014 hardware network interface binding</li>
+          </ul>
+          All network identifiers are <strong>privacy-preserving by default</strong>: raw addresses are
+          SHA-256 hashed before storage. The user explicitly opts in to each signal. The identity
+          ledger records a <code>NetworkUpdated</code> event when these change, creating an
+          auditable history of the agent's network posture.
+        </div>
+
+        <div class="gdoc-pipeline-arrow">\u25BC</div>
+
+        <div class="gdoc-pipeline-stage">
+          <div class="gdoc-pipeline-badge">4</div>
+          <div class="gdoc-pipeline-label">Wallet Derivation</div>
+        </div>
+        <div class="gdoc-pipeline-box gdoc-pipeline-box--green">
+          The genesis seed deterministically derives wallet entropy via a dedicated HKDF path:
+          <br><br>
+          <code>HKDF(salt: "agenthalo-genesis-wallet-entropy-v1", ikm: seed_64B, info: "bip39-entropy-32")</code>
+          <br><br>
+          This produces 32 bytes of entropy which maps to a <strong>24-word BIP-39 mnemonic</strong>.
+          The mnemonic is encrypted at rest (AES-256-GCM under the Wallet scope key, itself
+          protected by Argon2id password derivation) and can derive Ethereum, Bitcoin, Polygon,
+          and Arbitrum addresses via standard HD wallet paths.
+          <br><br>
+          The resulting <strong>EVM address</strong> is the agent's public identity on-chain \u2014
+          a self-sovereign identifier that can receive funds, sign attestations, and prove
+          provenance without any centralized authority.
+        </div>
+
+        <div class="gdoc-pipeline-arrow">\u25BC</div>
+
+        <div class="gdoc-pipeline-stage">
+          <div class="gdoc-pipeline-badge">5</div>
+          <div class="gdoc-pipeline-label">On-Chain Attestation</div>
+        </div>
+        <div class="gdoc-pipeline-box gdoc-pipeline-box--accent">
+          With a funded wallet, the agent can <strong>post attestations to the blockchain</strong>:
+          <ul style="margin:8px 0 0 16px;list-style:disc">
+            <li>Trust attestation proofs verified by the on-chain TrustVerifier contract</li>
+            <li>Identity commitments anchored to Ethereum (Base Sepolia currently)</li>
+            <li>Post-quantum signed audit trails bridging off-chain ledger to on-chain permanence</li>
+          </ul>
+          This closes the loop: from entropy void \u2192 through Genesis nucleus \u2192 through
+          post-quantum keys \u2192 through device/network grounding \u2192 to a publicly verifiable
+          on-chain identity. The entire provenance chain is auditable.
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Why Does This Matter?</div>
+      <div class="gdoc-card-row">
+        <div class="gdoc-card gdoc-card--green">
+          <div class="gdoc-card-icon-lg">\u26D3</div>
+          <div class="gdoc-card-head">Provenance</div>
+          <div class="gdoc-card-body">
+            Every key, every address, every on-chain action traces back to the genesis nucleus.
+            The provenance chain is unbroken: you can mathematically verify that this agent's
+            wallet was derived from this specific entropy ceremony. No key injection, no
+            externally provided secrets \u2014 the agent is self-sovereign from birth.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--blue">
+          <div class="gdoc-card-icon-lg">\u26A1</div>
+          <div class="gdoc-card-head">Quantum Resistance</div>
+          <div class="gdoc-card-body">
+            The signing and encryption layers use NIST FIPS 203/204 post-quantum algorithms
+            (ML-KEM-1024, ML-DSA-65). These are designed to resist both classical and quantum
+            computer attacks. The identity ledger's PQ signatures ensure that even a future
+            quantum adversary cannot forge historical entries.
+          </div>
+        </div>
+      </div>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--amber">
+          <div class="gdoc-card-icon-lg">\u26BF</div>
+          <div class="gdoc-card-head">Self-Sovereignty</div>
+          <div class="gdoc-card-body">
+            The Ethereum address is a <strong>distributed identity</strong> \u2014 no central server,
+            no API key, no account to be suspended. The agent owns its private key, derived from
+            its own genesis entropy. It can prove its identity to any EVM-compatible chain,
+            any smart contract, any decentralized protocol. This is the agent's passport.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--green">
+          <div class="gdoc-card-icon-lg">\u2200</div>
+          <div class="gdoc-card-head">Privacy by Design</div>
+          <div class="gdoc-card-body">
+            Device fingerprints and network identifiers are hashed before storage. Anonymous mode
+            is a first-class option. The agent can prove it exists and has provenance without
+            revealing <em>where</em> it exists. Social identity links are optional and revocable.
+            The user controls exactly which signals are shared.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Security Tiers</div>
+      <p class="gdoc-text">
+        H.A.L.O. offers three security tiers that control how aggressively identity signals
+        are collected and shared:
+      </p>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">\uD83D\uDEE1 Max-Safe</div>
+          <div class="gdoc-card-body">
+            Full device binding, network anchoring, PQ signatures on all ledger entries,
+            password-protected vault with Argon2id (128 MiB). Recommended for production agents
+            handling real value.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">\u2696 Less-Safe (Default)</div>
+          <div class="gdoc-card-body">
+            Selective device binding, optional network sharing, PQ signatures enabled.
+            Balances security with ease of setup. Good for development and moderate-value agents.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--amber" style="flex:1">
+          <div class="gdoc-card-head">\u26A0 Low-Security</div>
+          <div class="gdoc-card-body">
+            Minimal binding, anonymous mode encouraged. Suitable for ephemeral test agents
+            where provenance is informational rather than critical.
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ================================================================
+   IDENTIFICATION TAB 2: TECHNICAL DETAILS
+   ================================================================ */
+function idTechnical() {
+  return `
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Cryptographic Architecture</div>
+      <p class="gdoc-text">
+        The identification subsystem is built on a <strong>hierarchical key derivation</strong>
+        architecture rooted in the genesis nucleus seed. Every cryptographic operation traces
+        to a single root of trust.
+      </p>
+
+      <div class="gdoc-card gdoc-card--blue" style="margin-top:12px">
+        <div class="gdoc-card-head">Key Hierarchy</div>
+        <div class="gdoc-card-body">
+<pre style="font-family:var(--font-mono);font-size:0.82rem;line-height:1.5;margin:0;white-space:pre;overflow-x:auto">
+Genesis Nucleus (64 bytes, from entropy ceremony)
+\u2502
+\u251C\u2500\u2500 HKDF("agenthalo-genesis-seed-v1", "seed-wrap")
+\u2502   \u2514\u2500\u2500 AES-256-GCM wrap key (encrypts genesis seed at rest)
+\u2502
+\u251C\u2500\u2500 ML-DSA-65 KeyGen (FIPS 204)
+\u2502   \u251C\u2500\u2500 Signing Key (sk) \u2014 encrypted in PQ wallet file
+\u2502   \u2514\u2500\u2500 Verifying Key (vk) \u2014 public, in wallet + ledger entries
+\u2502
+\u251C\u2500\u2500 ML-KEM-1024 KeyGen (FIPS 203)
+\u2502   \u251C\u2500\u2500 Encapsulation Key (ek) \u2014 public, shared with agent credentials
+\u2502   \u2514\u2500\u2500 Decapsulation Key (dk) \u2014 encrypted, per-agent scope access
+\u2502
+\u251C\u2500\u2500 Argon2id(password, salt) \u2192 Master Key (32 bytes)
+\u2502   \u2502   Params: 128 MiB memory, 4 iterations, parallelism 1
+\u2502   \u2502
+\u2502   \u251C\u2500\u2500 HKDF("agenthalo-scope-v2", "scope:sign")   \u2192 Sign key    (TTL: 300s)
+\u2502   \u251C\u2500\u2500 HKDF("agenthalo-scope-v2", "scope:vault")  \u2192 Vault key   (TTL: 300s)
+\u2502   \u251C\u2500\u2500 HKDF("agenthalo-scope-v2", "scope:wallet") \u2192 Wallet key  (TTL: 120s)
+\u2502   \u251C\u2500\u2500 HKDF("agenthalo-scope-v2", "scope:identity") \u2192 ID key   (TTL: 1800s)
+\u2502   \u251C\u2500\u2500 HKDF("agenthalo-scope-v2", "scope:genesis") \u2192 Genesis key (TTL: 30s)
+\u2502   \u2514\u2500\u2500 HKDF("agenthalo-scope-v2", "scope:admin")  \u2192 Admin key   (TTL: 60s)
+\u2502
+\u2514\u2500\u2500 HKDF("agenthalo-genesis-wallet-entropy-v1", "bip39-entropy-32")
+    \u2514\u2500\u2500 32 bytes \u2192 BIP-39 Mnemonic (24 words) \u2192 HD Wallet
+        \u251C\u2500\u2500 Ethereum address (m/44'/60'/0'/0/0)
+        \u251C\u2500\u2500 Bitcoin address  (m/44'/0'/0'/0/0)
+        \u251C\u2500\u2500 Polygon address  (m/44'/60'/0'/0/0, chain 137)
+        \u2514\u2500\u2500 Arbitrum address (m/44'/60'/0'/0/0, chain 42161)
+</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Post-Quantum Algorithms</div>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">ML-DSA-65 (FIPS 204)</div>
+          <div class="gdoc-card-body">
+            <strong>Module-Lattice Digital Signature Algorithm</strong>. Security level 3
+            (equivalent to AES-192). Used for all identity ledger signatures, trust attestations,
+            and session authentication. Based on the hardness of the Module Learning-With-Errors
+            (MLWE) problem. Signature size: ~3.3 KB. Public key: ~1.95 KB.
+            <br><br>
+            <em>Rust crate:</em> <code>ml-dsa</code> (RustCrypto)
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">ML-KEM-1024 (FIPS 203)</div>
+          <div class="gdoc-card-body">
+            <strong>Module-Lattice Key Encapsulation Mechanism</strong>. Security level 5
+            (equivalent to AES-256). Used for agent credential encapsulation: when a new agent
+            is authorized, each scope key is wrapped via KEM \u2192 shared-secret \u2192 AES-GCM.
+            The encapsulated key can only be decrypted by the agent's decapsulation key.
+            <br><br>
+            <em>Rust crate:</em> <code>ml-kem</code> (RustCrypto)
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Encrypted Master Cache (Option B)</div>
+      <p class="gdoc-text">
+        The master key derived from the user's password via Argon2id is <strong>never held in
+        plaintext in RAM</strong> after initial derivation. Instead, it follows the
+        <strong>Option B Encrypted Master Cache</strong> pattern:
+      </p>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">1. Derive</div>
+          <div class="gdoc-card-body">
+            <code>Argon2id(password, salt, 128MiB, 4 iter)</code> \u2192 32-byte master key.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">2. Encrypt</div>
+          <div class="gdoc-card-body">
+            Generate ephemeral 32-byte session key + 12-byte nonce.
+            <code>AES-256-GCM(session_key, nonce, master_key)</code>.
+            Zeroize plaintext master key immediately.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--amber" style="flex:1">
+          <div class="gdoc-card-head">3. Use</div>
+          <div class="gdoc-card-body">
+            When a scope key is needed: decrypt master from cache, derive scope via HKDF,
+            zeroize master again. Scope keys auto-expire (TTL-based).
+            Session key struct implements <code>ZeroizeOnDrop</code>.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Identity Ledger</div>
+      <p class="gdoc-text">
+        The identity ledger is a <strong>hash-chained, append-only log</strong> with post-quantum
+        signatures on every entry. It records the complete lifecycle of the agent's identity:
+      </p>
+      <div class="gdoc-card gdoc-card--blue" style="margin-top:10px">
+        <div class="gdoc-card-head">Ledger Event Types</div>
+        <div class="gdoc-card-body">
+          <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><code>GenesisEntropyHarvested</code></td>
+              <td style="padding:4px 8px">Birth certificate \u2014 entropy hash + source list</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><code>WalletCreated</code></td>
+              <td style="padding:4px 8px">PQ wallet generated, public key recorded</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><code>WalletImported</code></td>
+              <td style="padding:4px 8px">External wallet or EVM address connected</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><code>DeviceUpdated</code></td>
+              <td style="padding:4px 8px">Hardware fingerprint changed/collected</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><code>NetworkUpdated</code></td>
+              <td style="padding:4px 8px">IP/MAC hashes changed</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><code>SafetyTierApplied</code></td>
+              <td style="padding:4px 8px">Security tier changed (max-safe/less-safe/low)</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><code>SocialTokenConnected</code></td>
+              <td style="padding:4px 8px">OAuth provider linked (GitHub, Google, etc.)</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><code>SuperSecureUpdated</code></td>
+              <td style="padding:4px 8px">Passkey, security key, or TOTP changed</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px"><code>AnonymousModeUpdated</code></td>
+              <td style="padding:4px 8px">Anonymous mode toggled</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+      <p class="gdoc-text" style="margin-top:12px">
+        Each entry includes: sequence number, timestamp, event kind, payload, prev_hash, entry_hash,
+        and a <strong>PQ signature envelope</strong> (ML-DSA-65 signature over the entry hash).
+        The chain is tamper-evident: modifying any entry invalidates all subsequent hashes and signatures.
+      </p>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">CURBy Quantum Randomness &amp; TWINE</div>
+      <p class="gdoc-text">
+        The CURBy quantum entropy source (University of Colorado) participates in the
+        <strong>TWINE (Trust-Worthy INformation Exchange) network</strong> \u2014 a distributed
+        protocol for publishing verifiable randomness pulses. Each CURBy pulse includes a
+        <code>twine_hash</code> field: a content-addressed hash that anchors the pulse into
+        the TWINE DAG.
+      </p>
+      <div class="gdoc-card gdoc-card--green" style="margin-top:10px">
+        <div class="gdoc-card-head">TWINE Integration Point</div>
+        <div class="gdoc-card-body">
+          When the Genesis ceremony harvests CURBy entropy, the agent records the TWINE hash
+          alongside the pulse ID in the entropy source metadata:
+          <br><br>
+          <code>{ "pulse_id": 7523, "twine_hash": "bafk...", "timestamp": "..." }</code>
+          <br><br>
+          This means the agent's birth entropy is <strong>anchored to a publicly verifiable
+          TWINE DAG node</strong>. Any third party can verify: (1) the CURBy pulse existed,
+          (2) it was published at the claimed time, (3) the entropy bytes match.
+          Future versions may register the agent's genesis commitment directly into the
+          TWINE network as a first-class identity anchor.
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Wallet Derivation Path</div>
+      <div class="gdoc-card gdoc-card--blue" style="margin-top:10px">
+        <div class="gdoc-card-head">Genesis Seed \u2192 BIP-39 \u2192 EVM Address</div>
+        <div class="gdoc-card-body">
+<pre style="font-family:var(--font-mono);font-size:0.82rem;line-height:1.5;margin:0;white-space:pre">
+genesis_seed (64 bytes, from entropy ceremony)
+    \u2502
+    \u2514\u2500 HKDF-SHA-256
+         salt:  "agenthalo-genesis-wallet-entropy-v1"
+         info:  "bip39-entropy-32"
+         \u2502
+         \u2514\u2500 32 bytes raw entropy
+              \u2502
+              \u2514\u2500 BIP-39 encoding \u2192 24-word mnemonic phrase
+                   \u2502
+                   \u2514\u2500 BIP-32/BIP-44 HD derivation
+                        m/44'/60'/0'/0/0 \u2192 Ethereum private key
+                        \u2502
+                        \u2514\u2500 secp256k1 \u2192 public key \u2192 Keccak-256 \u2192 EVM address
+</pre>
+          <p style="margin-top:8px;font-size:0.85rem">
+            The mnemonic is <strong>encrypted at rest</strong> under the Wallet scope key
+            (AES-256-GCM, key derived from Argon2id master via HKDF). Decryption requires
+            the user's password and an active Wallet scope session (120s TTL).
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Scope-Based Access Control</div>
+      <p class="gdoc-text">
+        Every sensitive API endpoint requires an active scope key. The scope system enforces
+        least-privilege access with time-limited keys:
+      </p>
+      <div class="gdoc-card gdoc-card--amber" style="margin-top:10px">
+        <div class="gdoc-card-head">Scope TTLs and Protected Operations</div>
+        <div class="gdoc-card-body">
+          <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px;width:100px"><strong>Sign</strong></td>
+              <td style="padding:4px 8px;width:60px">300s</td>
+              <td style="padding:4px 8px">PQ signature creation, ledger writes, session attestation</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><strong>Vault</strong></td>
+              <td style="padding:4px 8px">300s</td>
+              <td style="padding:4px 8px">API key storage, secret retrieval</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><strong>Wallet</strong></td>
+              <td style="padding:4px 8px">120s</td>
+              <td style="padding:4px 8px">Mnemonic access, address generation, WDK seed operations</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><strong>Identity</strong></td>
+              <td style="padding:4px 8px">1800s</td>
+              <td style="padding:4px 8px">Device/network config, profile updates, social links</td>
+            </tr>
+            <tr style="border-bottom:1px solid rgba(0,255,157,0.15)">
+              <td style="padding:4px 8px"><strong>Genesis</strong></td>
+              <td style="padding:4px 8px">30s</td>
+              <td style="padding:4px 8px">Genesis seed access (extremely sensitive, shortest TTL)</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 8px"><strong>Admin</strong></td>
+              <td style="padding:4px 8px">60s</td>
+              <td style="padding:4px 8px">Reserved for future administrative operations</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">On-Chain Contract Architecture</div>
+      <p class="gdoc-text">
+        The TrustVerifier smart contract on Base Sepolia accepts attestation proofs and records
+        verification results on-chain. The agent's EVM address is the <code>msg.sender</code>
+        for all transactions, tying every on-chain action to the genesis-derived identity.
+      </p>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">verifyAndRecord()</div>
+          <div class="gdoc-card-body">
+            Posts a proof + public inputs to the on-chain verifier. If verification passes,
+            the attestation digest is recorded. The agent's address is stored as the attester.
+            Gas estimation with preflight cap (500K gas max).
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">verifyAndRecordAnonymous()</div>
+          <div class="gdoc-card-body">
+            Same verification, but the proof is recorded without linking to the sender's
+            identity. Uses the same contract but a separate storage mapping.
+            For agents operating in anonymous mode.
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ================================================================
+   IDENTIFICATION TAB 3: AGENT ACCESS
+   ================================================================ */
+function idAccess() {
+  return `
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">CLI Commands</div>
+      <p class="gdoc-text">
+        The <code>agenthalo</code> CLI provides identity management commands:
+      </p>
+
+      <div class="gdoc-code-block">
+        <div class="gdoc-code-title">Create password and unlock vault</div>
+        <pre class="gdoc-pre gdoc-code">$ agenthalo crypto create-password
+Enter password: ********
+Confirm: ********
+Password created. Master key derived (Argon2id, 128 MiB).
+Session unlocked. Scope keys available.</pre>
+      </div>
+
+      <div class="gdoc-code-block">
+        <div class="gdoc-code-title">Check identity status</div>
+        <pre class="gdoc-pre gdoc-code">$ agenthalo identity status
+Genesis:     COMPLETE (4 sources, pulse #7523)
+PQ Wallet:   ML-DSA-65, key_id=sha256:a3f7...
+Device:      Bound (CPU+GPU+OS, entropy: 48 bits)
+Network:     Local IP hashed, public IP hashed
+EVM Address: 0x7a3B...9f2E (Base Sepolia)
+Ledger:      14 entries, chain valid</pre>
+      </div>
+
+      <div class="gdoc-code-block">
+        <div class="gdoc-code-title">Generate agent wallet from genesis seed</div>
+        <pre class="gdoc-pre gdoc-code">$ agenthalo wallet generate
+Deriving wallet entropy from genesis seed...
+BIP-39 mnemonic: 24 words (encrypted to vault)
+EVM address: 0x7a3B...9f2E
+Chains: ethereum, bitcoin, polygon, arbitrum
+Ledger: WalletCreated event written (seq 3)</pre>
+      </div>
+
+      <div class="gdoc-code-block">
+        <div class="gdoc-code-title">Authorize agent credential (ML-KEM-1024)</div>
+        <pre class="gdoc-pre gdoc-code">$ agenthalo agents authorize --label "claude-prod" --scopes sign,vault
+Agent authorized:
+  ID:     agent_1709312400_a3f7
+  Label:  claude-prod
+  Scopes: sign, vault
+  Algorithm: ML-KEM-1024 (FIPS 203)
+  Credential file written to .halo/agent_credentials/</pre>
+      </div>
+
+      <div class="gdoc-code-block">
+        <div class="gdoc-code-title">Post attestation on-chain</div>
+        <pre class="gdoc-pre gdoc-code">$ agenthalo onchain attest --session 42
+Estimating gas... 287,341 (cap: 500,000)
+Submitting to Base Sepolia...
+TX: 0x4f2e...c831
+Block: #12847291
+Gas used: 274,892
+Attestation recorded on-chain.</pre>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">API Endpoints</div>
+      <p class="gdoc-text">
+        The dashboard API exposes identity operations for programmatic access:
+      </p>
+      <div class="gdoc-tool-list">
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">GET /api/identity/status</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--read">Read-only</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Returns complete identity state: genesis status, PQ wallet, device/network
+            configuration, security tier, social links, and EVM address.
+          </div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">POST /api/crypto/create-password</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--guard">Guarded</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Creates the vault password, derives master key via Argon2id, triggers v1\u2192v2
+            migration if legacy files exist, and auto-unlocks the session.
+          </div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">POST /api/crypto/unlock</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--guard">Guarded</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Unlocks the session with password or agent credentials (ML-KEM-1024).
+            Supports dual-path: human password OR agent_id + agent_sk + scopes.
+          </div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">POST /api/agents/authorize</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--admin">Requires Sign scope</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Authorizes a new agent credential. Generates ML-KEM-1024 keypair, encapsulates
+            scope keys, writes credential file. Returns agent_id + agent_sk (display once).
+          </div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">POST /api/agentaddress/generate</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--guard">Guarded</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Generates an EVM address from the genesis-derived wallet seed.
+            Records WalletImported event in the identity ledger.
+          </div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">GET /api/crypto/status</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--read">Read-only</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Returns current crypto session state: lock status, migration status,
+            active scopes, failed attempt count, and throttle timer.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Formal Verification Bridge</div>
+      <p class="gdoc-text">
+        The identity subsystem maps to Lean 4 formal models, extending the Genesis
+        categorical framework:
+      </p>
+
+      <div class="gdoc-bridge">
+        <div class="gdoc-bridge-col">
+          <div class="gdoc-bridge-heading">Lean Category-Theoretic Model \u2192 Rust Runtime</div>
+          <div class="gdoc-bridge-row">
+            <div class="gdoc-bridge-item">Identity/Delta.lean<br><span>IdentityDelta + applyDelta</span></div>
+            <div class="gdoc-bridge-arrow">\u2192</div>
+            <div class="gdoc-bridge-item">identity.rs<br><span>IdentityConfig + save()</span></div>
+          </div>
+          <div class="gdoc-bridge-row">
+            <div class="gdoc-bridge-item">Core/Certificates.lean<br><span>CommitCertificate</span></div>
+            <div class="gdoc-bridge-arrow">\u2192</div>
+            <div class="gdoc-bridge-item">identity_ledger.rs<br><span>LedgerSignatureRef + verify_chain()</span></div>
+          </div>
+          <div class="gdoc-bridge-row">
+            <div class="gdoc-bridge-item">Core/Authorization.lean<br><span>ScopePolicy</span></div>
+            <div class="gdoc-bridge-arrow">\u2192</div>
+            <div class="gdoc-bridge-item">crypto_scope.rs<br><span>CryptoScope + ScopeKey (TTL)</span></div>
+          </div>
+          <div class="gdoc-bridge-row">
+            <div class="gdoc-bridge-item">Sheaf/MaterializationFunctor.lean<br><span>naturality</span></div>
+            <div class="gdoc-bridge-arrow">\u2192</div>
+            <div class="gdoc-bridge-item">encrypted_file.rs<br><span>EncryptedFileV2 (scope-keyed)</span></div>
+          </div>
         </div>
       </div>
     </div>
