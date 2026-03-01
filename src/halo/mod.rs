@@ -11,6 +11,7 @@ pub mod config;
 pub mod detect;
 pub mod funding;
 pub mod genesis_entropy;
+pub mod genesis_seed;
 pub mod identity;
 pub mod identity_ledger;
 pub mod onchain;

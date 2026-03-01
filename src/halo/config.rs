@@ -80,6 +80,10 @@ pub fn identity_social_ledger_path() -> PathBuf {
     halo_dir().join("identity_social_ledger.jsonl")
 }
 
+pub fn genesis_seed_path() -> PathBuf {
+    halo_dir().join("genesis_seed.enc")
+}
+
 pub fn ensure_halo_dir() -> Result<(), String> {
     let dir = halo_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create halo dir: {e}"))?;

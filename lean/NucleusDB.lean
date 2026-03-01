@@ -14,6 +14,7 @@ import NucleusDB.Identity.Materialization
 import NucleusDB.Identity.Policy
 import NucleusDB.Identity.State
 import NucleusDB.Identity.Wallet
+import NucleusDB.Genesis
 import NucleusDB.Contracts.Model
 import NucleusDB.Crypto.PostQuantum.IncomparableEncoding
 import NucleusDB.Crypto.PostQuantum.XMSS

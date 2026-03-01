@@ -139,6 +139,14 @@ pub fn genesis_seal() -> NodeHash {
     sha256(b"NucleusDB.MonotoneSeal.Genesis|")
 }
 
+/// Genesis seal anchored to an immutable external commitment (e.g. identity genesis hash).
+pub fn genesis_seal_with_anchor(anchor: &str) -> NodeHash {
+    let mut buf = Vec::with_capacity(b"NucleusDB.MonotoneSeal.Genesis|".len() + anchor.len());
+    buf.extend_from_slice(b"NucleusDB.MonotoneSeal.Genesis|");
+    buf.extend_from_slice(anchor.as_bytes());
+    sha256(&buf)
+}
+
 /// Verify a seal chain against a sequence of state snapshots.
 /// Returns `true` if the chain is valid (no deletion detected).
 pub fn verify_seal_chain(seals: &[NodeHash], states: &[(State, KeyMap)]) -> bool {

@@ -49,6 +49,8 @@ pub struct IdentityLedgerEntry {
     pub status: String,
     #[serde(default)]
     pub payload: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genesis_entropy_sha256: Option<String>,
     pub prev_hash: Option<String>,
     pub entry_hash: String,
     pub signature: Option<LedgerSignatureRef>,
@@ -113,7 +115,7 @@ fn entry_payload_for_hash(entry: &IdentityLedgerEntry) -> String {
     let payload_json = serde_json::to_string(&entry.payload)
         .unwrap_or_else(|_| "{\"error\":\"payload\"}".to_string());
     format!(
-        "{HASH_DOMAIN}|v={}|seq={}|ts={}|kind={:?}|provider={}|token_ref={}|expires_at={}|status={}|payload={}|prev_hash={}",
+        "{HASH_DOMAIN}|v={}|seq={}|ts={}|kind={:?}|provider={}|token_ref={}|expires_at={}|status={}|payload={}|genesis_entropy_sha256={}|prev_hash={}",
         entry.version,
         entry.seq,
         entry.timestamp,
@@ -126,6 +128,7 @@ fn entry_payload_for_hash(entry: &IdentityLedgerEntry) -> String {
             .unwrap_or_else(String::new),
         entry.status,
         payload_json,
+        entry.genesis_entropy_sha256.as_deref().unwrap_or(""),
         entry.prev_hash.as_deref().unwrap_or(""),
     )
 }
@@ -201,6 +204,36 @@ pub fn verify_chain(entries: &[IdentityLedgerEntry]) -> Result<(), String> {
                 entry.seq, computed, entry.entry_hash
             ));
         }
+        if matches!(entry.kind, IdentityLedgerKind::GenesisEntropyHarvested) {
+            if entry.signature.is_none() {
+                return Err(format!("genesis entry at seq {} must be signed", entry.seq));
+            }
+            if entry.status.eq_ignore_ascii_case("completed") {
+                let Some(anchor) = entry.genesis_entropy_sha256.as_deref() else {
+                    return Err(format!(
+                        "genesis completed entry at seq {} missing structured genesis_entropy_sha256",
+                        entry.seq
+                    ));
+                };
+                if !anchor.starts_with("sha256:") || anchor.len() <= "sha256:".len() {
+                    return Err(format!(
+                        "genesis completed entry at seq {} has malformed genesis_entropy_sha256",
+                        entry.seq
+                    ));
+                }
+                let payload_anchor = entry
+                    .payload
+                    .get("combined_entropy_sha256")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if payload_anchor != anchor {
+                    return Err(format!(
+                        "genesis completed entry at seq {} has payload/structured hash mismatch",
+                        entry.seq
+                    ));
+                }
+            }
+        }
         last_hash = Some(entry.entry_hash.clone());
         expected_seq = expected_seq.saturating_add(1);
     }
@@ -242,6 +275,11 @@ fn append_entry(mut entry: IdentityLedgerEntry) -> Result<IdentityLedgerEntry, S
     entry.prev_hash = prev_hash;
     entry.entry_hash = compute_entry_hash(&entry);
     entry.signature = try_sign_entry_hash(&entry.entry_hash);
+    if matches!(entry.kind, IdentityLedgerKind::GenesisEntropyHarvested)
+        && entry.signature.is_none()
+    {
+        return Err("genesis entries require a PQ wallet signature".to_string());
+    }
 
     let line = serde_json::to_string(&entry)
         .map_err(|e| format!("serialize identity ledger entry: {e}"))?;
@@ -272,6 +310,7 @@ pub fn append_social_connect(input: SocialConnectInput<'_>) -> Result<IdentityLe
             "source": input.source,
             "token_ref": "stored_in_vault_or_external_secret_store",
         }),
+        genesis_entropy_sha256: None,
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
@@ -295,6 +334,7 @@ pub fn append_social_revoke(
         payload: serde_json::json!({
             "reason": reason.unwrap_or("operator_requested"),
         }),
+        genesis_entropy_sha256: None,
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
@@ -321,6 +361,7 @@ pub fn append_super_secure_update(
             "enabled": enabled,
             "metadata": metadata,
         }),
+        genesis_entropy_sha256: None,
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
@@ -350,6 +391,7 @@ pub fn append_profile_update(
             "name_locked": name_locked,
             "name_revision": name_revision,
         }),
+        genesis_entropy_sha256: None,
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
@@ -382,6 +424,7 @@ pub fn append_device_update(
             "has_puf_binding": puf_fingerprint_hex.map(|v| !v.trim().is_empty()).unwrap_or(false),
             "puf_tier": puf_tier,
         }),
+        genesis_entropy_sha256: None,
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
@@ -424,6 +467,7 @@ pub fn append_network_update(
             "public_ip_hash_present": public_ip_hash_present,
             "mac_count": mac_count,
         }),
+        genesis_entropy_sha256: None,
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
@@ -450,6 +494,7 @@ pub fn append_anonymous_mode_update(
             "cleared_device": cleared_device,
             "cleared_network": cleared_network,
         }),
+        genesis_entropy_sha256: None,
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
@@ -477,6 +522,7 @@ pub fn append_safety_tier_applied(
             "applied_by": applied_by,
             "step_failures": step_failures,
         }),
+        genesis_entropy_sha256: None,
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
@@ -509,6 +555,7 @@ pub fn append_wallet_event(
         expires_at: None,
         status: status.to_string(),
         payload,
+        genesis_entropy_sha256: None,
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
@@ -517,6 +564,23 @@ pub fn append_wallet_event(
 }
 
 pub fn append_genesis_event(status: &str, payload: Value) -> Result<IdentityLedgerEntry, String> {
+    let normalized_status = status.trim().to_ascii_lowercase();
+    let structured_hash = if normalized_status == "completed" {
+        let hash = payload
+            .get("combined_entropy_sha256")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                "genesis completed payload missing combined_entropy_sha256".to_string()
+            })?;
+        if !hash.starts_with("sha256:") || hash.len() <= "sha256:".len() {
+            return Err(
+                "genesis completed payload has malformed combined_entropy_sha256".to_string(),
+            );
+        }
+        Some(hash.to_string())
+    } else {
+        None
+    };
     let entry = IdentityLedgerEntry {
         version: LEDGER_VERSION,
         seq: 0,
@@ -525,13 +589,34 @@ pub fn append_genesis_event(status: &str, payload: Value) -> Result<IdentityLedg
         provider: None,
         token_ref_sha256: None,
         expires_at: None,
-        status: status.to_string(),
+        status: normalized_status,
         payload,
+        genesis_entropy_sha256: structured_hash,
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
     };
     append_entry(entry)
+}
+
+pub fn latest_head_hash() -> Result<Option<String>, String> {
+    let entries = load_entries()?;
+    verify_chain(&entries)?;
+    Ok(entries.last().map(|e| e.entry_hash.clone()))
+}
+
+pub fn latest_completed_genesis_hash() -> Result<Option<String>, String> {
+    let entries = load_entries()?;
+    verify_chain(&entries)?;
+    for entry in entries.iter().rev() {
+        if !matches!(entry.kind, IdentityLedgerKind::GenesisEntropyHarvested) {
+            continue;
+        }
+        if entry.status.eq_ignore_ascii_case("completed") {
+            return Ok(entry.genesis_entropy_sha256.clone());
+        }
+    }
+    Ok(None)
 }
 
 pub fn latest_genesis_event() -> Result<Option<IdentityLedgerEntry>, String> {
@@ -782,12 +867,33 @@ mod tests {
     #[test]
     fn latest_genesis_event_tracks_completed_then_reset() {
         let _home = set_tmp_home("genesis_latest");
-        append_genesis_event("completed", serde_json::json!({"sources": 4})).expect("genesis done");
+        crate::halo::pq::keygen_pq(false).expect("create signing wallet");
+        append_genesis_event(
+            "completed",
+            serde_json::json!({
+                "sources": 4,
+                "combined_entropy_sha256": "sha256:0123456789abcdef",
+            }),
+        )
+        .expect("genesis done");
         append_genesis_event("reset", serde_json::json!({"reason": "test"}))
             .expect("genesis reset");
         let latest = latest_genesis_event()
             .expect("latest genesis")
             .expect("genesis entry should exist");
         assert_eq!(latest.status, "reset");
+        let anchor = latest_completed_genesis_hash()
+            .expect("latest completed hash")
+            .expect("anchor exists");
+        assert_eq!(anchor, "sha256:0123456789abcdef");
+    }
+
+    #[test]
+    fn genesis_completed_requires_structured_hash() {
+        let _home = set_tmp_home("genesis_hash_required");
+        crate::halo::pq::keygen_pq(false).expect("create signing wallet");
+        let err = append_genesis_event("completed", serde_json::json!({"sources": 4}))
+            .expect_err("missing structured hash should fail");
+        assert!(err.contains("combined_entropy_sha256"));
     }
 }

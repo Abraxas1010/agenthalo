@@ -1243,6 +1243,16 @@ async fn genesis_harvest_success_writes_ledger_and_trace() {
     let (s2, v2) = api_get(state.clone(), "/genesis/status").await;
     assert_eq!(s2, StatusCode::OK, "genesis status should succeed: {v2}");
     assert_eq!(v2["completed"], true);
+    assert_eq!(
+        v2["signed"].as_bool(),
+        Some(true),
+        "genesis ledger entries should now be signed: {v2}"
+    );
+    assert_eq!(
+        v2["seed_stored"].as_bool(),
+        Some(true),
+        "genesis seed should be sealed to local encrypted storage: {v2}"
+    );
     assert!(
         v2["curby_pulse_id"].as_u64().is_some(),
         "genesis status should expose CURBy pulse id: {v2}"
@@ -1328,6 +1338,34 @@ async fn genesis_harvest_failure_records_trace_and_stays_incomplete() {
             .iter()
             .any(|e| matches!(e.event_type, EventType::GenesisHarvest)),
         "failed harvest should still be written to trace"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&halo_home);
+}
+
+#[tokio::test]
+async fn genesis_reset_is_forbidden_by_default() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_genesis_reset_forbidden_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _reset_guard = EnvVarGuard::set("AGENTHALO_ENABLE_GENESIS_RESET", None);
+
+    let (state, db_path) = test_state("genesis_reset_forbidden");
+    let (s, v) = api_post(state, "/genesis/reset", json!({"reason":"test"})).await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "reset should be blocked by policy: {v}"
     );
 
     let _ = std::fs::remove_file(&db_path);

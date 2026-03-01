@@ -604,6 +604,23 @@ fn normalize_genesis_reset_reason(reason: Option<&str>) -> String {
         .unwrap_or_else(|| "operator_reset".to_string())
 }
 
+fn genesis_reset_enabled() -> bool {
+    matches!(
+        std::env::var("AGENTHALO_ENABLE_GENESIS_RESET")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1" | "true" | "yes")
+    )
+}
+
+fn ensure_genesis_signing_wallet() -> Result<(), String> {
+    if crate::halo::pq::has_wallet() {
+        return Ok(());
+    }
+    crate::halo::pq::keygen_pq(false).map(|_| ())
+}
+
 async fn record_genesis_trace_event(
     state: &DashboardState,
     outcome: &str,
@@ -2165,6 +2182,8 @@ async fn api_identity_tier_update(
 }
 
 async fn api_genesis_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let seed_stored = crate::halo::genesis_seed::seed_exists();
+    let seed_hash = crate::halo::genesis_seed::load_seed_sha256().ok().flatten();
     let latest = crate::halo::identity_ledger::latest_genesis_event().map_err(internal_err)?;
     if let Some(entry) = latest {
         let completed = genesis_is_completed_status(&entry.status);
@@ -2184,22 +2203,31 @@ async fn api_genesis_status(AxumState(_state): AxumState<DashboardState>) -> Api
             "completed": completed,
             "status": entry.status,
             "summary": entry.payload,
+            "genesis_entropy_sha256": entry.genesis_entropy_sha256,
             "curby_pulse_id": curby_pulse_id,
             "sources_count": sources_count,
             "combined_entropy_sha256": combined_entropy_sha256,
+            "seed_stored": seed_stored,
+            "seed_hash_sha256": seed_hash,
             "seq": entry.seq,
             "timestamp": entry.timestamp,
             "entry_hash": entry.entry_hash,
             "signed": entry.signature.is_some(),
+            "signature_required_for_genesis": true,
         })));
     }
     Ok(Json(json!({
         "completed": false,
         "status": "missing",
+        "seed_stored": seed_stored,
+        "seed_hash_sha256": seed_hash,
+        "signature_required_for_genesis": true,
     })))
 }
 
 async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    ensure_genesis_signing_wallet().map_err(internal_err)?;
+
     if let Some(latest) =
         crate::halo::identity_ledger::latest_genesis_event().map_err(internal_err)?
     {
@@ -2216,6 +2244,7 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                     .unwrap_or(0),
                 "curby_pulse_id": latest.payload.get("curby_pulse_id").and_then(|v| v.as_u64()),
                 "combined_entropy_sha256": latest.payload.get("combined_entropy_sha256").cloned().unwrap_or(Value::Null),
+                "genesis_entropy_sha256": latest.genesis_entropy_sha256,
             })));
         }
     }
@@ -2229,6 +2258,12 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
             record_genesis_trace_event(&state, "success", Some(&result), None, None)
                 .await
                 .map_err(internal_err)?;
+
+            crate::halo::genesis_seed::store_seed_once(
+                &result.combined_entropy,
+                &result.combined_entropy_sha256,
+            )
+            .map_err(internal_err)?;
 
             let payload = json!({
                 "combined_entropy_sha256": result.combined_entropy_sha256,
@@ -2256,6 +2291,7 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                 "ledger_seq": entry.seq,
                 "ledger_entry_hash": entry.entry_hash,
                 "ledger_signed": entry.signature.is_some(),
+                "genesis_entropy_sha256": entry.genesis_entropy_sha256,
             })))
         }
         Err(err) => {
@@ -2290,6 +2326,12 @@ async fn api_genesis_reset(
     AxumState(state): AxumState<DashboardState>,
     Json(req): Json<GenesisResetRequest>,
 ) -> ApiResult {
+    if !genesis_reset_enabled() {
+        return Err(api_err(
+            StatusCode::FORBIDDEN,
+            "genesis reset is disabled by policy (set AGENTHALO_ENABLE_GENESIS_RESET=1 to enable)",
+        ));
+    }
     require_sensitive_access(&state)?;
     let reason = normalize_genesis_reset_reason(req.reason.as_deref());
     let payload = json!({

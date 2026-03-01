@@ -64,6 +64,8 @@ pub struct CommitEntry {
     #[serde(default = "default_algorithm_tag")]
     pub witness_signature_algorithm: String,
     pub witness_sigs: Vec<(String, String)>,
+    #[serde(default)]
+    pub identity_ledger_head_hash: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -373,6 +375,9 @@ impl NucleusDb {
             sth,
             witness_signature_algorithm: sig_alg.as_tag().to_string(),
             witness_sigs: sigs,
+            identity_ledger_head_hash: crate::halo::identity_ledger::latest_head_hash()
+                .ok()
+                .flatten(),
         };
         verify_post_commit_refinement(
             height,
@@ -390,11 +395,12 @@ impl NucleusDb {
         // Compute and chain monotone seal (AppendOnly mode).
         if self.write_mode == WriteMode::AppendOnly {
             let kv_digest = immutable::key_value_digest(&self.state, &self.keymap);
-            let prev_seal = self
-                .monotone_seals
-                .last()
-                .copied()
-                .unwrap_or_else(immutable::genesis_seal);
+            let prev_seal = self.monotone_seals.last().copied().unwrap_or_else(|| {
+                match crate::halo::identity_ledger::latest_completed_genesis_hash() {
+                    Ok(Some(anchor)) => immutable::genesis_seal_with_anchor(&anchor),
+                    _ => immutable::genesis_seal(),
+                }
+            });
             let seal = immutable::next_seal(&prev_seal, &kv_digest);
             self.monotone_seals.push(seal);
         }
