@@ -19,12 +19,21 @@ structure SealedPCNCommit (V : Type u) [DecidableEq V] where
   witnessSignature : String
   ctTreeEntry : String
 
+/-- Link predicate between adjacent seal-chain commits. -/
+def sealLinked {V : Type u} [DecidableEq V] (prev next : SealedPCNCommit V) : Prop :=
+  next.prevSeal = some prev.sealHash
+
 /-- Monotone extension policy for the seal chain over PCN commits. -/
 theorem sealed_pcn_monotone_extension {V : Type u} [DecidableEq V]
-    (_prev next : SealedPCNCommit V) :
-    next.prevSeal = some _prev.sealHash → True := by
-  intro _hLink
-  sorry -- Assumes SHA-256 preimage resistance (cryptographic prop assumption)
+    (prev next : SealedPCNCommit V) :
+    sealLinked prev next →
+      next.prevSeal.IsSome
+        ∧ (∀ S : Finset V, NucleusDB.PaymentChannels.Cuts.cutIntervalHolds
+            (V := V) next.payload.graph next.payload.wealth S) := by
+  intro hLink
+  refine ⟨?_, ?_⟩
+  · exact ⟨prev.sealHash, hLink⟩
+  · exact NucleusDB.Integration.committed_pcn_feasible next.payload
 
 end Integration
 end NucleusDB

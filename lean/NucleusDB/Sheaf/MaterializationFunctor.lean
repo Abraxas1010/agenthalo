@@ -27,10 +27,9 @@ theorem materialize_transport_eq
     M.toVector s = M.toVector t :=
   M.naturality s t h
 
-/-- Transport relation laws needed to view transports as a thin category. -/
-class TransportLaws {State : Type u} (R : State → State → Prop) : Prop where
-  refl : ∀ s : State, R s s
-  trans : ∀ {a b c : State}, R a b → R b c → R a c
+/-- Standard preorder law package for transport relations. -/
+abbrev TransportLaws {State : Type u} (R : State → State → Prop) : Prop :=
+  IsPreorder State R
 
 def transportCategory
     {State : Type u} {Idx : Type v} {Val : Type w}
@@ -38,8 +37,8 @@ def transportCategory
     [TransportLaws M.transports] :
     Category State where
   Hom s t := PLift (M.transports s t)
-  id s := ⟨TransportLaws.refl s⟩
-  comp f g := ⟨TransportLaws.trans f.down g.down⟩
+  id s := ⟨IsRefl.refl s⟩
+  comp f g := ⟨IsTrans.trans _ _ _ f.down g.down⟩
   id_comp := by
     intro _ _ f
     apply Subsingleton.elim
@@ -56,6 +55,26 @@ def materializationDiscreteFunctor
     (M : MaterializationFunctor State Idx Val) :
     Discrete State ⥤ Discrete (Idx → Val) :=
   Discrete.functor (fun s => (⟨M.toVector s⟩ : Discrete (Idx → Val)))
+
+/-- Transport-respecting materialization functor from the thin transport category. -/
+def materializationTransportFunctor
+    {State : Type u} {Idx : Type v} {Val : Type w}
+    (M : MaterializationFunctor State Idx Val)
+    [TransportLaws M.transports] :
+    letI : Category State := transportCategory M
+    State ⥤ Discrete (Idx → Val) := by
+  letI : Category State := transportCategory M
+  exact
+    { obj := fun s => ⟨M.toVector s⟩
+      map := by
+        intro a b f
+        exact Discrete.eqToHom (M.naturality a b f.down)
+      map_id := by
+        intro a
+        apply Subsingleton.elim
+      map_comp := by
+        intro a b c f g
+        apply Subsingleton.elim }
 
 /-- Identity natural transformation for a materialization functor. -/
 def materializationIdentityNat

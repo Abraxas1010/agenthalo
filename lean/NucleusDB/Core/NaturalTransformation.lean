@@ -10,15 +10,22 @@ universe u v w
 /-- Generic bridge: pointwise-equal materializations induce a natural transformation. -/
 def materializationBridgeNat
     {State : Type u} {Idx : Type v} {Val : Type w}
-    (M : Sheaf.MaterializationFunctor State Idx Val) :
-    Sheaf.materializationDiscreteFunctor M ⟶ Sheaf.materializationDiscreteFunctor M :=
-  Sheaf.materializationIdentityNat M
+    (M N : Sheaf.MaterializationFunctor State Idx Val)
+    (hEq : ∀ s, M.toVector s = N.toVector s) :
+    Sheaf.materializationDiscreteFunctor M ⟶ Sheaf.materializationDiscreteFunctor N where
+  app s := CategoryTheory.Discrete.eqToHom (hEq s.as)
+  naturality := by
+    intro X Y f
+    apply Subsingleton.elim
 
 /-- Concrete witness for the identity subsystem: self-map natural transformation. -/
 def identityMaterializationIdNat :
     Identity.identityDiscreteMaterializationFunctor ⟶
       Identity.identityDiscreteMaterializationFunctor :=
-  materializationBridgeNat Identity.identityMaterializationFunctor
+  materializationBridgeNat
+    Identity.identityMaterializationFunctor
+    Identity.identityMaterializationFunctor
+    (fun _ => rfl)
 
 end Core
 end NucleusDB

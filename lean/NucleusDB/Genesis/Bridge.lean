@@ -44,9 +44,9 @@ theorem ceremony_reaches_nucleus (cs : CeremonyStatus)
   rfl
 
 /-- The nucleus phase is a fixed point for the closure operator `R`. -/
-theorem nucleus_is_fixed_point (cs : CeremonyStatus) (h : cs.phase = .nucleus) :
+theorem nucleus_is_fixed_point (cs : CeremonyStatus) :
     R cs.phase = .nucleus := by
-  simp [h, R]
+  simp [R]
 
 end Genesis
 end NucleusDB

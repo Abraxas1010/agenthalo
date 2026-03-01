@@ -1,3 +1,7 @@
+import Mathlib.CategoryTheory.Discrete.Basic
+import Mathlib.CategoryTheory.Opposites
+import Mathlib.CategoryTheory.Functor.Basic
+
 namespace HeytingLean
 namespace PerspectivalPlenum
 namespace LensSheaf
@@ -10,7 +14,7 @@ structure LensObj (A : Type u) where
 
 /-- Minimal presheaf placeholder for standalone sheaf coherence specs. -/
 structure LensPresheaf (A : Type u) where
-  restrict : A → A := id
+  restrict : A → A
 
 /-- Minimal covering-family witness used by standalone sheaf specs. -/
 structure CoveringFamily {A : Type u} (U : LensObj A) where
@@ -35,6 +39,7 @@ namespace NucleusDB
 namespace Sheaf
 
 open HeytingLean.PerspectivalPlenum.LensSheaf
+open CategoryTheory
 
 universe u
 
@@ -54,6 +59,35 @@ def verifyCoherence {A : Type u} (w : CoherenceWitness A) : Prop :=
 theorem verifyCoherence_sound {A : Type u} (w : CoherenceWitness A) :
     verifyCoherence w :=
   w.amalgamates
+
+theorem verifyCoherence_iff_amalgamates {A : Type u} (w : CoherenceWitness A) :
+    verifyCoherence w ↔ Amalgamates w.F w.U w.C w.family := by
+  rfl
+
+/-- Mathlib category index used to expose coherence witnesses as presheaf data. -/
+abbrev LensIndexCat (A : Type u) := Discrete (LensObj A)
+
+/-- Mathlib presheaf surface corresponding to lens-indexed sections. -/
+abbrev LensMathlibPresheaf (A : Type u) := (LensIndexCat A)ᵒᵖ ⥤ Discrete A
+
+/-- Convert a coherence witness into a constant Mathlib presheaf of candidate sections. -/
+def toMathlibPresheaf {A : Type u} (w : CoherenceWitness A) : LensMathlibPresheaf A :=
+  { obj := fun _ => Discrete.mk w.U.carrier
+    map := by
+      intro X Y f
+      exact 𝟙 (Discrete.mk w.U.carrier)
+    map_id := by
+      intro X
+      apply Subsingleton.elim
+    map_comp := by
+      intro X Y Z f g
+      apply Subsingleton.elim }
+
+/-- Coherence evidence yields a global section candidate in the Mathlib presheaf view. -/
+theorem coherence_implies_global_section {A : Type u} (w : CoherenceWitness A)
+    (h : verifyCoherence w) :
+    ∃ a : A, ∀ s ∈ w.family.sections, w.F.restrict s = w.F.restrict a := by
+  exact h
 
 end Sheaf
 end NucleusDB
