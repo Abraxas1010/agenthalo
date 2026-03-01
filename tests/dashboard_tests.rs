@@ -2069,6 +2069,56 @@ async fn agentpmt_refresh_requires_auth() {
 }
 
 #[tokio::test]
+async fn identity_ledger_migrate_requires_auth() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
+    let (state, db_path, creds_path) = test_state_unauth("identity_ledger_migrate_auth");
+    let (s, _v) = api_post(
+        state,
+        "/identity/ledger/migrate-legacy-signatures",
+        json!({}),
+    )
+    .await;
+    assert!(
+        s == StatusCode::UNAUTHORIZED || s == StatusCode::FORBIDDEN,
+        "unauthenticated migration should be denied"
+    );
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn identity_ledger_migrate_returns_ok_for_authenticated_operator() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_identity_ledger_migrate_ok_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    nucleusdb::halo::pq::keygen_pq(false).expect("create pq wallet");
+
+    let (state, db_path) = test_state("identity_ledger_migrate_ok");
+    let (s, v) = api_post(
+        state,
+        "/identity/ledger/migrate-legacy-signatures",
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "migration endpoint should succeed: {v}");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["updated_entries"], 0);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&halo_home);
+}
+
+#[tokio::test]
 async fn agentpmt_enable_requires_auth() {
     let _guard = env_lock().lock().expect("lock env");
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
@@ -2170,6 +2220,46 @@ async fn wdk_import_rejects_invalid_bip39_seed() {
         val["error"].as_str().unwrap_or_default().contains("BIP-39"),
         "error should mention BIP-39 validity: {val}"
     );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn wdk_create_requires_genesis_seed() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_wdk_create_requires_genesis_seed_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
+    let (state, db_path) = test_state("wdk_create_requires_genesis_seed");
+    let (status, val) = api_post(
+        state,
+        "/wdk/create",
+        json!({
+            "passphrase": "testpass123"
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "wallet create should fail when genesis seed is unavailable: {val}"
+    );
+    assert!(
+        val["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("genesis seed not available"),
+        "error should indicate missing genesis seed precondition: {val}"
+    );
+    let _ = std::fs::remove_dir_all(&halo_home);
     let _ = std::fs::remove_file(&db_path);
 }
 

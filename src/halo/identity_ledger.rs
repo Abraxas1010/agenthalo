@@ -31,6 +31,8 @@ pub enum IdentityLedgerKind {
 pub struct LedgerSignatureRef {
     pub algorithm: String,
     pub key_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key_hex: Option<String>,
     pub payload_sha256: String,
     pub signature_hex: String,
     pub signature_digest: String,
@@ -167,13 +169,138 @@ fn compute_entry_hash_legacy(entry: &IdentityLedgerEntry) -> String {
 }
 
 fn strict_genesis_signature_enforcement() -> bool {
-    matches!(
+    if matches!(
+        std::env::var("AGENTHALO_ALLOW_LEGACY_UNSIGNED_GENESIS")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1" | "true" | "yes")
+    ) {
+        return false;
+    }
+    !matches!(
         std::env::var("AGENTHALO_STRICT_GENESIS_SIGNATURES")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("0" | "false" | "no")
+    )
+}
+
+fn strict_ledger_signature_fields() -> bool {
+    matches!(
+        std::env::var("AGENTHALO_STRICT_LEDGER_SIGNATURE_FIELDS")
             .ok()
             .map(|v| v.trim().to_ascii_lowercase())
             .as_deref(),
         Some("1" | "true" | "yes")
     )
+}
+
+fn entry_signature_payload(entry_hash: &str) -> String {
+    format!("agenthalo.identity.ledger.entry_hash.v1:{entry_hash}")
+}
+
+fn compute_payload_sha256_hex(payload: &[u8]) -> String {
+    crate::halo::util::hex_encode(&Sha256::digest(payload))
+}
+
+fn compute_signature_digest_hex(key_id: &str, payload_sha256: &str, signature_hex: &str) -> String {
+    crate::halo::util::hex_encode(&Sha256::digest(
+        format!(
+            "agenthalo.sign.pq.v1:{}:{}:{}",
+            key_id, payload_sha256, signature_hex
+        )
+        .as_bytes(),
+    ))
+}
+
+fn resolve_signature_public_key(
+    sig: &LedgerSignatureRef,
+    wallet_identity: Option<&(String, String)>,
+) -> Result<String, String> {
+    if let Some(pubkey) = sig
+        .public_key_hex
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return Ok(pubkey.to_string());
+    }
+    if strict_ledger_signature_fields() {
+        return Err(format!(
+            "signature for key_id {} missing public_key_hex (strict field policy enabled)",
+            sig.key_id
+        ));
+    }
+    if let Some((wallet_key_id, wallet_public_key)) = wallet_identity {
+        if wallet_key_id.eq_ignore_ascii_case(&sig.key_id) {
+            eprintln!(
+                "warning: inferring ledger signature public key from current wallet for key_id {}",
+                sig.key_id
+            );
+            return Ok(wallet_public_key.clone());
+        }
+    }
+    Err(format!(
+        "signature for key_id {} missing public_key_hex and no matching wallet key available",
+        sig.key_id
+    ))
+}
+
+fn verify_signature_ref(
+    entry: &IdentityLedgerEntry,
+    sig: &LedgerSignatureRef,
+    wallet_identity: Option<&(String, String)>,
+) -> Result<String, String> {
+    if !sig.algorithm.eq_ignore_ascii_case("ml_dsa65") {
+        return Err(format!(
+            "unsupported ledger signature algorithm at seq {}: {}",
+            entry.seq, sig.algorithm
+        ));
+    }
+    let payload = entry_signature_payload(&entry.entry_hash);
+    let payload_sha = compute_payload_sha256_hex(payload.as_bytes());
+    if !sig.payload_sha256.eq_ignore_ascii_case(&payload_sha) {
+        return Err(format!(
+            "ledger signature payload_sha256 mismatch at seq {}",
+            entry.seq
+        ));
+    }
+    let expected_digest =
+        compute_signature_digest_hex(&sig.key_id, &sig.payload_sha256, &sig.signature_hex);
+    if !sig.signature_digest.eq_ignore_ascii_case(&expected_digest) {
+        return Err(format!(
+            "ledger signature_digest mismatch at seq {}",
+            entry.seq
+        ));
+    }
+    let signer_public_key = resolve_signature_public_key(sig, wallet_identity)?;
+    let derived_key_id = crate::halo::pq::key_id_for_public_key(&signer_public_key);
+    if !sig.key_id.eq_ignore_ascii_case(&derived_key_id) {
+        return Err(format!(
+            "ledger signature key_id mismatch at seq {}: declared {}, derived {}",
+            entry.seq, sig.key_id, derived_key_id
+        ));
+    }
+    let verified = crate::halo::pq::verify_detached_signature(
+        payload.as_bytes(),
+        &signer_public_key,
+        &sig.signature_hex,
+    )
+    .map_err(|e| {
+        format!(
+            "ledger signature verification error at seq {}: {e}",
+            entry.seq
+        )
+    })?;
+    if !verified {
+        return Err(format!(
+            "invalid ledger signature cryptographic proof at seq {}",
+            entry.seq
+        ));
+    }
+    Ok(signer_public_key)
 }
 
 fn ledger_path() -> std::path::PathBuf {
@@ -206,7 +333,81 @@ pub fn load_entries() -> Result<Vec<IdentityLedgerEntry>, String> {
     Ok(out)
 }
 
+fn write_entries(entries: &[IdentityLedgerEntry]) -> Result<(), String> {
+    let path = ledger_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create ledger dir {}: {e}", parent.display()))?;
+    }
+    let tmp = path.with_extension("jsonl.tmp");
+    let mut file = std::fs::File::create(&tmp)
+        .map_err(|e| format!("create temp identity ledger {}: {e}", tmp.display()))?;
+    for entry in entries {
+        let line = serde_json::to_string(entry)
+            .map_err(|e| format!("serialize identity ledger entry: {e}"))?;
+        writeln!(file, "{line}").map_err(|e| format!("write identity ledger temp: {e}"))?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        format!(
+            "rename identity ledger {} -> {}: {e}",
+            tmp.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// One-time migration tool:
+/// - signs legacy unsigned genesis entries
+/// - fills missing `signature.public_key_hex` for signatures produced by the current wallet key
+pub fn migrate_legacy_signatures() -> Result<usize, String> {
+    let wallet_identity = crate::halo::pq::wallet_key_identity()?
+        .ok_or_else(|| "migration requires an existing PQ wallet".to_string())?;
+    let mut entries = load_entries()?;
+    if entries.is_empty() {
+        return Ok(0);
+    }
+    let mut changed = 0usize;
+
+    for entry in &mut entries {
+        if matches!(entry.kind, IdentityLedgerKind::GenesisEntropyHarvested)
+            && entry.signature.is_none()
+        {
+            let sig = try_sign_entry_hash(&entry.entry_hash).ok_or_else(|| {
+                format!(
+                    "failed to sign legacy genesis entry at seq {} during migration",
+                    entry.seq
+                )
+            })?;
+            entry.signature = Some(sig);
+            changed += 1;
+        }
+        if let Some(sig) = entry.signature.as_mut() {
+            if sig
+                .public_key_hex
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
+                && sig.key_id.eq_ignore_ascii_case(&wallet_identity.0)
+            {
+                sig.public_key_hex = Some(wallet_identity.1.clone());
+                changed += 1;
+            }
+        }
+    }
+
+    if changed == 0 {
+        return Ok(0);
+    }
+    write_entries(&entries)?;
+    verify_chain(&entries)?;
+    Ok(changed)
+}
+
 pub fn verify_chain(entries: &[IdentityLedgerEntry]) -> Result<(), String> {
+    let wallet_identity = crate::halo::pq::wallet_key_identity().ok().flatten();
+    let mut pinned_signer_public_key: Option<String> = None;
     let mut last_hash: Option<String> = None;
     let mut expected_seq = 1u64;
     for (idx, entry) in entries.iter().enumerate() {
@@ -243,6 +444,11 @@ pub fn verify_chain(entries: &[IdentityLedgerEntry]) -> Result<(), String> {
                 entry.seq, computed_v2, computed_legacy, entry.entry_hash
             ));
         }
+        let mut signer_public_key_for_entry: Option<String> = None;
+        if let Some(sig) = entry.signature.as_ref() {
+            signer_public_key_for_entry =
+                Some(verify_signature_ref(entry, sig, wallet_identity.as_ref())?);
+        }
         if matches!(entry.kind, IdentityLedgerKind::GenesisEntropyHarvested) {
             if entry.signature.is_none() {
                 if legacy_hash_match {
@@ -256,7 +462,7 @@ pub fn verify_chain(entries: &[IdentityLedgerEntry]) -> Result<(), String> {
                         ));
                     }
                     eprintln!(
-                        "warning: accepting unsigned legacy genesis entry at seq {} for backward compatibility; set AGENTHALO_STRICT_GENESIS_SIGNATURES=1 to reject",
+                        "warning: accepting unsigned legacy genesis entry at seq {} for backward compatibility; unset AGENTHALO_ALLOW_LEGACY_UNSIGNED_GENESIS or set AGENTHALO_STRICT_GENESIS_SIGNATURES=1 to reject",
                         entry.seq
                     );
                 } else {
@@ -302,6 +508,29 @@ pub fn verify_chain(entries: &[IdentityLedgerEntry]) -> Result<(), String> {
                         ));
                     }
                 }
+                if let Some(pubkey) = signer_public_key_for_entry.as_deref() {
+                    if let Some(pinned) = pinned_signer_public_key.as_deref() {
+                        if !pubkey.eq_ignore_ascii_case(pinned) {
+                            return Err(format!(
+                                "completed genesis signer drift at seq {}: pinned {}, got {}",
+                                entry.seq, pinned, pubkey
+                            ));
+                        }
+                    } else {
+                        pinned_signer_public_key = Some(pubkey.to_string());
+                    }
+                }
+            }
+        }
+        if let (Some(pinned), Some(pubkey)) = (
+            pinned_signer_public_key.as_deref(),
+            signer_public_key_for_entry.as_deref(),
+        ) {
+            if !pubkey.eq_ignore_ascii_case(pinned) {
+                return Err(format!(
+                    "ledger signer drift at seq {}: pinned {}, got {}",
+                    entry.seq, pinned, pubkey
+                ));
             }
         }
         last_hash = Some(entry.entry_hash.clone());
@@ -325,6 +554,7 @@ fn try_sign_entry_hash(entry_hash: &str) -> Option<LedgerSignatureRef> {
     Some(LedgerSignatureRef {
         algorithm: env.algorithm,
         key_id: env.key_id,
+        public_key_hex: Some(env.public_key_hex),
         payload_sha256: env.payload_sha256,
         signature_hex: env.signature_hex,
         signature_digest: env.signature_digest,
@@ -337,6 +567,16 @@ fn append_entry(mut entry: IdentityLedgerEntry) -> Result<IdentityLedgerEntry, S
     let path = ledger_path();
     let mut entries = load_entries()?;
     verify_chain(&entries)?;
+    let wallet_identity = crate::halo::pq::wallet_key_identity().ok().flatten();
+    let pinned_signer_public_key = entries
+        .iter()
+        .find(|e| {
+            matches!(e.kind, IdentityLedgerKind::GenesisEntropyHarvested)
+                && e.status.eq_ignore_ascii_case("completed")
+                && e.signature.is_some()
+        })
+        .and_then(|e| e.signature.as_ref())
+        .and_then(|sig| resolve_signature_public_key(sig, wallet_identity.as_ref()).ok());
 
     let next_seq = entries.last().map(|e| e.seq.saturating_add(1)).unwrap_or(1);
     let prev_hash = entries.last().map(|e| e.entry_hash.clone());
@@ -349,6 +589,18 @@ fn append_entry(mut entry: IdentityLedgerEntry) -> Result<IdentityLedgerEntry, S
         && entry.signature.is_none()
     {
         return Err("genesis entries require a PQ wallet signature".to_string());
+    }
+    if let (Some(pinned), Some(sig)) = (
+        pinned_signer_public_key.as_deref(),
+        entry.signature.as_ref(),
+    ) {
+        let signer_public_key = resolve_signature_public_key(sig, wallet_identity.as_ref())?;
+        if !signer_public_key.eq_ignore_ascii_case(pinned) {
+            return Err(format!(
+                "refusing ledger append signed by unpinned key_id {} (expected genesis signer {})",
+                sig.key_id, pinned
+            ));
+        }
     }
 
     let line = serde_json::to_string(&entry)
@@ -1017,7 +1269,8 @@ mod tests {
     #[test]
     fn verify_chain_accepts_legacy_unsigned_completed_genesis_entry() {
         let _guard = env_lock().lock().expect("env lock");
-        let _unstrict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", None);
+        let _allow_legacy = EnvVarGuard::set("AGENTHALO_ALLOW_LEGACY_UNSIGNED_GENESIS", Some("1"));
+        let _strict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", None);
         let mut entry = IdentityLedgerEntry {
             version: LEDGER_VERSION,
             seq: 1,
@@ -1040,6 +1293,7 @@ mod tests {
     #[test]
     fn verify_chain_rejects_legacy_unsigned_completed_genesis_entry_in_strict_mode() {
         let _guard = env_lock().lock().expect("env lock");
+        let _allow_legacy = EnvVarGuard::set("AGENTHALO_ALLOW_LEGACY_UNSIGNED_GENESIS", None);
         let _strict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", Some("1"));
         let mut entry = IdentityLedgerEntry {
             version: LEDGER_VERSION,
@@ -1064,7 +1318,8 @@ mod tests {
     #[test]
     fn verify_chain_reports_missing_legacy_completed_payload_hash() {
         let _guard = env_lock().lock().expect("env lock");
-        let _unstrict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", None);
+        let _allow_legacy = EnvVarGuard::set("AGENTHALO_ALLOW_LEGACY_UNSIGNED_GENESIS", Some("1"));
+        let _strict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", None);
         let mut entry = IdentityLedgerEntry {
             version: LEDGER_VERSION,
             seq: 1,
@@ -1083,5 +1338,79 @@ mod tests {
         entry.entry_hash = compute_entry_hash_legacy(&entry);
         let err = verify_chain(&[entry]).expect_err("missing payload hash should fail");
         assert!(err.contains("missing combined_entropy_sha256 payload"));
+    }
+
+    #[test]
+    fn verify_chain_rejects_forged_signature_material() {
+        let _home = set_tmp_home("reject_forged_sig");
+        crate::halo::pq::keygen_pq(false).expect("create signing wallet");
+        append_profile_update(Some("Hal"), Some("initials"), true, 0).expect("profile");
+        let mut entries = load_entries().expect("load");
+        let sig = entries[0].signature.as_mut().expect("signature exists");
+        sig.signature_hex = "00".to_string();
+        sig.signature_digest =
+            compute_signature_digest_hex(&sig.key_id, &sig.payload_sha256, &sig.signature_hex);
+        let err = verify_chain(&entries).expect_err("forged signature must fail");
+        assert!(
+            err.contains("signature verification error")
+                || err.contains("invalid ledger signature cryptographic proof")
+        );
+    }
+
+    #[test]
+    fn append_rejects_signer_rotation_after_genesis_pin() {
+        let _home = set_tmp_home("pin_reject_rotation");
+        crate::halo::pq::keygen_pq(false).expect("create signing wallet #1");
+        append_genesis_event(
+            "completed",
+            serde_json::json!({
+                "sources": 4,
+                "combined_entropy_sha256": "sha256:0123456789abcdef0123456789abcdef",
+            }),
+        )
+        .expect("append pinned genesis");
+        crate::halo::pq::keygen_pq(true).expect("rotate wallet to key #2");
+        let err = append_profile_update(Some("rotated"), Some("initials"), true, 1)
+            .expect_err("rotation should be rejected after signer pin");
+        assert!(err.contains("unpinned key_id"));
+    }
+
+    #[test]
+    fn migrate_legacy_signatures_signs_unsigned_genesis() {
+        let _home = set_tmp_home("migrate_legacy_signatures");
+        crate::halo::pq::keygen_pq(false).expect("create signing wallet");
+        let _allow_legacy = EnvVarGuard::set("AGENTHALO_ALLOW_LEGACY_UNSIGNED_GENESIS", Some("1"));
+        let _strict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", None);
+
+        let mut legacy = IdentityLedgerEntry {
+            version: LEDGER_VERSION,
+            seq: 1,
+            timestamp: now_unix(),
+            kind: IdentityLedgerKind::GenesisEntropyHarvested,
+            provider: None,
+            token_ref_sha256: None,
+            expires_at: None,
+            status: "completed".to_string(),
+            payload: serde_json::json!({"combined_entropy_sha256":"sha256:legacy_anchor"}),
+            genesis_entropy_sha256: None,
+            prev_hash: None,
+            entry_hash: String::new(),
+            signature: None,
+        };
+        legacy.entry_hash = compute_entry_hash_legacy(&legacy);
+        write_entries(&[legacy]).expect("write legacy entry");
+        let changed = migrate_legacy_signatures().expect("migrate");
+        assert_eq!(changed, 1);
+
+        let entries = load_entries().expect("reload");
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].signature.is_some(),
+            "migration should sign legacy genesis"
+        );
+
+        let _allow_legacy_off = EnvVarGuard::set("AGENTHALO_ALLOW_LEGACY_UNSIGNED_GENESIS", None);
+        let _strict_on = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", Some("1"));
+        verify_chain(&entries).expect("migrated chain should verify under strict policy");
     }
 }

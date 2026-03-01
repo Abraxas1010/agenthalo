@@ -1,5 +1,7 @@
 use crate::halo::config;
 use crate::halo::trace::now_unix_secs;
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use ml_dsa::{
     EncodedSignature, EncodedVerifyingKey, KeyGen, MlDsa65, Signature as MlDsaSignature,
     VerifyingKey as MlDsaVerifyingKey,
@@ -27,8 +29,18 @@ pub struct PqWallet {
     pub algorithm: String,
     pub key_id: String,
     pub public_key_hex: String,
-    pub secret_seed_hex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_seed_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_seed: Option<PqEncryptedSeed>,
     pub created_at: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PqEncryptedSeed {
+    pub schema: String,
+    pub nonce_hex: String,
+    pub ciphertext_hex: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -92,12 +104,14 @@ pub fn keygen_pq_with_paths(paths: &PqStoragePaths, force: bool) -> Result<PqKey
     let public_key_hex = hex_encode(kp.verifying_key().encode().as_slice());
     let key_id = key_id_from_public_key(&public_key_hex);
     let created_at = now_unix_secs();
+    let encrypted_seed = encrypt_wallet_seed(paths, &seed_bytes)?;
     let wallet = PqWallet {
         version: 1,
         algorithm: "ml_dsa65".to_string(),
         key_id: key_id.clone(),
         public_key_hex: public_key_hex.clone(),
-        secret_seed_hex: hex_encode(&seed_bytes),
+        secret_seed_hex: None,
+        encrypted_seed: Some(encrypted_seed),
         created_at,
     };
     save_wallet(wallet_path, &wallet)?;
@@ -131,7 +145,7 @@ pub fn sign_pq_payload_with_paths(
     payload_hint: Option<String>,
 ) -> Result<(PqSignatureEnvelope, PathBuf), String> {
     let wallet = load_wallet(&paths.wallet_path)?;
-    let kp = keypair_from_wallet(&wallet)?;
+    let kp = keypair_from_wallet(&paths.wallet_path, &wallet)?;
     let sig = kp
         .signing_key()
         .sign_deterministic(payload, PQ_CONTEXT)
@@ -188,6 +202,36 @@ pub fn verify_detached_signature(
     Ok(vk.verify_with_context(payload, PQ_CONTEXT, &sig))
 }
 
+pub fn key_id_for_public_key(public_key_hex: &str) -> String {
+    key_id_from_public_key(public_key_hex)
+}
+
+pub fn wallet_key_identity() -> Result<Option<(String, String)>, String> {
+    let paths = default_storage_paths();
+    if !paths.wallet_path.exists() {
+        return Ok(None);
+    }
+    let wallet = load_wallet(&paths.wallet_path)?;
+    Ok(Some((wallet.key_id, wallet.public_key_hex)))
+}
+
+pub fn wallet_seed_bytes() -> Result<Option<Vec<u8>>, String> {
+    let paths = default_storage_paths();
+    if !paths.wallet_path.exists() {
+        return Ok(None);
+    }
+    let wallet = load_wallet(&paths.wallet_path)?;
+    Ok(Some(extract_wallet_seed_bytes(
+        &paths.wallet_path,
+        &wallet,
+    )?))
+}
+
+pub fn wallet_seed_bytes_from_path(wallet_path: &Path) -> Result<Vec<u8>, String> {
+    let wallet = load_wallet(wallet_path)?;
+    extract_wallet_seed_bytes(wallet_path, &wallet)
+}
+
 fn save_wallet(path: &Path, wallet: &PqWallet) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(wallet).map_err(|e| format!("serialize wallet: {e}"))?;
     if let Some(parent) = path.parent() {
@@ -221,8 +265,20 @@ fn load_wallet(path: &Path) -> Result<PqWallet, String> {
     serde_json::from_str(&raw).map_err(|e| format!("parse wallet {}: {e}", path.display()))
 }
 
-fn keypair_from_wallet(wallet: &PqWallet) -> Result<ml_dsa::KeyPair<MlDsa65>, String> {
-    let seed_bytes = hex_decode_exact::<32>(&wallet.secret_seed_hex)?;
+fn keypair_from_wallet(
+    wallet_path: &Path,
+    wallet: &PqWallet,
+) -> Result<ml_dsa::KeyPair<MlDsa65>, String> {
+    let seed_vec = extract_wallet_seed_bytes(wallet_path, wallet)?;
+    if seed_vec.len() != 32 {
+        return Err(format!(
+            "wallet seed must be 32 bytes, got {}",
+            seed_vec.len()
+        ));
+    }
+    let mut seed_arr = [0u8; 32];
+    seed_arr.copy_from_slice(&seed_vec);
+    let seed_bytes = seed_arr;
     let seed = ml_dsa::Seed::try_from(seed_bytes.as_slice())
         .map_err(|_| "wallet seed must be 32 bytes".to_string())?;
     let kp = MlDsa65::from_seed(&seed);
@@ -231,6 +287,116 @@ fn keypair_from_wallet(wallet: &PqWallet) -> Result<ml_dsa::KeyPair<MlDsa65>, St
         return Err("wallet public key does not match stored seed".to_string());
     }
     Ok(kp)
+}
+
+fn extract_wallet_seed_bytes(wallet_path: &Path, wallet: &PqWallet) -> Result<Vec<u8>, String> {
+    if let Some(enc) = &wallet.encrypted_seed {
+        return decrypt_wallet_seed(wallet_path, enc);
+    }
+    if let Some(seed_hex) = &wallet.secret_seed_hex {
+        let seed = hex_decode_exact::<32>(seed_hex)?.to_vec();
+        let migrated = PqWallet {
+            version: wallet.version,
+            algorithm: wallet.algorithm.clone(),
+            key_id: wallet.key_id.clone(),
+            public_key_hex: wallet.public_key_hex.clone(),
+            secret_seed_hex: None,
+            encrypted_seed: Some(encrypt_wallet_seed_from_existing(wallet_path, &seed)?),
+            created_at: wallet.created_at,
+        };
+        let _ = save_wallet(wallet_path, &migrated);
+        return Ok(seed);
+    }
+    Err("wallet missing encrypted_seed and legacy secret_seed_hex".to_string())
+}
+
+fn wallet_wrap_key_path(wallet_path: &Path) -> PathBuf {
+    wallet_path.with_extension("seed.key")
+}
+
+fn load_or_create_wallet_wrap_key(wallet_path: &Path) -> Result<[u8; 32], String> {
+    let key_path = wallet_wrap_key_path(wallet_path);
+    if key_path.exists() {
+        let raw = std::fs::read(&key_path)
+            .map_err(|e| format!("read wallet wrap key {}: {e}", key_path.display()))?;
+        if raw.len() != 32 {
+            return Err(format!(
+                "wallet wrap key {} must be 32 bytes, got {}",
+                key_path.display(),
+                raw.len()
+            ));
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&raw);
+        return Ok(out);
+    }
+    if let Some(parent) = key_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create wrap-key dir {}: {e}", parent.display()))?;
+    }
+    let key = random_seed_32();
+    #[cfg(unix)]
+    {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true).mode(0o600);
+        let mut file = opts
+            .open(&key_path)
+            .map_err(|e| format!("open wallet wrap key {}: {e}", key_path.display()))?;
+        file.write_all(&key)
+            .map_err(|e| format!("write wallet wrap key {}: {e}", key_path.display()))?;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod wallet wrap key {}: {e}", key_path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&key_path, &key)
+            .map_err(|e| format!("write wallet wrap key {}: {e}", key_path.display()))?;
+    }
+    Ok(key)
+}
+
+fn encrypt_wallet_seed(
+    paths: &PqStoragePaths,
+    seed_bytes: &[u8; 32],
+) -> Result<PqEncryptedSeed, String> {
+    encrypt_wallet_seed_from_existing(&paths.wallet_path, seed_bytes)
+}
+
+fn encrypt_wallet_seed_from_existing(
+    wallet_path: &Path,
+    seed_bytes: &[u8],
+) -> Result<PqEncryptedSeed, String> {
+    let key = load_or_create_wallet_wrap_key(wallet_path)?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("seed-wrap cipher init: {e}"))?;
+    let mut nonce = [0u8; 12];
+    nonce[..].copy_from_slice(&random_seed_32()[..12]);
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), seed_bytes)
+        .map_err(|e| format!("seed-wrap encrypt failed: {e}"))?;
+    Ok(PqEncryptedSeed {
+        schema: "agenthalo.pq.seedwrap.v1".to_string(),
+        nonce_hex: hex_encode(&nonce),
+        ciphertext_hex: hex_encode(&ciphertext),
+    })
+}
+
+fn decrypt_wallet_seed(wallet_path: &Path, encrypted: &PqEncryptedSeed) -> Result<Vec<u8>, String> {
+    if encrypted.schema != "agenthalo.pq.seedwrap.v1" {
+        return Err(format!(
+            "unsupported wallet encrypted seed schema {}",
+            encrypted.schema
+        ));
+    }
+    let key = load_or_create_wallet_wrap_key(wallet_path)?;
+    let nonce = hex_decode_exact::<12>(&encrypted.nonce_hex)?;
+    let ciphertext = hex_decode_dynamic(&encrypted.ciphertext_hex)?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("seed-wrap cipher init: {e}"))?;
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
+        .map_err(|_| "seed-wrap decryption failed".to_string())?;
+    Ok(plaintext)
 }
 
 fn save_signature(
@@ -260,8 +426,7 @@ fn default_storage_paths() -> PqStoragePaths {
 
 fn random_seed_32() -> [u8; 32] {
     let mut out = [0u8; 32];
-    out[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    out[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    getrandom::getrandom(&mut out).expect("OS entropy source unavailable");
     out
 }
 
@@ -375,6 +540,17 @@ mod tests {
         assert_ne!(path1, path2);
         assert!(path1.exists());
         assert!(path2.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keygen_wallet_no_longer_persists_plain_seed_hex() {
+        let (paths, root) = temp_paths("no_plain_seed");
+        let _ = keygen_pq_with_paths(&paths, false).expect("keygen");
+        let raw = std::fs::read_to_string(&paths.wallet_path).expect("read wallet");
+        let wallet: PqWallet = serde_json::from_str(&raw).expect("parse wallet");
+        assert!(wallet.secret_seed_hex.is_none());
+        assert!(wallet.encrypted_seed.is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

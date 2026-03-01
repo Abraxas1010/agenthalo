@@ -1264,6 +1264,13 @@ fn tool_wallet_create(arguments: Value) -> Result<Value, String> {
     if nucleusdb::halo::wdk_proxy::wallet_exists() {
         return Err("wallet already exists; unlock or delete it first".to_string());
     }
+    let seed_phrase =
+        nucleusdb::halo::genesis_seed::derive_wallet_mnemonic()?.ok_or_else(|| {
+            "genesis seed not available; complete Genesis ceremony before wallet creation"
+                .to_string()
+        })?;
+    let genesis_seed_sha256 =
+        nucleusdb::halo::genesis_seed::load_seed_sha256()?.unwrap_or_default();
     if !nucleusdb::halo::wdk_proxy::WdkManager::is_available() {
         return Err(
             "WDK sidecar unavailable; install with `cd wdk-sidecar && npm install`".to_string(),
@@ -1274,12 +1281,12 @@ fn tool_wallet_create(arguments: Value) -> Result<Value, String> {
         if !mgr.is_running() {
             mgr.start()?;
         }
-        let init_resp = mgr.post("/init", &json!({"generate": true}))?;
-        let seed = init_resp
-            .get("seed")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "WDK sidecar did not return a seed phrase".to_string())?;
-        let encrypted = nucleusdb::halo::wdk_proxy::encrypt_seed(seed, passphrase)?;
+        if let Err(e) = mgr.post("/init", &json!({"seed": seed_phrase})) {
+            let _ = mgr.post("/destroy", &json!({}));
+            mgr.stop();
+            return Err(e);
+        }
+        let encrypted = nucleusdb::halo::wdk_proxy::encrypt_seed(&seed_phrase, passphrase)?;
         if let Err(e) = nucleusdb::halo::wdk_proxy::save_encrypted_seed(&encrypted) {
             let _ = mgr.post("/destroy", &json!({}));
             mgr.stop();
@@ -1291,12 +1298,16 @@ fn tool_wallet_create(arguments: Value) -> Result<Value, String> {
             json!({
                 "chains": encrypted.chains,
                 "kdf": encrypted.kdf,
+                "genesis_bound": true,
+                "genesis_seed_sha256": genesis_seed_sha256,
             }),
         );
         let accounts = mgr.get("/accounts").unwrap_or_else(|_| json!({}));
         Ok(json!({
             "status": "ok",
-            "message": "wallet created and encrypted",
+            "message": "wallet created from genesis-bound entropy and encrypted",
+            "genesis_bound": true,
+            "genesis_seed_sha256": genesis_seed_sha256,
             "ledger_logged": ledger_logged,
             "ledger_error": ledger_error,
             "accounts": accounts.get("accounts").cloned().unwrap_or(Value::Array(Vec::new())),

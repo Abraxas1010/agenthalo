@@ -261,12 +261,7 @@ fn derive_master_key(pq_wallet_path: &Path) -> Result<(String, [u8; 32]), String
         .and_then(|v| v.as_str())
         .ok_or_else(|| "wallet missing key_id".to_string())?
         .to_string();
-    let seed_hex = wallet
-        .get("secret_seed_hex")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "wallet missing secret_seed_hex".to_string())?;
-
-    let seed_bytes = hex_decode(seed_hex)?;
+    let seed_bytes = crate::halo::pq::wallet_seed_bytes_from_path(pq_wallet_path)?;
     let hk = Hkdf::<Sha256>::new(Some(b"agenthalo-vault-v1"), &seed_bytes);
     let mut out = [0u8; 32];
     hk.expand(b"aes-master", &mut out)
@@ -328,29 +323,6 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-fn hex_decode(input: &str) -> Result<Vec<u8>, String> {
-    let s = input.trim();
-    if s.is_empty() || !s.len().is_multiple_of(2) {
-        return Err("hex string must have even length".to_string());
-    }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for pair in s.as_bytes().chunks_exact(2) {
-        let hi = hex_nibble(pair[0]).ok_or_else(|| "invalid hex".to_string())?;
-        let lo = hex_nibble(pair[1]).ok_or_else(|| "invalid hex".to_string())?;
-        out.push((hi << 4) | lo);
-    }
-    Ok(out)
-}
-
-fn hex_nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(10 + (b - b'a')),
-        b'A'..=b'F' => Some(10 + (b - b'A')),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

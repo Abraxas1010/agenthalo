@@ -103,6 +103,10 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/identity/status", get(api_identity_status))
         .route("/identity/social", get(api_identity_social_status))
         .route(
+            "/identity/ledger/migrate-legacy-signatures",
+            post(api_identity_ledger_migrate_legacy_signatures),
+        )
+        .route(
             "/identity/social/connect",
             post(api_identity_social_connect),
         )
@@ -2577,6 +2581,21 @@ async fn api_identity_status(AxumState(_state): AxumState<DashboardState>) -> Ap
     })))
 }
 
+async fn api_identity_ledger_migrate_legacy_signatures(
+    AxumState(state): AxumState<DashboardState>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let updated =
+        crate::halo::identity_ledger::migrate_legacy_signatures().map_err(internal_err)?;
+    let ledger = crate::halo::identity_ledger::project_ledger_status(now_unix_secs())
+        .map_err(internal_err)?;
+    Ok(Json(json!({
+        "ok": true,
+        "updated_entries": updated,
+        "ledger": ledger,
+    })))
+}
+
 async fn api_identity_social_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let now = now_unix_secs();
     let projection =
@@ -3478,6 +3497,17 @@ async fn api_wdk_create(
             "wallet already exists; unlock or delete it first",
         ));
     }
+    let seed = crate::halo::genesis_seed::derive_wallet_mnemonic()
+        .map_err(internal_err)?
+        .ok_or_else(|| {
+            api_err(
+                StatusCode::PRECONDITION_FAILED,
+                "genesis seed not available; complete Genesis ceremony before wallet creation",
+            )
+        })?;
+    let genesis_seed_sha256 = crate::halo::genesis_seed::load_seed_sha256()
+        .map_err(internal_err)?
+        .unwrap_or_default();
     if !crate::halo::wdk_proxy::WdkManager::is_available() {
         return Err(api_err(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3489,15 +3519,13 @@ async fn api_wdk_create(
     if !mgr.is_running() {
         mgr.start().map_err(internal_err)?;
     }
-    let init_resp = mgr
-        .post("/init", &json!({"generate": true}))
-        .map_err(internal_err)?;
-    let seed = init_resp
-        .get("seed")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| internal_err("WDK sidecar did not return a seed phrase".to_string()))?;
+    if let Err(e) = mgr.post("/init", &json!({"seed": seed})) {
+        let _ = mgr.post("/destroy", &json!({}));
+        mgr.stop();
+        return Err(internal_err(e));
+    }
     let encrypted =
-        crate::halo::wdk_proxy::encrypt_seed(seed, &req.passphrase).map_err(internal_err)?;
+        crate::halo::wdk_proxy::encrypt_seed(&seed, &req.passphrase).map_err(internal_err)?;
     if let Err(e) = crate::halo::wdk_proxy::save_encrypted_seed(&encrypted) {
         let _ = mgr.post("/destroy", &json!({}));
         mgr.stop();
@@ -3509,6 +3537,8 @@ async fn api_wdk_create(
         json!({
             "chains": encrypted.chains,
             "kdf": encrypted.kdf,
+            "genesis_bound": true,
+            "genesis_seed_sha256": genesis_seed_sha256,
         }),
     ) {
         Ok(_) => (true, None::<String>),
@@ -3517,7 +3547,9 @@ async fn api_wdk_create(
     let accounts = mgr.get("/accounts").unwrap_or_else(|_| json!({}));
     Ok(Json(json!({
         "ok": true,
-        "message": "wallet created and encrypted",
+        "message": "wallet created from genesis-bound entropy and encrypted",
+        "genesis_bound": true,
+        "genesis_seed_sha256": genesis_seed_sha256,
         "ledger_logged": ledger_logged,
         "ledger_error": ledger_error,
         "accounts": accounts.get("accounts").cloned().unwrap_or(Value::Array(Vec::new())),
