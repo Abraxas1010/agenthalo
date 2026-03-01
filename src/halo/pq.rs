@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroize;
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -269,7 +270,7 @@ fn keypair_from_wallet(
     wallet_path: &Path,
     wallet: &PqWallet,
 ) -> Result<ml_dsa::KeyPair<MlDsa65>, String> {
-    let seed_vec = extract_wallet_seed_bytes(wallet_path, wallet)?;
+    let mut seed_vec = extract_wallet_seed_bytes(wallet_path, wallet)?;
     if seed_vec.len() != 32 {
         return Err(format!(
             "wallet seed must be 32 bytes, got {}",
@@ -278,10 +279,12 @@ fn keypair_from_wallet(
     }
     let mut seed_arr = [0u8; 32];
     seed_arr.copy_from_slice(&seed_vec);
+    seed_vec.zeroize();
     let seed_bytes = seed_arr;
     let seed = ml_dsa::Seed::try_from(seed_bytes.as_slice())
         .map_err(|_| "wallet seed must be 32 bytes".to_string())?;
     let kp = MlDsa65::from_seed(&seed);
+    seed_arr.zeroize();
     let actual_pub = hex_encode(kp.verifying_key().encode().as_slice());
     if !eq_case_insensitive(&actual_pub, &wallet.public_key_hex) {
         return Err("wallet public key does not match stored seed".to_string());

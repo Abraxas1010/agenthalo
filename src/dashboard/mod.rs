@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
+use tokio::time::Duration;
 
 /// Shared state for all dashboard API handlers.
 ///
@@ -34,6 +35,8 @@ pub struct DashboardState {
     pub wdk_manager: Arc<StdMutex<crate::halo::wdk_proxy::WdkManager>>,
     /// Unlock throttling state for WDK passphrase attempts.
     pub wdk_unlock_state: Arc<StdMutex<WdkUnlockState>>,
+    /// Unified cryptographic lock/session state for password + scoped unlocks.
+    pub crypto_state: Arc<StdMutex<CryptoState>>,
     /// Proxy resale configuration (markup, rate limits).
     pub proxy_config: crate::halo::pricing::ProxyConfig,
     /// Pricing table for cost calculation.
@@ -44,6 +47,21 @@ pub struct DashboardState {
 pub struct WdkUnlockState {
     pub failed_attempts: u32,
     pub locked_until_unix: u64,
+}
+
+#[derive(Debug)]
+pub struct CryptoState {
+    pub session: crate::halo::session_manager::SessionManager,
+    pub migration_status: crate::halo::migration::MigrationStatus,
+}
+
+impl CryptoState {
+    pub fn new() -> Self {
+        Self {
+            session: crate::halo::session_manager::SessionManager::new(),
+            migration_status: crate::halo::migration::detect_migration_status(),
+        }
+    }
 }
 
 fn default_grant_store_path(db_path: &Path) -> PathBuf {
@@ -75,18 +93,6 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         eprintln!("warning: failed to load POD grants: {e}");
     }
 
-    // Auto-create PQ wallet if it doesn't exist — this gives us a vault from first launch.
-    if !crate::halo::config::pq_wallet_path().exists() {
-        match crate::halo::pq::keygen_pq(false) {
-            Ok(result) => {
-                eprintln!("info: auto-created PQ wallet (key_id: {})", result.key_id);
-            }
-            Err(e) => {
-                eprintln!("warning: failed to auto-create PQ wallet: {e}");
-            }
-        }
-    }
-
     let vault = match crate::halo::vault::Vault::open(
         &crate::halo::config::pq_wallet_path(),
         &crate::halo::config::vault_path(),
@@ -115,6 +121,7 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         key_store,
         wdk_manager: Arc::new(StdMutex::new(crate::halo::wdk_proxy::WdkManager::new())),
         wdk_unlock_state: Arc::new(StdMutex::new(WdkUnlockState::default())),
+        crypto_state: Arc::new(StdMutex::new(CryptoState::new())),
         proxy_config,
         pricing_table,
     }
@@ -137,6 +144,18 @@ pub async fn serve(port: u16, open_browser: bool) -> Result<(), String> {
         crate::halo::config::db_path(),
         crate::halo::config::credentials_path(),
     );
+
+    // Reap expired scoped keys in the background.
+    let reaper_state = state.crypto_state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            if let Ok(mut guard) = reaper_state.lock() {
+                guard.session.reap_expired();
+            }
+        }
+    });
 
     let app = build_router(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));

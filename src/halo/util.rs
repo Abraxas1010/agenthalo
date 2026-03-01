@@ -54,6 +54,13 @@ pub fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+pub fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 pub(crate) fn hex_nibble(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),

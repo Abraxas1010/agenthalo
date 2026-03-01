@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroize;
 
 #[derive(Clone, Debug)]
 pub struct Vault {
@@ -250,6 +250,12 @@ impl Vault {
     }
 }
 
+impl Drop for Vault {
+    fn drop(&mut self) {
+        self.master_key.zeroize();
+    }
+}
+
 fn derive_master_key(pq_wallet_path: &Path) -> Result<(String, [u8; 32]), String> {
     let raw = std::fs::read_to_string(pq_wallet_path)
         .map_err(|e| format!("read wallet {}: {e}", pq_wallet_path.display()))?;
@@ -267,6 +273,26 @@ fn derive_master_key(pq_wallet_path: &Path) -> Result<(String, [u8; 32]), String
     hk.expand(b"aes-master", &mut out)
         .map_err(|_| "hkdf expand failed".to_string())?;
     Ok((key_id, out))
+}
+
+pub fn decrypt_legacy_vault_payload(
+    pq_wallet_path: &Path,
+    vault_path: &Path,
+) -> Result<Vec<u8>, String> {
+    let (_, mut master_key) = derive_master_key(pq_wallet_path)?;
+    let raw = std::fs::read(vault_path)
+        .map_err(|e| format!("read vault {}: {e}", vault_path.display()))?;
+    if raw.len() <= 12 {
+        master_key.zeroize();
+        return Err(format!("vault {} is truncated", vault_path.display()));
+    }
+    let cipher =
+        Aes256Gcm::new_from_slice(&master_key).map_err(|e| format!("vault cipher init: {e}"))?;
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(&raw[..12]), &raw[12..])
+        .map_err(|e| format!("decrypt vault file {}: {e}", vault_path.display()))?;
+    master_key.zeroize();
+    Ok(plaintext)
 }
 
 pub fn provider_default_env_var(provider: &str) -> String {
@@ -319,10 +345,7 @@ fn normalize_provider(provider: &str) -> String {
 }
 
 fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    crate::halo::util::now_unix_secs()
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use zeroize::Zeroize;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -18,10 +19,7 @@ struct StoredGenesisSeed {
 }
 
 fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    crate::halo::util::now_unix_secs()
 }
 
 fn load_wallet_seed_bytes(wallet_path: &std::path::Path) -> Result<Vec<u8>, String> {
@@ -54,7 +52,7 @@ fn store_seed_once_with_paths(
         ));
     }
 
-    let key = derive_seed_key(wallet_path)?;
+    let mut key = derive_seed_key(wallet_path)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("cipher init failed: {e}"))?;
     let payload = StoredGenesisSeed {
         schema: "agenthalo.genesis.seed.v1".to_string(),
@@ -95,6 +93,7 @@ fn store_seed_once_with_paths(
         std::fs::set_permissions(seed_path, std::fs::Permissions::from_mode(0o600))
             .map_err(|e| format!("chmod genesis seed {}: {e}", seed_path.display()))?;
     }
+    key.zeroize();
     Ok(())
 }
 
@@ -117,7 +116,7 @@ fn load_seed_payload_with_paths(
     if raw.len() <= 12 {
         return Err(format!("genesis seed {} is truncated", seed_path.display()));
     }
-    let key = derive_seed_key(wallet_path)?;
+    let mut key = derive_seed_key(wallet_path)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("cipher init failed: {e}"))?;
     let plaintext = cipher
         .decrypt(Nonce::from_slice(&raw[..12]), &raw[12..])
@@ -130,6 +129,7 @@ fn load_seed_payload_with_paths(
             payload.schema
         ));
     }
+    key.zeroize();
     Ok(Some(payload))
 }
 
@@ -145,6 +145,24 @@ pub fn load_seed_sha256() -> Result<Option<String>, String> {
     let wallet_path = crate::halo::config::pq_wallet_path();
     let seed_path = crate::halo::config::genesis_seed_path();
     load_seed_sha256_with_paths(&wallet_path, &seed_path)
+}
+
+pub fn decrypt_legacy_seed_payload(
+    wallet_path: &std::path::Path,
+    seed_path: &std::path::Path,
+) -> Result<Vec<u8>, String> {
+    let raw = std::fs::read(seed_path)
+        .map_err(|e| format!("read genesis seed {}: {e}", seed_path.display()))?;
+    if raw.len() <= 12 {
+        return Err(format!("genesis seed {} is truncated", seed_path.display()));
+    }
+    let mut key = derive_seed_key(wallet_path)?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("cipher init failed: {e}"))?;
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(&raw[..12]), &raw[12..])
+        .map_err(|e| format!("decrypt genesis seed {}: {e}", seed_path.display()))?;
+    key.zeroize();
+    Ok(plaintext)
 }
 
 fn load_seed_bytes_with_paths(

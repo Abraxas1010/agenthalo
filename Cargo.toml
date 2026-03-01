@@ -91,10 +91,15 @@ hkdf = "0.12"
 hex = "0.4"
 argon2 = "0.5"
 bip39 = "2.1"
+bip32 = { version = "0.5", features = ["mnemonic"] }
+sha3 = "0.10"
 getrandom = "0.2"
 futures-util = "0.3"
 mid = "2"
 mac_address = "1"
+ml-kem = { version = "0.2", features = ["zeroize"] }
+zeroize = { version = "1.8", features = ["derive"] }
+subtle = "2.6"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"

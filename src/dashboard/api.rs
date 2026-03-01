@@ -13,6 +13,7 @@ use super::DashboardState;
 use crate::cli::default_witness_cfg;
 use crate::cockpit::deploy::{self, LaunchRequest};
 use crate::halo::addons;
+use crate::halo::agent_auth;
 use crate::halo::agentpmt;
 use crate::halo::attest::{
     attest_session, resolve_session_id, save_attestation, AttestationRequest,
@@ -21,6 +22,8 @@ use crate::halo::auth::{
     dashboard_auth_required, is_dashboard_authenticated, load_credentials, save_credentials,
 };
 use crate::halo::config;
+use crate::halo::crypto_scope::CryptoScope;
+use crate::halo::encrypted_file;
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::pq::has_wallet;
 use crate::halo::schema::{
@@ -56,6 +59,7 @@ use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio_stream::StreamExt;
+use zeroize::{Zeroize, Zeroizing};
 
 // ---------------------------------------------------------------------------
 // Router
@@ -65,6 +69,16 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
     Router::new()
         // Status
         .route("/status", get(api_status))
+        // Crypto lock/session
+        .route("/crypto/status", get(api_crypto_status))
+        .route("/crypto/create-password", post(api_crypto_create_password))
+        .route("/crypto/unlock", post(api_crypto_unlock))
+        .route("/crypto/lock", post(api_crypto_lock))
+        .route("/crypto/change-password", post(api_crypto_change_password))
+        // Agent credentials
+        .route("/agents/list", get(api_agents_list))
+        .route("/agents/authorize", post(api_agents_authorize))
+        .route("/agents/revoke", post(api_agents_revoke))
         // Sessions
         .route("/sessions", get(api_sessions))
         .route("/sessions/{id}", get(api_session_detail))
@@ -533,6 +547,8 @@ pub struct WdkTransferRequest {
 pub struct AgentAddressGenerateRequest {
     #[serde(default)]
     persist_public_address: Option<bool>,
+    #[serde(default)]
+    source: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -553,6 +569,44 @@ pub struct AuthOauthCallbackQuery {
     user_id: Option<String>,
     #[serde(default)]
     sub: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CryptoCreatePasswordRequest {
+    password: String,
+    confirm: String,
+}
+
+#[derive(Deserialize, Default)]
+pub struct CryptoUnlockRequest {
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    agent_sk: Option<String>,
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+pub struct CryptoChangePasswordRequest {
+    current_password: String,
+    new_password: String,
+    confirm: String,
+}
+
+#[derive(Deserialize)]
+pub struct AgentAuthorizeRequest {
+    label: String,
+    scopes: Vec<String>,
+    #[serde(default)]
+    expires_days: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub struct AgentRevokeRequest {
+    agent_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -725,6 +779,25 @@ fn agentaddress_api_base() -> String {
         .unwrap_or_else(|| "https://www.agentpmt.com".to_string())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AgentAddressSource {
+    External,
+    Genesis,
+}
+
+fn parse_agentaddress_source(raw: Option<&str>) -> Result<AgentAddressSource, String> {
+    let Some(source) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(AgentAddressSource::External);
+    };
+    match source.to_ascii_lowercase().as_str() {
+        "external" | "agentpmt_external_noauth" | "agentpmt" => Ok(AgentAddressSource::External),
+        "genesis" | "genesis_derived" => Ok(AgentAddressSource::Genesis),
+        other => Err(format!(
+            "unsupported source '{other}' (expected 'external' or 'genesis')"
+        )),
+    }
+}
+
 fn agentaddress_supported_chains() -> Vec<&'static str> {
     vec![
         "Ethereum",
@@ -774,6 +847,15 @@ fn lock_wdk_manager<'a>(
         .wdk_manager
         .lock()
         .map_err(|e| internal_err(format!("WDK manager lock poisoned: {e}")))
+}
+
+fn lock_crypto_state<'a>(
+    state: &'a DashboardState,
+) -> Result<std::sync::MutexGuard<'a, super::CryptoState>, (StatusCode, Json<Value>)> {
+    state
+        .crypto_state
+        .lock()
+        .map_err(|e| internal_err(format!("crypto state lock poisoned: {e}")))
 }
 
 fn wdk_seed_word_count(seed: &str) -> usize {
@@ -864,6 +946,105 @@ fn wdk_unlock_delay_secs(failed_attempts: u32) -> u64 {
     let exponent = failed_attempts.min(8);
     let delay = 1u64.checked_shl(exponent).unwrap_or(u64::MAX);
     delay.clamp(2, 300)
+}
+
+fn migration_status_name(status: &crate::halo::migration::MigrationStatus) -> &'static str {
+    match status {
+        crate::halo::migration::MigrationStatus::Fresh => "fresh",
+        crate::halo::migration::MigrationStatus::NeedsPasswordCreation => "needs_password_creation",
+        crate::halo::migration::MigrationStatus::V2Locked => "v2_locked",
+        crate::halo::migration::MigrationStatus::V2Unlocked => "v2_unlocked",
+    }
+}
+
+fn require_scope(
+    state: &DashboardState,
+    scope: CryptoScope,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    // Backward-compatible mode: if password vault has not been initialized yet,
+    // preserve legacy behavior and allow access.
+    if !encrypted_file::header_exists() {
+        return Ok(());
+    }
+    let mut crypto = lock_crypto_state(state)?;
+    crypto.session.get_scope_key(scope).map_err(|_| {
+        (
+            StatusCode::LOCKED,
+            Json(json!({
+                "error": format!("unlock required (scope: {})", scope.as_str()),
+                "required_scope": scope.as_str(),
+                "code": "crypto_locked",
+            })),
+        )
+    })?;
+    Ok(())
+}
+
+fn header_salt_bytes(header: &encrypted_file::CryptoHeader) -> Result<[u8; 32], String> {
+    let raw = hex::decode(&header.kdf.salt_hex).map_err(|e| format!("kdf salt decode: {e}"))?;
+    if raw.len() != 32 {
+        return Err(format!(
+            "crypto header salt must be 32 bytes, got {}",
+            raw.len()
+        ));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&raw);
+    Ok(out)
+}
+
+fn crypto_scope_targets() -> Vec<(std::path::PathBuf, CryptoScope)> {
+    vec![
+        (crate::halo::config::pq_wallet_v2_path(), CryptoScope::Sign),
+        (crate::halo::config::vault_v2_path(), CryptoScope::Vault),
+        (crate::halo::config::wdk_seed_v2_path(), CryptoScope::Wallet),
+        (
+            crate::halo::config::identity_v2_path(),
+            CryptoScope::Identity,
+        ),
+        (
+            crate::halo::config::profile_v2_path(),
+            CryptoScope::Identity,
+        ),
+        (
+            crate::halo::config::genesis_seed_v2_path(),
+            CryptoScope::Genesis,
+        ),
+    ]
+}
+
+fn derive_scope_key_from_master(master: &[u8; 32], scope: CryptoScope) -> Result<[u8; 32], String> {
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"agenthalo-scope-v2"), master);
+    let mut out = [0u8; 32];
+    hk.expand(scope.hkdf_info(), &mut out)
+        .map_err(|_| "hkdf expand failed".to_string())?;
+    Ok(out)
+}
+
+fn verify_master_key_against_crypto_state(
+    header: &encrypted_file::CryptoHeader,
+    master: &[u8; 32],
+) -> Result<bool, String> {
+    if encrypted_file::verify_password_with_header(header, master) {
+        return Ok(true);
+    }
+    let targets = crypto_scope_targets();
+    if !targets.iter().any(|(path, _)| path.exists()) {
+        return Ok(false);
+    }
+    for (path, scope) in targets {
+        if !path.exists() {
+            continue;
+        }
+        let mut scope_key = derive_scope_key_from_master(master, scope)?;
+        let file = encrypted_file::EncryptedFileV2::load(&path)?;
+        let ok = file.decrypt(&scope_key).is_ok();
+        scope_key.zeroize();
+        if ok {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn social_provider_specs() -> Vec<(&'static str, bool, &'static str)> {
@@ -1529,6 +1710,386 @@ async fn api_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     })))
 }
 
+async fn api_crypto_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let password_protected = encrypted_file::header_exists();
+    let mut crypto = lock_crypto_state(&state)?;
+    crypto.session.reap_expired();
+    let locked = !crypto.session.is_unlocked();
+    let mut active_scopes = crypto
+        .session
+        .active_scopes()
+        .into_iter()
+        .map(|s| s.as_str().to_string())
+        .collect::<Vec<_>>();
+    active_scopes.sort();
+    let status = if password_protected {
+        if locked {
+            crate::halo::migration::MigrationStatus::V2Locked
+        } else {
+            crate::halo::migration::MigrationStatus::V2Unlocked
+        }
+    } else {
+        crate::halo::migration::detect_migration_status()
+    };
+    crypto.migration_status = status.clone();
+    let retry_after_secs = crypto
+        .session
+        .locked_until_unix()
+        .saturating_sub(now_unix_secs());
+    Ok(Json(json!({
+        "locked": locked,
+        "migration_status": migration_status_name(&status),
+        "active_scopes": active_scopes,
+        "password_protected": password_protected,
+        "failed_attempts": crypto.session.failed_attempts(),
+        "retry_after_secs": retry_after_secs,
+    })))
+}
+
+async fn api_crypto_create_password(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<CryptoCreatePasswordRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    crate::halo::password::validate_password_pair(&req.password, &req.confirm)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    crate::halo::config::ensure_halo_dir().map_err(internal_err)?;
+
+    if !crate::halo::pq::has_wallet() {
+        crate::halo::pq::keygen_pq(false).map_err(internal_err)?;
+    }
+
+    let status = crate::halo::migration::detect_migration_status();
+    let mut migrated_files = Vec::new();
+    if matches!(
+        status,
+        crate::halo::migration::MigrationStatus::NeedsPasswordCreation
+    ) {
+        let report =
+            crate::halo::migration::migrate_v1_to_v2(&req.password).map_err(internal_err)?;
+        migrated_files = report.files_migrated;
+    } else {
+        let _ = encrypted_file::create_header_if_missing().map_err(internal_err)?;
+    }
+
+    let header = encrypted_file::load_header()
+        .map_err(internal_err)?
+        .ok_or_else(|| internal_err("crypto header missing after password creation".to_string()))?;
+    let mut verify_master = header
+        .kdf
+        .derive_master_key(&req.password)
+        .map_err(internal_err)?;
+    let mut updated_header = header.clone();
+    updated_header.password_verifier_hex =
+        Some(encrypted_file::password_verifier_hex(&verify_master));
+    encrypted_file::save_header(&updated_header).map_err(internal_err)?;
+    verify_master.zeroize();
+    let salt = header_salt_bytes(&header).map_err(internal_err)?;
+
+    let mut crypto = lock_crypto_state(&state)?;
+    crypto
+        .session
+        .unlock_with_password(&req.password, &salt)
+        .map_err(|e| api_err(StatusCode::UNAUTHORIZED, &e))?;
+    crypto.migration_status = crate::halo::migration::MigrationStatus::V2Unlocked;
+    let mut scopes = crypto
+        .session
+        .active_scopes()
+        .into_iter()
+        .map(|s| s.as_str().to_string())
+        .collect::<Vec<_>>();
+    scopes.sort();
+
+    Ok(Json(json!({
+        "ok": true,
+        "migrated_files": migrated_files,
+        "active_scopes": scopes,
+        "migration_status": "v2_unlocked",
+    })))
+}
+
+async fn api_crypto_unlock(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<CryptoUnlockRequest>,
+) -> ApiResult {
+    if let Some(password) = req.password.as_deref() {
+        let header = encrypted_file::load_header()
+            .map_err(internal_err)?
+            .ok_or_else(|| api_err(StatusCode::PRECONDITION_REQUIRED, "password not configured"))?;
+
+        {
+            let crypto = lock_crypto_state(&state)?;
+            let now = now_unix_secs();
+            if let Err((until, _)) = crypto.session.check_throttle(now) {
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({
+                        "error": format!("too many failed unlock attempts; retry in {}s", until.saturating_sub(now)),
+                        "retry_after_secs": until.saturating_sub(now),
+                    })),
+                ));
+            }
+        }
+
+        let mut candidate_master = header
+            .kdf
+            .derive_master_key(password)
+            .map_err(|_| api_err(StatusCode::UNAUTHORIZED, "invalid password"))?;
+        let verified = verify_master_key_against_crypto_state(&header, &candidate_master)
+            .map_err(internal_err)?;
+        if !verified {
+            let mut crypto = lock_crypto_state(&state)?;
+            let now = now_unix_secs();
+            if let Err((until, _)) = crypto.session.check_throttle(now) {
+                candidate_master.zeroize();
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({
+                        "error": format!("too many failed unlock attempts; retry in {}s", until.saturating_sub(now)),
+                        "retry_after_secs": until.saturating_sub(now),
+                    })),
+                ));
+            }
+            candidate_master.zeroize();
+            crypto.session.record_failed_attempt(now);
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": "invalid password",
+                    "retry_after_secs": crypto.session.locked_until_unix().saturating_sub(now),
+                })),
+            ));
+        }
+        let verifier_upgrade = if header.password_verifier_hex.is_none() {
+            Some(encrypted_file::password_verifier_hex(&candidate_master))
+        } else {
+            None
+        };
+        let mut crypto = lock_crypto_state(&state)?;
+        let now = now_unix_secs();
+        if let Err((until, _)) = crypto.session.check_throttle(now) {
+            candidate_master.zeroize();
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": format!("too many failed unlock attempts; retry in {}s", until.saturating_sub(now)),
+                    "retry_after_secs": until.saturating_sub(now),
+                })),
+            ));
+        }
+        crypto
+            .session
+            .unlock_with_master_key(candidate_master)
+            .map_err(internal_err)?;
+        if let Some(verifier) = verifier_upgrade {
+            let mut upgraded = header.clone();
+            upgraded.password_verifier_hex = Some(verifier);
+            if let Err(err) = encrypted_file::save_header(&upgraded) {
+                eprintln!(
+                    "warning: failed to persist password verifier upgrade after unlock: {}",
+                    err
+                );
+            }
+        }
+        crypto.migration_status = crate::halo::migration::MigrationStatus::V2Unlocked;
+        let mut scopes = crypto
+            .session
+            .active_scopes()
+            .into_iter()
+            .map(|s| s.as_str().to_string())
+            .collect::<Vec<_>>();
+        scopes.sort();
+        return Ok(Json(json!({
+            "ok": true,
+            "mode": "password",
+            "unlocked_scopes": scopes,
+        })));
+    }
+
+    let agent_id = req.agent_id.as_deref().ok_or_else(|| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            "agent_id is required for agent unlock",
+        )
+    })?;
+    let agent_sk = req.agent_sk.as_deref().ok_or_else(|| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            "agent_sk is required for agent unlock",
+        )
+    })?;
+    let scope_names = req
+        .scopes
+        .as_ref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            api_err(
+                StatusCode::BAD_REQUEST,
+                "scopes are required for agent unlock",
+            )
+        })?;
+    let mut unlocked_scopes = Vec::new();
+    let mut crypto = lock_crypto_state(&state)?;
+    for name in scope_names {
+        let scope = CryptoScope::parse(name)
+            .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, &format!("unknown scope {}", name)))?;
+        let scope_key =
+            agent_auth::agent_unlock_scope(agent_id, agent_sk, scope).map_err(internal_err)?;
+        crypto.session.insert_scope_key(scope_key);
+        unlocked_scopes.push(scope.as_str().to_string());
+    }
+    unlocked_scopes.sort();
+    crypto.migration_status = crate::halo::migration::MigrationStatus::V2Unlocked;
+    Ok(Json(json!({
+        "ok": true,
+        "mode": "agent",
+        "unlocked_scopes": unlocked_scopes,
+    })))
+}
+
+async fn api_crypto_lock(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let mut crypto = lock_crypto_state(&state)?;
+    crypto.session.lock();
+    crypto.migration_status = if encrypted_file::header_exists() {
+        crate::halo::migration::MigrationStatus::V2Locked
+    } else {
+        crate::halo::migration::detect_migration_status()
+    };
+    Ok(Json(json!({"ok": true, "locked": true})))
+}
+
+async fn api_crypto_change_password(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<CryptoChangePasswordRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Identity)?;
+    crate::halo::password::validate_password_pair(&req.new_password, &req.confirm)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let old_header = encrypted_file::load_header()
+        .map_err(internal_err)?
+        .ok_or_else(|| api_err(StatusCode::PRECONDITION_REQUIRED, "password not configured"))?;
+    let mut old_master = old_header
+        .kdf
+        .derive_master_key(&req.current_password)
+        .map_err(|_| api_err(StatusCode::UNAUTHORIZED, "current password is incorrect"))?;
+    let old_password_verified =
+        verify_master_key_against_crypto_state(&old_header, &old_master).map_err(internal_err)?;
+    if !old_password_verified {
+        old_master.zeroize();
+        return Err(api_err(
+            StatusCode::UNAUTHORIZED,
+            "current password is incorrect",
+        ));
+    }
+    let new_kdf = encrypted_file::KdfParams::random_v2();
+    let mut new_master = new_kdf
+        .derive_master_key(&req.new_password)
+        .map_err(internal_err)?;
+
+    let targets = crypto_scope_targets();
+    for (path, scope) in targets {
+        if !path.exists() {
+            continue;
+        }
+        let mut old_scope_key =
+            derive_scope_key_from_master(&old_master, scope).map_err(internal_err)?;
+        let file = encrypted_file::EncryptedFileV2::load(&path).map_err(internal_err)?;
+        let plain = Zeroizing::new(file.decrypt(&old_scope_key).map_err(internal_err)?);
+        old_scope_key.zeroize();
+        let mut new_scope_key =
+            derive_scope_key_from_master(&new_master, scope).map_err(internal_err)?;
+        let rebuilt = encrypted_file::EncryptedFileV2::encrypt(
+            plain.as_slice(),
+            &new_scope_key,
+            scope,
+            &new_kdf,
+        )
+        .map_err(internal_err)?;
+        new_scope_key.zeroize();
+        rebuilt.save(&path).map_err(internal_err)?;
+    }
+
+    let new_header = encrypted_file::CryptoHeader {
+        schema: encrypted_file::CRYPTO_HEADER_SCHEMA.to_string(),
+        kdf: new_kdf.clone(),
+        created_at: now_unix_secs(),
+        password_protected: true,
+        password_verifier_hex: Some(encrypted_file::password_verifier_hex(&new_master)),
+    };
+    encrypted_file::save_header(&new_header).map_err(internal_err)?;
+    old_master.zeroize();
+    new_master.zeroize();
+
+    let mut crypto = lock_crypto_state(&state)?;
+    let salt = header_salt_bytes(&new_header).map_err(internal_err)?;
+    crypto
+        .session
+        .unlock_with_password(&req.new_password, &salt)
+        .map_err(|e| api_err(StatusCode::UNAUTHORIZED, &e))?;
+    let reencapsulated = agent_auth::reencapsulate_all_agents(&mut crypto.session).unwrap_or(0);
+    crypto.migration_status = crate::halo::migration::MigrationStatus::V2Unlocked;
+
+    Ok(Json(json!({
+        "ok": true,
+        "agents_reencapsulated": reencapsulated,
+    })))
+}
+
+async fn api_agents_list(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Identity)?;
+    let agents = agent_auth::list_agents().map_err(internal_err)?;
+    Ok(Json(json!({ "agents": agents })))
+}
+
+async fn api_agents_authorize(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<AgentAuthorizeRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Sign)?;
+    let scopes: Vec<CryptoScope> = req
+        .scopes
+        .iter()
+        .filter_map(|s| CryptoScope::parse(s))
+        .filter(|s| *s != CryptoScope::Admin)
+        .collect();
+    if scopes.is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "at least one valid scope is required",
+        ));
+    }
+    let mut crypto = lock_crypto_state(&state)?;
+    let (cred, secret) =
+        agent_auth::authorize_agent(&mut crypto.session, &req.label, &scopes, req.expires_days)
+            .map_err(internal_err)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": cred.agent_id,
+        "label": cred.label,
+        "scopes": cred.scopes.keys().cloned().collect::<Vec<_>>(),
+        "expires_at": cred.expires_at,
+        "agent_sk": secret.secret_key_hex,
+        "algorithm": secret.algorithm,
+        "warning": "This secret key is shown once. Copy and store it securely.",
+    })))
+}
+
+async fn api_agents_revoke(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<AgentRevokeRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Identity)?;
+    agent_auth::revoke_agent(&req.agent_id).map_err(internal_err)?;
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": req.agent_id,
+    })))
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
@@ -1618,6 +2179,7 @@ async fn api_session_attest(
     AxumState(state): AxumState<DashboardState>,
     Path(id): Path<String>,
 ) -> ApiResult {
+    require_scope(&state, CryptoScope::Sign)?;
     let _guard = state.db_lock.lock().await;
     let resolved = resolve_session_id(&state.db_path, Some(&id)).map_err(internal_err)?;
     let result = attest_session(
@@ -1779,9 +2341,10 @@ async fn api_get_profile(AxumState(_state): AxumState<DashboardState>) -> ApiRes
 }
 
 async fn api_save_profile(
-    AxumState(_state): AxumState<DashboardState>,
+    AxumState(state): AxumState<DashboardState>,
     Json(body): Json<Value>,
 ) -> ApiResult {
+    require_scope(&state, CryptoScope::Identity)?;
     let mut profile = crate::halo::profile::load();
     let previous_profile = profile.clone();
     let rename = body
@@ -1880,9 +2443,10 @@ async fn api_identity_device_scan(AxumState(_state): AxumState<DashboardState>) 
 }
 
 async fn api_identity_device_save(
-    AxumState(_state): AxumState<DashboardState>,
+    AxumState(state): AxumState<DashboardState>,
     Json(body): Json<Value>,
 ) -> ApiResult {
+    require_scope(&state, CryptoScope::Identity)?;
     let browser_fp = body
         .get("browser_fingerprint")
         .and_then(|v| v.as_str())
@@ -2002,9 +2566,10 @@ async fn api_identity_network(AxumState(_state): AxumState<DashboardState>) -> A
 }
 
 async fn api_identity_network_save(
-    AxumState(_state): AxumState<DashboardState>,
+    AxumState(state): AxumState<DashboardState>,
     Json(body): Json<Value>,
 ) -> ApiResult {
+    require_scope(&state, CryptoScope::Identity)?;
     let share_local_ip = body
         .get("share_local_ip")
         .and_then(|v| v.as_bool())
@@ -2109,9 +2674,10 @@ async fn api_identity_network_save(
 }
 
 async fn api_identity_anonymous(
-    AxumState(_state): AxumState<DashboardState>,
+    AxumState(state): AxumState<DashboardState>,
     Json(body): Json<Value>,
 ) -> ApiResult {
+    require_scope(&state, CryptoScope::Identity)?;
     let enabled = body
         .get("enabled")
         .and_then(|v| v.as_bool())
@@ -2164,9 +2730,10 @@ async fn api_identity_tier_status(AxumState(_state): AxumState<DashboardState>) 
 }
 
 async fn api_identity_tier_update(
-    AxumState(_state): AxumState<DashboardState>,
+    AxumState(state): AxumState<DashboardState>,
     Json(req): Json<IdentityTierUpdateRequest>,
 ) -> ApiResult {
+    require_scope(&state, CryptoScope::Identity)?;
     let tier = parse_identity_tier(&req.tier).ok_or_else(|| {
         api_err(
             StatusCode::BAD_REQUEST,
@@ -2248,6 +2815,7 @@ async fn api_genesis_status(AxumState(_state): AxumState<DashboardState>) -> Api
 }
 
 async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_scope(&state, CryptoScope::Genesis)?;
     if let Err(e) = ensure_genesis_signing_wallet() {
         return Err(genesis_api_err(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2420,6 +2988,7 @@ async fn api_genesis_reset(
         ));
     }
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Genesis)?;
     if matches!(
         crate::halo::identity_ledger::latest_completed_genesis_hash(),
         Ok(Some(_))
@@ -2585,6 +3154,7 @@ async fn api_identity_ledger_migrate_legacy_signatures(
     AxumState(state): AxumState<DashboardState>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Sign)?;
     let updated =
         crate::halo::identity_ledger::migrate_legacy_signatures().map_err(internal_err)?;
     let ledger = crate::halo::identity_ledger::project_ledger_status(now_unix_secs())
@@ -2644,6 +3214,7 @@ async fn api_identity_social_connect(
     AxumState(state): AxumState<DashboardState>,
     Json(req): Json<SocialConnectRequest>,
 ) -> ApiResult {
+    require_scope(&state, CryptoScope::Identity)?;
     let provider = crate::halo::identity_ledger::normalize_social_provider(&req.provider);
     let token = req.token.as_deref().ok_or_else(|| {
         api_err(
@@ -2668,6 +3239,7 @@ async fn api_identity_social_revoke(
     AxumState(state): AxumState<DashboardState>,
     Json(req): Json<SocialRevokeRequest>,
 ) -> ApiResult {
+    require_scope(&state, CryptoScope::Identity)?;
     let provider = crate::halo::identity_ledger::normalize_social_provider(&req.provider);
     if !social_provider_supported(&provider) {
         return Err(api_err(
@@ -3265,28 +3837,69 @@ async fn api_agentaddress_generate(
     Json(req): Json<AgentAddressGenerateRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-
-    let base = agentaddress_api_base();
-    let endpoint = format!("{}/api/external/agentaddress", base.trim_end_matches('/'));
-    let resp = ureq::post(&endpoint)
-        .header("Content-Type", "application/json")
-        .send_json(json!({}))
-        .map_err(|e| {
-            api_err(
-                StatusCode::BAD_GATEWAY,
-                &format!("AgentAddress request failed: {e}"),
+    let source = parse_agentaddress_source(req.source.as_deref())
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let (provider, endpoint, source_tag, data, genesis_seed_sha256) = match source {
+        AgentAddressSource::External => {
+            let base = agentaddress_api_base();
+            let endpoint = format!("{}/api/external/agentaddress", base.trim_end_matches('/'));
+            let resp = ureq::post(&endpoint)
+                .header("Content-Type", "application/json")
+                .send_json(json!({}))
+                .map_err(|e| {
+                    api_err(
+                        StatusCode::BAD_GATEWAY,
+                        &format!("AgentAddress request failed: {e}"),
+                    )
+                })?;
+            let payload: Value = resp.into_body().read_json().map_err(|e| {
+                api_err(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("parse AgentAddress response: {e}"),
+                )
+            })?;
+            let data = payload
+                .get("data")
+                .cloned()
+                .unwrap_or_else(|| payload.clone());
+            (
+                "AgentAddress",
+                endpoint,
+                "agentpmt_external_noauth".to_string(),
+                data,
+                None,
             )
-        })?;
-    let payload: Value = resp.into_body().read_json().map_err(|e| {
-        api_err(
-            StatusCode::BAD_GATEWAY,
-            &format!("parse AgentAddress response: {e}"),
-        )
-    })?;
-    let data = payload
-        .get("data")
-        .cloned()
-        .unwrap_or_else(|| payload.clone());
+        }
+        AgentAddressSource::Genesis => {
+            require_scope(&state, CryptoScope::Wallet)?;
+            let mnemonic = crate::halo::genesis_seed::derive_wallet_mnemonic()
+                .map_err(internal_err)?
+                .ok_or_else(|| {
+                    api_err(
+                        StatusCode::PRECONDITION_FAILED,
+                        "genesis seed not available; complete Genesis ceremony first",
+                    )
+                })?;
+            let derived = crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic, None)
+                .map_err(internal_err)?;
+            let seed_hash = crate::halo::genesis_seed::load_seed_sha256()
+                .map_err(internal_err)?
+                .unwrap_or_default();
+            let data = json!({
+                "evmAddress": derived.evm_address,
+                "evmPrivateKey": derived.private_key_hex,
+                "mnemonic": mnemonic,
+                "derivationPath": derived.derivation_path,
+            });
+            (
+                "LocalGenesis",
+                "local://genesis-seed-derivation".to_string(),
+                "genesis_derived".to_string(),
+                data,
+                Some(seed_hash),
+            )
+        }
+    };
     let address = data
         .get("evmAddress")
         .and_then(serde_json::Value::as_str)
@@ -3356,16 +3969,26 @@ async fn api_agentaddress_generate(
         identity.agent_address = Some(crate::halo::identity::AgentAddressIdentity {
             evm_address: address.clone(),
             generated_at: chrono::Utc::now().to_rfc3339(),
-            source: Some("agentpmt_external_noauth".to_string()),
+            source: Some(source_tag.clone()),
         });
         crate::halo::identity::save(&identity).map_err(internal_err)?;
+        let ledger_kind = match source {
+            AgentAddressSource::Genesis => {
+                crate::halo::identity_ledger::IdentityLedgerKind::WalletCreated
+            }
+            AgentAddressSource::External => {
+                crate::halo::identity_ledger::IdentityLedgerKind::WalletImported
+            }
+        };
         match crate::halo::identity_ledger::append_wallet_event(
-            crate::halo::identity_ledger::IdentityLedgerKind::WalletImported,
+            ledger_kind,
             "agent_address_generated",
             json!({
                 "provider": "agentaddress",
+                "source": source_tag,
                 "evm_address": address,
                 "vault_stored": vault_stored,
+                "genesis_seed_sha256": genesis_seed_sha256,
             }),
         ) {
             Ok(_) => {
@@ -3394,13 +4017,18 @@ async fn api_agentaddress_generate(
 
     Ok(Json(json!({
         "ok": true,
-        "provider": "AgentAddress",
+        "provider": provider,
+        "source": match source {
+            AgentAddressSource::External => "external",
+            AgentAddressSource::Genesis => "genesis",
+        },
         "endpoint": endpoint,
         "persist_public_address": persist_public,
         "vault_stored": vault_stored,
         "vault_error": vault_error,
         "ledger_logged": ledger_logged,
         "ledger_error": ledger_error,
+        "genesis_seed_sha256": genesis_seed_sha256,
         "data": safe_data,
     })))
 }
@@ -3485,6 +4113,7 @@ async fn api_wdk_create(
     Json(req): Json<WdkPassphraseRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Wallet)?;
     if req.passphrase.trim().len() < 8 {
         return Err(api_err(
             StatusCode::BAD_REQUEST,
@@ -3561,6 +4190,7 @@ async fn api_wdk_import(
     Json(req): Json<WdkImportRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Wallet)?;
     let seed = req.seed.trim();
     if !wdk_is_valid_seed_phrase(seed) {
         return Err(api_err(
@@ -3629,6 +4259,7 @@ async fn api_wdk_unlock(
     Json(req): Json<WdkPassphraseRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Wallet)?;
     let now = now_unix_secs();
     {
         let throttle = state
@@ -3699,6 +4330,7 @@ async fn api_wdk_unlock(
 
 async fn api_wdk_accounts(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Wallet)?;
     let mgr = lock_wdk_manager(&state)?;
     if !mgr.is_running() {
         return Err(api_err(
@@ -3711,6 +4343,7 @@ async fn api_wdk_accounts(AxumState(state): AxumState<DashboardState>) -> ApiRes
 
 async fn api_wdk_balances(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Wallet)?;
     let mgr = lock_wdk_manager(&state)?;
     if !mgr.is_running() {
         return Err(api_err(
@@ -3726,6 +4359,7 @@ async fn api_wdk_send(
     Json(req): Json<WdkTransferRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Wallet)?;
     let (chain, to, amount) =
         validate_wdk_transfer(&req).map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     let mgr = lock_wdk_manager(&state)?;
@@ -3752,6 +4386,7 @@ async fn api_wdk_quote(
     Json(req): Json<WdkTransferRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Wallet)?;
     let (chain, to, amount) =
         validate_wdk_transfer(&req).map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     let mgr = lock_wdk_manager(&state)?;
@@ -3775,6 +4410,7 @@ async fn api_wdk_quote(
 
 async fn api_wdk_fees(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Wallet)?;
     let mgr = lock_wdk_manager(&state)?;
     if !mgr.is_running() {
         return Err(api_err(
@@ -3787,6 +4423,7 @@ async fn api_wdk_fees(AxumState(state): AxumState<DashboardState>) -> ApiResult 
 
 async fn api_wdk_lock(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Wallet)?;
     let mut mgr = lock_wdk_manager(&state)?;
     if mgr.is_running() {
         let _ = mgr.post("/destroy", &json!({}));
@@ -3817,6 +4454,7 @@ async fn api_wdk_delete(
     Json(req): Json<WdkDeleteRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Wallet)?;
     if req.confirm.trim() != "DELETE" {
         return Err(api_err(
             StatusCode::BAD_REQUEST,
@@ -4027,6 +4665,7 @@ async fn api_config_x402(
 
 async fn api_vault_keys(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Vault)?;
     let vault = configured_vault(&state)?;
     let keys = vault.list_keys().map_err(internal_err)?;
     Ok(Json(json!({ "keys": keys })))
@@ -4038,6 +4677,7 @@ async fn api_vault_set_key(
     Json(req): Json<VaultSetKeyRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Vault)?;
     let vault = configured_vault(&state)?;
     let env_var = req
         .env_var
@@ -4055,6 +4695,7 @@ async fn api_vault_delete_key(
     Path(provider): Path<String>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Vault)?;
     let vault = configured_vault(&state)?;
     vault.delete_key(&provider).map_err(internal_err)?;
     Ok(Json(json!({ "ok": true, "provider": provider })))
@@ -4065,6 +4706,7 @@ async fn api_vault_test_key(
     Path(provider): Path<String>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Vault)?;
     let vault = configured_vault(&state)?;
     let key = vault.get_key(&provider).map_err(|_| {
         api_err(
@@ -4651,6 +5293,7 @@ async fn api_attestation_verify(
     AxumState(state): AxumState<DashboardState>,
     Json(req): Json<VerifyRequest>,
 ) -> ApiResult {
+    require_scope(&state, CryptoScope::Sign)?;
     use crate::halo::attest::AttestationResult;
 
     // 1. Find the stored attestation by digest

@@ -11,6 +11,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use zeroize::Zeroize;
 
 const WDK_PORT: u16 = 7321;
 const WDK_SIDECAR_DIR: &str = "wdk-sidecar";
@@ -239,14 +240,14 @@ pub fn encrypt_seed(seed: &str, passphrase: &str) -> Result<EncryptedSeed, Strin
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
 
-    let key = derive_key_argon2(passphrase.as_bytes(), &salt)?;
+    let mut key = derive_key_argon2(passphrase.as_bytes(), &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("cipher init: {e}"))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, seed.as_bytes())
         .map_err(|e| format!("seed encryption failed: {e}"))?;
 
-    Ok(EncryptedSeed {
+    let out = EncryptedSeed {
         nonce: hex::encode(nonce_bytes),
         ciphertext: hex::encode(ciphertext),
         salt: hex::encode(salt),
@@ -261,7 +262,9 @@ pub fn encrypt_seed(seed: &str, passphrase: &str) -> Result<EncryptedSeed, Strin
             "polygon".to_string(),
             "arbitrum".to_string(),
         ],
-    })
+    };
+    key.zeroize();
+    Ok(out)
 }
 
 pub fn decrypt_seed(encrypted: &EncryptedSeed, passphrase: &str) -> Result<String, String> {
@@ -282,10 +285,16 @@ pub fn decrypt_seed(encrypted: &EncryptedSeed, passphrase: &str) -> Result<Strin
     }
 
     let mut last_err = None;
-    for key in attempts {
+    for mut key in attempts {
         match try_decrypt_with_key(&key, &nonce_bytes, &ciphertext) {
-            Ok(seed) => return Ok(seed),
-            Err(e) => last_err = Some(e),
+            Ok(seed) => {
+                key.zeroize();
+                return Ok(seed);
+            }
+            Err(e) => {
+                key.zeroize();
+                last_err = Some(e);
+            }
         }
     }
     Err(last_err.unwrap_or_else(|| "decryption failed".to_string()))

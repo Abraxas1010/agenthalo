@@ -76,6 +76,38 @@ pub fn identity_config_path() -> PathBuf {
     halo_dir().join("identity.json")
 }
 
+pub fn crypto_header_path() -> PathBuf {
+    halo_dir().join("crypto_header.json")
+}
+
+pub fn agent_credentials_dir() -> PathBuf {
+    halo_dir().join("agent_credentials")
+}
+
+pub fn pq_wallet_v2_path() -> PathBuf {
+    halo_dir().join("pq_wallet.v2.enc")
+}
+
+pub fn vault_v2_path() -> PathBuf {
+    halo_dir().join("vault.v2.enc")
+}
+
+pub fn identity_v2_path() -> PathBuf {
+    halo_dir().join("identity.v2.enc")
+}
+
+pub fn profile_v2_path() -> PathBuf {
+    halo_dir().join("profile.v2.enc")
+}
+
+pub fn genesis_seed_v2_path() -> PathBuf {
+    halo_dir().join("genesis_seed.v2.enc")
+}
+
+pub fn wdk_seed_v2_path() -> PathBuf {
+    halo_dir().join("wdk_seed.v2.enc")
+}
+
 pub fn identity_social_ledger_path() -> PathBuf {
     halo_dir().join("identity_social_ledger.jsonl")
 }
@@ -106,6 +138,23 @@ pub fn ensure_audits_dir() -> Result<(), String> {
 
 pub fn ensure_signatures_dir() -> Result<(), String> {
     std::fs::create_dir_all(signatures_dir()).map_err(|e| format!("create signatures dir: {e}"))
+}
+
+pub fn ensure_agent_credentials_dir() -> Result<(), String> {
+    let path = agent_credentials_dir();
+    std::fs::create_dir_all(&path)
+        .map_err(|e| format!("create agent credentials dir {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
+            format!(
+                "chmod agent credentials dir {} to 0700: {e}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 pub fn ensure_circuit_dir() -> Result<(), String> {
