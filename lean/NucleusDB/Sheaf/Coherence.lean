@@ -52,7 +52,10 @@ structure CoherenceWitness (A : Type u) where
   F : LensPresheaf A
   C : CoveringFamily U
   family : MatchingFamily F U C
-  /-- Chain-indexed transport used for nontrivial restriction maps. -/
+  /-- Chain-indexed transport used for nontrivial restriction maps.
+      The carrier family is intentionally constant (`ChainId ↦ A`) for the
+      compliance setting: each chain stores the same semantic object type and
+      transport accounts for representation/projection changes. -/
   transport : _root_.NucleusDB.Sheaf.ChainTransport (fun _ : ChainId => A) A
   coveredChains : Finset ChainId
   rootChain : ChainId
@@ -64,6 +67,10 @@ structure CoherenceWitness (A : Type u) where
   /-- Compatibility witness from lens-level restriction into chain transport projection. -/
   restrict_transport : ∀ c (hc : c ∈ coveredChains),
       F.restrict (chainSection c hc) = transport.toShared c (chainSection c hc)
+  /-- Cached amalgamation witness.
+      This is redundant in principle (derivable via `gluing_implies_amalgamation`)
+      but retained for ergonomic witness construction in call-sites that already
+      carry a direct proof. -/
   amalgamates : Amalgamates F U C family
   digest : String
 
@@ -147,6 +154,13 @@ theorem gluing_implies_amalgamation {A : Type u} (w : CoherenceWitness A)
     _ = w.F.restrict (w.chainSection w.rootChain w.root_mem) := by
       symm
       exact w.restrict_transport w.rootChain w.root_mem
+
+/-- Transport/gluing-derived coherence check (independent of cached field). -/
+theorem verifyCoherence_from_gluing {A : Type u} (w : CoherenceWitness A)
+    (hFamilyCovered :
+      ∀ s ∈ w.family.sections, ∃ c, ∃ hc : c ∈ w.coveredChains, s = w.chainSection c hc) :
+    verifyCoherence w := by
+  exact gluing_implies_amalgamation w hFamilyCovered
 
 /-- Coherence evidence yields a global section candidate in the Mathlib presheaf view. -/
 theorem coherence_implies_global_section {A : Type u} (w : CoherenceWitness A)

@@ -337,6 +337,23 @@ async fn sql_rejects_bad_syntax() {
 
 #[tokio::test]
 async fn attestation_verify_is_cryptographic() {
+    // Hold env_lock: save_attestation and api_attestation_verify both read
+    // AGENTHALO_HOME via config::attestations_dir().  Without the lock a
+    // concurrent genesis test can change AGENTHALO_HOME between the attest
+    // and verify steps, making the verify scan a different directory.
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_attest_verify_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
     let (state, db_path) = test_state("attest_verify");
     let session_id = format!("sess-verify-{}", now_unix_secs());
     seed_session(&db_path, &session_id);
@@ -374,6 +391,7 @@ async fn attestation_verify_is_cryptographic() {
     assert_eq!(v2["checks"]["event_count_match"], true);
 
     let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&halo_home);
 }
 
 #[tokio::test]
