@@ -279,6 +279,14 @@ function renderCryptoOverlay(status) {
         <div class="crypto-lock-row">
           <input id="crypto-create-confirm" type="password" class="input" placeholder="Confirm password">
         </div>
+        <div class="crypto-lock-rules">
+          <div class="crypto-lock-rules-title">Password requirements</div>
+          <ul>
+            <li>Minimum 8 characters.</li>
+            <li>Use at least 3 of 4 character groups: uppercase, lowercase, number, symbol.</li>
+            <li>Recommended: 12+ characters with all 4 groups.</li>
+          </ul>
+        </div>
         <div class="crypto-lock-actions">
           <button id="crypto-create-btn" class="btn btn-primary">Create Password</button>
         </div>

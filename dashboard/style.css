@@ -4764,6 +4764,34 @@ input:focus, select:focus, textarea:focus {
   margin-top: 10px;
 }
 
+.crypto-lock-rules {
+  margin-top: 8px;
+  margin-bottom: 2px;
+  border: 1px solid rgba(53, 255, 62, 0.22);
+  border-radius: 6px;
+  background: rgba(4, 12, 4, 0.55);
+  padding: 8px 10px;
+}
+
+.crypto-lock-rules-title {
+  color: var(--text-bright);
+  font-size: 11px;
+  margin-bottom: 5px;
+  letter-spacing: 0.3px;
+}
+
+.crypto-lock-rules ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.crypto-lock-rules li {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+  margin-bottom: 2px;
+}
+
 .crypto-lock-meta {
   margin-top: 12px;
   color: var(--text-dim);
