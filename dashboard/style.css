@@ -1315,96 +1315,10 @@ body.no-crt #crt-overlay { display: none; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   padding: 12px 10px;
-  gap: 6px;
+  gap: 8px;
   overflow: visible;
-}
-
-/* Chain logo carousel — paginated 2-row grid */
-.chain-carousel-wrap {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  padding: 0 2px;
-}
-
-.chain-carousel-track {
-  flex: 1;
-  min-width: 0;
-}
-
-.chain-carousel-page {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: auto auto;
-  gap: 10px 12px;
-  justify-items: center;
-  padding: 4px 0;
-}
-
-.chain-logo-item {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.chain-logo-item img {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  object-fit: cover;
-  border: 1px solid rgba(53, 255, 62, 0.15);
-  background: #0a0f08;
-  transition: transform 0.15s ease, border-color 0.15s ease;
-}
-
-.chain-logo-item img:hover {
-  transform: scale(1.18);
-  border-color: rgba(53, 255, 62, 0.5);
-}
-
-.chain-carousel-arrow {
-  background: none;
-  border: 1px solid rgba(53, 255, 62, 0.2);
-  border-radius: 50%;
-  color: var(--green);
-  font-size: 16px;
-  width: 22px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  flex-shrink: 0;
-  padding: 0;
-  line-height: 1;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.chain-carousel-arrow:hover {
-  background: rgba(53, 255, 62, 0.08);
-  border-color: rgba(53, 255, 62, 0.4);
-}
-
-.chain-carousel-dots {
-  display: flex;
-  justify-content: center;
-  gap: 5px;
-  margin-top: 4px;
-}
-
-.chain-carousel-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: rgba(53, 255, 62, 0.2);
-  transition: background 0.15s ease;
-}
-
-.chain-carousel-dot.active {
-  background: var(--green);
 }
 
 .agentaddress-visual > img,

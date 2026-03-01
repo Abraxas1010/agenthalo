@@ -1138,7 +1138,7 @@ async function renderSetup() {
     : (agentaddressConnected ? 'agentaddress' : 'none');
   const hasAnyWallet = walletPath !== 'none';
   const walletCardDesc = walletPath === 'agentaddress'
-    ? 'Agent identity &amp; wallet ready for autonomous agents'
+    ? 'Agent identity ready for autonomous agents'
     : `Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + '+' : ''} tools, workflows, and budget management`;
   const orStatus = providerStatus('openrouter');
 
@@ -1178,6 +1178,8 @@ async function renderSetup() {
   if (securityTierImageByKey[serverTier]) {
     try { localStorage.setItem('halo_identity_security_tier', serverTier); } catch (_e) {}
   }
+  const identityConfigured = !!(identityCfg.device_configured && identityCfg.network_configured);
+  const hideSafetyUI = identityCfg.anonymous_mode || identityConfigured;
 
   content.innerHTML = `
   <div class="setup-page-wrap">
@@ -1191,13 +1193,13 @@ async function renderSetup() {
 
     <div class="setup-info-box" style="margin-top:14px">
       <span class="info-icon">&#9432;</span>
-      <span><strong>How this page works:</strong> complete Identity, connect a Wallet, then add an LLM key. After that, all tabs are fully unlocked.</span>
+      <span><strong>How this page works:</strong> complete Identity, connect your Wallet, then add an LLM key. After that, all tabs are fully unlocked.</span>
     </div>
     <div style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-top:10px;background:rgba(4,14,8,0.45)">
       <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Quick Start</div>
       <ol class="setup-steps-friendly" style="margin:0">
         <li><span class="step-circle">1</span><span>Set your identity and safety preference in <strong>My Identity</strong>.</span></li>
-        <li><span class="step-circle">2</span><span>Set up your agent identity &amp; wallet.</span></li>
+        <li><span class="step-circle">2</span><span>Set up your agent identity.</span></li>
         <li><span class="step-circle">3</span><span>Add your OpenRouter key in <strong>Add Your LLM Key</strong>.</span></li>
       </ol>
       <div style="margin-top:10px;font-size:12px;color:var(--text-dim)">
@@ -1243,10 +1245,12 @@ async function renderSetup() {
         </div>
       </div>
 
-      <div class="identity-safety-intent-label">I Want To Be</div>
-      <div class="identity-security-tier-shell ${showLowSafetyTierOption ? '' : 'two-options'}" aria-label="Identity safety tier">
+      <div class="identity-safety-intent-label" id="safety-intent-label"
+           style="${hideSafetyUI ? 'display:none' : ''}">I Want To Be</div>
+      <div class="identity-security-tier-shell ${showLowSafetyTierOption ? '' : 'two-options'}" id="safety-tier-shell" aria-label="Identity safety tier"
+           style="${hideSafetyUI ? 'display:none' : ''}">
         <button type="button" class="security-tier-btn tier-safe ${initialSecurityTier === 'max-safe' ? 'is-selected' : ''}" data-tier="max-safe">
-          As Safe as Possible
+          As Safe As Possible
         </button>
         <button type="button" class="security-tier-btn tier-caution ${initialSecurityTier === 'less-safe' ? 'is-selected' : ''}" data-tier="less-safe">
           A Little Rebellious
@@ -1254,40 +1258,84 @@ async function renderSetup() {
       </div>
       <div class="identity-tier-control-row">
         <div id="identity-tier-status" class="identity-tier-status" aria-live="polite"></div>
+        ${hideSafetyUI ? `<button type="button" class="btn btn-sm" id="identity-rescan-btn"
+            style="border-radius:6px;padding:6px 14px;font-size:12px;margin-top:6px;background:var(--card-bg);border:1px solid var(--border);color:var(--text-muted)">
+            Rescan Identity</button>` : ''}
       </div>
 
-      <div class="identity-tech-options-title">Individual Technical Options</div>
+      <div class="anon-mode-shell ${identityCfg.anonymous_mode ? 'is-active' : ''}" id="anon-mode-shell"
+           style="${(!identityCfg.anonymous_mode && identityConfigured) ? 'display:none' : ''}">
+        <div class="anon-mode-avatar-wrap" aria-hidden="true">
+          <img class="anon-mode-avatar anon-avatar-open" src="img/agenthalohiding_mode.png" alt="" onerror="this.style.display='none'">
+          <img class="anon-mode-avatar anon-avatar-hidden" src="img/agenthalohidden_mode.png" alt="" onerror="this.style.display='none'">
+        </div>
+        <div class="anon-mode-copy">
+          <div class="anon-mode-title">Total Anonymous Mode</div>
+          <p class="anon-mode-desc">
+            No device identifiers, no network identifiers. Each session gets a random ephemeral ID.
+          </p>
+        </div>
+        <div class="anonymous-launch-wrap">
+          <img class="anonymous-launch-ninja" src="img/agenthaloninja.png" alt="" onerror="this.style.display='none'">
+          <button class="anonymous-launch-btn ${identityCfg.anonymous_mode ? 'is-armed' : ''}" type="button" id="anonymous-mode-launch-btn" aria-pressed="${identityCfg.anonymous_mode ? 'true' : 'false'}">
+            ${identityCfg.anonymous_mode ? 'Disengage' : 'Engage'}
+          </button>
+        </div>
+        <input type="checkbox" id="anonymous-mode-check" class="anon-mode-hidden-checkbox" ${identityCfg.anonymous_mode ? 'checked' : ''}>
+      </div>
+
+      <div class="identity-tech-options-title" id="tech-options-title">Individual Technical Options</div>
 
       <details class="setup-alt-path" id="setup-device-details" style="margin-top:12px">
-        <summary>Device Fingerprint ${identityCfg.device_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ''}</summary>
+        <summary>Device Identity ${identityCfg.device_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ''}</summary>
         <div class="alt-body">
           <div class="device-fingerprint-layout">
-            <div class="device-fingerprint-main">
-              <div class="identity-option-checklist">
-                <label class="identity-option-check"><input type="checkbox" id="tier-device-enable"> Enable device fingerprint</label>
-                <label class="identity-option-check"><input type="checkbox" id="tier-device-components"> Include hardware components</label>
-                <label class="identity-option-check"><input type="checkbox" id="tier-device-browser"> Include browser fingerprint</label>
+            <div class="device-fingerprint-main" id="device-main-content">
+              ${identityCfg.anonymous_mode ? `
+              <div style="text-align:center;padding:20px 0">
+                <img src="img/agenthaloanonymous.png" alt="Anonymous mode" style="max-width:160px;border-radius:12px;margin-bottom:10px" onerror="this.style.display='none'">
+                <p style="font-size:12px;color:var(--text-dim)">Anonymous mode active &mdash; device identity disabled.</p>
               </div>
-              <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">
-                Scan your device for unique hardware identifiers. This strengthens your
-                identity for trust scoring. All data stays local.
-              </p>
-              <button class="btn btn-primary btn-sm" id="device-scan-btn"
-                      style="border-radius:6px;padding:8px 16px;margin-bottom:12px">
-                ${identityCfg.device_configured ? 'Rescan Device' : 'Scan Device'}
-              </button>
-              <div id="device-scan-results" style="display:none;width:100%;max-width:460px">
-                <div id="device-components-list"></div>
-                <div id="device-entropy-bar" style="margin:12px 0"></div>
-                <button class="btn btn-primary btn-sm" id="device-save-btn"
-                        style="border-radius:6px;padding:8px 16px">
-                  Save Device Identity
+              ` : (identityCfg.device_configured ? `
+              <div id="device-configured-display">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                  <span style="font-size:18px;color:var(--green)">&#9432;</span>
+                  <span style="font-size:13px;color:var(--green);font-weight:700">Device Identity Verified</span>
+                </div>
+                <div id="device-scan-summary" style="font-size:12px;color:var(--text-muted);line-height:1.8">
+                  Loading device details...
+                </div>
+                <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
+              </div>
+              ` : `
+              <div id="device-manual-setup">
+                <div class="identity-option-checklist">
+                  <label class="identity-option-check"><input type="checkbox" id="tier-device-enable"> Enable device identity</label>
+                  <label class="identity-option-check"><input type="checkbox" id="tier-device-components"> Include hardware components</label>
+                  <label class="identity-option-check"><input type="checkbox" id="tier-device-browser"> Include browser fingerprint</label>
+                </div>
+                <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">
+                  Scan your device for unique hardware identifiers. This strengthens your
+                  identity for trust scoring. All data stays local.
+                </p>
+                <button class="btn btn-primary btn-sm" id="device-scan-btn"
+                        style="border-radius:6px;padding:8px 16px;margin-bottom:12px">
+                  Scan Device
                 </button>
+                <div id="device-scan-results" style="display:none;width:100%;max-width:460px">
+                  <div id="device-components-list"></div>
+                  <div id="device-entropy-bar" style="margin:12px 0"></div>
+                  <button class="btn btn-primary btn-sm" id="device-save-btn"
+                          style="border-radius:6px;padding:8px 16px">
+                    Save Device Identity
+                  </button>
+                </div>
+                <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
               </div>
-              <div id="device-scan-status" style="font-size:12px;margin-top:8px">${identityCfg.device_configured ? '<span style="color:var(--green)">&#10003; Device identity already configured. Re-scan to update it.</span>' : ''}</div>
+              `)}
             </div>
             <div class="device-fingerprint-visual">
-              <img src="img/agenthalofingerprint_panel.png" alt="Fingerprint security visual" onerror="this.style.display='none'">
+              <img src="img/agenthalofingerprint_panel.png" alt="Device identity visual" onerror="this.style.display='none'">
             </div>
           </div>
         </div>
@@ -1297,23 +1345,41 @@ async function renderSetup() {
         <summary>Network Identity ${identityCfg.network_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ''}</summary>
         <div class="alt-body">
           <div class="network-identity-layout">
-            <div class="network-identity-main">
-              <div class="identity-option-checklist">
-                <label class="identity-option-check"><input type="checkbox" id="share-local-ip"> Share local IP (hashed)</label>
-                <label class="identity-option-check"><input type="checkbox" id="share-mac"> Share MAC (hashed)</label>
+            <div class="network-identity-main" id="network-main-content">
+              ${identityCfg.anonymous_mode ? `
+              <div style="text-align:center;padding:20px 0">
+                <img src="img/agenthaloanon.png" alt="Anonymous mode" style="max-width:160px;border-radius:12px;margin-bottom:10px" onerror="this.style.display='none'">
+                <p style="font-size:12px;color:var(--text-dim)">Anonymous mode active &mdash; network identity disabled.</p>
               </div>
-              <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">
-                Optionally share network identifiers to strengthen your fingerprint.
-              </p>
-              <div id="network-info" style="font-size:13px;color:var(--text-dim);width:100%;max-width:460px">
-                ${identityCfg.network_configured
-                  ? '&#10003; Network identity already configured. Re-open detection and update any values you want to share.'
-                  : 'Loading network info...'}
+              ` : (identityCfg.network_configured ? `
+              <div id="network-configured-display">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                  <span style="font-size:18px;color:var(--green)">&#9432;</span>
+                  <span style="font-size:13px;color:var(--green);font-weight:700">Network Identity Verified</span>
+                </div>
+                <div id="network-info" style="font-size:12px;color:var(--text-muted);line-height:1.8">
+                  Loading network details...
+                </div>
+                <div id="network-scan-status" style="font-size:12px;margin-top:8px"></div>
               </div>
-              <button class="btn btn-sm btn-primary" id="network-save-btn" style="border-radius:6px;padding:8px 16px;margin-top:10px">${identityCfg.network_configured ? 'Update Network Identity' : 'Save Network Identity'}</button>
-              <p style="font-size:11px;color:var(--text-dim);margin-top:8px;max-width:460px">
-                IP/MAC values are hashed before storage. Raw values shown here for your reference only.
-              </p>
+              ` : `
+              <div id="network-manual-setup">
+                <div class="identity-option-checklist">
+                  <label class="identity-option-check"><input type="checkbox" id="share-local-ip"> Share local IP (hashed)</label>
+                  <label class="identity-option-check"><input type="checkbox" id="share-mac"> Share MAC (hashed)</label>
+                </div>
+                <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">
+                  Optionally share network identifiers to strengthen your identity.
+                </p>
+                <div id="network-info" style="font-size:13px;color:var(--text-dim);width:100%;max-width:460px">
+                  Loading network info...
+                </div>
+                <button class="btn btn-sm btn-primary" id="network-save-btn" style="border-radius:6px;padding:8px 16px;margin-top:10px">Save Network Identity</button>
+                <p style="font-size:11px;color:var(--text-dim);margin-top:8px;max-width:460px">
+                  IP/MAC values are hashed before storage. Raw values shown here for your reference only.
+                </p>
+              </div>
+              `)}
             </div>
             <div class="network-identity-visual">
               <img src="img/agenthalonetworkidentity_panel.png" alt="Network identity visual" onerror="this.style.display='none'">
@@ -1390,123 +1456,52 @@ async function renderSetup() {
         </div>
       </details>
       ${deferIdentityRoadmapTracks ? `
-      <!-- Moved up from Wallet section per UX request -->
       <details class="setup-alt-path" style="margin-top:14px" id="agentaddress-section">
-        <summary>Agent Identity &amp; Wallet</summary>
+        <summary>Agent Identity</summary>
         <div class="alt-body">
           <div class="agentaddress-layout">
             <div class="agentaddress-main">
               <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px">
-                Your agent identity &amp; wallet is auto-generated on first launch. It provides a universal, verifiable
+                Your agent identity is auto-generated on first launch. It provides a universal, verifiable
                 address for autonomous agent operations.
               </p>
-              <div style="margin-top:0;margin-bottom:12px">
-                <button type="button" id="wallet-info-toggle" style="background:none;border:1px solid var(--border);border-radius:5px;color:var(--text-muted);font-size:11px;padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
-                  <span class="info-icon" style="font-size:13px">&#9432;</span> More Info
-                </button>
-                <div id="wallet-info-detail" class="setup-info-box" style="display:none;margin-top:8px">
-                  <span>Your private key and recovery phrase are encrypted and stored automatically in the local vault (AES-256-GCM).
-                    Use the <strong>Show Credentials</strong> button below to retrieve them if needed.</span>
-                </div>
-              </div>
               <div id="agentaddress-status" style="font-size:12px;color:var(--text-dim);margin-bottom:10px"></div>
+              <div style="margin-bottom:10px">
+                <button class="btn btn-sm" id="agentidentity-retry-btn" type="button"
+                        style="display:none;font-size:11px;padding:6px 14px;border-radius:5px">
+                  Retry Auto Setup
+                </button>
+              </div>
               <div id="agentaddress-output" style="display:none;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:0;background:rgba(4,14,8,0.45)">
-                <div style="font-size:12px;color:var(--green);margin-bottom:8px">&#10003; Agent identity &amp; wallet ready</div>
+                <div style="font-size:12px;color:var(--green);margin-bottom:8px">&#10003; Agent identity ready</div>
                 <div class="wallet-creds-grid">
                   <div class="wallet-cred-row">
                     <strong>Address</strong>
                     <code id="agentaddress-evm-address"></code>
                     <button class="btn btn-sm agentaddress-copy-btn" type="button" data-copy-target="agentaddress-evm-address">Copy</button>
                   </div>
-                  <div class="wallet-cred-row" id="agentaddress-privkey-row" style="display:none">
-                    <strong>Private Key</strong>
-                    <code id="agentaddress-private-key"></code>
-                    <button class="btn btn-sm agentaddress-copy-btn" type="button" data-copy-target="agentaddress-private-key">Copy</button>
-                  </div>
-                  <div class="wallet-cred-row" id="agentaddress-mnemonic-row" style="display:none">
-                    <strong>Mnemonic</strong>
-                    <code id="agentaddress-mnemonic"></code>
-                    <button class="btn btn-sm agentaddress-copy-btn" type="button" data-copy-target="agentaddress-mnemonic">Copy</button>
-                  </div>
                 </div>
                 <div style="margin-top:10px">
-                  <button class="btn btn-sm" id="agentaddress-show-credentials-btn" type="button"
-                          style="font-size:11px;padding:6px 14px;border-radius:5px">Show Credentials</button>
-                  <span id="agentaddress-credentials-status" style="font-size:11px;color:var(--text-dim);margin-left:8px"></span>
+                  <button type="button" id="vault-info-toggle" style="background:none;border:1px solid var(--border);border-radius:5px;color:var(--text-muted);font-size:11px;padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+                    <span class="info-icon" style="font-size:13px">&#9432;</span> Key Storage
+                  </button>
+                  <div id="vault-info-detail" class="setup-info-box" style="display:none;margin-top:8px">
+                    <span>Your private key and recovery phrase are encrypted automatically in the local vault (AES-256-GCM).
+                      To access them, use the CLI: <code style="font-size:10px">agenthalo vault get agent_wallet_private_key</code>
+                      and <code style="font-size:10px">agenthalo vault get agent_wallet_mnemonic</code>.
+                      The vault file is at <code style="font-size:10px">~/.agenthalo/vault.enc</code>.</span>
+                  </div>
                 </div>
               </div>
             </div>
             <div class="agentaddress-visual">
-              ${(function() {
-                const chains = [
-                  { name:'Ethereum',  img:'https://icons.llamao.fi/icons/chains/rsz_ethereum.jpg' },
-                  { name:'Polygon',   img:'https://icons.llamao.fi/icons/chains/rsz_polygon.jpg' },
-                  { name:'Arbitrum',  img:'https://icons.llamao.fi/icons/chains/rsz_arbitrum.jpg' },
-                  { name:'Optimism',  img:'https://icons.llamao.fi/icons/chains/rsz_optimism.jpg' },
-                  { name:'Base',      img:'https://icons.llamao.fi/icons/chains/rsz_base.jpg' },
-                  { name:'Avalanche', img:'https://icons.llamao.fi/icons/chains/rsz_avalanche.jpg' },
-                  { name:'BNB Chain', img:'https://icons.llamao.fi/icons/chains/rsz_binance.jpg' },
-                  { name:'Fantom',    img:'https://icons.llamao.fi/icons/chains/rsz_fantom.jpg' },
-                  { name:'Gnosis',    img:'https://icons.llamao.fi/icons/chains/rsz_xdai.jpg' },
-                  { name:'zkSync',    img:'https://icons.llamao.fi/icons/chains/rsz_zksync%20era.jpg' },
-                  { name:'Linea',     img:'https://icons.llamao.fi/icons/chains/rsz_linea.jpg' },
-                  { name:'Scroll',    img:'https://icons.llamao.fi/icons/chains/rsz_scroll.jpg' },
-                  { name:'Mantle',    img:'https://icons.llamao.fi/icons/chains/rsz_mantle.jpg' },
-                  { name:'Celo',      img:'https://icons.llamao.fi/icons/chains/rsz_celo.jpg' },
-                  { name:'Cronos',    img:'https://icons.llamao.fi/icons/chains/rsz_cronos.jpg' },
-                  { name:'Moonbeam',  img:'https://icons.llamao.fi/icons/chains/rsz_moonbeam.jpg' },
-                  { name:'Aurora',    img:'https://icons.llamao.fi/icons/chains/rsz_aurora.jpg' },
-                  { name:'Harmony',   img:'https://icons.llamao.fi/icons/chains/rsz_harmony.jpg' },
-                  { name:'Metis',     img:'https://icons.llamao.fi/icons/chains/rsz_metis.jpg' },
-                  { name:'Kava',      img:'https://icons.llamao.fi/icons/chains/rsz_kava.jpg' },
-                  { name:'Blast',     img:'https://icons.llamao.fi/icons/chains/rsz_blast.jpg' },
-                  { name:'Mode',      img:'https://icons.llamao.fi/icons/chains/rsz_mode.jpg' },
-                  { name:'Boba',      img:'https://icons.llamao.fi/icons/chains/rsz_boba.jpg' },
-                  { name:'Canto',     img:'https://icons.llamao.fi/icons/chains/rsz_canto.jpg' },
-                ];
-                const perPage = 6;
-                const pages = [];
-                for (let i = 0; i < chains.length; i += perPage) pages.push(chains.slice(i, i + perPage));
-                const pagesHtml = pages.map((pg, pi) =>
-                  `<div class="chain-carousel-page" data-page="${pi}" style="${pi > 0 ? 'display:none' : ''}">` +
-                  pg.map(c => `<div class="chain-logo-item" title="${c.name}"><img src="${c.img}" alt="${c.name}" onerror="this.parentElement.style.display='none'"></div>`).join('') +
-                  `</div>`
-                ).join('');
-                const dots = pages.map((_, i) => `<div class="chain-carousel-dot${i === 0 ? ' active' : ''}" data-dot="${i}"></div>`).join('');
-                return `<div class="chain-carousel-wrap">
-                  <button class="chain-carousel-arrow chain-carousel-left" type="button" aria-label="Previous">&#8249;</button>
-                  <div class="chain-carousel-track" id="chain-carousel-track">${pagesHtml}</div>
-                  <button class="chain-carousel-arrow chain-carousel-right" type="button" aria-label="Next">&#8250;</button>
-                </div>
-                <div class="chain-carousel-dots" id="chain-carousel-dots">${dots}</div>`;
-              })()}
-              <div style="text-align:center;font-size:9px;color:var(--text-dim);margin-top:2px">Works on all EVM-compatible chains</div>
-              <img src="img/agenthaloidentity.png" alt="Agent identity and wallet visual" onerror="this.style.display='none'">
+              <div style="text-align:center;font-size:9px;color:var(--text-dim);margin-bottom:4px">Works on all EVM-compatible chains</div>
+              <img src="img/agenthaloidentity.png" alt="Agent identity visual" onerror="this.style.display='none'">
             </div>
           </div>
         </div>
       </details>
       ` : ''}
-
-      <div class="anon-mode-shell ${identityCfg.anonymous_mode ? 'is-active' : ''}" id="anon-mode-shell">
-        <div class="anon-mode-avatar-wrap" aria-hidden="true">
-          <img class="anon-mode-avatar anon-avatar-open" src="img/agenthalohiding_mode.png" alt="" onerror="this.style.display='none'">
-          <img class="anon-mode-avatar anon-avatar-hidden" src="img/agenthalohidden_mode.png" alt="" onerror="this.style.display='none'">
-        </div>
-        <div class="anon-mode-copy">
-          <div class="anon-mode-title">Total Anonymous Mode</div>
-          <p class="anon-mode-desc">
-            No device fingerprints, no network identifiers. Each session gets a random ephemeral ID.
-          </p>
-        </div>
-        <div class="anonymous-launch-wrap">
-          <img class="anonymous-launch-ninja" src="img/agenthaloninja.png" alt="" onerror="this.style.display='none'">
-          <button class="anonymous-launch-btn ${identityCfg.anonymous_mode ? 'is-armed' : ''}" type="button" id="anonymous-mode-launch-btn" aria-pressed="${identityCfg.anonymous_mode ? 'true' : 'false'}">
-            ${identityCfg.anonymous_mode ? 'Disengage' : 'Engage'}
-          </button>
-        </div>
-        <input type="checkbox" id="anonymous-mode-check" class="anon-mode-hidden-checkbox" ${identityCfg.anonymous_mode ? 'checked' : ''}>
-      </div>
     </div>
 
     <!-- SECTION 2: Wallet -->
@@ -1780,6 +1775,46 @@ async function renderSetup() {
   </div>
   `;
 
+  // ---- Populate configured identity displays ----
+  if (identityCfg.device_configured && !identityCfg.anonymous_mode) {
+    const deviceSummary = document.getElementById('device-scan-summary');
+    if (deviceSummary) {
+      (async () => {
+        try {
+          const deviceData = await api('/identity/device');
+          let html = '';
+          (deviceData.components || []).forEach(c => {
+            const icon = c.stable ? '&#10003;' : '&#9888;';
+            const color = c.stable ? 'var(--green)' : 'var(--yellow)';
+            html += `<div style="display:flex;align-items:center;gap:6px;padding:2px 0"><span style="color:${color}">${icon}</span> <span>${esc(c.name)}</span> <span style="color:var(--text-dim);font-size:11px">${c.entropy_bits || 0} bits</span></div>`;
+          });
+          const totalEntropy = (deviceData.components || []).reduce((s, c) => s + (c.entropy_bits || 0), 0);
+          html += `<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">Entropy: <strong>${totalEntropy} bits</strong> | Tier: <strong>${esc(deviceData.tier || 'unknown')}</strong></div>`;
+          deviceSummary.innerHTML = html;
+        } catch (_e) {
+          deviceSummary.innerHTML = '<span style="color:var(--text-dim)">Device identity saved.</span>';
+        }
+      })();
+    }
+  }
+  if (identityCfg.network_configured && !identityCfg.anonymous_mode) {
+    const networkInfo = document.getElementById('network-info');
+    if (networkInfo) {
+      (async () => {
+        try {
+          const networkData = await api('/identity/network');
+          networkInfo.innerHTML = `
+            <div style="display:flex;align-items:center;gap:6px;padding:2px 0"><span style="color:var(--green)">&#10003;</span> Local IP: <strong>${esc(networkData.local_ip || 'not shared')}</strong></div>
+            <div style="display:flex;align-items:center;gap:6px;padding:2px 0"><span style="color:var(--green)">&#10003;</span> MAC: <strong>${esc(networkData.mac_address || 'not shared')}</strong></div>
+          `;
+          networkInfo.dataset.loaded = '1';
+        } catch (_e) {
+          networkInfo.innerHTML = '<span style="color:var(--text-dim)">Network identity saved.</span>';
+        }
+      })();
+    }
+  }
+
   // ---- Wire up interactive elements ----
 
   // AgentPMT token save
@@ -1914,32 +1949,20 @@ async function renderSetup() {
       agentAddressOutput.style.display = shouldShow ? 'block' : 'none';
     }
     agentAddressField('agentaddress-evm-address', address);
-    // Private key and mnemonic are now vault-stored; only show via "Show Credentials" button.
-    // But if passed directly (vault unavailable fallback), populate them.
-    if (privateKey) {
-      agentAddressField('agentaddress-private-key', privateKey);
-      const pkRow = document.getElementById('agentaddress-privkey-row');
-      if (pkRow) pkRow.style.display = '';
-    }
-    if (mnemonic) {
-      agentAddressField('agentaddress-mnemonic', mnemonic);
-      const mnRow = document.getElementById('agentaddress-mnemonic-row');
-      if (mnRow) mnRow.style.display = '';
-    }
-    if (address || privateKey || mnemonic) {
+    // Private key and mnemonic are vault-stored only — never shown in UI.
+    if (address) {
       window.__haloGeneratedAgentAddress = Object.assign(
         window.__haloGeneratedAgentAddress || {},
-        { evmAddress: address || (window.__haloGeneratedAgentAddress || {}).evmAddress },
-        privateKey ? { evmPrivateKey: privateKey } : {},
-        mnemonic ? { mnemonic } : {}
+        { evmAddress: address }
       );
     }
   };
 
+  const autoRetryBtn = document.getElementById('agentidentity-retry-btn');
   if (agentaddressConnected && agentAddressStatus) {
-    agentAddressStatus.innerHTML = '<span style="color:var(--green)">&#10003; Wallet generated and secured.</span>';
+    agentAddressStatus.innerHTML = '<span style="color:var(--green)">&#10003; Identity ready and secured.</span>';
   } else if (agentAddressStatus) {
-    agentAddressStatus.innerHTML = '<span style="color:var(--text-dim)">Provisioning agent wallet...</span>';
+    agentAddressStatus.innerHTML = '<span style="color:var(--text-dim)">Provisioning agent identity...</span>';
   }
   if (window.__haloGeneratedAgentAddress && typeof window.__haloGeneratedAgentAddress === 'object') {
     setAgentAddressOutput(window.__haloGeneratedAgentAddress);
@@ -1951,19 +1974,29 @@ async function renderSetup() {
     || (window.__haloIdentityAutoProvision = { inFlight: false, attempted: false });
   const needsAddress = !agentaddressConnected;
 
-  if (needsAddress && !autoProvisionState.inFlight && !autoProvisionState.attempted) {
+  const maybeShowRetry = (show) => {
+    if (!autoRetryBtn) return;
+    autoRetryBtn.style.display = show ? '' : 'none';
+  };
+
+  const runAutoProvision = async (force = false) => {
+    if (autoProvisionState.inFlight) return;
+    if (!needsAddress && !force) return;
+    if (!needsAddress || (!force && autoProvisionState.attempted)) return;
+
     autoProvisionState.inFlight = true;
     autoProvisionState.attempted = true;
+    maybeShowRetry(false);
     try {
       if (agentAddressStatus) {
-        agentAddressStatus.innerHTML = '<span style="color:var(--text-dim)">Generating agent wallet...</span>';
+        agentAddressStatus.innerHTML = '<span style="color:var(--text-dim)">Generating agent identity...</span>';
       }
       const resp = await apiPost('/agentaddress/generate', { persist_public_address: true });
       const generatedAddress = resp && resp.data ? resp.data : null;
       if (generatedAddress) {
         setAgentAddressOutput(generatedAddress);
         if (agentAddressStatus) {
-          agentAddressStatus.innerHTML = '<span style="color:var(--green)">&#10003; Wallet generated and secured.</span>';
+          agentAddressStatus.innerHTML = '<span style="color:var(--green)">&#10003; Identity ready and secured.</span>';
         }
       }
       window._invalidateSetupState();
@@ -1972,45 +2005,36 @@ async function renderSetup() {
       updateNavLockState();
     } catch (e) {
       if (agentAddressStatus) {
-        agentAddressStatus.innerHTML = `<span style="color:var(--red)">Wallet generation failed: ${esc(String(e.message || e))}</span>`;
+        agentAddressStatus.innerHTML = `<span style="color:var(--red)">Identity setup failed: ${esc(String(e.message || e))}</span>`;
       }
+      maybeShowRetry(true);
     } finally {
       autoProvisionState.inFlight = false;
     }
-  }
+  };
 
-  // --- More Info toggle for wallet info box ---
-  const walletInfoToggle = document.getElementById('wallet-info-toggle');
-  const walletInfoDetail = document.getElementById('wallet-info-detail');
-  if (walletInfoToggle && walletInfoDetail) {
-    walletInfoToggle.addEventListener('click', () => {
-      const showing = walletInfoDetail.style.display !== 'none';
-      walletInfoDetail.style.display = showing ? 'none' : 'block';
-      walletInfoToggle.innerHTML = showing
-        ? '<span class="info-icon" style="font-size:13px">&#9432;</span> More Info'
-        : '<span class="info-icon" style="font-size:13px">&#9432;</span> Less Info';
+  if (autoRetryBtn) {
+    autoRetryBtn.addEventListener('click', async () => {
+      autoProvisionState.attempted = false;
+      await runAutoProvision(true);
     });
   }
+  await runAutoProvision(false);
 
-  // --- Chain carousel pagination ---
-  const chainTrack = document.getElementById('chain-carousel-track');
-  const chainDots = document.getElementById('chain-carousel-dots');
-  if (chainTrack) {
-    const pages = chainTrack.querySelectorAll('.chain-carousel-page');
-    const dots = chainDots ? chainDots.querySelectorAll('.chain-carousel-dot') : [];
-    let currentPage = 0;
-    const showPage = (idx) => {
-      if (idx < 0 || idx >= pages.length) return;
-      pages.forEach((p, i) => { p.style.display = i === idx ? '' : 'none'; });
-      dots.forEach((d, i) => { d.classList.toggle('active', i === idx); });
-      currentPage = idx;
-    };
-    const wrap = chainTrack.parentElement;
-    const leftBtn = wrap.querySelector('.chain-carousel-left');
-    const rightBtn = wrap.querySelector('.chain-carousel-right');
-    if (leftBtn) leftBtn.addEventListener('click', () => showPage((currentPage - 1 + pages.length) % pages.length));
-    if (rightBtn) rightBtn.addEventListener('click', () => showPage((currentPage + 1) % pages.length));
-    dots.forEach(d => d.addEventListener('click', () => showPage(parseInt(d.dataset.dot, 10))));
+  // --- Key Storage toggle for vault info box (delegation, registered once) ---
+  if (!content._haloVaultInfoHandler) {
+    content._haloVaultInfoHandler = true;
+    content.addEventListener('click', (e) => {
+      const toggle = e.target.closest('#vault-info-toggle');
+      if (!toggle) return;
+      const detail = document.getElementById('vault-info-detail');
+      if (!detail) return;
+      const showing = detail.style.display !== 'none';
+      detail.style.display = showing ? 'none' : 'block';
+      toggle.innerHTML = showing
+        ? '<span class="info-icon" style="font-size:13px">&#9432;</span> Key Storage'
+        : '<span class="info-icon" style="font-size:13px">&#9432;</span> Hide';
+    });
   }
 
   // --- Copy buttons for wallet credentials ---
@@ -2028,86 +2052,6 @@ async function renderSetup() {
     });
   }
 
-  // --- Show Credentials (retrieve from vault, fallback to browser memory) ---
-  const showCredsBtn = document.getElementById('agentaddress-show-credentials-btn');
-  const credsStatus = document.getElementById('agentaddress-credentials-status');
-  if (showCredsBtn) {
-    showCredsBtn.addEventListener('click', async () => {
-      // Toggle hide if already revealed
-      if (showCredsBtn._revealed) {
-        const pkRow = document.getElementById('agentaddress-privkey-row');
-        const mnRow = document.getElementById('agentaddress-mnemonic-row');
-        if (pkRow) pkRow.style.display = 'none';
-        if (mnRow) mnRow.style.display = 'none';
-        showCredsBtn.textContent = 'Show Credentials';
-        showCredsBtn._revealed = false;
-        if (credsStatus) credsStatus.textContent = '';
-        return;
-      }
-      showCredsBtn.disabled = true;
-      if (credsStatus) credsStatus.textContent = 'Retrieving...';
-      let loaded = false;
-      try {
-        const resp = await apiPost('/agentaddress/credentials', {});
-        if (resp && resp.private_key) {
-          agentAddressField('agentaddress-private-key', resp.private_key);
-          const pkRow = document.getElementById('agentaddress-privkey-row');
-          if (pkRow) pkRow.style.display = '';
-          loaded = true;
-        }
-        if (resp && resp.mnemonic) {
-          agentAddressField('agentaddress-mnemonic', resp.mnemonic);
-          const mnRow = document.getElementById('agentaddress-mnemonic-row');
-          if (mnRow) mnRow.style.display = '';
-          loaded = true;
-        }
-        if (loaded && credsStatus) {
-          credsStatus.innerHTML = '<span style="color:var(--green)">&#10003; From vault</span>';
-        }
-      } catch (_vaultErr) {
-        // Vault unavailable — try browser session memory
-      }
-      if (!loaded) {
-        const mem = window.__haloGeneratedAgentAddress || {};
-        // Try browser session memory first (survives re-renders)
-        if (mem.evmPrivateKey) {
-          agentAddressField('agentaddress-private-key', mem.evmPrivateKey);
-          const pkRow = document.getElementById('agentaddress-privkey-row');
-          if (pkRow) pkRow.style.display = '';
-          loaded = true;
-        }
-        if (mem.mnemonic) {
-          agentAddressField('agentaddress-mnemonic', mem.mnemonic);
-          const mnRow = document.getElementById('agentaddress-mnemonic-row');
-          if (mnRow) mnRow.style.display = '';
-          loaded = true;
-        }
-        // Last resort: check if DOM elements were populated by setAgentAddressOutput
-        if (!loaded) {
-          const pk = document.getElementById('agentaddress-private-key');
-          const mn = document.getElementById('agentaddress-mnemonic');
-          if (pk && pk.textContent) {
-            const pkRow = document.getElementById('agentaddress-privkey-row');
-            if (pkRow) pkRow.style.display = '';
-            loaded = true;
-          }
-          if (mn && mn.textContent) {
-            const mnRow = document.getElementById('agentaddress-mnemonic-row');
-            if (mnRow) mnRow.style.display = '';
-            loaded = true;
-          }
-        }
-        if (loaded && credsStatus) {
-          credsStatus.innerHTML = '<span style="color:var(--yellow)">Shown from current session. Set up a PQ wallet to enable encrypted vault storage.</span>';
-        } else if (credsStatus) {
-          credsStatus.innerHTML = '<span style="color:var(--yellow)">Credentials not available. Wallet may need to be regenerated.</span>';
-        }
-      }
-      showCredsBtn.textContent = 'Hide Credentials';
-      showCredsBtn._revealed = true;
-      showCredsBtn.disabled = false;
-    });
-  }
 
   // --- Identity handlers ---
 
@@ -2426,6 +2370,7 @@ async function renderSetup() {
       if (enableDevice) {
         await bestEffort('device_identity_save', async () => {
           const deviceMeta = await api('/identity/device');
+          lastDeviceScan = deviceMeta;
           const selectedComponents = includeComponents
             ? (deviceMeta.components || []).map((c) => c.name).filter(Boolean)
             : [];
@@ -2504,11 +2449,19 @@ async function renderSetup() {
           stepFailures.length ? 'warn' : 'ok',
         );
       }
+      // Immediately hide safety UI for responsive feedback
+      const _tierShell = document.getElementById('safety-tier-shell');
+      const _intentLabel = document.getElementById('safety-intent-label');
+      const _anonShell = document.getElementById('anon-mode-shell');
+      if (_tierShell) _tierShell.style.display = 'none';
+      if (_intentLabel) _intentLabel.style.display = 'none';
+      if (_anonShell) _anonShell.style.display = 'none';
+
       window._invalidateSetupState();
       await fetchSetupState(true);
       updateNavLockState();
-      await refreshSocialStatus();
-      await refreshSuperSecureStatus();
+      // Re-render to show configured state (verified cards, rescan button)
+      await renderSetup();
     } catch (e) {
       setTierStatus(`Preset continued with skipped step(s): ${String(e.message || e)}`, 'warn');
     } finally {
@@ -2554,6 +2507,28 @@ async function renderSetup() {
   await refreshSocialStatus();
   await refreshSuperSecureStatus();
   setSecurityTier(initialSecurityTier, false);
+
+  // --- Rescan Identity button handler ---
+  const rescanBtn = document.getElementById('identity-rescan-btn');
+  if (rescanBtn) {
+    rescanBtn.addEventListener('click', async () => {
+      rescanBtn.disabled = true;
+      rescanBtn.textContent = 'Resetting...';
+      try {
+        // Toggle anonymous mode on then off to clear device/network identity
+        await apiPost('/identity/anonymous', { enabled: true });
+        await apiPost('/identity/anonymous', { enabled: false });
+        window._invalidateSetupState();
+        await fetchSetupState(true);
+        await renderSetup();
+        updateNavLockState();
+      } catch (e) {
+        alert('Reset failed: ' + (e.message || e));
+        rescanBtn.disabled = false;
+        rescanBtn.textContent = 'Rescan Identity';
+      }
+    });
+  }
 
   let lastDeviceScan = null;
   const deviceScanBtn = document.getElementById('device-scan-btn');
@@ -2685,6 +2660,13 @@ async function renderSetup() {
       if (anonLaunchBtn) {
         anonLaunchBtn.disabled = true;
         anonLaunchBtn.classList.add('is-loading');
+      }
+      // Immediately hide safety buttons when engaging anonymous mode
+      if (anonCheck.checked) {
+        const tierShell = document.getElementById('safety-tier-shell');
+        const intentLabel = document.getElementById('safety-intent-label');
+        if (tierShell) tierShell.style.display = 'none';
+        if (intentLabel) intentLabel.style.display = 'none';
       }
       try {
         await apiPost('/identity/anonymous', { enabled: anonCheck.checked });
