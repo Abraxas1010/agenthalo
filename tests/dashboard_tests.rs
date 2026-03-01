@@ -5,7 +5,9 @@ use nucleusdb::dashboard::{build_state, DashboardState};
 use nucleusdb::halo::agentpmt;
 use nucleusdb::halo::auth::{save_credentials, Credentials};
 use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
-use nucleusdb::halo::trace::{list_sessions as list_trace_sessions, now_unix_secs, TraceWriter};
+use nucleusdb::halo::trace::{
+    list_sessions as list_trace_sessions, now_unix_secs, session_events, TraceWriter,
+};
 use nucleusdb::halo::vault::Vault;
 
 use axum::body::Body;
@@ -1185,6 +1187,151 @@ async fn config_includes_setup_complete_fields() {
     );
 
     let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn genesis_status_incomplete_when_missing() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_genesis_status_missing_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _fixture_guard = EnvVarGuard::set("AGENTHALO_GENESIS_TEST_MODE", None);
+
+    let (state, db_path) = test_state("genesis_status_missing");
+    let (status, val) = api_get(state, "/genesis/status").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "genesis status should succeed: {val}"
+    );
+    assert_eq!(val["completed"], false, "fresh state should be incomplete");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&halo_home);
+}
+
+#[tokio::test]
+async fn genesis_harvest_success_writes_ledger_and_trace() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_genesis_success_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _fixture_guard = EnvVarGuard::set("AGENTHALO_GENESIS_TEST_MODE", Some("success"));
+
+    let (state, db_path) = test_state("genesis_success");
+    let (s1, v1) = api_post(state.clone(), "/genesis/harvest", json!({})).await;
+    assert_eq!(s1, StatusCode::OK, "genesis harvest should succeed: {v1}");
+    assert_eq!(v1["success"], true);
+    assert_eq!(v1["completed"], true);
+
+    let (s2, v2) = api_get(state.clone(), "/genesis/status").await;
+    assert_eq!(s2, StatusCode::OK, "genesis status should succeed: {v2}");
+    assert_eq!(v2["completed"], true);
+    assert!(
+        v2["curby_pulse_id"].as_u64().is_some(),
+        "genesis status should expose CURBy pulse id: {v2}"
+    );
+    assert_eq!(
+        v2["sources_count"].as_u64(),
+        Some(4),
+        "fixture success should persist 4 sources in status: {v2}"
+    );
+    assert!(
+        v2["combined_entropy_sha256"]
+            .as_str()
+            .map(|s| s.starts_with("sha256:"))
+            .unwrap_or(false),
+        "genesis status should expose digest hash: {v2}"
+    );
+
+    let entries = nucleusdb::halo::identity_ledger::load_entries().expect("load ledger entries");
+    assert!(
+        entries.iter().any(|e| {
+            matches!(
+                e.kind,
+                nucleusdb::halo::identity_ledger::IdentityLedgerKind::GenesisEntropyHarvested
+            ) && e.status == "completed"
+        }),
+        "identity ledger should contain completed genesis entry"
+    );
+
+    let sessions = list_trace_sessions(&db_path).expect("list trace sessions");
+    let genesis_session = sessions
+        .iter()
+        .find(|s| s.agent == "genesis")
+        .expect("genesis trace session missing");
+    let events = session_events(&db_path, &genesis_session.session_id).expect("session events");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e.event_type, EventType::GenesisHarvest)),
+        "genesis trace session should include GenesisHarvest event"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&halo_home);
+}
+
+#[tokio::test]
+async fn genesis_harvest_failure_records_trace_and_stays_incomplete() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_genesis_failure_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _fixture_guard = EnvVarGuard::set("AGENTHALO_GENESIS_TEST_MODE", Some("all_remote_failed"));
+
+    let (state, db_path) = test_state("genesis_failure");
+    let (s1, v1) = api_post(state.clone(), "/genesis/harvest", json!({})).await;
+    assert_eq!(
+        s1,
+        StatusCode::BAD_GATEWAY,
+        "genesis harvest should fail with bad gateway: {v1}"
+    );
+    assert_eq!(v1["error_code"], "ALL_REMOTE_FAILED");
+
+    let (s2, v2) = api_get(state.clone(), "/genesis/status").await;
+    assert_eq!(s2, StatusCode::OK, "genesis status should succeed: {v2}");
+    assert_eq!(v2["completed"], false);
+
+    let sessions = list_trace_sessions(&db_path).expect("list trace sessions");
+    let genesis_session = sessions
+        .iter()
+        .find(|s| s.agent == "genesis")
+        .expect("genesis trace session missing");
+    let events = session_events(&db_path, &genesis_session.session_id).expect("session events");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e.event_type, EventType::GenesisHarvest)),
+        "failed harvest should still be written to trace"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&halo_home);
 }
 
 #[tokio::test]

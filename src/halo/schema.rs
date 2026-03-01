@@ -53,6 +53,7 @@ pub enum EventType {
     McpToolResult,
     FileChange,
     BashCommand,
+    GenesisHarvest,
     Error,
     SubagentSpawn,
     SystemMessage,

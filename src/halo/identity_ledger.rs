@@ -24,6 +24,7 @@ pub enum IdentityLedgerKind {
     SocialTokenConnected,
     SocialTokenRevoked,
     SuperSecureUpdated,
+    GenesisEntropyHarvested,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -515,6 +516,33 @@ pub fn append_wallet_event(
     append_entry(entry)
 }
 
+pub fn append_genesis_event(status: &str, payload: Value) -> Result<IdentityLedgerEntry, String> {
+    let entry = IdentityLedgerEntry {
+        version: LEDGER_VERSION,
+        seq: 0,
+        timestamp: now_unix(),
+        kind: IdentityLedgerKind::GenesisEntropyHarvested,
+        provider: None,
+        token_ref_sha256: None,
+        expires_at: None,
+        status: status.to_string(),
+        payload,
+        prev_hash: None,
+        entry_hash: String::new(),
+        signature: None,
+    };
+    append_entry(entry)
+}
+
+pub fn latest_genesis_event() -> Result<Option<IdentityLedgerEntry>, String> {
+    let entries = load_entries()?;
+    verify_chain(&entries)?;
+    Ok(entries
+        .into_iter()
+        .rev()
+        .find(|entry| matches!(entry.kind, IdentityLedgerKind::GenesisEntropyHarvested)))
+}
+
 /// Build the current immutable-ledger projection:
 /// per-provider social activity plus global chain/signing status.
 pub fn project_ledger_status(now: u64) -> Result<LedgerProjection, String> {
@@ -555,7 +583,8 @@ pub fn project_ledger_status(now: u64) -> Result<LedgerProjection, String> {
             | IdentityLedgerKind::WalletImported
             | IdentityLedgerKind::WalletUnlocked
             | IdentityLedgerKind::WalletLocked
-            | IdentityLedgerKind::WalletDeleted => {}
+            | IdentityLedgerKind::WalletDeleted
+            | IdentityLedgerKind::GenesisEntropyHarvested => {}
             IdentityLedgerKind::SocialTokenConnected => {
                 let expired = entry.expires_at.map(|exp| exp <= now).unwrap_or(false);
                 state.expired = expired;
@@ -748,5 +777,17 @@ mod tests {
         let entries = load_entries().expect("load entries");
         assert_eq!(entries.len(), 6);
         verify_chain(&entries).expect("chain should verify");
+    }
+
+    #[test]
+    fn latest_genesis_event_tracks_completed_then_reset() {
+        let _home = set_tmp_home("genesis_latest");
+        append_genesis_event("completed", serde_json::json!({"sources": 4})).expect("genesis done");
+        append_genesis_event("reset", serde_json::json!({"reason": "test"}))
+            .expect("genesis reset");
+        let latest = latest_genesis_event()
+            .expect("latest genesis")
+            .expect("genesis entry should exist");
+        assert_eq!(latest.status, "reset");
     }
 }

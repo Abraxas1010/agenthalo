@@ -56,15 +56,257 @@ const PROVIDER_INFO = {
 };
 
 // -- Routing ------------------------------------------------------------------
-const pages = { overview: renderOverview, sessions: renderSessions, costs: renderCosts,
-  config: renderConfig, setup: renderSetup, trust: renderTrust, nucleusdb: renderNucleusDB,
-  cockpit: renderCockpit, deploy: renderDeploy };
+const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
+  costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
+  trust: renderTrust, nucleusdb: renderNucleusDB, cockpit: renderCockpit, deploy: renderDeploy };
+
+// Genesis + Overview hub pages — rendering logic in genesis-docs.js (loaded after app.js)
+function renderGenesisPage() {
+  if (typeof renderGenesis === 'function') renderGenesis();
+  else content.innerHTML = '<div class="loading">Genesis docs module not loaded.</div>';
+}
+function renderOverviewHub() {
+  if (typeof renderDocsOverview === 'function') renderDocsOverview();
+  else content.innerHTML = '<div class="loading">Overview module not loaded.</div>';
+}
 
 // Setup-first gate: cached setup state
 let _setupState = null;
 let _setupStateFetchedAt = 0;
 let _lastSetupComplete = null;
 const SETUP_CACHE_MS = 5000;
+let _genesisComplete = null;
+let _genesisStatusFetchedAt = 0;
+let _genesisCeremonyRunning = false;
+const GENESIS_CACHE_MS = 3000;
+const GENESIS_STAGES = [
+  { id: 'hw', label: 'Hardware Detection', stub: true },
+  { id: 'curby', label: 'Quantum Entropy', stub: false },
+  { id: 'beacons', label: 'Remote Beacons', stub: false },
+  { id: 'combine', label: 'Entropy Combination', stub: false },
+  { id: 'derive', label: 'Identity Derivation', stub: true },
+  { id: 'lattice', label: 'Lattice Formation', stub: true },
+  { id: 'destroy', label: 'Seed Destruction', stub: true },
+  { id: 'anchor', label: 'Triple Anchor', stub: true },
+  { id: 'verify', label: 'Verification', stub: true },
+  { id: 'complete', label: 'Genesis Complete', stub: false },
+];
+const GENESIS_ERROR_MESSAGES = {
+  CURBY_UNREACHABLE: {
+    category: 'Network / CURBy Unreachable',
+    message: 'Could not reach the quantum randomness beacon at random.colorado.edu.',
+    steps: [
+      'Check your internet connection',
+      'Whitelist random.colorado.edu',
+      'Disable VPN/proxy and retry',
+      'Verify system clock is correct',
+    ],
+  },
+  ALL_REMOTE_FAILED: {
+    category: 'All Remote Entropy Sources Failed',
+    message: 'Could not reach CURBy, NIST, or drand. Internet access is required for Genesis.',
+    steps: [
+      'Check your internet connection',
+      'Whitelist random.colorado.edu, beacon.nist.gov, api.drand.sh',
+      'Disable VPN/proxy and retry',
+      'Retry when network is stable',
+    ],
+  },
+  INSUFFICIENT_ENTROPY: {
+    category: 'Insufficient Entropy Sources',
+    message: 'Genesis requires at least 2 independent entropy sources.',
+    steps: [
+      'Ensure internet access is available',
+      'Retry (remote beacon outage may be temporary)',
+      'Check firewall rules for blocked domains',
+    ],
+  },
+  UNKNOWN: {
+    category: 'Unknown Genesis Error',
+    message: 'The entropy harvest failed unexpectedly.',
+    steps: [
+      'Retry the Genesis ceremony',
+      'Check network and system time',
+      'If it persists, contact support',
+    ],
+  },
+};
+
+async function fetchGenesisStatus(force) {
+  const now = Date.now();
+  if (!force && _genesisComplete !== null && (now - _genesisStatusFetchedAt) < GENESIS_CACHE_MS) {
+    return _genesisComplete;
+  }
+  try {
+    const status = await api('/genesis/status');
+    _genesisComplete = !!status.completed;
+  } catch (_e) {
+    // Fail closed.
+    _genesisComplete = false;
+  }
+  _genesisStatusFetchedAt = now;
+  return _genesisComplete;
+}
+
+function genesisStageById(id) {
+  return $(`#gs-${id}`);
+}
+
+function setGenesisStage(id, state, detail) {
+  const el = genesisStageById(id);
+  if (!el) return;
+  el.className = `genesis-stage ${state}`;
+  const icon = $('.genesis-stage-icon', el);
+  const det = $('.genesis-stage-detail', el);
+  if (icon) {
+    if (state === 'active') icon.textContent = '◉';
+    else if (state === 'done') icon.textContent = '✓';
+    else if (state === 'failed') icon.textContent = '✗';
+    else icon.textContent = '○';
+  }
+  if (det) det.textContent = detail || '';
+}
+
+function setGenesisStatus(text, cls) {
+  const statusEl = $('#genesis-status');
+  if (!statusEl) return;
+  statusEl.className = `genesis-status ${cls || ''}`.trim();
+  statusEl.textContent = text || '';
+}
+
+function showGenesisError(result) {
+  const statusEl = $('#genesis-status');
+  if (!statusEl) return;
+  const code = String((result && result.error_code) || 'UNKNOWN');
+  const spec = GENESIS_ERROR_MESSAGES[code] || GENESIS_ERROR_MESSAGES.UNKNOWN;
+  const message = String((result && result.message) || spec.message);
+  const technical = result && (result.technical_detail || JSON.stringify(result.failed_sources || []));
+  statusEl.className = 'genesis-status error';
+  statusEl.innerHTML = `
+    <div class="genesis-error-panel">
+      <div class="genesis-error-category">${esc(spec.category)} (${esc(code)})</div>
+      <div>${esc(message)}</div>
+      ${technical ? `<details style="margin-top:8px"><summary style="cursor:pointer">Technical details</summary><pre style="margin-top:6px;white-space:pre-wrap;font-size:11px;color:var(--text-dim)">${esc(String(technical))}</pre></details>` : ''}
+      <ol class="genesis-error-steps">
+        ${spec.steps.map(s => `<li>${esc(s)}</li>`).join('')}
+      </ol>
+      <button class="genesis-retry-btn" onclick="retryGenesis()">Retry</button>
+      <a class="genesis-support-link" href="#/config">Contact Support</a>
+    </div>
+  `;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function showGenesisCeremony() {
+  if (_genesisCeremonyRunning) return;
+  _genesisCeremonyRunning = true;
+
+  const stagesEl = $('#genesis-stages');
+  const statusEl = $('#genesis-status');
+  if (!stagesEl || !statusEl) {
+    _genesisCeremonyRunning = false;
+    return;
+  }
+
+  stagesEl.innerHTML = GENESIS_STAGES.map((s) => `
+    <div class="genesis-stage future" id="gs-${esc(s.id)}">
+      <span class="genesis-stage-icon">○</span>
+      <span class="genesis-stage-label">${esc(s.label)}</span>
+      <span class="genesis-stage-detail"></span>
+    </div>
+  `).join('');
+  setGenesisStatus('Initializing Genesis ceremony...');
+
+  try {
+    setGenesisStage('hw', 'active');
+    setGenesisStatus('Detecting hardware entropy sources...');
+    await sleep(700);
+    setGenesisStage('hw', 'done', 'OS CSPRNG available');
+
+    setGenesisStage('curby', 'active');
+    setGenesisStatus('Harvesting entropy from CURBy, NIST, drand, and OS...');
+    const result = await apiPost('/genesis/harvest', {});
+
+    const sources = Array.isArray(result.sources) ? result.sources : [];
+    const failed = Array.isArray(result.failed_sources) ? result.failed_sources : [];
+    const sourceBy = {};
+    sources.forEach((s) => { sourceBy[String(s.name || '')] = s; });
+    failed.forEach((f) => { sourceBy[String(f.name || '')] = f; });
+
+    const curby = sourceBy['CURBy-Q'];
+    if (curby && !curby.error) setGenesisStage('curby', 'done', curby.detail || (result.curby_pulse_id ? `Pulse #${result.curby_pulse_id}` : 'Connected'));
+    else setGenesisStage('curby', 'failed', (curby && curby.error) ? 'unreachable' : 'unavailable');
+
+    const nist = sourceBy['NIST-Beacon'];
+    const drand = sourceBy.drand;
+    const beaconDetail = [
+      nist && !nist.error ? 'NIST ✓' : 'NIST ✗',
+      drand && !drand.error ? 'drand ✓' : 'drand ✗',
+    ].join(' · ');
+    if ((nist && !nist.error) || (drand && !drand.error)) {
+      setGenesisStage('beacons', 'done', beaconDetail);
+    } else {
+      setGenesisStage('beacons', 'failed', beaconDetail);
+    }
+
+    if (!result.success) {
+      setGenesisStage('combine', 'failed', result.error_code || 'failed');
+      throw result;
+    }
+    setGenesisStage('combine', 'done', `${Number(result.sources_count || sources.length || 0)} sources combined`);
+
+    for (const s of GENESIS_STAGES.filter(x => x.stub && x.id !== 'hw')) {
+      setGenesisStage(s.id, 'active');
+      setGenesisStatus(`${s.label}...`);
+      await sleep(420);
+      setGenesisStage(s.id, 'done');
+    }
+
+    setGenesisStage('complete', 'done');
+    _genesisComplete = true;
+    _genesisStatusFetchedAt = Date.now();
+    statusEl.className = 'genesis-status complete';
+    statusEl.innerHTML = `
+      <div style="margin-bottom:12px"><strong>Genesis Complete — Your agent is alive</strong></div>
+      <div style="font-size:0.78rem;color:var(--text-dim);margin-bottom:16px">
+        ${esc(String(result.sources_count || sources.length || 0))} entropy sources combined
+        ${result.curby_pulse_id ? ` · CURBy pulse #${esc(String(result.curby_pulse_id))}` : ''}
+      </div>
+      <button class="genesis-continue-btn" onclick="completeGenesis()">Continue to Setup →</button>
+    `;
+  } catch (err) {
+    const payload = (err && err.body && typeof err.body === 'object') ? err.body : err;
+    const code = payload && payload.error_code;
+    if (code === 'ALL_REMOTE_FAILED' || code === 'INSUFFICIENT_ENTROPY') {
+      setGenesisStage('curby', 'failed', 'unreachable');
+      setGenesisStage('beacons', 'failed', 'all failed');
+      setGenesisStage('combine', 'failed', String(code));
+    }
+    showGenesisError(payload || { error_code: 'UNKNOWN', message: String(err && err.message || err || 'unknown error') });
+  }
+
+  _genesisCeremonyRunning = false;
+}
+
+window.retryGenesis = function retryGenesis() {
+  _genesisCeremonyRunning = false;
+  _genesisComplete = null;
+  _genesisStatusFetchedAt = 0;
+  const overlay = $('#genesis-overlay');
+  if (overlay) overlay.style.display = '';
+  showGenesisCeremony();
+};
+
+window.completeGenesis = function completeGenesis() {
+  _genesisComplete = true;
+  _genesisStatusFetchedAt = Date.now();
+  const overlay = $('#genesis-overlay');
+  if (overlay) overlay.style.display = 'none';
+  route();
+};
 
 async function fetchSetupState(force) {
   const now = Date.now();
@@ -134,6 +376,16 @@ window._invalidateSetupState = function() {
 async function route() {
   // Clean up particle animation when leaving NucleusDB page
   if (window._destroyHeroParticles) window._destroyHeroParticles();
+  const overlay = $('#genesis-overlay');
+
+  const genesisOk = await fetchGenesisStatus();
+  if (!genesisOk) {
+    if (overlay) overlay.style.display = '';
+    showGenesisCeremony();
+    return;
+  }
+  if (overlay) overlay.style.display = 'none';
+
   const hash = location.hash.replace('#/', '') || 'setup';
   const page = hash.split('/')[0];
   const arg = hash.split('/').slice(1).join('/');
@@ -347,7 +599,7 @@ function statusBadge(status) {
 function eventTypeBadge(type) {
   const colors = { assistant: '#00ee00', tool_call: '#c49bff', tool_result: '#c49bff',
     mcp_tool_call: '#ffb830', file_change: '#00ff41', bash_command: '#ff8c00',
-    error: '#ff3030', thinking: '#3a7a2a' };
+    genesis_harvest: '#4ba3ff', error: '#ff3030', thinking: '#3a7a2a' };
   const c = colors[type] || '#3a7a2a';
   return `<span class="event-type" style="background:${c}18;color:${c}">${esc(type)}</span>`;
 }
@@ -403,7 +655,7 @@ async function renderOverview() {
     const recentSessions = (sessions.sessions || []).slice(0, 5);
 
     content.innerHTML = `
-      <div class="page-title">Overview</div>
+      <div class="page-title">Dashboard</div>
       <div class="card-grid">
         <div class="card">
           <div class="card-label">Status</div>

@@ -170,6 +170,7 @@ impl TraceWriter {
                 }
             }
             EventType::BashCommand => self.summary.bash_commands += 1,
+            EventType::GenesisHarvest => {}
             EventType::Error => self.summary.errors += 1,
             EventType::SubagentSpawn => self.summary.subagents_spawned += 1,
             _ => {}

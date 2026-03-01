@@ -10,6 +10,7 @@ pub mod circuit_policy;
 pub mod config;
 pub mod detect;
 pub mod funding;
+pub mod genesis_entropy;
 pub mod identity;
 pub mod identity_ledger;
 pub mod onchain;

@@ -14,6 +14,13 @@
   <script src="vendor/xterm-addon-webgl.min.js"></script>
 </head>
 <body>
+  <div id="genesis-overlay" style="display:none">
+    <div class="genesis-circle">
+      <img class="genesis-hero" src="img/agentpmtbootup.png" alt="Genesis">
+      <div class="genesis-stages" id="genesis-stages"></div>
+    </div>
+    <div class="genesis-status" id="genesis-status"></div>
+  </div>
   <div id="crt-overlay"></div>
   <!-- SVG filter definitions (hidden — referenced by CSS filter:url()) -->
   <svg style="position:absolute;width:0;height:0" aria-hidden="true">
@@ -38,7 +45,11 @@
       <li><a href="#/setup" class="nav-link active" data-page="setup">
         <span class="nav-icon">&#9883;</span> Setup</a></li>
       <li><a href="#/overview" class="nav-link" data-page="overview">
-        <span class="nav-icon">&#9673;</span> Overview</a></li>
+        <span class="nav-icon">&#9670;</span> Overview</a></li>
+      <li><a href="#/genesis" class="nav-link nav-sub" data-page="genesis">
+        <span class="nav-icon">&#9733;</span> Genesis</a></li>
+      <li><a href="#/dashboard" class="nav-link" data-page="dashboard">
+        <span class="nav-icon">&#9673;</span> Dashboard</a></li>
       <li><a href="#/sessions" class="nav-link" data-page="sessions">
         <span class="nav-icon">&#9776;</span> Sessions</a></li>
       <li><a href="#/costs" class="nav-link" data-page="costs">
@@ -65,6 +76,7 @@
   </main>
   <script src="vendor/thumbmark.min.js"></script>
   <script src="app.js"></script>
+  <script src="genesis-docs.js"></script>
   <script src="cockpit.js"></script>
   <script src="deploy.js"></script>
 </body>

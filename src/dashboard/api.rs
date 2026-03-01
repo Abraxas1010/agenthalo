@@ -97,6 +97,9 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
             "/identity/tier",
             get(api_identity_tier_status).post(api_identity_tier_update),
         )
+        .route("/genesis/status", get(api_genesis_status))
+        .route("/genesis/harvest", post(api_genesis_harvest))
+        .route("/genesis/reset", post(api_genesis_reset))
         .route("/identity/status", get(api_identity_status))
         .route("/identity/social", get(api_identity_social_status))
         .route(
@@ -133,7 +136,10 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/agentaddress/status", get(api_agentaddress_status))
         .route("/agentaddress/chains", get(api_agentaddress_chains))
         .route("/agentaddress/generate", post(api_agentaddress_generate))
-        .route("/agentaddress/credentials", post(api_agentaddress_credentials))
+        .route(
+            "/agentaddress/credentials",
+            post(api_agentaddress_credentials),
+        )
         .route(
             "/agentaddress/disconnect",
             post(api_agentaddress_disconnect),
@@ -490,6 +496,12 @@ pub struct IdentityTierUpdateRequest {
     step_failures: Option<usize>,
 }
 
+#[derive(Deserialize, Default)]
+pub struct GenesisResetRequest {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub struct WdkPassphraseRequest {
     passphrase: String,
@@ -578,6 +590,85 @@ fn identity_tier_as_str(tier: &crate::halo::identity::IdentitySecurityTier) -> &
 
 fn default_identity_tier_label() -> &'static str {
     crate::halo::identity::default_security_tier_str()
+}
+
+fn genesis_is_completed_status(status: &str) -> bool {
+    status.trim().eq_ignore_ascii_case("completed")
+}
+
+fn normalize_genesis_reset_reason(reason: Option<&str>) -> String {
+    reason
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.chars().take(160).collect::<String>())
+        .unwrap_or_else(|| "operator_reset".to_string())
+}
+
+async fn record_genesis_trace_event(
+    state: &DashboardState,
+    outcome: &str,
+    harvest: Option<&crate::halo::genesis_entropy::HarvestOutcome>,
+    err: Option<&crate::halo::genesis_entropy::GenesisError>,
+    reset_reason: Option<&str>,
+) -> Result<(), String> {
+    let now = now_unix_secs();
+    let session_id = format!(
+        "genesis-{}-{}",
+        now,
+        &uuid::Uuid::new_v4().as_simple().to_string()[..6]
+    );
+    let mut content = json!({
+        "outcome": outcome,
+        "sources_attempted": 4u64,
+        "sources_succeeded": harvest.map(|h| h.sources_count).unwrap_or(0),
+        "policy_pass": harvest.map(|h| h.sources_count >= 2).unwrap_or(false),
+        "error_code": err.map(|e| e.error_code.clone()),
+        "message": err.map(|e| e.message.clone()),
+        "duration_ms": harvest.map(|h| h.duration_ms).unwrap_or(0),
+        "failed_sources": err.map(|e| e.failed_sources.clone()).unwrap_or_default(),
+        "reset_reason": reset_reason,
+    });
+    if let Some(h) = harvest {
+        content["combined_entropy_sha256"] = json!(h.combined_entropy_sha256);
+        content["sources"] = json!(h.sources);
+        content["curby_pulse_id"] = json!(h.curby_pulse_id);
+    }
+
+    let _guard = state.db_lock.lock().await;
+    let mut writer = TraceWriter::new(&state.db_path)?;
+    writer.start_session(SessionMetadata {
+        session_id,
+        agent: "genesis".to_string(),
+        model: None,
+        started_at: now,
+        ended_at: None,
+        prompt: Some("genesis entropy harvest".to_string()),
+        status: HaloSessionStatus::Running,
+        user_id: None,
+        machine_id: None,
+        puf_digest: None,
+    })?;
+    writer.write_event(TraceEvent {
+        seq: 0,
+        timestamp: now,
+        event_type: EventType::GenesisHarvest,
+        content,
+        input_tokens: None,
+        output_tokens: None,
+        cache_read_tokens: None,
+        tool_name: None,
+        tool_input: None,
+        tool_output: None,
+        file_path: None,
+        content_hash: String::new(),
+    })?;
+    let end_status = if err.is_some() {
+        HaloSessionStatus::Failed
+    } else {
+        HaloSessionStatus::Completed
+    };
+    writer.end_session(end_status)?;
+    Ok(())
 }
 
 fn rollback_profile(previous: &crate::halo::profile::UserProfile) -> Result<(), String> {
@@ -2073,6 +2164,152 @@ async fn api_identity_tier_update(
     })))
 }
 
+async fn api_genesis_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let latest = crate::halo::identity_ledger::latest_genesis_event().map_err(internal_err)?;
+    if let Some(entry) = latest {
+        let completed = genesis_is_completed_status(&entry.status);
+        let curby_pulse_id = entry.payload.get("curby_pulse_id").and_then(|v| v.as_u64());
+        let sources_count = entry
+            .payload
+            .get("policy")
+            .and_then(|p| p.get("actual_sources"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let combined_entropy_sha256 = entry
+            .payload
+            .get("combined_entropy_sha256")
+            .cloned()
+            .unwrap_or(Value::Null);
+        return Ok(Json(json!({
+            "completed": completed,
+            "status": entry.status,
+            "summary": entry.payload,
+            "curby_pulse_id": curby_pulse_id,
+            "sources_count": sources_count,
+            "combined_entropy_sha256": combined_entropy_sha256,
+            "seq": entry.seq,
+            "timestamp": entry.timestamp,
+            "entry_hash": entry.entry_hash,
+            "signed": entry.signature.is_some(),
+        })));
+    }
+    Ok(Json(json!({
+        "completed": false,
+        "status": "missing",
+    })))
+}
+
+async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    if let Some(latest) =
+        crate::halo::identity_ledger::latest_genesis_event().map_err(internal_err)?
+    {
+        if genesis_is_completed_status(&latest.status) {
+            return Ok(Json(json!({
+                "success": true,
+                "already_completed": true,
+                "completed": true,
+                "sources_count": latest
+                    .payload
+                    .get("policy")
+                    .and_then(|p| p.get("actual_sources"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                "curby_pulse_id": latest.payload.get("curby_pulse_id").and_then(|v| v.as_u64()),
+                "combined_entropy_sha256": latest.payload.get("combined_entropy_sha256").cloned().unwrap_or(Value::Null),
+            })));
+        }
+    }
+
+    let harvest = tokio::task::spawn_blocking(crate::halo::genesis_entropy::harvest_entropy)
+        .await
+        .map_err(|e| internal_err(format!("genesis harvest join error: {e}")))?;
+
+    match harvest {
+        Ok(result) => {
+            record_genesis_trace_event(&state, "success", Some(&result), None, None)
+                .await
+                .map_err(internal_err)?;
+
+            let payload = json!({
+                "combined_entropy_sha256": result.combined_entropy_sha256,
+                "sources": result.sources,
+                "failed_sources": result.failed_sources,
+                "policy": {
+                    "min_sources": 2,
+                    "actual_sources": result.sources_count,
+                },
+                "curby_pulse_id": result.curby_pulse_id,
+                "drand_normalization": "sha512",
+                "duration_ms": result.duration_ms,
+            });
+            let entry = crate::halo::identity_ledger::append_genesis_event("completed", payload)
+                .map_err(internal_err)?;
+            Ok(Json(json!({
+                "success": true,
+                "completed": true,
+                "sources_count": result.sources_count,
+                "curby_pulse_id": result.curby_pulse_id,
+                "combined_entropy_sha256": result.combined_entropy_sha256,
+                "sources": result.sources,
+                "failed_sources": result.failed_sources,
+                "duration_ms": result.duration_ms,
+                "ledger_seq": entry.seq,
+                "ledger_entry_hash": entry.entry_hash,
+                "ledger_signed": entry.signature.is_some(),
+            })))
+        }
+        Err(err) => {
+            record_genesis_trace_event(&state, "failure", None, Some(&err), None)
+                .await
+                .map_err(internal_err)?;
+            let status = match err.error_code.as_str() {
+                crate::halo::genesis_entropy::ERR_CURBY_UNREACHABLE
+                | crate::halo::genesis_entropy::ERR_NIST_UNREACHABLE
+                | crate::halo::genesis_entropy::ERR_DRAND_UNREACHABLE
+                | crate::halo::genesis_entropy::ERR_ALL_REMOTE_FAILED => StatusCode::BAD_GATEWAY,
+                crate::halo::genesis_entropy::ERR_INSUFFICIENT_ENTROPY
+                | crate::halo::genesis_entropy::ERR_ENTROPY_QUALITY_FAILURE => {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            Err((
+                status,
+                Json(json!({
+                    "success": false,
+                    "error_code": err.error_code,
+                    "message": err.message,
+                    "failed_sources": err.failed_sources,
+                })),
+            ))
+        }
+    }
+}
+
+async fn api_genesis_reset(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<GenesisResetRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let reason = normalize_genesis_reset_reason(req.reason.as_deref());
+    let payload = json!({
+        "reason": reason,
+        "reset_at": now_unix_secs(),
+    });
+    let entry = crate::halo::identity_ledger::append_genesis_event("reset", payload)
+        .map_err(internal_err)?;
+    record_genesis_trace_event(&state, "reset", None, None, Some(&reason))
+        .await
+        .map_err(internal_err)?;
+    Ok(Json(json!({
+        "ok": true,
+        "completed": false,
+        "status": "reset",
+        "ledger_seq": entry.seq,
+        "ledger_entry_hash": entry.entry_hash,
+    })))
+}
+
 fn persist_social_token_secret(
     state: &DashboardState,
     provider: &str,
@@ -2945,11 +3182,9 @@ async fn api_agentaddress_generate(
             }
         }
         if !mnemonic.is_empty() {
-            if let Err(e) = vault.set_key(
-                "agent_wallet_mnemonic",
-                "AGENT_WALLET_MNEMONIC",
-                &mnemonic,
-            ) {
+            if let Err(e) =
+                vault.set_key("agent_wallet_mnemonic", "AGENT_WALLET_MNEMONIC", &mnemonic)
+            {
                 let msg = format!("store mnemonic: {e}");
                 vault_error = Some(match vault_error {
                     Some(prev) => format!("{prev}; {msg}"),
