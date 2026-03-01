@@ -960,9 +960,15 @@ async fn proxy_models_empty_without_vault() {
     assert_eq!(val["object"], "list");
     let data = val["data"].as_array().expect("data array");
     if has_vault {
-        // When a vault is configured (e.g. dev machine with OpenRouter key),
-        // models will be returned.  Just verify the structure.
-        assert!(!data.is_empty(), "vault present: should return models");
+        // A vault may exist without any configured proxy provider key.
+        // If models are returned, validate shape; empty is also valid.
+        for model in data {
+            assert!(
+                model.get("id").and_then(|v| v.as_str()).is_some(),
+                "model entries should include id: {val}"
+            );
+            assert_eq!(model.get("object"), Some(&json!("model")));
+        }
     } else {
         assert!(data.is_empty(), "no vault: data should be empty");
     }
