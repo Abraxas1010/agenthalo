@@ -58,6 +58,32 @@ theorem identityMaterialization_transport_eq
       identityMaterializationFunctor.toVector t := by
   exact identityMaterializationFunctor.naturality s t h
 
+instance : Sheaf.TransportLaws identityTransports where
+  refl := by
+    intro s
+    constructor
+    · rfl
+    · constructor
+      · rfl
+      · constructor
+        · rfl
+        · rfl
+  trans := by
+    intro a b c hab hbc
+    rcases hab with ⟨h1, h2, h3, h4⟩
+    rcases hbc with ⟨k1, k2, k3, k4⟩
+    constructor
+    · exact h1.trans k1
+    · constructor
+      · exact h2.trans k2
+      · constructor
+        · exact h3.trans k3
+        · exact h4.trans k4
+
+/-- Identity materialization as a genuine functor into a discrete codomain. -/
+def identityDiscreteMaterializationFunctor :=
+  Sheaf.materializationDiscreteFunctor identityMaterializationFunctor
+
 end Identity
 end NucleusDB
 end HeytingLean

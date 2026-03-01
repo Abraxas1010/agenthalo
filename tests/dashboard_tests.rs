@@ -1345,6 +1345,48 @@ async fn genesis_harvest_failure_records_trace_and_stays_incomplete() {
 }
 
 #[tokio::test]
+async fn genesis_harvest_reports_seed_read_failure_with_structured_code() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_genesis_seed_read_failure_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _fixture_guard = EnvVarGuard::set("AGENTHALO_GENESIS_TEST_MODE", Some("success"));
+
+    let corrupted_seed_path = halo_home.join("genesis_seed.enc");
+    std::fs::write(&corrupted_seed_path, vec![0xA5; 64]).expect("write corrupted seed");
+
+    let (state, db_path) = test_state("genesis_seed_read_failure");
+    let (status, val) = api_post(state, "/genesis/harvest", json!({})).await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "corrupted sealed seed should return service unavailable: {val}"
+    );
+    assert_eq!(
+        val["error_code"], "SEED_READ_FAILURE",
+        "seed read/decrypt failure must be surfaced with explicit code: {val}"
+    );
+    assert!(
+        val["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("sealed genesis seed"),
+        "error message should explain seed read failure path: {val}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&halo_home);
+}
+
+#[tokio::test]
 async fn genesis_reset_is_forbidden_by_default() {
     let _guard = env_lock().lock().expect("lock env");
     let halo_home = std::env::temp_dir().join(format!(
@@ -1366,6 +1408,51 @@ async fn genesis_reset_is_forbidden_by_default() {
         s,
         StatusCode::FORBIDDEN,
         "reset should be blocked by policy: {v}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&halo_home);
+}
+
+#[tokio::test]
+async fn genesis_reset_is_blocked_after_completed_commit() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_genesis_reset_after_completed_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _fixture_guard = EnvVarGuard::set("AGENTHALO_GENESIS_TEST_MODE", Some("success"));
+    let _reset_guard = EnvVarGuard::set("AGENTHALO_ENABLE_GENESIS_RESET", Some("1"));
+
+    let (state, db_path) = test_state("genesis_reset_after_completed");
+    let (harvest_status, harvest_val) =
+        api_post(state.clone(), "/genesis/harvest", json!({})).await;
+    assert_eq!(
+        harvest_status,
+        StatusCode::OK,
+        "harvest should complete before reset policy check: {harvest_val}"
+    );
+
+    let (reset_status, reset_val) =
+        api_post(state, "/genesis/reset", json!({"reason":"test"})).await;
+    assert_eq!(
+        reset_status,
+        StatusCode::CONFLICT,
+        "reset must be blocked after completed genesis commit: {reset_val}"
+    );
+    assert!(
+        reset_val["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("blocked after a completed genesis commit"),
+        "reset conflict should return an explicit policy reason: {reset_val}"
     );
 
     let _ = std::fs::remove_file(&db_path);

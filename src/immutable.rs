@@ -150,10 +150,23 @@ pub fn genesis_seal_with_anchor(anchor: &str) -> NodeHash {
 /// Verify a seal chain against a sequence of state snapshots.
 /// Returns `true` if the chain is valid (no deletion detected).
 pub fn verify_seal_chain(seals: &[NodeHash], states: &[(State, KeyMap)]) -> bool {
+    verify_seal_chain_with_anchor(seals, states, None)
+}
+
+/// Verify a seal chain against a sequence of state snapshots with an optional
+/// genesis anchor. When `anchor` is provided, verification starts from
+/// `genesis_seal_with_anchor(anchor)`.
+pub fn verify_seal_chain_with_anchor(
+    seals: &[NodeHash],
+    states: &[(State, KeyMap)],
+    anchor: Option<&str>,
+) -> bool {
     if seals.len() != states.len() {
         return false;
     }
-    let mut prev = genesis_seal();
+    let mut prev = anchor
+        .map(genesis_seal_with_anchor)
+        .unwrap_or_else(genesis_seal);
     for (i, seal) in seals.iter().enumerate() {
         let kv = key_value_digest(&states[i].0, &states[i].1);
         let expected = next_seal(&prev, &kv);
@@ -279,6 +292,25 @@ mod tests {
             &[seal1, seal2],
             &[(s1, km1), (s2_tampered, km2_tampered)]
         ));
+    }
+
+    #[test]
+    fn anchored_seal_chain_verification_valid() {
+        let anchor = "sha256:test_anchor";
+        let (s1, km1) = make_state(&[("a", 1)]);
+        let (s2, km2) = make_state(&[("a", 1), ("b", 2)]);
+        let gen = genesis_seal_with_anchor(anchor);
+        let seal1 = next_seal(&gen, &key_value_digest(&s1, &km1));
+        let seal2 = next_seal(&seal1, &key_value_digest(&s2, &km2));
+        assert!(verify_seal_chain_with_anchor(
+            &[seal1, seal2],
+            &[(s1.clone(), km1.clone()), (s2.clone(), km2.clone()),],
+            Some(anchor)
+        ));
+        assert!(
+            !verify_seal_chain(&[seal1, seal2], &[(s1, km1), (s2, km2)]),
+            "anchored chains must not validate against unanchored genesis"
+        );
     }
 
     #[test]

@@ -6,7 +6,9 @@ import NucleusDB.Core.Authorization
 import NucleusDB.Core.Certificates
 import NucleusDB.Core.Invariants
 import NucleusDB.Core.Ledger
+import NucleusDB.Core.NaturalTransformation
 import NucleusDB.Core.Nucleus
+import NucleusDB.Core.SealChain
 import NucleusDB.Identity.Certificate
 import NucleusDB.Identity.Delta
 import NucleusDB.Identity.GrantPresheaf

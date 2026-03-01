@@ -72,7 +72,7 @@ const DOCS_PAGES = [
     icon: '\u2733',
     color: 'blue',
     status: 'live',
-    summary: 'The birth ceremony for your agent. A generative act from Nothing through Oscillation to a stable Re-entry Nucleus. Harvests true randomness from 4 independent sources, combines them via commutative XOR fold (proved associative and commutative in Lean), and commits the result into an immutable seal chain. Category-theoretic formalization in Lean 4.',
+    summary: 'The birth ceremony for your agent. A generative act from Nothing through Oscillation to a stable Re-entry Nucleus. Harvests true randomness from 4 independent sources, combines them via XOR — the codiagonal of the abelian-group structure on 64-byte vectors, and commits the result into an immutable seal chain. Category-theoretic formalization in Lean 4.',
     stats: [
       { val: '4', lbl: 'Sources' },
       { val: '64 B', lbl: 'Seed' },
@@ -146,8 +146,8 @@ function renderDocsOverview() {
             <div class="gdoc-hero-stat-lbl">Total Sections</div>
           </div>
           <div class="gdoc-hero-stat">
-            <!-- Actual theorem count from lean/NucleusDB/ (grep -rc '^theorem'). TODO: dynamic API -->
-            <div class="gdoc-hero-stat-val">117</div>
+            <!-- Snapshot theorem count from lean/NucleusDB/ (grep -rc '^theorem'). TODO: dynamic API -->
+            <div class="gdoc-hero-stat-val">124</div>
             <div class="gdoc-hero-stat-lbl">Proved Theorems</div>
           </div>
         </div>
@@ -193,7 +193,7 @@ function renderDocsOverview() {
         <div class="gdoc-card gdoc-card--amber" style="flex:1">
           <div class="gdoc-card-head">Tamper Evidence</div>
           <div class="gdoc-card-body">
-            The seal chain follows the structure of a categorical diagram: each commit
+            The seal chain is a diagram in the category of hash commitments: each commit
             extends the previous seal via a one-way hash. Monotone extension is the key
             property &mdash; every commit proves the new state includes all previous data.
             Deletion would require finding a SHA-256 preimage (a 2<sup>128</sup> operation)
@@ -211,7 +211,10 @@ function renderDocsOverview() {
         Genesis is the first and most literal instance: from the void of pre-existence,
         independent entropy sources create oscillatory perturbations, the XOR fold is the
         re-entrant combination, and the committed hash is the stable nucleus &mdash; the
-        agent's fixed-point identity. Each protocol page explains how this pattern manifests
+        agent's fixed-point identity. This correspondence is formally proved: the bridge theorem
+        in <code>Genesis/Bridge.lean</code> shows that XOR combination transitions the ceremony phase
+        to Re-entry, and successful gate verification advances to the stable Nucleus.
+        Each protocol page explains how this pattern manifests
         in its specific domain.
       </p>
     </div>

@@ -565,6 +565,24 @@ fn internal_err(msg: String) -> (StatusCode, Json<Value>) {
     api_err(StatusCode::INTERNAL_SERVER_ERROR, &msg)
 }
 
+fn genesis_api_err(
+    status: StatusCode,
+    error_code: &str,
+    message: impl Into<String>,
+    technical_detail: Option<String>,
+) -> (StatusCode, Json<Value>) {
+    let mut body = json!({
+        "success": false,
+        "error_code": error_code,
+        "message": message.into(),
+        "failed_sources": [],
+    });
+    if let Some(detail) = technical_detail.filter(|s| !s.trim().is_empty()) {
+        body["technical_detail"] = json!(detail);
+    }
+    (status, Json(body))
+}
+
 fn parse_identity_tier(raw: &str) -> Option<crate::halo::identity::IdentitySecurityTier> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "max-safe" | "max_safe" | "maxsafe" => {
@@ -2226,11 +2244,28 @@ async fn api_genesis_status(AxumState(_state): AxumState<DashboardState>) -> Api
 }
 
 async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> ApiResult {
-    ensure_genesis_signing_wallet().map_err(internal_err)?;
+    if let Err(e) = ensure_genesis_signing_wallet() {
+        return Err(genesis_api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "WALLET_BOOTSTRAP_FAILED",
+            "could not initialize PQ wallet for genesis signing",
+            Some(e),
+        ));
+    }
 
-    if let Some(latest) =
-        crate::halo::identity_ledger::latest_genesis_event().map_err(internal_err)?
-    {
+    let latest_genesis = match crate::halo::identity_ledger::latest_genesis_event() {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(genesis_api_err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "LEDGER_READ_FAILURE",
+                "could not read genesis ledger state",
+                Some(e),
+            ));
+        }
+    };
+
+    if let Some(latest) = latest_genesis {
         if genesis_is_completed_status(&latest.status) {
             return Ok(Json(json!({
                 "success": true,
@@ -2251,19 +2286,58 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
 
     let harvest = tokio::task::spawn_blocking(crate::halo::genesis_entropy::harvest_entropy)
         .await
-        .map_err(|e| internal_err(format!("genesis harvest join error: {e}")))?;
+        .map_err(|e| {
+            genesis_api_err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "HARVEST_RUNTIME_FAILURE",
+                "genesis harvest runtime worker failed",
+                Some(e.to_string()),
+            )
+        })?;
 
     match harvest {
         Ok(result) => {
-            record_genesis_trace_event(&state, "success", Some(&result), None, None)
-                .await
-                .map_err(internal_err)?;
+            if let Err(e) =
+                record_genesis_trace_event(&state, "success", Some(&result), None, None).await
+            {
+                eprintln!("warning: failed to write genesis success trace event: {e}");
+            }
 
-            crate::halo::genesis_seed::store_seed_once(
-                &result.combined_entropy,
-                &result.combined_entropy_sha256,
-            )
-            .map_err(internal_err)?;
+            match crate::halo::genesis_seed::load_seed_sha256() {
+                Ok(Some(existing)) if existing == result.combined_entropy_sha256 => {}
+                Ok(Some(existing)) => {
+                    return Err(genesis_api_err(
+                        StatusCode::CONFLICT,
+                        "GENESIS_SEED_MISMATCH",
+                        "existing sealed genesis seed hash does not match harvested value",
+                        Some(format!(
+                            "existing={}, new={}",
+                            existing, result.combined_entropy_sha256
+                        )),
+                    ));
+                }
+                Ok(None) => {
+                    if let Err(e) = crate::halo::genesis_seed::store_seed_once(
+                        &result.combined_entropy,
+                        &result.combined_entropy_sha256,
+                    ) {
+                        return Err(genesis_api_err(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "SEED_STORAGE_FAILURE",
+                            "could not seal genesis seed",
+                            Some(e),
+                        ));
+                    }
+                }
+                Err(e) => {
+                    return Err(genesis_api_err(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "SEED_READ_FAILURE",
+                        "could not read existing sealed genesis seed",
+                        Some(e),
+                    ));
+                }
+            }
 
             let payload = json!({
                 "combined_entropy_sha256": result.combined_entropy_sha256,
@@ -2278,7 +2352,14 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                 "duration_ms": result.duration_ms,
             });
             let entry = crate::halo::identity_ledger::append_genesis_event("completed", payload)
-                .map_err(internal_err)?;
+                .map_err(|e| {
+                    genesis_api_err(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "LEDGER_APPEND_FAILURE",
+                        "could not append genesis completion entry to identity ledger",
+                        Some(e),
+                    )
+                })?;
             Ok(Json(json!({
                 "success": true,
                 "completed": true,
@@ -2295,9 +2376,11 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
             })))
         }
         Err(err) => {
-            record_genesis_trace_event(&state, "failure", None, Some(&err), None)
-                .await
-                .map_err(internal_err)?;
+            if let Err(e) =
+                record_genesis_trace_event(&state, "failure", None, Some(&err), None).await
+            {
+                eprintln!("warning: failed to write genesis failure trace event: {e}");
+            }
             let status = match err.error_code.as_str() {
                 crate::halo::genesis_entropy::ERR_CURBY_UNREACHABLE
                 | crate::halo::genesis_entropy::ERR_NIST_UNREACHABLE
@@ -2333,6 +2416,15 @@ async fn api_genesis_reset(
         ));
     }
     require_sensitive_access(&state)?;
+    if matches!(
+        crate::halo::identity_ledger::latest_completed_genesis_hash(),
+        Ok(Some(_))
+    ) {
+        return Err(api_err(
+            StatusCode::CONFLICT,
+            "genesis reset is blocked after a completed genesis commit",
+        ));
+    }
     let reason = normalize_genesis_reset_reason(req.reason.as_deref());
     let payload = json!({
         "reason": reason,

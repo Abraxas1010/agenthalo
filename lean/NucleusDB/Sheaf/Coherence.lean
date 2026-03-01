@@ -6,26 +6,27 @@ universe u
 
 /-- Minimal lens object placeholder for standalone sheaf coherence specs. -/
 structure LensObj (A : Type u) where
-  unit : Unit := ()
+  carrier : A
 
 /-- Minimal presheaf placeholder for standalone sheaf coherence specs. -/
 structure LensPresheaf (A : Type u) where
-  unit : Unit := ()
+  restrict : A → A := id
 
 /-- Minimal covering-family witness used by standalone sheaf specs. -/
 structure CoveringFamily {A : Type u} (U : LensObj A) where
-  unit : Unit := ()
+  patches : List A
 
 /-- Minimal matching-family witness used by standalone sheaf specs. -/
 structure MatchingFamily {A : Type u}
     (F : LensPresheaf A) (U : LensObj A) (C : CoveringFamily U) where
-  unit : Unit := ()
+  sections : List A
+  aligned : sections.length = C.patches.length
 
 /-- Minimal amalgamation predicate used by standalone sheaf specs. -/
 def Amalgamates {A : Type u}
     (F : LensPresheaf A) (U : LensObj A) (C : CoveringFamily U)
-    (_family : MatchingFamily F U C) : Prop :=
-  True
+    (family : MatchingFamily F U C) : Prop :=
+  ∃ amalg : A, ∀ s ∈ family.sections, F.restrict s = F.restrict amalg
 
 end LensSheaf
 end PerspectivalPlenum

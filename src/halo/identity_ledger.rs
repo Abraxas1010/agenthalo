@@ -133,10 +133,47 @@ fn entry_payload_for_hash(entry: &IdentityLedgerEntry) -> String {
     )
 }
 
+fn entry_payload_for_hash_legacy(entry: &IdentityLedgerEntry) -> String {
+    let payload_json = serde_json::to_string(&entry.payload)
+        .unwrap_or_else(|_| "{\"error\":\"payload\"}".to_string());
+    format!(
+        "{HASH_DOMAIN}|v={}|seq={}|ts={}|kind={:?}|provider={}|token_ref={}|expires_at={}|status={}|payload={}|prev_hash={}",
+        entry.version,
+        entry.seq,
+        entry.timestamp,
+        entry.kind,
+        entry.provider.as_deref().unwrap_or(""),
+        entry.token_ref_sha256.as_deref().unwrap_or(""),
+        entry
+            .expires_at
+            .map(|v| v.to_string())
+            .unwrap_or_else(String::new),
+        entry.status,
+        payload_json,
+        entry.prev_hash.as_deref().unwrap_or(""),
+    )
+}
+
 fn compute_entry_hash(entry: &IdentityLedgerEntry) -> String {
     let mut h = Sha256::new();
     h.update(entry_payload_for_hash(entry).as_bytes());
     crate::halo::util::hex_encode(&h.finalize())
+}
+
+fn compute_entry_hash_legacy(entry: &IdentityLedgerEntry) -> String {
+    let mut h = Sha256::new();
+    h.update(entry_payload_for_hash_legacy(entry).as_bytes());
+    crate::halo::util::hex_encode(&h.finalize())
+}
+
+fn strict_genesis_signature_enforcement() -> bool {
+    matches!(
+        std::env::var("AGENTHALO_STRICT_GENESIS_SIGNATURES")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1" | "true" | "yes")
+    )
 }
 
 fn ledger_path() -> std::path::PathBuf {
@@ -197,40 +234,73 @@ pub fn verify_chain(entries: &[IdentityLedgerEntry]) -> Result<(), String> {
                 entry.prev_hash
             ));
         }
-        let computed = compute_entry_hash(entry);
-        if computed != entry.entry_hash {
+        let computed_v2 = compute_entry_hash(entry);
+        let computed_legacy = compute_entry_hash_legacy(entry);
+        let legacy_hash_match = computed_legacy == entry.entry_hash;
+        if computed_v2 != entry.entry_hash && !legacy_hash_match {
             return Err(format!(
-                "ledger entry hash mismatch at seq {}: expected {}, got {}",
-                entry.seq, computed, entry.entry_hash
+                "ledger entry hash mismatch at seq {}: expected {} (v2) or {} (legacy), got {}",
+                entry.seq, computed_v2, computed_legacy, entry.entry_hash
             ));
         }
         if matches!(entry.kind, IdentityLedgerKind::GenesisEntropyHarvested) {
             if entry.signature.is_none() {
-                return Err(format!("genesis entry at seq {} must be signed", entry.seq));
+                if legacy_hash_match {
+                    // Backward compatibility: pre-v2 genesis entries may be unsigned because
+                    // older ledgers did not enforce mandatory PQ signatures. Strict mode allows
+                    // operators to disable this compatibility path during hardening/migration.
+                    if strict_genesis_signature_enforcement() {
+                        return Err(format!(
+                            "legacy unsigned genesis entry at seq {} rejected by strict policy",
+                            entry.seq
+                        ));
+                    }
+                    eprintln!(
+                        "warning: accepting unsigned legacy genesis entry at seq {} for backward compatibility; set AGENTHALO_STRICT_GENESIS_SIGNATURES=1 to reject",
+                        entry.seq
+                    );
+                } else {
+                    return Err(format!("genesis entry at seq {} must be signed", entry.seq));
+                }
             }
             if entry.status.eq_ignore_ascii_case("completed") {
-                let Some(anchor) = entry.genesis_entropy_sha256.as_deref() else {
+                let payload_anchor = entry
+                    .payload
+                    .get("combined_entropy_sha256")
+                    .and_then(|v| v.as_str());
+                if let Some(anchor) = entry.genesis_entropy_sha256.as_deref() {
+                    if !anchor.starts_with("sha256:") || anchor.len() <= "sha256:".len() {
+                        return Err(format!(
+                            "genesis completed entry at seq {} has malformed genesis_entropy_sha256",
+                            entry.seq
+                        ));
+                    }
+                    if payload_anchor.unwrap_or("") != anchor {
+                        return Err(format!(
+                            "genesis completed entry at seq {} has payload/structured hash mismatch",
+                            entry.seq
+                        ));
+                    }
+                } else if !legacy_hash_match {
                     return Err(format!(
                         "genesis completed entry at seq {} missing structured genesis_entropy_sha256",
                         entry.seq
                     ));
-                };
-                if !anchor.starts_with("sha256:") || anchor.len() <= "sha256:".len() {
-                    return Err(format!(
-                        "genesis completed entry at seq {} has malformed genesis_entropy_sha256",
-                        entry.seq
-                    ));
-                }
-                let payload_anchor = entry
-                    .payload
-                    .get("combined_entropy_sha256")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if payload_anchor != anchor {
-                    return Err(format!(
-                        "genesis completed entry at seq {} has payload/structured hash mismatch",
-                        entry.seq
-                    ));
+                } else {
+                    let Some(payload_anchor) = payload_anchor else {
+                        return Err(format!(
+                            "legacy genesis completed entry at seq {} missing combined_entropy_sha256 payload",
+                            entry.seq
+                        ));
+                    };
+                    if !payload_anchor.starts_with("sha256:")
+                        || payload_anchor.len() <= "sha256:".len()
+                    {
+                        return Err(format!(
+                            "legacy genesis completed entry at seq {} has malformed combined_entropy_sha256 payload",
+                            entry.seq
+                        ));
+                    }
                 }
             }
         }
@@ -808,6 +878,32 @@ mod tests {
         TmpHomeGuard::new(tag)
     }
 
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = std::env::var(key).ok();
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(v) = self.previous.as_deref() {
+                std::env::set_var(self.key, v);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     #[test]
     fn append_and_verify_social_chain() {
         let _home = set_tmp_home("chain");
@@ -895,5 +991,97 @@ mod tests {
         let err = append_genesis_event("completed", serde_json::json!({"sources": 4}))
             .expect_err("missing structured hash should fail");
         assert!(err.contains("combined_entropy_sha256"));
+    }
+
+    #[test]
+    fn verify_chain_accepts_legacy_hash_entries() {
+        let mut entry = IdentityLedgerEntry {
+            version: LEDGER_VERSION,
+            seq: 1,
+            timestamp: now_unix(),
+            kind: IdentityLedgerKind::ProfileUpdated,
+            provider: None,
+            token_ref_sha256: None,
+            expires_at: None,
+            status: "saved".to_string(),
+            payload: serde_json::json!({"display_name":"Legacy User"}),
+            genesis_entropy_sha256: None,
+            prev_hash: None,
+            entry_hash: String::new(),
+            signature: None,
+        };
+        entry.entry_hash = compute_entry_hash_legacy(&entry);
+        verify_chain(&[entry]).expect("legacy hash schema should remain valid");
+    }
+
+    #[test]
+    fn verify_chain_accepts_legacy_unsigned_completed_genesis_entry() {
+        let _guard = env_lock().lock().expect("env lock");
+        let _unstrict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", None);
+        let mut entry = IdentityLedgerEntry {
+            version: LEDGER_VERSION,
+            seq: 1,
+            timestamp: now_unix(),
+            kind: IdentityLedgerKind::GenesisEntropyHarvested,
+            provider: None,
+            token_ref_sha256: None,
+            expires_at: None,
+            status: "completed".to_string(),
+            payload: serde_json::json!({"combined_entropy_sha256":"sha256:legacy_anchor"}),
+            genesis_entropy_sha256: None,
+            prev_hash: None,
+            entry_hash: String::new(),
+            signature: None,
+        };
+        entry.entry_hash = compute_entry_hash_legacy(&entry);
+        verify_chain(&[entry]).expect("legacy genesis entry should remain valid");
+    }
+
+    #[test]
+    fn verify_chain_rejects_legacy_unsigned_completed_genesis_entry_in_strict_mode() {
+        let _guard = env_lock().lock().expect("env lock");
+        let _strict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", Some("1"));
+        let mut entry = IdentityLedgerEntry {
+            version: LEDGER_VERSION,
+            seq: 1,
+            timestamp: now_unix(),
+            kind: IdentityLedgerKind::GenesisEntropyHarvested,
+            provider: None,
+            token_ref_sha256: None,
+            expires_at: None,
+            status: "completed".to_string(),
+            payload: serde_json::json!({"combined_entropy_sha256":"sha256:legacy_anchor"}),
+            genesis_entropy_sha256: None,
+            prev_hash: None,
+            entry_hash: String::new(),
+            signature: None,
+        };
+        entry.entry_hash = compute_entry_hash_legacy(&entry);
+        let err = verify_chain(&[entry]).expect_err("strict mode should reject legacy unsigned");
+        assert!(err.contains("legacy unsigned genesis entry"));
+    }
+
+    #[test]
+    fn verify_chain_reports_missing_legacy_completed_payload_hash() {
+        let _guard = env_lock().lock().expect("env lock");
+        let _unstrict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", None);
+        let mut entry = IdentityLedgerEntry {
+            version: LEDGER_VERSION,
+            seq: 1,
+            timestamp: now_unix(),
+            kind: IdentityLedgerKind::GenesisEntropyHarvested,
+            provider: None,
+            token_ref_sha256: None,
+            expires_at: None,
+            status: "completed".to_string(),
+            payload: serde_json::json!({}),
+            genesis_entropy_sha256: None,
+            prev_hash: None,
+            entry_hash: String::new(),
+            signature: None,
+        };
+        entry.entry_hash = compute_entry_hash_legacy(&entry);
+        let err = verify_chain(&[entry]).expect_err("missing payload hash should fail");
+        assert!(err.contains("missing combined_entropy_sha256 payload"));
     }
 }

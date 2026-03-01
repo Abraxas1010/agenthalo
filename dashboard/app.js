@@ -92,6 +92,33 @@ const GENESIS_STAGES = [
   { id: 'complete', label: 'Genesis Complete', stub: false },
 ];
 const GENESIS_ERROR_MESSAGES = {
+  WALLET_BOOTSTRAP_FAILED: {
+    category: 'Signing Wallet Bootstrap Failed',
+    message: 'Genesis could not initialize the local PQ signing wallet.',
+    steps: [
+      'Retry Genesis once',
+      'Ensure the app can write to your AgentHALO home directory',
+      'If this persists, open Configuration and run diagnostics',
+    ],
+  },
+  LEDGER_READ_FAILURE: {
+    category: 'Identity Ledger Read Failure',
+    message: 'Genesis could not read the identity ledger state.',
+    steps: [
+      'Retry Genesis once',
+      'Check local disk permissions for AgentHALO files',
+      'If this persists, run ledger health check from Configuration',
+    ],
+  },
+  HARVEST_RUNTIME_FAILURE: {
+    category: 'Genesis Runtime Failure',
+    message: 'The Genesis worker failed unexpectedly before entropy completion.',
+    steps: [
+      'Retry Genesis',
+      'Restart the dashboard service',
+      'If this persists, export logs and contact support',
+    ],
+  },
   CURBY_UNREACHABLE: {
     category: 'Network / CURBy Unreachable',
     message: 'Could not reach the quantum randomness beacon at random.colorado.edu.',
@@ -119,6 +146,42 @@ const GENESIS_ERROR_MESSAGES = {
       'Ensure internet access is available',
       'Retry (remote beacon outage may be temporary)',
       'Check firewall rules for blocked domains',
+    ],
+  },
+  SEED_READ_FAILURE: {
+    category: 'Sealed Seed Read Failure',
+    message: 'Genesis could not read an existing sealed seed state.',
+    steps: [
+      'Retry Genesis',
+      'If this is a migrated install, re-run Genesis initialization',
+      'If it persists, use diagnostics to repair local seed state',
+    ],
+  },
+  SEED_STORAGE_FAILURE: {
+    category: 'Sealed Seed Storage Failure',
+    message: 'Genesis could not seal/store the derived seed.',
+    steps: [
+      'Retry Genesis',
+      'Check disk space and local directory permissions',
+      'If it persists, restart service and run diagnostics',
+    ],
+  },
+  GENESIS_SEED_MISMATCH: {
+    category: 'Genesis Seed Mismatch',
+    message: 'Existing sealed seed does not match the newly harvested Genesis value.',
+    steps: [
+      'Do not continue with mismatched seed state',
+      'Run Genesis diagnostics/repair from Configuration',
+      'Contact support if mismatch persists',
+    ],
+  },
+  LEDGER_APPEND_FAILURE: {
+    category: 'Ledger Append Failure',
+    message: 'Genesis completed entropy harvest but could not append immutable ledger entry.',
+    steps: [
+      'Retry Genesis',
+      'Check local file permissions and disk health',
+      'If it persists, run ledger repair diagnostics',
     ],
   },
   UNKNOWN: {
@@ -179,8 +242,9 @@ function showGenesisError(result) {
   if (!statusEl) return;
   const code = String((result && result.error_code) || 'UNKNOWN');
   const spec = GENESIS_ERROR_MESSAGES[code] || GENESIS_ERROR_MESSAGES.UNKNOWN;
-  const message = String((result && result.message) || spec.message);
-  const technical = result && (result.technical_detail || JSON.stringify(result.failed_sources || []));
+  const message = String((result && (result.message || result.error)) || spec.message);
+  const failedSources = Array.isArray(result && result.failed_sources) ? result.failed_sources : [];
+  const technical = (result && result.technical_detail) || (failedSources.length > 0 ? JSON.stringify(failedSources) : '');
   statusEl.className = 'genesis-status error';
   statusEl.innerHTML = `
     <div class="genesis-error-panel">
