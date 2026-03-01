@@ -1191,22 +1191,13 @@ async function renderSetup() {
       <p>Let's get everything properly set up for you. Then, we can build something amazing together!</p>
     </div>
 
-    <div class="setup-info-box" style="margin-top:14px">
-      <span class="info-icon">&#9432;</span>
-      <span><strong>How this page works:</strong> complete Identity, connect your Wallet, then add an LLM key. After that, all tabs are fully unlocked.</span>
-    </div>
     <div style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-top:10px;background:rgba(4,14,8,0.45)">
       <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Quick Start</div>
       <ol class="setup-steps-friendly" style="margin:0">
-        <li><span class="step-circle">1</span><span>Set your identity and safety preference in <strong>My Identity</strong>.</span></li>
-        <li><span class="step-circle">2</span><span>Set up your agent identity.</span></li>
-        <li><span class="step-circle">3</span><span>Add your OpenRouter key in <strong>Add Your LLM Key</strong>.</span></li>
+        <li><span class="step-circle">1</span><span>Set your agents identity &amp; safety level</span></li>
+        <li><span class="step-circle">2</span><span>Setup your agents wallet</span></li>
+        <li><span class="step-circle">3</span><span>Connect your agent to an LLM</span></li>
       </ol>
-      <div style="margin-top:10px;font-size:12px;color:var(--text-dim)">
-        ${dashboardAuthRequired
-          ? 'Sign-in mode is enabled on this instance. You must authenticate with GitHub/Google where prompted.'
-          : 'Local mode is enabled on this instance. GitHub/Google sign-in is optional, so those buttons may be hidden.'}
-      </div>
     </div>
 
     <!-- SECTION 1: Identity -->
