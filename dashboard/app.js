@@ -1205,18 +1205,10 @@ async function renderSetup() {
       <div class="identity-instruct-overlay" aria-hidden="true">
         <img class="identity-security-badge" id="identity-security-badge" src="${securityTierImageByKey[initialSecurityTier]}" alt="Current security state" onerror="this.style.display='none'">
         <img class="identity-instruct-img" src="img/agenthaloinstruct_cutout.png" alt="" onerror="this.style.display='none'">
-        <div class="identity-instruct-note">The more you know about me the easier it is to keep me under control allowing you and others to trust me.</div>
+        <div class="identity-instruct-note">The more you know about me, and I know about you, the easier it is to keep me under control.</div>
       </div>
       <div class="card-header">
-          <div class="card-icon">
-            <img class="identity-card-icon-img" src="img/agenthaloicon_header.png" alt="Agent HALO icon" onerror="this.parentElement.textContent='🤖'">
-          </div>
-        <div>
-          <div class="card-title">
-            My Identity
-          </div>
-          <div class="card-desc">Help me get to know myself</div>
-        </div>
+        <img src="img/agenthalodl.png" alt="My Identity" style="width:100%;height:auto;display:block;border-radius:6px">
       </div>
 
       <div class="identity-subsection" id="identity-profile">
@@ -1448,7 +1440,7 @@ async function renderSetup() {
       </details>
       ${deferIdentityRoadmapTracks ? `
       <details class="setup-alt-path" style="margin-top:14px" id="agentaddress-section">
-        <summary>Agent Identity</summary>
+        <summary>Agent Identity <span class="setup-inline-status status-done">&#10003; Complete</span></summary>
         <div class="alt-body">
           <div class="agentaddress-layout">
             <div class="agentaddress-main">
