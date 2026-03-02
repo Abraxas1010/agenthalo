@@ -1601,12 +1601,53 @@ window.authorizeAgentPrompt = async function authorizeAgentPrompt() {
       scopes,
       expires_days: Number.isFinite(expires_days) ? expires_days : null,
     });
-    alert(`Agent authorized.\n\nAgent ID: ${resp.agent_id}\n\nSecret key (shown once):\n${resp.agent_sk}`);
+    openAgentSecretModal(resp.agent_id, resp.agent_sk);
     await renderConfig();
   } catch (e) {
     alert(`Authorize failed: ${String(e && e.message || e)}`);
   }
 };
+
+function openAgentSecretModal(agentId, secretKey) {
+  const old = document.getElementById('agent-secret-modal');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'agent-secret-modal';
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.72);display:flex;align-items:center;justify-content:center;z-index:1300';
+  wrap.innerHTML = `
+    <div style="width:min(760px,94vw);background:var(--bg-card);border:1px solid var(--accent);padding:16px;border-radius:6px;box-shadow:0 10px 40px rgba(0,0,0,0.45)">
+      <div style="font-size:15px;color:var(--accent);margin-bottom:8px">Agent Authorized</div>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px">
+        Agent ID: <span style="color:var(--text)">${esc(String(agentId || ''))}</span>
+      </div>
+      <div style="font-size:12px;color:var(--amber);margin-bottom:10px">
+        Secret key is shown once. Copy and store it securely before closing.
+      </div>
+      <textarea id="agent-secret-modal-text" readonly style="width:100%;min-height:140px;resize:vertical;padding:10px;border-radius:6px;border:1px solid var(--border);background:rgba(4,14,8,0.5);color:var(--text);font-family:var(--mono);font-size:12px;line-height:1.4">${esc(String(secretKey || ''))}</textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-sm" id="agent-secret-modal-copy">Copy</button>
+        <button class="btn btn-sm btn-primary" id="agent-secret-modal-close">I have saved this key</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  const txt = document.getElementById('agent-secret-modal-text');
+  if (txt && typeof txt.select === 'function') txt.select();
+  const copyBtn = document.getElementById('agent-secret-modal-copy');
+  const closeBtn = document.getElementById('agent-secret-modal-close');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(String(secretKey || ''));
+        copyBtn.textContent = 'Copied';
+        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
+      } catch (_e) {
+        alert('Copy failed. Please copy manually.');
+      }
+    });
+  }
+  if (closeBtn) closeBtn.addEventListener('click', () => wrap.remove());
+}
 
 window.revokeAgent = async function revokeAgent(agent_id) {
   if (!confirm(`Revoke agent ${agent_id}?`)) return;
