@@ -89,7 +89,10 @@ pub fn resolve_socks5_proxy() -> Option<String> {
     for key in ["ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy"] {
         if let Ok(raw) = std::env::var(key) {
             let lowered = raw.trim().to_ascii_lowercase();
-            if lowered.starts_with("socks5://") || lowered.starts_with("socks://") {
+            if lowered.starts_with("socks5h://")
+                || lowered.starts_with("socks5://")
+                || lowered.starts_with("socks://")
+            {
                 if let Some(uri) = normalize_proxy_uri(&raw) {
                     return Some(uri);
                 }
@@ -98,7 +101,10 @@ pub fn resolve_socks5_proxy() -> Option<String> {
     }
 
     if std::env::var("NYM_BINARY").is_ok() || std::env::var("NYM_CONFIG_DIR").is_ok() {
-        return Some(format!("socks5://{DEFAULT_SOCKS5_ADDR}"));
+        eprintln!(
+            "[AgentHalo/Nym] auto-detecting SOCKS5 proxy at {DEFAULT_SOCKS5_ADDR} (set SOCKS5_PROXY to override)"
+        );
+        return Some(format!("socks5h://{DEFAULT_SOCKS5_ADDR}"));
     }
 
     None
@@ -132,7 +138,8 @@ pub fn apply_proxy_env_for_url(cmd: &mut Command, url: &str) -> Result<(), Strin
     };
 
     let proxy_no_scheme = proxy_uri
-        .strip_prefix("socks5://")
+        .strip_prefix("socks5h://")
+        .or_else(|| proxy_uri.strip_prefix("socks5://"))
         .or_else(|| proxy_uri.strip_prefix("socks://"))
         .unwrap_or(&proxy_uri)
         .to_string();
@@ -169,21 +176,27 @@ fn normalize_proxy_uri(raw: &str) -> Option<String> {
         return None;
     }
     let lowered = trimmed.to_ascii_lowercase();
-    if lowered.starts_with("socks5://") {
+    if lowered.starts_with("socks5h://") {
         return Some(trimmed.to_string());
     }
+    if lowered.starts_with("socks5://") {
+        let rest = trimmed.split_once("://").map(|(_, r)| r).unwrap_or(trimmed);
+        return Some(format!("socks5h://{rest}"));
+    }
     if lowered.starts_with("socks://") {
-        return Some(trimmed.replacen("socks://", "socks5://", 1));
+        let rest = trimmed.split_once("://").map(|(_, r)| r).unwrap_or(trimmed);
+        return Some(format!("socks5h://{rest}"));
     }
     if trimmed.contains("://") {
         return None;
     }
-    Some(format!("socks5://{trimmed}"))
+    Some(format!("socks5h://{trimmed}"))
 }
 
 fn proxy_healthcheck(proxy_uri: &str) -> bool {
     let addr = proxy_uri
-        .strip_prefix("socks5://")
+        .strip_prefix("socks5h://")
+        .or_else(|| proxy_uri.strip_prefix("socks5://"))
         .or_else(|| proxy_uri.strip_prefix("socks://"))
         .unwrap_or(proxy_uri);
     tcp_healthcheck(addr)
@@ -238,7 +251,7 @@ mod tests {
         let _socks = EnvVarGuard::set("SOCKS5_PROXY", Some("127.0.0.1:9050"));
         assert_eq!(
             resolve_socks5_proxy().as_deref(),
-            Some("socks5://127.0.0.1:9050")
+            Some("socks5h://127.0.0.1:9050")
         );
     }
 
@@ -246,11 +259,15 @@ mod tests {
     fn normalize_uri_variants() {
         assert_eq!(
             normalize_proxy_uri("127.0.0.1:1080").as_deref(),
-            Some("socks5://127.0.0.1:1080")
+            Some("socks5h://127.0.0.1:1080")
         );
         assert_eq!(
             normalize_proxy_uri("socks5://127.0.0.1:1080").as_deref(),
-            Some("socks5://127.0.0.1:1080")
+            Some("socks5h://127.0.0.1:1080")
+        );
+        assert_eq!(
+            normalize_proxy_uri("SOCKS5://127.0.0.1:1080").as_deref(),
+            Some("socks5h://127.0.0.1:1080")
         );
         assert_eq!(normalize_proxy_uri("http://127.0.0.1:1080"), None);
     }

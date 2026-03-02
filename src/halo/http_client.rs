@@ -58,7 +58,13 @@ fn build_direct_agent(timeout: Duration) -> ureq::Agent {
 }
 
 fn build_socks5_agent(proxy_uri: &str, timeout: Duration) -> Result<ureq::Agent, String> {
-    let proxy = ureq::Proxy::new(proxy_uri)
+    // ureq accepts `socks5://`; `socks5h://` is retained for env-level DNS-over-proxy semantics.
+    let proxy_uri_for_ureq = if let Some(rest) = proxy_uri.strip_prefix("socks5h://") {
+        format!("socks5://{rest}")
+    } else {
+        proxy_uri.to_string()
+    };
+    let proxy = ureq::Proxy::new(&proxy_uri_for_ureq)
         .map_err(|e| format!("invalid SOCKS5 proxy URI `{proxy_uri}`: {e}"))?;
     Ok(ureq::Agent::config_builder()
         .proxy(Some(proxy))
@@ -134,5 +140,11 @@ mod tests {
         let err = build_socks5_agent("socks5://", Duration::from_secs(1))
             .expect_err("invalid URI should error");
         assert!(err.contains("invalid SOCKS5 proxy URI"));
+    }
+
+    #[test]
+    fn socks5h_proxy_uri_is_accepted() {
+        let agent = build_socks5_agent("socks5h://127.0.0.1:1080", Duration::from_secs(1));
+        assert!(agent.is_ok());
     }
 }

@@ -1,0 +1,18 @@
+# Nym SOCKS5 sidecar for AgentHalo external privacy transport.
+FROM debian:bookworm-slim
+
+ARG NYM_SOCKS5_CLIENT_URL="https://github.com/nymtech/nym/releases/latest/download/nym-socks5-client"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl netcat-openbsd && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl -fL "${NYM_SOCKS5_CLIENT_URL}" -o /usr/local/bin/nym-socks5-client && \
+    chmod +x /usr/local/bin/nym-socks5-client
+
+COPY scripts/nym-entrypoint.sh /usr/local/bin/nym-entrypoint.sh
+RUN chmod +x /usr/local/bin/nym-entrypoint.sh
+
+VOLUME ["/root/.nym"]
+EXPOSE 1080
+ENTRYPOINT ["/usr/local/bin/nym-entrypoint.sh"]

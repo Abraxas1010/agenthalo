@@ -59,6 +59,20 @@ pub fn classify_url(url: &str) -> PrivacyLevel {
     }
 }
 
+pub fn should_route_didcomm_via_mixnet(message_type: &str) -> bool {
+    // Task transfer, credential exchange, and status artifacts should route via mixnet by default.
+    matches!(
+        message_type,
+        "https://agenthalo.dev/didcomm/task-send/1.0"
+            | "https://agenthalo.dev/didcomm/task-status/1.0"
+            | "https://agenthalo.dev/didcomm/task-artifact/1.0"
+            | "https://agenthalo.dev/didcomm/task-cancel/1.0"
+            | "https://agenthalo.dev/didcomm/credential-offer/1.0"
+            | "https://agenthalo.dev/didcomm/credential-request/1.0"
+            | "https://agenthalo.dev/didcomm/credential-issue/1.0"
+    )
+}
+
 fn extract_host(url: &str) -> Option<String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
@@ -82,6 +96,7 @@ fn strip_scheme(url: &str) -> &str {
         (b"http://", 7),
         (b"wss://", 6),
         (b"ws://", 5),
+        (b"socks5h://", 10),
         (b"socks5://", 9),
         (b"tcp://", 6),
     ] {
@@ -263,5 +278,15 @@ mod tests {
             parse_host_port("2001:db8::1"),
             Some(("2001:db8::1".to_string(), None))
         );
+    }
+
+    #[test]
+    fn didcomm_mixnet_router_prefers_sensitive_types() {
+        assert!(should_route_didcomm_via_mixnet(
+            "https://agenthalo.dev/didcomm/task-send/1.0"
+        ));
+        assert!(!should_route_didcomm_via_mixnet(
+            "https://agenthalo.dev/didcomm/ping/1.0"
+        ));
     }
 }

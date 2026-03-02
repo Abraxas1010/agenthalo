@@ -1,0 +1,57 @@
+version: "3.9"
+
+services:
+  nym-socks5:
+    build:
+      context: .
+      dockerfile: Dockerfile.nym
+    environment:
+      NYM_ID: ${NYM_ID:-agenthalo}
+      NYM_PORT: "1080"
+      NYM_PROVIDER: ${NYM_PROVIDER:?set NYM_PROVIDER to an active Nym network requester}
+      NYM_DATA_DIR: /root/.nym
+    volumes:
+      - nym-data:/root/.nym
+    expose:
+      - "1080"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "1080"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - halo-internal
+
+  agenthalo:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    depends_on:
+      nym-socks5:
+        condition: service_healthy
+    environment:
+      NYM_ENABLED: "true"
+      NYM_FAIL_OPEN: "false"
+      SOCKS5_PROXY: nym-socks5:1080
+      ALL_PROXY: socks5h://nym-socks5:1080
+      HTTP_PROXY: socks5h://nym-socks5:1080
+      HTTPS_PROXY: socks5h://nym-socks5:1080
+      NO_PROXY: localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    volumes:
+      - agent-data:/data
+    ports:
+      - "3000:3000"
+      - "8443:8443"
+    restart: unless-stopped
+    networks:
+      - halo-internal
+
+networks:
+  halo-internal:
+    driver: bridge
+
+volumes:
+  nym-data:
+  agent-data:
