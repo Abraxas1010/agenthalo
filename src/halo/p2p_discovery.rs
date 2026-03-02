@@ -7,6 +7,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
 pub const TOPIC_PREFIX: &str = "/agenthalo/capabilities/";
+const DID_KEY_PREFIX: &str = "did:key:";
+const TYPE_ED25519: &str = "Ed25519VerificationKey2020";
+const MULTICODEC_ED25519_PUB: &[u8] = &[0xed, 0x01];
 
 pub fn topic_general() -> String {
     format!("{TOPIC_PREFIX}general")
@@ -99,6 +102,57 @@ impl From<&AgentAnnouncement> for AgentAnnouncementPayload {
 fn payload_bytes(announcement: &AgentAnnouncement) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&AgentAnnouncementPayload::from(announcement))
         .map_err(|e| format!("serialize announcement payload: {e}"))
+}
+
+fn decode_did_key_ed25519_public(did: &str) -> Result<[u8; 32], String> {
+    let encoded = did
+        .strip_prefix(DID_KEY_PREFIX)
+        .ok_or_else(|| "announcement DID is not a did:key identifier".to_string())?;
+    let (_, decoded) = multibase::decode(encoded)
+        .map_err(|e| format!("multibase decode failed for did:key identifier: {e}"))?;
+    if decoded.len() != MULTICODEC_ED25519_PUB.len() + 32 {
+        return Err("did:key payload must be Ed25519 multicodec + 32-byte key".to_string());
+    }
+    if !decoded.starts_with(MULTICODEC_ED25519_PUB) {
+        return Err("did:key payload must use Ed25519 multicodec prefix".to_string());
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&decoded[MULTICODEC_ED25519_PUB.len()..]);
+    Ok(out)
+}
+
+fn decode_document_ed25519_public(did_document: &DIDDocument) -> Result<[u8; 32], String> {
+    let method = did_document
+        .verification_method
+        .iter()
+        .find(|method| method.type_ == TYPE_ED25519)
+        .ok_or_else(|| "DID document missing Ed25519 verification method".to_string())?;
+    let (_, decoded) = multibase::decode(&method.public_key_multibase)
+        .map_err(|e| format!("multibase decode failed for DID Ed25519 key: {e}"))?;
+    if decoded.len() != MULTICODEC_ED25519_PUB.len() + 32 {
+        return Err("DID Ed25519 key must include multicodec + 32-byte key".to_string());
+    }
+    if !decoded.starts_with(MULTICODEC_ED25519_PUB) {
+        return Err("DID Ed25519 key has unexpected multicodec prefix".to_string());
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&decoded[MULTICODEC_ED25519_PUB.len()..]);
+    Ok(out)
+}
+
+fn verify_did_document_binding(
+    announcement: &AgentAnnouncement,
+    did_document: &DIDDocument,
+) -> Result<(), String> {
+    if did_document.id != announcement.did {
+        return Err("announcement DID document id does not match announcement DID".to_string());
+    }
+    let did_key_ed25519 = decode_did_key_ed25519_public(&announcement.did)?;
+    let document_ed25519 = decode_document_ed25519_public(did_document)?;
+    if did_key_ed25519 != document_ed25519 {
+        return Err("announcement DID document Ed25519 key does not match did:key identifier".to_string());
+    }
+    Ok(())
 }
 
 pub fn sign_announcement(
@@ -217,11 +271,21 @@ impl AgentDiscovery {
     }
 
     pub fn ingest_kad_record(&mut self, record: &Record) -> Result<(), String> {
+        self.ingest_kad_record_with_resolver(record, |_| None)
+            .map(|_| ())
+    }
+
+    pub fn ingest_kad_record_with_resolver<F>(
+        &mut self,
+        record: &Record,
+        resolve_document: F,
+    ) -> Result<AgentAnnouncement, String>
+    where
+        F: Fn(&str) -> Option<DIDDocument>,
+    {
         let announcement: AgentAnnouncement = serde_json::from_slice(&record.value)
             .map_err(|e| format!("decode DHT record as announcement: {e}"))?;
-        self.known_agents
-            .insert(announcement.did.clone(), announcement);
-        Ok(())
+        self.verify_and_upsert(announcement, resolve_document)
     }
 
     pub fn handle_gossipsub_message<F>(
@@ -234,6 +298,17 @@ impl AgentDiscovery {
     {
         let announcement: AgentAnnouncement = serde_json::from_slice(data)
             .map_err(|e| format!("decode gossipsub message as announcement: {e}"))?;
+        self.verify_and_upsert(announcement, resolve_document)
+    }
+
+    fn verify_and_upsert<F>(
+        &mut self,
+        announcement: AgentAnnouncement,
+        resolve_document: F,
+    ) -> Result<AgentAnnouncement, String>
+    where
+        F: Fn(&str) -> Option<DIDDocument>,
+    {
         let did_document = announcement
             .did_document
             .clone()
@@ -244,9 +319,7 @@ impl AgentDiscovery {
                     announcement.did
                 )
             })?;
-        if did_document.id != announcement.did {
-            return Err("announcement DID document id does not match announcement DID".to_string());
-        }
+        verify_did_document_binding(&announcement, &did_document)?;
         let verified = verify_announcement(&announcement, &did_document)?;
         if !verified {
             return Err(format!(
@@ -418,6 +491,62 @@ mod tests {
             .handle_gossipsub_message(&payload, |_did| None)
             .expect("verified gossip");
         assert_eq!(accepted.did, identity.did);
+        assert!(discovery.known_agents().contains_key(&identity.did));
+    }
+
+    #[test]
+    fn handle_gossipsub_message_rejects_did_key_mismatch() {
+        let alice = crate::halo::did::did_from_genesis_seed(&seed(0x61)).expect("alice");
+        let mallory = crate::halo::did::did_from_genesis_seed(&seed(0x62)).expect("mallory");
+        let mut announcement = announcement_for_identity(&mallory, PeerId::random(), vec![], vec![]);
+        announcement.did = alice.did.clone();
+        let mut tampered_document = mallory.did_document.clone();
+        tampered_document.id = alice.did.clone();
+        announcement.did_document = Some(tampered_document);
+        sign_announcement(&mallory, &mut announcement).expect("sign");
+        let payload = serde_json::to_vec(&announcement).expect("serialize");
+
+        let mut discovery = AgentDiscovery::new();
+        let err = discovery
+            .handle_gossipsub_message(&payload, |_did| None)
+            .expect_err("did:key/document mismatch must fail");
+        assert!(err.contains("does not match did:key identifier"));
+    }
+
+    #[test]
+    fn ingest_kad_record_requires_signature_verification() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x63)).expect("identity");
+        let announcement = announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+        let value = serde_json::to_vec(&announcement).expect("serialize");
+        let record = Record {
+            key: announcement_kad_key(&announcement.did),
+            value,
+            publisher: None,
+            expires: None,
+        };
+        let mut discovery = AgentDiscovery::new();
+        let err = discovery
+            .ingest_kad_record(&record)
+            .expect_err("unsigned KAD record must fail");
+        assert!(err.contains("missing Ed25519 signature"));
+    }
+
+    #[test]
+    fn ingest_kad_record_accepts_signed_announcement() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x64)).expect("identity");
+        let mut announcement = announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+        sign_announcement(&identity, &mut announcement).expect("sign");
+        let value = serde_json::to_vec(&announcement).expect("serialize");
+        let record = Record {
+            key: announcement_kad_key(&announcement.did),
+            value,
+            publisher: None,
+            expires: None,
+        };
+        let mut discovery = AgentDiscovery::new();
+        discovery
+            .ingest_kad_record(&record)
+            .expect("signed KAD record should be accepted");
         assert!(discovery.known_agents().contains_key(&identity.did));
     }
 }
