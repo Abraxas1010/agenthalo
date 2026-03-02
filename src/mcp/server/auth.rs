@@ -83,9 +83,12 @@ impl ToolScope {
             | "proof_gate_verify"
             | "proof_gate_requirements" => Self::Read,
             // Trust verification (read-only chain queries)
-            "nucleusdb_verify_agent" | "verify_agent_multichain" | "register_chain" => {
-                Self::TrustVerify
-            }
+            "nucleusdb_verify_agent"
+            | "verify_agent_multichain"
+            | "register_chain"
+            | "zk_verify_credential"
+            | "zk_verify_anonymous_membership"
+            | "zk_compute_verify" => Self::TrustVerify,
             // Write DB operations
             "nucleusdb_execute_sql"
             | "nucleusdb_create_database"
@@ -100,7 +103,11 @@ impl ToolScope {
             | "access_revoke"
             | "proof_gate_submit" => Self::Write,
             // Trust attestation (on-chain submit)
-            "nucleusdb_agent_register" | "submit_composite_attestation" => Self::TrustAttest,
+            "nucleusdb_agent_register"
+            | "submit_composite_attestation"
+            | "zk_prove_credential"
+            | "zk_prove_anonymous_membership"
+            | "zk_compute_prove" => Self::TrustAttest,
             // Container
             "nucleusdb_container_launch" => Self::Container,
             // Unknown tools default to most restrictive
@@ -572,6 +579,9 @@ mod tests {
             "nucleusdb_verify_agent",
             "verify_agent_multichain",
             "register_chain",
+            "zk_verify_credential",
+            "zk_verify_anonymous_membership",
+            "zk_compute_verify",
         ];
         for t in &trust_read {
             assert_eq!(ToolScope::for_tool(t), ToolScope::TrustVerify, "tool {t}");
@@ -595,7 +605,13 @@ mod tests {
             assert_eq!(ToolScope::for_tool(t), ToolScope::Write, "tool {t}");
         }
 
-        let attest_tools = ["nucleusdb_agent_register", "submit_composite_attestation"];
+        let attest_tools = [
+            "nucleusdb_agent_register",
+            "submit_composite_attestation",
+            "zk_prove_credential",
+            "zk_prove_anonymous_membership",
+            "zk_compute_prove",
+        ];
         for t in &attest_tools {
             assert_eq!(ToolScope::for_tool(t), ToolScope::TrustAttest, "tool {t}");
         }

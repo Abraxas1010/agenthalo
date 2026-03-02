@@ -30,6 +30,9 @@ use nucleusdb::halo::trace::{
 use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::util::digest_json;
 use nucleusdb::halo::x402;
+#[cfg(feature = "zk-compute")]
+use nucleusdb::halo::zk_compute;
+use nucleusdb::halo::zk_credential;
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
 use nucleusdb::license;
 use nucleusdb::pod::access_policy::{AccessContext, AccessPolicy, PolicyStore};
@@ -81,6 +84,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "genesis" => cmd_genesis(&args[2..]),
         "access" => cmd_access(&args[2..]),
         "proof-gate" => cmd_proof_gate(&args[2..]),
+        "zk" => cmd_zk(&args[2..]),
         "x402" => cmd_x402(&args[2..]),
         "wrap" => cmd_wrap(&args[2..]),
         "unwrap" => cmd_unwrap(&args[2..]),
@@ -3222,6 +3226,587 @@ fn cmd_proof_gate(args: &[String]) -> Result<(), String> {
     }
 }
 
+fn requested_permissions_from_action_cli(
+    action: &str,
+) -> Result<nucleusdb::pod::acl::GrantPermissions, String> {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "read" => Ok(nucleusdb::pod::acl::GrantPermissions {
+            read: true,
+            write: false,
+            append: false,
+            control: false,
+        }),
+        "write" => Ok(nucleusdb::pod::acl::GrantPermissions {
+            read: false,
+            write: true,
+            append: false,
+            control: false,
+        }),
+        "append" => Ok(nucleusdb::pod::acl::GrantPermissions {
+            read: false,
+            write: false,
+            append: true,
+            control: false,
+        }),
+        "control" => Ok(nucleusdb::pod::acl::GrantPermissions {
+            read: false,
+            write: false,
+            append: false,
+            control: true,
+        }),
+        other => Err(format!(
+            "unknown action: {other} (expected read|write|append|control)"
+        )),
+    }
+}
+
+fn default_pod_grants_path() -> std::path::PathBuf {
+    config::halo_dir().join("pod_grants.json")
+}
+
+fn load_pod_grants(path: &Path) -> Result<Vec<nucleusdb::pod::acl::AccessGrant>, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read pod grants {}: {e}", path.display()))?;
+    if let Ok(list) = serde_json::from_str::<Vec<nucleusdb::pod::acl::AccessGrant>>(&raw) {
+        return Ok(list);
+    }
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("parse pod grants {}: {e}", path.display()))?;
+    let grants_value = v.get("grants").cloned().ok_or_else(|| {
+        "pod grants file must be either an array or object with `grants`".to_string()
+    })?;
+    serde_json::from_value(grants_value)
+        .map_err(|e| format!("parse grants payload {}: {e}", path.display()))
+}
+
+fn load_registry_hashes(path: &Path) -> Result<Vec<[u8; 32]>, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read registry {}: {e}", path.display()))?;
+    let direct = serde_json::from_str::<Vec<String>>(&raw);
+    let hashes = if let Ok(list) = direct {
+        list
+    } else {
+        let value: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| format!("parse registry {}: {e}", path.display()))?;
+        value
+            .get("did_hashes")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                "registry must be an array of hash strings or {\"did_hashes\": [...]}".to_string()
+            })?
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| "registry hash entries must be strings".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    hashes
+        .iter()
+        .map(|h| nucleusdb::halo::util::hex_decode_32(h))
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn emit_json_output(value: &serde_json::Value, out_path: Option<&str>) -> Result<(), String> {
+    if let Some(path) = out_path {
+        let raw =
+            serde_json::to_vec_pretty(value).map_err(|e| format!("encode json output: {e}"))?;
+        std::fs::write(path, raw).map_err(|e| format!("write output {path}: {e}"))?;
+        println!("{}", serde_json::json!({"status":"ok","written_to":path}));
+        return Ok(());
+    }
+    print_json(value)
+}
+
+fn cmd_zk_credential(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    match sub {
+        "prove" => {
+            let mut grant_id_hex: Option<String> = None;
+            let mut resource: Option<String> = None;
+            let mut action: Option<String> = None;
+            let mut grant_file: Option<String> = None;
+            let mut grantee_did: Option<String> = None;
+            let mut current_time: Option<u64> = None;
+            let mut out_path: Option<String> = None;
+            let mut i = 1usize;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--grant-id" => {
+                        i += 1;
+                        grant_id_hex = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--grant-id requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--resource" => {
+                        i += 1;
+                        resource = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--resource requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--action" => {
+                        i += 1;
+                        action = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--action requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--grant-file" => {
+                        i += 1;
+                        grant_file = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--grant-file requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--grantee-did" => {
+                        i += 1;
+                        grantee_did = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--grantee-did requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--current-time" => {
+                        i += 1;
+                        current_time = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--current-time requires a value".to_string())?
+                                .parse::<u64>()
+                                .map_err(|_| "--current-time must be an integer".to_string())?,
+                        );
+                    }
+                    "--out" => {
+                        i += 1;
+                        out_path = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--out requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    other => return Err(format!("unknown flag for zk credential prove: {other}")),
+                }
+                i += 1;
+            }
+
+            let grant_id = decode_hex_32_cli(
+                grant_id_hex
+                    .as_deref()
+                    .ok_or_else(|| "--grant-id is required".to_string())?,
+                "grant-id",
+            )?;
+            let resource = resource.ok_or_else(|| "--resource is required".to_string())?;
+            let action = action.ok_or_else(|| "--action is required".to_string())?;
+            let requested = requested_permissions_from_action_cli(&action)?;
+            let now = current_time.unwrap_or_else(now_unix_secs);
+            let grantee = if let Some(did) = grantee_did {
+                did
+            } else {
+                load_local_did_identity()?.did
+            };
+            let grant_path = grant_file
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(default_pod_grants_path);
+            let grants = load_pod_grants(&grant_path)?;
+            let mut grant = grants
+                .into_iter()
+                .find(|g| g.grant_id == grant_id)
+                .ok_or_else(|| format!("grant id not found in {}", grant_path.display()))?;
+            if !nucleusdb::pod::acl::key_pattern_matches(&grant.key_pattern, &resource) {
+                return Err(format!(
+                    "grant key pattern `{}` does not cover requested resource `{}`",
+                    grant.key_pattern, resource
+                ));
+            }
+            grant.key_pattern = resource.clone();
+
+            let (pk, _vk) = zk_credential::setup_credential_circuit()?;
+            let bundle = zk_credential::prove_credential(&pk, &grant, &grantee, requested, now)?;
+            emit_json_output(
+                &serde_json::json!({
+                    "status": "ok",
+                    "resource": resource,
+                    "action": action,
+                    "proof_bundle": bundle,
+                }),
+                out_path.as_deref(),
+            )
+        }
+        "verify" => {
+            let proof_path = args
+                .iter()
+                .position(|a| a == "--proof")
+                .and_then(|idx| args.get(idx + 1))
+                .ok_or_else(|| "usage: agenthalo zk credential verify --proof <json-file>".to_string())?;
+            let raw = std::fs::read_to_string(proof_path)
+                .map_err(|e| format!("read proof file {proof_path}: {e}"))?;
+            let value: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|e| format!("parse proof file {proof_path}: {e}"))?;
+            let bundle_value = value
+                .get("proof_bundle")
+                .cloned()
+                .unwrap_or(value);
+            let bundle: zk_credential::CredentialProofBundle =
+                serde_json::from_value(bundle_value).map_err(|e| format!("parse credential proof bundle: {e}"))?;
+            let (_pk, vk) = zk_credential::setup_credential_circuit()?;
+            let verified = zk_credential::verify_credential_proof(&vk, &bundle)?;
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "verified": verified,
+            }))
+        }
+        _ => Err("usage: agenthalo zk credential [prove --grant-id <id> --resource <pattern> --action <read|write|append|control> [--grant-file <path>] [--grantee-did <did>] [--current-time <unix>] [--out <path>] | verify --proof <json-file>]".to_string()),
+    }
+}
+
+fn cmd_zk_anonymous(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    match sub {
+        "prove" => {
+            let mut grant_id_hex: Option<String> = None;
+            let mut resource: Option<String> = None;
+            let mut action: Option<String> = None;
+            let mut registry_path: Option<String> = None;
+            let mut grant_file: Option<String> = None;
+            let mut grantee_did: Option<String> = None;
+            let mut current_time: Option<u64> = None;
+            let mut out_path: Option<String> = None;
+            let mut i = 1usize;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--grant-id" => {
+                        i += 1;
+                        grant_id_hex = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--grant-id requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--resource" => {
+                        i += 1;
+                        resource = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--resource requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--action" => {
+                        i += 1;
+                        action = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--action requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--registry" => {
+                        i += 1;
+                        registry_path = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--registry requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--grant-file" => {
+                        i += 1;
+                        grant_file = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--grant-file requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--grantee-did" => {
+                        i += 1;
+                        grantee_did = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--grantee-did requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--current-time" => {
+                        i += 1;
+                        current_time = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--current-time requires a value".to_string())?
+                                .parse::<u64>()
+                                .map_err(|_| "--current-time must be an integer".to_string())?,
+                        );
+                    }
+                    "--out" => {
+                        i += 1;
+                        out_path = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--out requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    other => return Err(format!("unknown flag for zk anonymous prove: {other}")),
+                }
+                i += 1;
+            }
+            let grant_id = decode_hex_32_cli(
+                grant_id_hex
+                    .as_deref()
+                    .ok_or_else(|| "--grant-id is required".to_string())?,
+                "grant-id",
+            )?;
+            let resource = resource.ok_or_else(|| "--resource is required".to_string())?;
+            let action = action.ok_or_else(|| "--action is required".to_string())?;
+            let registry_path =
+                registry_path.ok_or_else(|| "--registry is required".to_string())?;
+            let requested = requested_permissions_from_action_cli(&action)?;
+            let now = current_time.unwrap_or_else(now_unix_secs);
+            let grantee = if let Some(did) = grantee_did {
+                did
+            } else {
+                load_local_did_identity()?.did
+            };
+            let registry_hashes = load_registry_hashes(Path::new(&registry_path))?;
+            if registry_hashes.is_empty() {
+                return Err("registry cannot be empty".to_string());
+            }
+            let did_hash =
+                nucleusdb::halo::util::digest_bytes("agenthalo.zk_credential.did_hash.v1", grantee.as_bytes());
+            let member_index = registry_hashes
+                .iter()
+                .position(|h| *h == did_hash)
+                .ok_or_else(|| "grantee DID hash is not present in registry".to_string())?;
+            let root = zk_credential::merkle_root(&registry_hashes);
+            let path = zk_credential::merkle_path(&registry_hashes, member_index)?;
+            let witness = zk_credential::AnonymousMembershipWitness {
+                leaf_did_hash: nucleusdb::halo::util::hex_encode(&did_hash),
+                merkle_path: path
+                    .iter()
+                    .map(|h| nucleusdb::halo::util::hex_encode(h))
+                    .collect(),
+                merkle_index: member_index as u64,
+                merkle_root_hash: nucleusdb::halo::util::hex_encode(&root),
+            };
+
+            let grant_path = grant_file
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(default_pod_grants_path);
+            let grants = load_pod_grants(&grant_path)?;
+            let mut grant = grants
+                .into_iter()
+                .find(|g| g.grant_id == grant_id)
+                .ok_or_else(|| format!("grant id not found in {}", grant_path.display()))?;
+            if !nucleusdb::pod::acl::key_pattern_matches(&grant.key_pattern, &resource) {
+                return Err(format!(
+                    "grant key pattern `{}` does not cover requested resource `{}`",
+                    grant.key_pattern, resource
+                ));
+            }
+            grant.key_pattern = resource.clone();
+
+            let (pk, _vk) = zk_credential::setup_credential_circuit()?;
+            let bundle = zk_credential::prove_anonymous_membership(
+                &pk,
+                &grant,
+                &grantee,
+                requested,
+                now,
+                &witness,
+            )?;
+            emit_json_output(
+                &serde_json::json!({
+                    "status": "ok",
+                    "resource": resource,
+                    "action": action,
+                    "proof_bundle": bundle,
+                }),
+                out_path.as_deref(),
+            )
+        }
+        "verify" => {
+            let proof_path = args
+                .iter()
+                .position(|a| a == "--proof")
+                .and_then(|idx| args.get(idx + 1))
+                .ok_or_else(|| "usage: agenthalo zk anonymous verify --proof <json-file> --registry <json-file>".to_string())?;
+            let registry_path = args
+                .iter()
+                .position(|a| a == "--registry")
+                .and_then(|idx| args.get(idx + 1))
+                .ok_or_else(|| "usage: agenthalo zk anonymous verify --proof <json-file> --registry <json-file>".to_string())?;
+            let registry_hashes = load_registry_hashes(Path::new(registry_path))?;
+            let expected_root = zk_credential::merkle_root(&registry_hashes);
+
+            let raw = std::fs::read_to_string(proof_path)
+                .map_err(|e| format!("read proof file {proof_path}: {e}"))?;
+            let value: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|e| format!("parse proof file {proof_path}: {e}"))?;
+            let bundle_value = value
+                .get("proof_bundle")
+                .cloned()
+                .unwrap_or(value);
+            let bundle: zk_credential::AnonymousCredentialProofBundle =
+                serde_json::from_value(bundle_value)
+                    .map_err(|e| format!("parse anonymous proof bundle: {e}"))?;
+            let (_pk, vk) = zk_credential::setup_credential_circuit()?;
+            let zk_verified = zk_credential::verify_anonymous_membership_proof(&vk, &bundle)?;
+            let root_matches = bundle.merkle_root_hash
+                == nucleusdb::halo::util::hex_encode(&expected_root);
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "verified": zk_verified && root_matches,
+                "zk_verified": zk_verified,
+                "registry_root_matches": root_matches,
+            }))
+        }
+        _ => Err("usage: agenthalo zk anonymous [prove --grant-id <id> --resource <pattern> --action <read|write|append|control> --registry <json-file> [--grant-file <path>] [--grantee-did <did>] [--current-time <unix>] [--out <path>] | verify --proof <json-file> --registry <json-file>]".to_string()),
+    }
+}
+
+fn cmd_zk_compute(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    match sub {
+        "prove" => {
+            #[cfg(feature = "zk-compute")]
+            {
+                let mut guest: Option<String> = None;
+                let mut public_input: Option<String> = None;
+                let mut private_input: Option<String> = None;
+                let mut compute_id: Option<String> = None;
+                let mut requester_did: Option<String> = None;
+                let mut out_path: Option<String> = None;
+                let mut i = 1usize;
+                while i < args.len() {
+                    match args[i].as_str() {
+                        "--guest" => {
+                            i += 1;
+                            guest = Some(args.get(i).ok_or_else(|| "--guest requires a value".to_string())?.to_string());
+                        }
+                        "--input" => {
+                            i += 1;
+                            public_input = Some(args.get(i).ok_or_else(|| "--input requires a value".to_string())?.to_string());
+                        }
+                        "--private" => {
+                            i += 1;
+                            private_input = Some(args.get(i).ok_or_else(|| "--private requires a value".to_string())?.to_string());
+                        }
+                        "--compute-id" => {
+                            i += 1;
+                            compute_id = Some(args.get(i).ok_or_else(|| "--compute-id requires a value".to_string())?.to_string());
+                        }
+                        "--requester-did" => {
+                            i += 1;
+                            requester_did = Some(args.get(i).ok_or_else(|| "--requester-did requires a value".to_string())?.to_string());
+                        }
+                        "--out" => {
+                            i += 1;
+                            out_path = Some(args.get(i).ok_or_else(|| "--out requires a value".to_string())?.to_string());
+                        }
+                        other => return Err(format!("unknown flag for zk compute prove: {other}")),
+                    }
+                    i += 1;
+                }
+                let guest_path = guest.ok_or_else(|| "--guest is required".to_string())?;
+                let input_path = public_input.ok_or_else(|| "--input is required".to_string())?;
+                let private_path = private_input.ok_or_else(|| "--private is required".to_string())?;
+                let guest_elf = std::fs::read(&guest_path)
+                    .map_err(|e| format!("read guest ELF {guest_path}: {e}"))?;
+                let public_inputs = std::fs::read(&input_path)
+                    .map_err(|e| format!("read input file {input_path}: {e}"))?;
+                let private_inputs = std::fs::read(&private_path)
+                    .map_err(|e| format!("read private file {private_path}: {e}"))?;
+                let requester_did = if let Some(did) = requester_did {
+                    did
+                } else {
+                    load_local_did_identity()?.did
+                };
+                let request = zk_compute::ComputeRequest {
+                    compute_id: compute_id.unwrap_or_else(|| format!("compute-{}", now_unix_secs())),
+                    guest_elf,
+                    public_inputs,
+                    private_inputs,
+                    requester_did,
+                };
+                let receipt = zk_compute::prove_computation(&request)?;
+                emit_json_output(
+                    &serde_json::json!({
+                        "status": "ok",
+                        "receipt": receipt,
+                    }),
+                    out_path.as_deref(),
+                )
+            }
+            #[cfg(not(feature = "zk-compute"))]
+            {
+                let _ = args;
+                Err("`agenthalo zk compute prove` requires cargo feature `zk-compute`".to_string())
+            }
+        }
+        "verify" => {
+            #[cfg(feature = "zk-compute")]
+            {
+                let mut receipt_path: Option<String> = None;
+                let mut image_id: Option<String> = None;
+                let mut i = 1usize;
+                while i < args.len() {
+                    match args[i].as_str() {
+                        "--receipt" => {
+                            i += 1;
+                            receipt_path = Some(args.get(i).ok_or_else(|| "--receipt requires a value".to_string())?.to_string());
+                        }
+                        "--image-id" => {
+                            i += 1;
+                            image_id = Some(args.get(i).ok_or_else(|| "--image-id requires a value".to_string())?.to_string());
+                        }
+                        other => return Err(format!("unknown flag for zk compute verify: {other}")),
+                    }
+                    i += 1;
+                }
+                let receipt_path =
+                    receipt_path.ok_or_else(|| "--receipt is required".to_string())?;
+                let raw = std::fs::read_to_string(&receipt_path)
+                    .map_err(|e| format!("read receipt file {receipt_path}: {e}"))?;
+                let value: serde_json::Value = serde_json::from_str(&raw)
+                    .map_err(|e| format!("parse receipt file {receipt_path}: {e}"))?;
+                let receipt_value = value.get("receipt").cloned().unwrap_or(value);
+                let receipt: zk_compute::ComputeReceipt = serde_json::from_value(receipt_value)
+                    .map_err(|e| format!("parse compute receipt: {e}"))?;
+                let verified = if let Some(expected_image_id) = image_id {
+                    zk_compute::verify_receipt_minimal(
+                        &receipt.receipt_bytes,
+                        &expected_image_id,
+                        &receipt.journal,
+                    )?
+                } else {
+                    zk_compute::verify_computation(&receipt)?
+                };
+                print_json(&serde_json::json!({
+                    "status": "ok",
+                    "verified": verified,
+                }))
+            }
+            #[cfg(not(feature = "zk-compute"))]
+            {
+                let _ = args;
+                Err("`agenthalo zk compute verify` requires cargo feature `zk-compute`".to_string())
+            }
+        }
+        _ => Err("usage: agenthalo zk compute [prove --guest <elf-path> --input <json-file> --private <json-file> [--compute-id <id>] [--requester-did <did>] [--out <path>] | verify --receipt <json-file> [--image-id <hex>]]".to_string()),
+    }
+}
+
+fn cmd_zk(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    match sub {
+        "credential" => cmd_zk_credential(&args[1..]),
+        "anonymous" => cmd_zk_anonymous(&args[1..]),
+        "compute" => cmd_zk_compute(&args[1..]),
+        _ => Err(
+            "usage: agenthalo zk [credential <...> | anonymous <...> | compute <...>]".to_string(),
+        ),
+    }
+}
+
 fn cmd_wrap(args: &[String]) -> Result<(), String> {
     let rc = wrap::detect_shell_rc();
     if args.first().map(|s| s.as_str()) == Some("--all") {
@@ -3546,6 +4131,6 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony status/harvest/reset via API bridge\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony status/harvest/reset via API bridge\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
     );
 }

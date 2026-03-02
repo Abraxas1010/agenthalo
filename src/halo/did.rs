@@ -1,3 +1,6 @@
+#[cfg(feature = "zk-compute")]
+use crate::halo::zk_compute::ComputeReceipt;
+use crate::halo::zk_credential::CredentialProofBundle;
 use ed25519_dalek::{
     Signature as Ed25519Signature, Signer as Ed25519Signer, SigningKey as Ed25519SigningKey,
     Verifier as Ed25519Verifier, VerifyingKey as Ed25519VerifyingKey,
@@ -70,6 +73,20 @@ pub struct KeyAgreementMethod {
     pub controller: String,
     #[serde(rename = "publicKeyMultibase")]
     pub public_key_multibase: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DIDCommCredentialAttachment {
+    pub proof_bundle: CredentialProofBundle,
+    pub resource_uri: String,
+    pub requested_action: String,
+}
+
+#[cfg(feature = "zk-compute")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DIDCommComputeAttachment {
+    pub receipt: ComputeReceipt,
+    pub result_summary: String,
 }
 
 fn hkdf_expand<const N: usize>(seed: &[u8; 64], info: &[u8]) -> Result<[u8; N], String> {

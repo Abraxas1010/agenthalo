@@ -32,6 +32,9 @@ use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::util::digest_json;
 use nucleusdb::halo::viewer;
 use nucleusdb::halo::x402;
+#[cfg(feature = "zk-compute")]
+use nucleusdb::halo::zk_compute;
+use nucleusdb::halo::zk_credential;
 use nucleusdb::pod::access_policy::{AccessContext, PolicyStore};
 use nucleusdb::pod::capability::{self, AccessMode, CapabilityStore};
 use nucleusdb::verifier::gate as proof_gate;
@@ -890,6 +893,79 @@ async fn mcp(
                         "required": ["path"]
                     }
                 }),
+                json!({
+                    "name": "zk_prove_credential",
+                    "description": "Generate a Groth16 credential proof for an access grant without revealing grant metadata.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "grant": {"type": "object", "description": "AccessGrant payload"},
+                            "grantee_did": {"type": "string"},
+                            "action": {"type": "string", "description": "read|write|append|control"},
+                            "current_time": {"type": "integer"}
+                        },
+                        "required": ["grant", "grantee_did", "action"]
+                    }
+                }),
+                json!({
+                    "name": "zk_verify_credential",
+                    "description": "Verify a Groth16 credential proof bundle.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "proof_bundle": {"type": "object"}
+                        },
+                        "required": ["proof_bundle"]
+                    }
+                }),
+                json!({
+                    "name": "zk_prove_anonymous_membership",
+                    "description": "Generate an anonymous membership credential proof using a Merkle witness.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "grant": {"type": "object", "description": "AccessGrant payload"},
+                            "grantee_did": {"type": "string"},
+                            "action": {"type": "string", "description": "read|write|append|control"},
+                            "witness": {"type": "object", "description": "AnonymousMembershipWitness payload"},
+                            "current_time": {"type": "integer"}
+                        },
+                        "required": ["grant", "grantee_did", "action", "witness"]
+                    }
+                }),
+                json!({
+                    "name": "zk_verify_anonymous_membership",
+                    "description": "Verify an anonymous credential proof bundle.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "proof_bundle": {"type": "object"}
+                        },
+                        "required": ["proof_bundle"]
+                    }
+                }),
+                json!({
+                    "name": "zk_compute_prove",
+                    "description": "Generate a verifiable computation receipt (feature-gated with zk-compute).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "request": {"type": "object", "description": "ComputeRequest payload"}
+                        },
+                        "required": ["request"]
+                    }
+                }),
+                json!({
+                    "name": "zk_compute_verify",
+                    "description": "Verify a verifiable computation receipt (feature-gated with zk-compute).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "receipt": {"type": "object", "description": "ComputeReceipt payload"}
+                        },
+                        "required": ["receipt"]
+                    }
+                }),
             ];
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
@@ -1042,6 +1118,12 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "proof_gate_status" => tool_proof_gate_status(arguments),
         "proof_gate_verify" => tool_proof_gate_verify(arguments),
         "proof_gate_submit" => tool_proof_gate_submit(arguments),
+        "zk_prove_credential" => tool_zk_prove_credential(arguments),
+        "zk_verify_credential" => tool_zk_verify_credential(arguments),
+        "zk_prove_anonymous_membership" => tool_zk_prove_anonymous_membership(arguments),
+        "zk_verify_anonymous_membership" => tool_zk_verify_anonymous_membership(arguments),
+        "zk_compute_prove" => tool_zk_compute_prove(arguments),
+        "zk_compute_verify" => tool_zk_compute_verify(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -3281,6 +3363,40 @@ fn parse_access_modes_mcp(arguments: &Value) -> Result<Vec<AccessMode>, String> 
     Ok(modes)
 }
 
+fn requested_permissions_from_action(
+    action: &str,
+) -> Result<nucleusdb::pod::acl::GrantPermissions, String> {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "read" => Ok(nucleusdb::pod::acl::GrantPermissions {
+            read: true,
+            write: false,
+            append: false,
+            control: false,
+        }),
+        "write" => Ok(nucleusdb::pod::acl::GrantPermissions {
+            read: false,
+            write: true,
+            append: false,
+            control: false,
+        }),
+        "append" => Ok(nucleusdb::pod::acl::GrantPermissions {
+            read: false,
+            write: false,
+            append: true,
+            control: false,
+        }),
+        "control" => Ok(nucleusdb::pod::acl::GrantPermissions {
+            read: false,
+            write: false,
+            append: false,
+            control: true,
+        }),
+        other => Err(format!(
+            "unknown action: {other} (expected read|write|append|control)"
+        )),
+    }
+}
+
 fn tool_access_grant(arguments: Value) -> Result<Value, String> {
     mcp_require_scope(CryptoScope::Identity)?;
     let grantee_did = arguments
@@ -3479,6 +3595,157 @@ fn tool_proof_gate_submit(arguments: Value) -> Result<Value, String> {
         "status": "ok",
         "stored_at": stored,
     }))
+}
+
+fn tool_zk_prove_credential(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Sign)?;
+    let grant_value = arguments
+        .get("grant")
+        .cloned()
+        .ok_or_else(|| "grant is required".to_string())?;
+    let grant: nucleusdb::pod::acl::AccessGrant =
+        serde_json::from_value(grant_value).map_err(|e| format!("parse grant: {e}"))?;
+    let grantee_did = arguments
+        .get("grantee_did")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "grantee_did is required".to_string())?;
+    let action = arguments
+        .get("action")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "action is required".to_string())?;
+    let requested = requested_permissions_from_action(action)?;
+    let now = arguments
+        .get("current_time")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(now_unix_secs);
+
+    let (pk, _vk) = zk_credential::setup_credential_circuit()?;
+    let bundle = zk_credential::prove_credential(&pk, &grant, grantee_did, requested, now)?;
+    Ok(json!({
+        "status": "ok",
+        "proof_bundle": bundle,
+    }))
+}
+
+fn tool_zk_verify_credential(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let bundle_value = arguments
+        .get("proof_bundle")
+        .cloned()
+        .ok_or_else(|| "proof_bundle is required".to_string())?;
+    let bundle: zk_credential::CredentialProofBundle =
+        serde_json::from_value(bundle_value).map_err(|e| format!("parse proof_bundle: {e}"))?;
+    let (_pk, vk) = zk_credential::setup_credential_circuit()?;
+    let verified = zk_credential::verify_credential_proof(&vk, &bundle)?;
+    Ok(json!({
+        "status": "ok",
+        "verified": verified,
+    }))
+}
+
+fn tool_zk_prove_anonymous_membership(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Sign)?;
+    let grant_value = arguments
+        .get("grant")
+        .cloned()
+        .ok_or_else(|| "grant is required".to_string())?;
+    let grant: nucleusdb::pod::acl::AccessGrant =
+        serde_json::from_value(grant_value).map_err(|e| format!("parse grant: {e}"))?;
+    let grantee_did = arguments
+        .get("grantee_did")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "grantee_did is required".to_string())?;
+    let action = arguments
+        .get("action")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "action is required".to_string())?;
+    let requested = requested_permissions_from_action(action)?;
+    let witness_value = arguments
+        .get("witness")
+        .cloned()
+        .ok_or_else(|| "witness is required".to_string())?;
+    let witness: zk_credential::AnonymousMembershipWitness =
+        serde_json::from_value(witness_value).map_err(|e| format!("parse witness: {e}"))?;
+    let now = arguments
+        .get("current_time")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(now_unix_secs);
+
+    let (pk, _vk) = zk_credential::setup_credential_circuit()?;
+    let bundle = zk_credential::prove_anonymous_membership(
+        &pk,
+        &grant,
+        grantee_did,
+        requested,
+        now,
+        &witness,
+    )?;
+    Ok(json!({
+        "status": "ok",
+        "proof_bundle": bundle,
+    }))
+}
+
+fn tool_zk_verify_anonymous_membership(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let bundle_value = arguments
+        .get("proof_bundle")
+        .cloned()
+        .ok_or_else(|| "proof_bundle is required".to_string())?;
+    let bundle: zk_credential::AnonymousCredentialProofBundle =
+        serde_json::from_value(bundle_value).map_err(|e| format!("parse proof_bundle: {e}"))?;
+    let (_pk, vk) = zk_credential::setup_credential_circuit()?;
+    let verified = zk_credential::verify_anonymous_membership_proof(&vk, &bundle)?;
+    Ok(json!({
+        "status": "ok",
+        "verified": verified,
+    }))
+}
+
+fn tool_zk_compute_prove(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Sign)?;
+    #[cfg(feature = "zk-compute")]
+    {
+        let req_value = arguments
+            .get("request")
+            .cloned()
+            .ok_or_else(|| "request is required".to_string())?;
+        let request: zk_compute::ComputeRequest =
+            serde_json::from_value(req_value).map_err(|e| format!("parse request: {e}"))?;
+        let receipt = zk_compute::prove_computation(&request)?;
+        Ok(json!({
+            "status": "ok",
+            "receipt": receipt,
+        }))
+    }
+    #[cfg(not(feature = "zk-compute"))]
+    {
+        let _ = arguments;
+        Err("zk_compute_prove requires the `zk-compute` cargo feature".to_string())
+    }
+}
+
+fn tool_zk_compute_verify(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    #[cfg(feature = "zk-compute")]
+    {
+        let receipt_value = arguments
+            .get("receipt")
+            .cloned()
+            .ok_or_else(|| "receipt is required".to_string())?;
+        let receipt: zk_compute::ComputeReceipt =
+            serde_json::from_value(receipt_value).map_err(|e| format!("parse receipt: {e}"))?;
+        let verified = zk_compute::verify_computation(&receipt)?;
+        Ok(json!({
+            "status": "ok",
+            "verified": verified,
+        }))
+    }
+    #[cfg(not(feature = "zk-compute"))]
+    {
+        let _ = arguments;
+        Err("zk_compute_verify requires the `zk-compute` cargo feature".to_string())
+    }
 }
 
 fn tool_attest(arguments: Value) -> Result<Value, String> {

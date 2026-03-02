@@ -41,6 +41,7 @@ puf-tpm = ["dep:tss-esapi"]
 puf-dgx = ["puf-server"]
 puf-browser = []
 container-runtime = []
+zk-compute = ["dep:risc0-zkvm"]
 
 [dependencies]
 axum = { version = "0.8.6", features = ["ws"] }
@@ -102,6 +103,7 @@ mac_address = "1"
 ml-kem = { version = "0.2", features = ["zeroize"] }
 zeroize = { version = "1.8", features = ["derive"] }
 subtle = "2.6"
+risc0-zkvm = { version = "1.2", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"

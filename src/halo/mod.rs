@@ -39,6 +39,10 @@ pub mod viewer;
 pub mod wdk_proxy;
 pub mod wrap;
 pub mod x402;
+#[cfg(feature = "zk-compute")]
+pub mod zk_compute;
+pub mod zk_credential;
+pub mod zk_guests;
 
 pub fn generic_agents_allowed() -> bool {
     std::env::var("AGENTHALO_ALLOW_GENERIC")
