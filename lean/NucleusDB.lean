@@ -50,6 +50,7 @@ import NucleusDB.Security.Assumptions
 import NucleusDB.Security.Parameters
 import NucleusDB.Security.Reductions
 import NucleusDB.Security.Refinement
+import NucleusDB.Security.DIDCommRefinement
 import NucleusDB.Sheaf.ChainGluing
 import NucleusDB.Sheaf.ChainTransport
 import NucleusDB.Sheaf.Coherence

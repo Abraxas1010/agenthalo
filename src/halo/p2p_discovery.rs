@@ -1,15 +1,19 @@
 use crate::halo::did::{dual_sign, dual_verify, DIDDocument, DIDIdentity};
+use crate::halo::util::{digest_bytes, hex_encode};
+use crate::halo::zk_credential;
 use libp2p::gossipsub::{IdentTopic, MessageId};
 use libp2p::kad::{store::MemoryStore, Behaviour as Kademlia, Quorum, Record, RecordKey};
 use libp2p::{gossipsub, PeerId};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 pub const TOPIC_PREFIX: &str = "/agenthalo/capabilities/";
+// T23: topic isolation model in lean/NucleusDB/Comms/Protocol/TopicIsolationSpec.lean
 const DID_KEY_PREFIX: &str = "did:key:";
 const TYPE_ED25519: &str = "Ed25519VerificationKey2020";
 const MULTICODEC_ED25519_PUB: &[u8] = &[0xed, 0x01];
+const ZK_CREDENTIAL_DID_HASH_DOMAIN: &str = "agenthalo.zk_credential.did_hash.v1";
 
 pub fn topic_general() -> String {
     format!("{TOPIC_PREFIX}general")
@@ -33,6 +37,15 @@ pub fn topic_blockchain() -> String {
 
 pub fn topic_privacy() -> String {
     format!("{TOPIC_PREFIX}privacy")
+}
+
+pub fn is_allowed_capability_topic(topic: &str) -> bool {
+    topic == topic_general()
+        || topic == topic_coding()
+        || topic == topic_research()
+        || topic == topic_financial()
+        || topic == topic_blockchain()
+        || topic == topic_privacy()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +75,8 @@ pub struct AgentAnnouncement {
     pub ttl: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did_document: Option<DIDDocument>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anonymous_membership_proof: Option<zk_credential::AnonymousCredentialProofBundle>,
     pub ed25519_signature: Option<Vec<u8>>,
     pub mldsa65_signature: Option<Vec<u8>>,
 }
@@ -79,6 +94,7 @@ struct AgentAnnouncementPayload {
     timestamp: u64,
     ttl: u64,
     did_document: Option<DIDDocument>,
+    anonymous_membership_proof: Option<zk_credential::AnonymousCredentialProofBundle>,
 }
 
 impl From<&AgentAnnouncement> for AgentAnnouncementPayload {
@@ -95,6 +111,7 @@ impl From<&AgentAnnouncement> for AgentAnnouncementPayload {
             timestamp: value.timestamp,
             ttl: value.ttl,
             did_document: value.did_document.clone(),
+            anonymous_membership_proof: value.anonymous_membership_proof.clone(),
         }
     }
 }
@@ -193,6 +210,45 @@ fn now_unix() -> u64 {
 
 fn announcement_kad_key(did: &str) -> RecordKey {
     RecordKey::new(&format!("/agenthalo/agent/{did}"))
+}
+
+static CREDENTIAL_KEYS: OnceLock<zk_credential::CredentialKeypair> = OnceLock::new();
+
+fn credential_keys() -> Result<&'static zk_credential::CredentialKeypair, String> {
+    if let Some(keys) = CREDENTIAL_KEYS.get() {
+        return Ok(keys);
+    }
+    let keys = zk_credential::setup_credential_circuit()?;
+    let _ = CREDENTIAL_KEYS.set(keys);
+    CREDENTIAL_KEYS
+        .get()
+        .ok_or_else(|| "credential proving keys unavailable".to_string())
+}
+
+fn did_hash_for_zk_membership(did: &str) -> String {
+    hex_encode(digest_bytes(ZK_CREDENTIAL_DID_HASH_DOMAIN, did.as_bytes()).as_slice())
+}
+
+fn verify_optional_anonymous_membership(announcement: &AgentAnnouncement) -> Result<(), String> {
+    let Some(bundle) = announcement.anonymous_membership_proof.as_ref() else {
+        return Ok(());
+    };
+
+    let expected_leaf = did_hash_for_zk_membership(&announcement.did);
+    if bundle.leaf_did_hash != expected_leaf {
+        return Err(format!(
+            "anonymous membership proof leaf hash does not match announcement DID `{}`",
+            announcement.did
+        ));
+    }
+
+    let keys = credential_keys()?;
+    let ok = zk_credential::verify_anonymous_membership_proof(&keys.1, bundle)?;
+    if !ok {
+        return Err("anonymous membership proof verification failed".to_string());
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -329,6 +385,7 @@ impl AgentDiscovery {
                 announcement.did
             ));
         }
+        verify_optional_anonymous_membership(&announcement)?;
         self.upsert_verified(announcement.clone());
         Ok(announcement)
     }
@@ -360,8 +417,7 @@ impl AgentDiscovery {
 }
 
 pub fn hash_did_for_membership(did: &str) -> String {
-    let digest = Sha256::digest(did.as_bytes());
-    crate::halo::util::hex_encode(digest.as_slice())
+    did_hash_for_zk_membership(did)
 }
 
 pub fn announcement_for_identity(
@@ -385,6 +441,7 @@ pub fn announcement_for_identity(
         timestamp: now_unix(),
         ttl: 300,
         did_document: Some(identity.did_document.clone()),
+        anonymous_membership_proof: None,
         ed25519_signature: None,
         mldsa65_signature: None,
     }
@@ -393,9 +450,29 @@ pub fn announcement_for_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pod::acl::{AccessGrant, GrantPermissions};
 
     fn seed(byte: u8) -> [u8; 64] {
         [byte; 64]
+    }
+
+    fn sample_grant(key_pattern: &str, created_at: u64, expires_at: Option<u64>) -> AccessGrant {
+        let grantor_puf = [0x31u8; 32];
+        let grantee_puf = [0x41u8; 32];
+        let nonce = 7u64;
+        let grant_id =
+            AccessGrant::compute_id(&grantor_puf, &grantee_puf, key_pattern, created_at, nonce);
+        AccessGrant {
+            grant_id,
+            grantor_puf,
+            grantee_puf,
+            key_pattern: key_pattern.to_string(),
+            permissions: GrantPermissions::read_only(),
+            expires_at,
+            created_at,
+            nonce,
+            revoked: false,
+        }
     }
 
     #[test]
@@ -419,6 +496,24 @@ mod tests {
     }
 
     #[test]
+    fn allowed_capability_topics_are_isolated() {
+        assert!(is_allowed_capability_topic(&topic_general()));
+        assert!(is_allowed_capability_topic(&topic_coding()));
+        assert!(is_allowed_capability_topic(&topic_research()));
+        assert!(is_allowed_capability_topic(&topic_financial()));
+        assert!(is_allowed_capability_topic(&topic_blockchain()));
+        assert!(is_allowed_capability_topic(&topic_privacy()));
+
+        assert!(!is_allowed_capability_topic(
+            "/agenthalo/capabilities/unknown"
+        ));
+        assert!(!is_allowed_capability_topic(
+            "/agenthalo/credentials/general"
+        ));
+        assert!(!is_allowed_capability_topic("general"));
+    }
+
+    #[test]
     fn find_by_capability_filters_results() {
         let mut discovery = AgentDiscovery::new();
         discovery.upsert_verified(AgentAnnouncement {
@@ -439,6 +534,7 @@ mod tests {
             timestamp: now_unix(),
             ttl: 60,
             did_document: None,
+            anonymous_membership_proof: None,
             ed25519_signature: None,
             mldsa65_signature: None,
         });
@@ -460,6 +556,7 @@ mod tests {
             timestamp: now_unix(),
             ttl: 60,
             did_document: None,
+            anonymous_membership_proof: None,
             ed25519_signature: None,
             mldsa65_signature: None,
         });
@@ -553,5 +650,96 @@ mod tests {
             .ingest_kad_record(&record)
             .expect("signed KAD record should be accepted");
         assert!(discovery.known_agents().contains_key(&identity.did));
+    }
+
+    #[test]
+    fn handle_gossipsub_message_accepts_valid_anonymous_membership_proof() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x71)).expect("identity");
+        let mut announcement =
+            announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+
+        let grant = sample_grant("results/*", 1_000_000, Some(2_000_000));
+        let current_time = 1_500_000u64;
+        let (pk, _) = zk_credential::setup_credential_circuit().expect("setup");
+        let leaves = vec![
+            digest_bytes(ZK_CREDENTIAL_DID_HASH_DOMAIN, b"did:key:z6MkA"),
+            digest_bytes(ZK_CREDENTIAL_DID_HASH_DOMAIN, identity.did.as_bytes()),
+            digest_bytes(ZK_CREDENTIAL_DID_HASH_DOMAIN, b"did:key:z6MkC"),
+        ];
+        let root = zk_credential::merkle_root(&leaves);
+        let path = zk_credential::merkle_path(&leaves, 1).expect("path");
+        let witness = zk_credential::AnonymousMembershipWitness {
+            leaf_did_hash: hex_encode(leaves[1].as_slice()),
+            merkle_path: path
+                .iter()
+                .map(|value| hex_encode(value.as_slice()))
+                .collect(),
+            merkle_index: 1,
+            merkle_root_hash: hex_encode(root.as_slice()),
+        };
+        let bundle = zk_credential::prove_anonymous_membership(
+            &pk,
+            &grant,
+            &identity.did,
+            GrantPermissions::read_only(),
+            current_time,
+            &witness,
+        )
+        .expect("prove anonymous membership");
+        announcement.anonymous_membership_proof = Some(bundle);
+        sign_announcement(&identity, &mut announcement).expect("sign");
+
+        let payload = serde_json::to_vec(&announcement).expect("serialize");
+        let mut discovery = AgentDiscovery::new();
+        let accepted = discovery
+            .handle_gossipsub_message(&payload, |_did| None)
+            .expect("accept with valid anonymous membership proof");
+        assert_eq!(accepted.did, identity.did);
+    }
+
+    #[test]
+    fn handle_gossipsub_message_rejects_invalid_anonymous_membership_proof() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x72)).expect("identity");
+        let mut announcement =
+            announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+
+        let grant = sample_grant("results/*", 1_000_000, Some(2_000_000));
+        let current_time = 1_500_000u64;
+        let (pk, _) = zk_credential::setup_credential_circuit().expect("setup");
+        let leaves = vec![
+            digest_bytes(ZK_CREDENTIAL_DID_HASH_DOMAIN, b"did:key:z6MkA"),
+            digest_bytes(ZK_CREDENTIAL_DID_HASH_DOMAIN, identity.did.as_bytes()),
+            digest_bytes(ZK_CREDENTIAL_DID_HASH_DOMAIN, b"did:key:z6MkC"),
+        ];
+        let root = zk_credential::merkle_root(&leaves);
+        let path = zk_credential::merkle_path(&leaves, 1).expect("path");
+        let witness = zk_credential::AnonymousMembershipWitness {
+            leaf_did_hash: hex_encode(leaves[1].as_slice()),
+            merkle_path: path
+                .iter()
+                .map(|value| hex_encode(value.as_slice()))
+                .collect(),
+            merkle_index: 1,
+            merkle_root_hash: hex_encode(root.as_slice()),
+        };
+        let mut bundle = zk_credential::prove_anonymous_membership(
+            &pk,
+            &grant,
+            &identity.did,
+            GrantPermissions::read_only(),
+            current_time,
+            &witness,
+        )
+        .expect("prove anonymous membership");
+        bundle.membership_commitment_hash.replace_range(0..1, "f");
+        announcement.anonymous_membership_proof = Some(bundle);
+        sign_announcement(&identity, &mut announcement).expect("sign");
+
+        let payload = serde_json::to_vec(&announcement).expect("serialize");
+        let mut discovery = AgentDiscovery::new();
+        let err = discovery
+            .handle_gossipsub_message(&payload, |_did| None)
+            .expect_err("invalid anonymous membership proof must fail");
+        assert!(err.contains("anonymous membership proof verification failed"));
     }
 }

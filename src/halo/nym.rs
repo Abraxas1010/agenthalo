@@ -1,3 +1,4 @@
+use crate::halo::nym_native;
 use crate::halo::privacy_controller::{classify_url, PrivacyLevel};
 use serde::{Deserialize, Serialize};
 use std::net::{SocketAddr, TcpStream};
@@ -21,10 +22,16 @@ pub struct NymStatus {
     pub socks5_proxy: Option<String>,
     pub healthy: bool,
     pub fail_closed: bool,
+    pub native_enabled: bool,
+    pub native_connected: bool,
+    pub native_address: Option<String>,
+    pub inbound_registered: bool,
+    pub cover_traffic_active: bool,
     pub note: String,
 }
 
 pub fn status() -> NymStatus {
+    let native = nym_native::status_snapshot();
     let fail_closed = is_fail_closed();
     if let Some(proxy) = resolve_socks5_proxy() {
         let healthy = proxy_healthcheck(&proxy);
@@ -38,13 +45,35 @@ pub fn status() -> NymStatus {
         return NymStatus {
             mode,
             socks5_proxy: Some(proxy.clone()),
-            healthy,
+            healthy: healthy || native.connected,
             fail_closed,
+            native_enabled: native.enabled,
+            native_connected: native.connected,
+            native_address: native.address,
+            inbound_registered: native.inbound_registered,
+            cover_traffic_active: native.cover_traffic_active,
             note: if healthy {
                 "SOCKS5 transport available".to_string()
+            } else if native.connected {
+                "native mixnet connected; SOCKS5 health check failed".to_string()
             } else {
                 "SOCKS5 transport configured but health check failed".to_string()
             },
+        };
+    }
+
+    if native.connected {
+        return NymStatus {
+            mode: NymMode::Local,
+            socks5_proxy: None,
+            healthy: true,
+            fail_closed,
+            native_enabled: native.enabled,
+            native_connected: native.connected,
+            native_address: native.address,
+            inbound_registered: native.inbound_registered,
+            cover_traffic_active: native.cover_traffic_active,
+            note: "Native mixnet connected via nym-sdk".to_string(),
         };
     }
 
@@ -53,6 +82,11 @@ pub fn status() -> NymStatus {
         socks5_proxy: None,
         healthy: false,
         fail_closed,
+        native_enabled: native.enabled,
+        native_connected: native.connected,
+        native_address: native.address,
+        inbound_registered: native.inbound_registered,
+        cover_traffic_active: native.cover_traffic_active,
         note: "No SOCKS5 proxy detected".to_string(),
     }
 }
@@ -170,6 +204,27 @@ pub fn apply_proxy_env_for_cast(cmd: &mut Command, args: &[String]) -> Result<()
         apply_proxy_env_for_url(cmd, url)?;
     }
     Ok(())
+}
+
+pub async fn start_native_transport_if_enabled() -> Result<(), String> {
+    nym_native::ensure_connected().await
+}
+
+pub async fn send_mixnet_message(
+    recipient: &str,
+    payload: &[u8],
+    include_surbs: u32,
+) -> Result<(), String> {
+    nym_native::send_message_with_surbs(recipient, payload, include_surbs).await
+}
+
+pub async fn send_mixnet_reply(surb_tag: &str, payload: &[u8]) -> Result<(), String> {
+    nym_native::send_reply_via_surb(surb_tag, payload).await
+}
+
+pub fn subscribe_mixnet_inbound(
+) -> Option<tokio::sync::broadcast::Receiver<nym_native::NymInboundMessage>> {
+    nym_native::subscribe_inbound()
 }
 
 fn normalize_proxy_uri(raw: &str) -> Option<String> {

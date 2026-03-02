@@ -9,13 +9,24 @@ structure AuthcryptEnvelopeSpec where
   ed25519SigValid : Bool
   mlDsa65SigValid : Bool
   decrypts : Bool
+  expiresTime : Option Nat
   deriving DecidableEq, Repr
+
+/-- Runtime expiry gate: a message is valid if there is no expiry, or `now ≤ expires`. -/
+def notExpiredAt (now : Nat) (expiresTime : Option Nat) : Prop :=
+  match expiresTime with
+  | none => True
+  | some expires => now ≤ expires
 
 /-- Acceptance predicate matching the runtime `unpack_with_resolver` gate shape. -/
 def acceptsAuthcrypt (env : AuthcryptEnvelopeSpec) : Prop :=
   env.ed25519SigValid = true
     ∧ env.mlDsa65SigValid = true
     ∧ env.decrypts = true
+
+/-- Full acceptance gate including runtime expiry rejection. -/
+def acceptsAuthcryptAt (now : Nat) (env : AuthcryptEnvelopeSpec) : Prop :=
+  acceptsAuthcrypt env ∧ notExpiredAt now env.expiresTime
 
 /-- Authcrypt acceptance requires both classical and post-quantum signatures. -/
 theorem authcrypt_acceptance_requires_dual_signature
@@ -30,6 +41,13 @@ theorem authcrypt_acceptance_requires_decrypt
     (h : acceptsAuthcrypt env) :
     env.decrypts = true := by
   exact h.2.2
+
+theorem authcrypt_acceptance_at_requires_not_expired
+    (now : Nat)
+    (env : AuthcryptEnvelopeSpec)
+    (h : acceptsAuthcryptAt now env) :
+    notExpiredAt now env.expiresTime := by
+  exact h.2
 
 /-- If either signature check fails, authcrypt acceptance is impossible. -/
 theorem authcrypt_rejects_if_any_signature_invalid

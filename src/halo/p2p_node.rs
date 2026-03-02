@@ -1,6 +1,7 @@
 use crate::halo::did::DIDIdentity;
 use crate::halo::p2p_discovery::{
-    announcement_for_identity, sign_announcement, topic_general, AgentDiscovery, TOPIC_PREFIX,
+    announcement_for_identity, is_allowed_capability_topic, sign_announcement, topic_general,
+    AgentDiscovery,
 };
 use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use futures_util::StreamExt;
@@ -394,7 +395,7 @@ impl P2pNode {
                                 message_id,
                                 message,
                             } => {
-                                if message.topic.as_str().starts_with(TOPIC_PREFIX) {
+                                if is_allowed_capability_topic(message.topic.as_str()) {
                                     match discovery.handle_gossipsub_message(&message.data, |did| {
                                         if did == identity.did {
                                             Some(identity.did_document.clone())
@@ -414,6 +415,11 @@ impl P2pNode {
                                             );
                                         }
                                     }
+                                } else {
+                                    eprintln!(
+                                        "[AgentHalo/P2P] ignoring gossipsub message on disallowed topic `{}`",
+                                        message.topic
+                                    );
                                 }
                             }
                             other => {

@@ -133,6 +133,21 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+// T21: rust_authcrypt_refines_protocol (lean/NucleusDB/Security/DIDCommRefinement.lean)
+pub(crate) fn authcrypt_gate_accepts(
+    ed25519_sig_valid: bool,
+    mldsa65_sig_valid: bool,
+    decrypt_ok: bool,
+    is_expired: bool,
+) -> bool {
+    ed25519_sig_valid && mldsa65_sig_valid && decrypt_ok && !is_expired
+}
+
+// T22: rust_anoncrypt_refines_protocol (lean/NucleusDB/Security/DIDCommRefinement.lean)
+pub(crate) fn anoncrypt_gate_accepts(decrypt_ok: bool, is_expired: bool) -> bool {
+    decrypt_ok && !is_expired
+}
+
 fn random_nonce() -> Result<[u8; 12], String> {
     let mut nonce = [0u8; 12];
     getrandom::getrandom(&mut nonce)
@@ -311,7 +326,7 @@ where
 
             let message: DIDCommMessage = serde_json::from_slice(&plaintext)
                 .map_err(|e| format!("decode authcrypt plaintext message: {e}"))?;
-            if message.is_expired() {
+            if !authcrypt_gate_accepts(true, true, true, message.is_expired()) {
                 return Err("DIDComm message expired".to_string());
             }
             Ok((message, Some(sender_did)))
@@ -346,7 +361,7 @@ where
 
             let message: DIDCommMessage = serde_json::from_slice(&plaintext)
                 .map_err(|e| format!("decode anoncrypt plaintext message: {e}"))?;
-            if message.is_expired() {
+            if !anoncrypt_gate_accepts(true, message.is_expired()) {
                 return Err("DIDComm message expired".to_string());
             }
             Ok((message, None))
@@ -412,5 +427,37 @@ mod tests {
         assert!(sender.is_none());
         assert_eq!(decoded.type_, message_types::TASK_SEND);
         assert_eq!(decoded.body["task"], "compute");
+    }
+
+    #[test]
+    fn authcrypt_gate_truth_table_matches_spec() {
+        for ed_ok in [false, true] {
+            for pq_ok in [false, true] {
+                for decrypt_ok in [false, true] {
+                    for expired in [false, true] {
+                        let got = authcrypt_gate_accepts(ed_ok, pq_ok, decrypt_ok, expired);
+                        let expected = ed_ok && pq_ok && decrypt_ok && !expired;
+                        assert_eq!(
+                            got, expected,
+                            "mismatch for ed={ed_ok} pq={pq_ok} decrypt={decrypt_ok} expired={expired}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn anoncrypt_gate_truth_table_matches_spec() {
+        for decrypt_ok in [false, true] {
+            for expired in [false, true] {
+                let got = anoncrypt_gate_accepts(decrypt_ok, expired);
+                let expected = decrypt_ok && !expired;
+                assert_eq!(
+                    got, expected,
+                    "mismatch for decrypt={decrypt_ok} expired={expired}"
+                );
+            }
+        }
     }
 }

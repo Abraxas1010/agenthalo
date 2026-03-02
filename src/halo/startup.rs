@@ -5,6 +5,7 @@ use crate::halo::p2p_discovery::{
     announcement_for_identity, sign_announcement, topic_general, AgentDiscovery,
 };
 use crate::halo::p2p_node::{P2pConfig, P2pNode};
+use base64::Engine as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -94,6 +95,7 @@ pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, 
 
     let mut nym_status = nym::status();
     if config.nym_enabled {
+        nym::start_native_transport_if_enabled().await?;
         for attempt in 0..=config.nym_max_retries {
             nym_status = nym::status();
             if nym_status.healthy || nym_status.socks5_proxy.is_none() {
@@ -122,6 +124,52 @@ pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, 
         let mut handler = DIDCommHandler::new(identity.clone());
         handler.register_builtin_handlers();
         eprintln!("[AgentHalo/Startup][4/5] didcomm handlers ready");
+
+        if let Some(mut inbound) = nym::subscribe_mixnet_inbound() {
+            let mixnet_handler = handler.clone();
+            let identity_for_mixnet = identity.clone();
+            tokio::spawn(async move {
+                while let Ok(event) = inbound.recv().await {
+                    let packed = match base64::engine::general_purpose::STANDARD
+                        .decode(event.payload_base64.as_bytes())
+                    {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            eprintln!(
+                                "[AgentHalo/Nym] failed to decode inbound mixnet payload: {err}"
+                            );
+                            continue;
+                        }
+                    };
+
+                    match mixnet_handler
+                        .handle_incoming(&packed, |did| {
+                            if did == identity_for_mixnet.did {
+                                Some(identity_for_mixnet.did_document.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .await
+                    {
+                        Ok(Some(reply)) => {
+                            if let Some(sender_tag) = event.sender_tag.as_deref() {
+                                if let Err(err) = nym::send_mixnet_reply(sender_tag, &reply).await {
+                                    eprintln!(
+                                        "[AgentHalo/Nym] failed SURB reply for inbound message: {err}"
+                                    );
+                                }
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            eprintln!("[AgentHalo/Nym] inbound DIDComm handling failed: {err}");
+                        }
+                    }
+                }
+            });
+            eprintln!("[AgentHalo/Startup] native mixnet inbound bridge active");
+        }
 
         let mut agent_discovery = AgentDiscovery::new();
         agent_discovery.subscribe(&topic_general(), node.gossipsub_mut())?;

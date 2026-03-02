@@ -25,6 +25,7 @@ pub mod identity;
 pub mod identity_ledger;
 pub mod migration;
 pub mod nym;
+pub mod nym_native;
 pub mod onchain;
 pub mod p2p_discovery;
 pub mod p2p_node;
