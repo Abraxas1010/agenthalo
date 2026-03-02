@@ -30,6 +30,7 @@ impl CompositeCabProof {
 pub enum CompositeCabError {
     EmptyChainSet,
     MissingContractAddress,
+    NotImplemented(String),
 }
 
 impl Display for CompositeCabError {
@@ -37,6 +38,7 @@ impl Display for CompositeCabError {
         match self {
             Self::EmptyChainSet => write!(f, "chain_ids must be non-empty"),
             Self::MissingContractAddress => write!(f, "contract_address must be non-empty"),
+            Self::NotImplemented(msg) => write!(f, "not yet implemented: {msg}"),
         }
     }
 }
@@ -92,9 +94,9 @@ impl<'a> CompositeCabGenerator<'a> {
     }
 
     pub fn generate_proof(&self) -> Result<CompositeCabProof, CompositeCabError> {
-        // TODO(phase4): wire real Groth16/Plonk generation once composite CAB circuit
-        // witness extraction is finalized and benchmarked.
-        todo!("generate composite CAB zk proof from multi-chain witness")
+        Err(CompositeCabError::NotImplemented(
+            "composite CAB proof generation requires Phase 4 circuit implementation".to_string(),
+        ))
     }
 
     pub fn submit_attestation(
@@ -105,7 +107,43 @@ impl<'a> CompositeCabGenerator<'a> {
         if contract_address.trim().is_empty() {
             return Err(CompositeCabError::MissingContractAddress);
         }
-        // TODO(phase4): submit via cast/ethers once ABI and signing policy are finalized.
-        todo!("submit composite CAB proof to TrustVerifierMultiChain")
+        Err(CompositeCabError::NotImplemented(
+            "composite CAB on-chain submission requires Phase 4 ABI finalization".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::default_witness_cfg;
+    use crate::protocol::VcBackend;
+    use crate::state::State;
+
+    fn new_test_db() -> NucleusDb {
+        NucleusDb::new(
+            State::new(vec![]),
+            VcBackend::BinaryMerkle,
+            default_witness_cfg(),
+        )
+    }
+
+    #[test]
+    fn generate_proof_returns_not_implemented() {
+        let db = new_test_db();
+        let gen = CompositeCabGenerator::new(&db, vec![1]).expect("generator");
+        let err = gen.generate_proof().expect_err("must not panic");
+        assert!(matches!(err, CompositeCabError::NotImplemented(_)));
+    }
+
+    #[test]
+    fn submit_attestation_returns_not_implemented() {
+        let db = new_test_db();
+        let gen = CompositeCabGenerator::new(&db, vec![1]).expect("generator");
+        let proof = gen.build_placeholder();
+        let err = gen
+            .submit_attestation(&proof, "0x1234")
+            .expect_err("must not panic");
+        assert!(matches!(err, CompositeCabError::NotImplemented(_)));
     }
 }
