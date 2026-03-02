@@ -1699,6 +1699,7 @@ async fn api_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         "authenticated": has_auth,
         "tool_proxy_enabled": pmt_cfg.enabled,
         "x402_enabled": x402_cfg.enabled,
+        "onchain_stub_mode": crate::halo::onchain::onchain_stub_enabled(),
         "session_count": session_count,
         "total_cost_usd": total_cost,
         "total_tokens": total_tokens,

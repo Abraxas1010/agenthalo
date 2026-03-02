@@ -19,6 +19,7 @@ const STUB_OVERRIDE_TRUE: u8 = 1;
 const STUB_OVERRIDE_FALSE: u8 = 2;
 
 static ONCHAIN_STUB_OVERRIDE: AtomicU8 = AtomicU8::new(STUB_OVERRIDE_UNSET);
+const ONCHAIN_STUB_WARNING: &str = "[SECURITY WARNING] AGENTHALO_ONCHAIN_STUB is active — all on-chain operations return deterministic fake transaction hashes. Do not use this mode in production.";
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -648,6 +649,20 @@ pub fn onchain_stub_enabled() -> bool {
     false
 }
 
+pub fn warn_if_stub_mode() {
+    if let Some(msg) = stub_warning_message() {
+        eprintln!("{msg}");
+    }
+}
+
+pub fn stub_warning_message() -> Option<&'static str> {
+    if onchain_stub_enabled() {
+        Some(ONCHAIN_STUB_WARNING)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn set_onchain_stub_override(val: Option<bool>) {
     let code = match val {
@@ -813,5 +828,12 @@ mod tests {
         ));
         assert!(is_retryable_nonce_error("nonce too low"));
         assert!(!is_retryable_nonce_error("execution reverted"));
+    }
+
+    #[test]
+    fn test_stub_warning_message_present_when_enabled() {
+        let _guard = StubOverrideGuard::new(true);
+        let msg = stub_warning_message().expect("warning should be available");
+        assert!(msg.contains("SECURITY WARNING"));
     }
 }

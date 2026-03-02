@@ -21,7 +21,7 @@ use nucleusdb::halo::http_client;
 use nucleusdb::halo::nym;
 use nucleusdb::halo::onchain::{
     deploy_trust_verifier, load_onchain_config_or_default, onchain_config_path, post_attestation,
-    query_attestation, save_onchain_config, signer_mode_label, SignerMode,
+    query_attestation, save_onchain_config, signer_mode_label, warn_if_stub_mode, SignerMode,
 };
 use nucleusdb::halo::pq::{has_wallet, keygen_pq, sign_pq_payload};
 use nucleusdb::halo::privacy_controller;
@@ -45,6 +45,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 fn main() {
+    warn_if_stub_mode();
     let args: Vec<String> = std::env::args().collect();
     let code = run(args);
     if let Err(e) = code {

@@ -23,7 +23,9 @@ use nucleusdb::halo::encrypted_file;
 use nucleusdb::halo::http_client;
 use nucleusdb::halo::migration;
 use nucleusdb::halo::nym;
-use nucleusdb::halo::onchain::{load_onchain_config_or_default, post_attestation};
+use nucleusdb::halo::onchain::{
+    load_onchain_config_or_default, post_attestation, warn_if_stub_mode,
+};
 use nucleusdb::halo::password;
 use nucleusdb::halo::pq::{has_wallet, sign_pq_payload};
 use nucleusdb::halo::privacy_controller;
@@ -83,6 +85,7 @@ struct JsonRpcError {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
+    warn_if_stub_mode();
     let port: u16 = std::env::var("AGENTHALO_MCP_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
