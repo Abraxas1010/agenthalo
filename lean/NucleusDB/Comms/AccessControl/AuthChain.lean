@@ -52,14 +52,43 @@ def authChainPolicy :
 def noDuplicateKeys (s : DataState) : Prop :=
   s.records.Nodup
 
-theorem authorized_mutation_preserves_integrity
+/-- Authorized mutation requires all three chain components: DID, capability, and policy. -/
+theorem authorized_mutation_requires_full_chain
     (s : DataState) (d : DataDelta) (w : AuthChainWitness)
-    (hAuth : authChainPolicy s d w)
-    (hInv : noDuplicateKeys s) :
-    True := by
-  have _ := hAuth
-  have _ := hInv
-  trivial
+    (hAuth : authChainPolicy s d w) :
+    w.didValid = true ∧ w.capabilityValid = true ∧ w.policyAllows = true := hAuth
+
+/-- putRecord does not change grantCount. -/
+theorem putRecord_preserves_grantCount (s : DataState) (k : String) (v : Nat) :
+    (applyDelta s (.putRecord k v)).grantCount = s.grantCount := by
+  rfl
+
+/-- deleteRecord does not change grantCount. -/
+theorem deleteRecord_preserves_grantCount (s : DataState) (k : String) :
+    (applyDelta s (.deleteRecord k)).grantCount = s.grantCount := by
+  rfl
+
+/-- grantAccess increments grantCount by exactly 1. -/
+theorem grantAccess_increments_grantCount (s : DataState) (p : String) :
+    (applyDelta s (.grantAccess p)).grantCount = s.grantCount + 1 := by
+  rfl
+
+/-- Every delta step preserves or increases grantCount. -/
+theorem applyDelta_grantCount_monotone (s : DataState) (d : DataDelta) :
+    s.grantCount ≤ (applyDelta s d).grantCount := by
+  cases d with
+  | putRecord k v => exact Nat.le_refl _
+  | deleteRecord k => exact Nat.le_refl _
+  | grantAccess p => exact Nat.le_succ _
+
+/-- Replaying a list of deltas monotonically increases grantCount. -/
+theorem chain_replay_grantCount_monotone
+    (s : DataState) (ds : List DataDelta) :
+    s.grantCount ≤ (Core.replay DataState DataDelta applyDelta s ds).grantCount := by
+  induction ds generalizing s with
+  | nil => exact Nat.le_refl _
+  | cons d ds ih =>
+    exact Nat.le_trans (applyDelta_grantCount_monotone s d) (ih (applyDelta s d))
 
 theorem broken_chain_rejects_did
     (s : DataState) (d : DataDelta)
@@ -87,18 +116,6 @@ theorem broken_chain_rejects_policy
   unfold authChainPolicy at h
   rw [hBroken] at h
   cases h.2.2
-
-theorem chain_replay_preserves
-    (s : DataState) (ds : List DataDelta)
-    (hInv : noDuplicateKeys s) :
-    True := by
-  have _ := hInv
-  have hPres :
-      Core.PreservedBy DataState DataDelta applyDelta (fun _ => True) := by
-    intro _ _ _
-    trivial
-  have _ := Core.replay_preserves DataState DataDelta applyDelta (fun _ => True) hPres s ds trivial
-  trivial
 
 end AccessControl
 end Comms

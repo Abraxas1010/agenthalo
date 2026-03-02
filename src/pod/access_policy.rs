@@ -282,10 +282,10 @@ mod tests {
             did_uris: vec!["did:key:z6MkExample".to_string()],
         };
         store.add(policy);
-        matches!(
+        assert!(matches!(
             store.evaluate(ctx(AccessMode::Read)),
             AccessDecision::Allow { .. }
-        );
+        ));
     }
 
     #[test]
