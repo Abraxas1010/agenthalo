@@ -62,11 +62,11 @@ impl<'a> CompositeCabGenerator<'a> {
         &self.chain_ids
     }
 
-    pub fn build_placeholder(&self) -> CompositeCabProof {
+    pub fn build_preview(&self) -> CompositeCabProof {
         let witness = compliance_witness(self.db);
         let compliance = compliance_inputs_from_pcn_witness(&witness, None);
         let mut hasher = Sha256::new();
-        hasher.update(b"nucleusdb.composite_cab.placeholder.v1|");
+        hasher.update(b"nucleusdb.composite_cab.preview.v1|");
         hasher.update(compliance.feasibility_root.as_bytes());
         hasher.update(compliance.replay_seq.to_le_bytes());
         for chain_id in &self.chain_ids {
@@ -140,7 +140,7 @@ mod tests {
     fn submit_attestation_returns_not_implemented() {
         let db = new_test_db();
         let gen = CompositeCabGenerator::new(&db, vec![1]).expect("generator");
-        let proof = gen.build_placeholder();
+        let proof = gen.build_preview();
         let err = gen
             .submit_attestation(&proof, "0x1234")
             .expect_err("must not panic");

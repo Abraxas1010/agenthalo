@@ -2016,17 +2016,16 @@ impl NucleusDbMcpService {
         let guard = self.state.lock().await;
         let generator = CompositeCabGenerator::new(&guard.db, req.chain_ids.clone())
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let placeholder = generator.build_placeholder();
-        let composite_cab_hash = placeholder.composite_cab_hash_hex();
+        let preview = generator.build_preview();
+        let composite_cab_hash = preview.composite_cab_hash_hex();
         Ok(Json(GenerateCompositeCabResponse {
             ok: true,
-            chain_ids: placeholder.chain_ids.clone(),
-            replay_seq: placeholder.replay_seq,
+            chain_ids: preview.chain_ids.clone(),
+            replay_seq: preview.replay_seq,
             composite_cab_hash,
-            proof_hex: placeholder.proof_hex,
-            public_signals: placeholder.public_signals,
-            note: "placeholder payload generated; wire proof backend to replace proof_hex"
-                .to_string(),
+            proof_hex: preview.proof_hex,
+            public_signals: preview.public_signals,
+            note: "preview payload generated; wire proof backend to replace proof_hex".to_string(),
         }))
     }
 

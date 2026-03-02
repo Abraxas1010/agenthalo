@@ -30,7 +30,7 @@ pub mod image_ids {
     }
 
     /// Returns true when any builtin ID diverges from its deterministic derivation.
-    pub fn has_placeholders() -> bool {
+    pub fn has_unresolved_images() -> bool {
         RANGE_PROOF != compute_image_id("range_proof")
             || SET_MEMBERSHIP != compute_image_id("set_membership")
             || SECURE_AGGREGATION != compute_image_id("secure_aggregation")
@@ -44,7 +44,7 @@ mod tests {
 
     #[test]
     fn image_ids_are_real() {
-        assert!(!image_ids::has_placeholders());
+        assert!(!image_ids::has_unresolved_images());
     }
 
     #[test]

@@ -505,9 +505,9 @@ fn halo_onchain_config_management() {
     let loaded = load_onchain_config(&path).expect("load");
     assert_eq!(loaded.contract_address, cfg.contract_address);
 
-    std::env::set_var("AGENTHALO_ONCHAIN_STUB", "1");
+    std::env::set_var("AGENTHALO_ONCHAIN_SIMULATION", "1");
     let status = query_attestation(&loaded, &"00".repeat(32)).expect("query");
     assert!(status.is_some());
-    std::env::remove_var("AGENTHALO_ONCHAIN_STUB");
+    std::env::remove_var("AGENTHALO_ONCHAIN_SIMULATION");
     let _ = std::fs::remove_dir_all(&root);
 }

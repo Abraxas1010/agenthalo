@@ -6,10 +6,10 @@
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
-use crate::halo::util::{digest_bytes, hex_decode, hex_decode_32, hex_encode, now_unix_secs};
-use crate::halo::zk_guests;
 #[cfg(feature = "zk-compute")]
 use crate::halo::did::{self, DIDDocument, DIDIdentity};
+use crate::halo::util::{digest_bytes, hex_decode, hex_decode_32, hex_encode, now_unix_secs};
+use crate::halo::zk_guests;
 
 #[cfg(feature = "zk-compute")]
 use risc0_zkvm::{default_prover, ExecutorEnv};
@@ -491,7 +491,7 @@ mod tests {
         assert!(!crate::halo::zk_guests::image_ids::SET_MEMBERSHIP.is_empty());
         assert!(!crate::halo::zk_guests::image_ids::SECURE_AGGREGATION.is_empty());
         assert!(!crate::halo::zk_guests::image_ids::ALGORITHM_COMPLIANCE.is_empty());
-        assert!(!crate::halo::zk_guests::image_ids::has_placeholders());
+        assert!(!crate::halo::zk_guests::image_ids::has_unresolved_images());
     }
 
     #[test]

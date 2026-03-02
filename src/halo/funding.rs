@@ -169,7 +169,7 @@ pub fn validate_funding_source(source: &FundingSource, key_id: &str) -> FundingV
             }
             if let Err(err) = verify_x402_transaction(transaction_hash, *amount_base_units, network)
             {
-                if !crate::halo::onchain::onchain_stub_enabled() {
+                if !crate::halo::onchain::onchain_simulation_enabled() {
                     return FundingValidation {
                         valid: false,
                         amount_usd: 0.0,
@@ -179,7 +179,7 @@ pub fn validate_funding_source(source: &FundingSource, key_id: &str) -> FundingV
                     };
                 }
                 eprintln!(
-                    "[WARN] x402 transaction verification skipped (onchain stub mode): {err}"
+                    "[WARN] x402 transaction verification skipped (onchain simulation mode): {err}"
                 );
             }
 
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn x402_funding_valid() {
         let _guard = env_lock().lock().expect("env lock");
-        let _stub = EnvVarGuard::set("AGENTHALO_ONCHAIN_STUB", Some("1"));
+        let _sim = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
         let source = FundingSource::X402Direct {
             transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
                 .to_string(),

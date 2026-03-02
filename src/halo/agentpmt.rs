@@ -479,10 +479,10 @@ fn discover_marketplace_tool_count() -> usize {
 /// Refresh the tool catalog.
 ///
 /// Uses AgentPMT MCP `tools/list` over HTTP JSON-RPC.
-/// If `AGENTHALO_AGENTPMT_STUB=1` is set, uses built-in defaults.
+/// If `AGENTHALO_AGENTPMT_SIMULATION=1` is set, uses built-in defaults.
 /// Also discovers the marketplace tool count via the search meta-tool.
 pub fn refresh_tool_catalog() -> Result<ToolCatalog, String> {
-    let mut catalog = if is_truthy_env("AGENTHALO_AGENTPMT_STUB") {
+    let mut catalog = if is_truthy_env("AGENTHALO_AGENTPMT_SIMULATION") {
         default_tool_catalog()
     } else {
         let result = mcp_call("tools/list", json!({}))?;
@@ -559,14 +559,14 @@ pub fn is_proxied_tool(name: &str) -> Option<String> {
 
 /// Forward a proxied AgentPMT tool call through MCP `tools/call`.
 pub fn call_tool(tool_name: &str, arguments: Value) -> Result<Value, String> {
-    if is_truthy_env("AGENTHALO_AGENTPMT_STUB") {
+    if is_truthy_env("AGENTHALO_AGENTPMT_SIMULATION") {
         return Ok(json!({
             "content": [
                 {
                     "type": "text",
                     "text": json!({
                         "status": "ok",
-                        "stub": true,
+                        "simulated": true,
                         "tool": tool_name,
                         "arguments": arguments
                     }).to_string()
@@ -826,10 +826,11 @@ mod tests {
     }
 
     #[test]
-    fn call_tool_stub_mode_returns_success_payload() {
-        std::env::set_var("AGENTHALO_AGENTPMT_STUB", "1");
-        let result = call_tool("gmail_send", json!({"to":"a@example.com"})).expect("stub call");
+    fn call_tool_simulation_mode_returns_success_payload() {
+        std::env::set_var("AGENTHALO_AGENTPMT_SIMULATION", "1");
+        let result =
+            call_tool("gmail_send", json!({"to":"a@example.com"})).expect("simulated call");
         assert_eq!(result["isError"], false);
-        std::env::remove_var("AGENTHALO_AGENTPMT_STUB");
+        std::env::remove_var("AGENTHALO_AGENTPMT_SIMULATION");
     }
 }

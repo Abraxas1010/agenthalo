@@ -14,12 +14,12 @@ const BASE_SEPOLIA_RPC: &str = "https://sepolia.base.org";
 const BASE_SEPOLIA_CHAIN_ID: u64 = 84532;
 const MAX_VERIFY_GAS: u64 = 500_000;
 const NONCE_RETRY_MAX: usize = 3;
-const STUB_OVERRIDE_UNSET: u8 = 0;
-const STUB_OVERRIDE_TRUE: u8 = 1;
-const STUB_OVERRIDE_FALSE: u8 = 2;
+const SIMULATION_OVERRIDE_UNSET: u8 = 0;
+const SIMULATION_OVERRIDE_TRUE: u8 = 1;
+const SIMULATION_OVERRIDE_FALSE: u8 = 2;
 
-static ONCHAIN_STUB_OVERRIDE: AtomicU8 = AtomicU8::new(STUB_OVERRIDE_UNSET);
-const ONCHAIN_STUB_WARNING: &str = "[SECURITY WARNING] AGENTHALO_ONCHAIN_STUB is active — all on-chain operations return deterministic fake transaction hashes. Do not use this mode in production.";
+static ONCHAIN_SIMULATION_OVERRIDE: AtomicU8 = AtomicU8::new(SIMULATION_OVERRIDE_UNSET);
+const ONCHAIN_SIMULATION_WARNING: &str = "[SECURITY WARNING] AGENTHALO_ONCHAIN_SIMULATION is active — all on-chain operations return deterministic fake transaction hashes. Do not use this mode in production.";
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -150,9 +150,9 @@ pub fn post_attestation(
         return Err("invalid proof bundle schema version".to_string());
     }
 
-    if onchain_stub_enabled() {
+    if onchain_simulation_enabled() {
         let digest = digest_bytes(
-            "agenthalo.onchain.stub.tx.v1",
+            "agenthalo.onchain.sim.tx.v1",
             format!(
                 "{}:{}:{}:{}:{}",
                 cfg.contract_address,
@@ -219,12 +219,12 @@ pub fn query_attestation(
     if cfg.contract_address.trim().is_empty() {
         return Ok(None);
     }
-    if onchain_stub_enabled() {
+    if onchain_simulation_enabled() {
         return Ok(Some(OnchainAttestationStatus {
             attestation_digest: attestation_digest.to_string(),
             verified: false,
             recorded: false,
-            raw: "stub".to_string(),
+            raw: "simulated".to_string(),
         }));
     }
     let raw = run_cast(
@@ -249,9 +249,9 @@ pub fn query_attestation(
 
 pub fn deploy_trust_verifier(cfg: &OnchainConfig) -> Result<String, String> {
     validate_chain(cfg)?;
-    if onchain_stub_enabled() {
+    if onchain_simulation_enabled() {
         let digest = digest_bytes(
-            "agenthalo.onchain.stub.deploy.v1",
+            "agenthalo.onchain.sim.deploy.v1",
             format!(
                 "{}:{}:{}:{}:{}",
                 cfg.rpc_url,
@@ -316,7 +316,7 @@ pub fn fetch_chain_id(rpc_url: &str) -> Result<u64, String> {
 }
 
 fn validate_chain(cfg: &OnchainConfig) -> Result<(), String> {
-    if onchain_stub_enabled() {
+    if onchain_simulation_enabled() {
         return Ok(());
     }
     let chain_id = fetch_chain_id(&cfg.rpc_url)?;
@@ -633,13 +633,13 @@ fn parse_bool_output(raw: &str) -> Result<bool, String> {
     Err(format!("boolean result expected, got `{raw}`"))
 }
 
-pub fn onchain_stub_enabled() -> bool {
-    match ONCHAIN_STUB_OVERRIDE.load(Ordering::Relaxed) {
-        STUB_OVERRIDE_TRUE => return true,
-        STUB_OVERRIDE_FALSE => return false,
+pub fn onchain_simulation_enabled() -> bool {
+    match ONCHAIN_SIMULATION_OVERRIDE.load(Ordering::Relaxed) {
+        SIMULATION_OVERRIDE_TRUE => return true,
+        SIMULATION_OVERRIDE_FALSE => return false,
         _ => {}
     }
-    for key in ["AGENTHALO_ONCHAIN_STUB"] {
+    for key in ["AGENTHALO_ONCHAIN_SIMULATION"] {
         if let Ok(v) = std::env::var(key) {
             if matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes") {
                 return true;
@@ -649,28 +649,28 @@ pub fn onchain_stub_enabled() -> bool {
     false
 }
 
-pub fn warn_if_stub_mode() {
-    if let Some(msg) = stub_warning_message() {
+pub fn warn_if_simulation_mode() {
+    if let Some(msg) = simulation_warning_message() {
         eprintln!("{msg}");
     }
 }
 
-pub fn stub_warning_message() -> Option<&'static str> {
-    if onchain_stub_enabled() {
-        Some(ONCHAIN_STUB_WARNING)
+pub fn simulation_warning_message() -> Option<&'static str> {
+    if onchain_simulation_enabled() {
+        Some(ONCHAIN_SIMULATION_WARNING)
     } else {
         None
     }
 }
 
 #[cfg(test)]
-pub(crate) fn set_onchain_stub_override(val: Option<bool>) {
+pub(crate) fn set_onchain_simulation_override(val: Option<bool>) {
     let code = match val {
-        Some(true) => STUB_OVERRIDE_TRUE,
-        Some(false) => STUB_OVERRIDE_FALSE,
-        None => STUB_OVERRIDE_UNSET,
+        Some(true) => SIMULATION_OVERRIDE_TRUE,
+        Some(false) => SIMULATION_OVERRIDE_FALSE,
+        None => SIMULATION_OVERRIDE_UNSET,
     };
-    ONCHAIN_STUB_OVERRIDE.store(code, Ordering::Relaxed);
+    ONCHAIN_SIMULATION_OVERRIDE.store(code, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -680,7 +680,7 @@ mod tests {
     use crate::halo::public_input_schema::PUBLIC_INPUT_SCHEMA_VERSION;
     use std::sync::{Mutex, MutexGuard};
 
-    static STUB_OVERRIDE_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static SIMULATION_OVERRIDE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     struct StubOverrideGuard {
         _guard: MutexGuard<'static, ()>,
@@ -688,15 +688,17 @@ mod tests {
 
     impl StubOverrideGuard {
         fn new(val: bool) -> Self {
-            let lock = STUB_OVERRIDE_TEST_LOCK.lock().expect("lock stub override");
-            set_onchain_stub_override(Some(val));
+            let lock = SIMULATION_OVERRIDE_TEST_LOCK
+                .lock()
+                .expect("lock simulation override");
+            set_onchain_simulation_override(Some(val));
             Self { _guard: lock }
         }
     }
 
     impl Drop for StubOverrideGuard {
         fn drop(&mut self) {
-            set_onchain_stub_override(None);
+            set_onchain_simulation_override(None);
         }
     }
 
@@ -831,9 +833,9 @@ mod tests {
     }
 
     #[test]
-    fn test_stub_warning_message_present_when_enabled() {
+    fn test_simulation_warning_message_present_when_enabled() {
         let _guard = StubOverrideGuard::new(true);
-        let msg = stub_warning_message().expect("warning should be available");
+        let msg = simulation_warning_message().expect("warning should be available");
         assert!(msg.contains("SECURITY WARNING"));
     }
 }

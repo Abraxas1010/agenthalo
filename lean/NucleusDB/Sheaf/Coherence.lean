@@ -10,11 +10,11 @@ namespace LensSheaf
 
 universe u
 
-/-- Minimal lens object placeholder for standalone sheaf coherence specs. -/
+/-- Minimal lens object fallbacks? for standalone sheaf coherence specs. -/
 structure LensObj (A : Type u) where
   carrier : A
 
-/-- Minimal presheaf placeholder for standalone sheaf coherence specs. -/
+/-- Minimal presheaf fallbacks? for standalone sheaf coherence specs. -/
 structure LensPresheaf (A : Type u) where
   restrict : A → A
 

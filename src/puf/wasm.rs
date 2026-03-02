@@ -1,4 +1,4 @@
-//! Browser-side wasm module in this crate is a host test stub only.
+//! Browser-side wasm module in this crate is a host test harness only.
 //! The production browser implementation is `projects/nucleusdb/puf-browser`.
 use crate::puf::core::{
     challenge_response, now_unix_secs, verify_fingerprint, ChallengeResponse, DevicePuf,
