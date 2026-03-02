@@ -242,7 +242,7 @@ pub fn did_document_to_json(doc: &DIDDocument) -> serde_json::Value {
     serde_json::to_value(doc).expect("DID document should always serialize")
 }
 
-pub fn dual_sign(identity: &DIDIdentity, message: &[u8]) -> (Vec<u8>, Vec<u8>) {
+pub fn dual_sign(identity: &DIDIdentity, message: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     let ed_signature = identity
         .ed25519_signing_key
         .sign(message)
@@ -252,11 +252,11 @@ pub fn dual_sign(identity: &DIDIdentity, message: &[u8]) -> (Vec<u8>, Vec<u8>) {
         .mldsa65_signing_key
         .signing_key()
         .sign_deterministic(message, MLDSA65_CONTEXT)
-        .expect("ML-DSA signing failed")
+        .map_err(|e| format!("ML-DSA signing failed: {e}"))?
         .encode()
         .as_slice()
         .to_vec();
-    (ed_signature, pq_signature)
+    Ok((ed_signature, pq_signature))
 }
 
 pub fn dual_verify(
@@ -381,7 +381,7 @@ mod tests {
     fn dual_sign_verify_roundtrip() {
         let identity = did_from_genesis_seed(&seed_from_byte(0x44)).expect("identity");
         let message = b"agenthalo did roundtrip";
-        let (ed_sig, pq_sig) = dual_sign(&identity, message);
+        let (ed_sig, pq_sig) = dual_sign(&identity, message).expect("dual sign should run");
         let verified = dual_verify(&identity.did_document, message, &ed_sig, &pq_sig)
             .expect("dual verify should run");
         assert!(verified);
@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn dual_verify_rejects_wrong_message() {
         let identity = did_from_genesis_seed(&seed_from_byte(0x55)).expect("identity");
-        let (ed_sig, pq_sig) = dual_sign(&identity, b"msg A");
+        let (ed_sig, pq_sig) = dual_sign(&identity, b"msg A").expect("dual sign should run");
         let verified = dual_verify(&identity.did_document, b"msg B", &ed_sig, &pq_sig)
             .expect("dual verify should run");
         assert!(!verified);
@@ -401,7 +401,7 @@ mod tests {
         let signer = did_from_genesis_seed(&seed_from_byte(0x66)).expect("signer");
         let verifier = did_from_genesis_seed(&seed_from_byte(0x67)).expect("verifier");
         let message = b"binding test";
-        let (ed_sig, pq_sig) = dual_sign(&signer, message);
+        let (ed_sig, pq_sig) = dual_sign(&signer, message).expect("dual sign should run");
         let verified = dual_verify(&verifier.did_document, message, &ed_sig, &pq_sig)
             .expect("dual verify should run");
         assert!(!verified);
