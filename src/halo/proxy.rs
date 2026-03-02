@@ -13,6 +13,7 @@
 //! entire proxy subsystem.
 
 use crate::halo::api_keys::CustomerKeyStore;
+use crate::halo::http_client;
 use crate::halo::pricing;
 use crate::halo::vault::Vault;
 use serde::{Deserialize, Serialize};
@@ -337,7 +338,7 @@ fn call_openrouter(
         }
     }
 
-    let resp = ureq::post("https://openrouter.ai/api/v1/chat/completions")
+    let resp = http_client::post("https://openrouter.ai/api/v1/chat/completions")?
         .header("Authorization", &format!("Bearer {api_key}"))
         .header("X-Title", "AgentHALO")
         .content_type("application/json")

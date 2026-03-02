@@ -1,3 +1,4 @@
+use crate::halo::nym;
 use crate::license::{compliance_inputs_from_pcn_witness, CompliancePublicInputs};
 use crate::pcn::compliance_witness;
 use crate::protocol::NucleusDb;
@@ -270,7 +271,10 @@ pub fn load_private_key_env(name: &str) -> Result<String, TrustBridgeError> {
 }
 
 fn run_cast(args: &[String]) -> Result<String, TrustBridgeError> {
-    let out = Command::new("cast").args(args).output().map_err(|e| {
+    let mut cmd = Command::new("cast");
+    cmd.args(args);
+    nym::apply_proxy_env_for_cast(&mut cmd, args).map_err(TrustBridgeError::CastCommandFailed)?;
+    let out = cmd.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             TrustBridgeError::CastNotFound
         } else {

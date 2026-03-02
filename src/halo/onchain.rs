@@ -1,6 +1,8 @@
 use crate::halo::circuit::AttestationProofBundle;
 use crate::halo::circuit_policy::CircuitPolicy;
 use crate::halo::config;
+use crate::halo::http_client;
+use crate::halo::nym;
 use crate::halo::util::{digest_bytes, hex_encode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -297,7 +299,7 @@ pub fn fetch_chain_id(rpc_url: &str) -> Result<u64, String> {
         "method":"eth_chainId",
         "params":[]
     });
-    let resp = ureq::post(rpc_url)
+    let resp = http_client::post(rpc_url)?
         .content_type("application/json")
         .send_json(payload)
         .map_err(|e| format!("RPC unreachable: {e}"))?;
@@ -472,7 +474,7 @@ pub(crate) fn fetch_pending_nonce(rpc_url: &str, address: &str) -> Result<u64, S
         "method":"eth_getTransactionCount",
         "params":[address, "pending"]
     });
-    let resp = ureq::post(rpc_url)
+    let resp = http_client::post(rpc_url)?
         .content_type("application/json")
         .send_json(payload)
         .map_err(|e| format!("nonce RPC failed: {e}"))?;
@@ -503,7 +505,7 @@ pub(crate) fn wait_for_receipt(rpc_url: &str, tx_hash: &str) -> Result<TxReceipt
             "method":"eth_getTransactionReceipt",
             "params":[tx_hash]
         });
-        let resp = ureq::post(rpc_url)
+        let resp = http_client::post(rpc_url)?
             .content_type("application/json")
             .send_json(payload.clone())
             .map_err(|e| format!("receipt RPC failed: {e}"))?;
@@ -566,17 +568,16 @@ fn parse_first_u64_token(raw: &str) -> Option<u64> {
 }
 
 pub(crate) fn run_cast(args: &[String], env: &[(String, String)]) -> Result<String, String> {
-    let out = Command::new("cast")
-        .args(args)
-        .envs(env.iter().cloned())
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                "`cast` command not found".to_string()
-            } else {
-                format!("cast execution failed: {e}")
-            }
-        })?;
+    let mut cmd = Command::new("cast");
+    cmd.args(args).envs(env.iter().cloned());
+    nym::apply_proxy_env_for_cast(&mut cmd, args)?;
+    let out = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "`cast` command not found".to_string()
+        } else {
+            format!("cast execution failed: {e}")
+        }
+    })?;
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if !out.status.success() {

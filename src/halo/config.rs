@@ -128,6 +128,14 @@ pub fn proof_certificates_dir() -> PathBuf {
     halo_dir().join("proof_certificates")
 }
 
+pub fn nym_config_dir() -> PathBuf {
+    halo_dir().join("nym")
+}
+
+pub fn nym_state_path() -> PathBuf {
+    halo_dir().join("nym_state.json")
+}
+
 pub fn genesis_seed_path() -> PathBuf {
     halo_dir().join("genesis_seed.enc")
 }

@@ -4,6 +4,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256, Sha512};
 use std::time::{Duration, Instant};
 
+use crate::halo::http_client;
+
 const CURBY_URL: &str = "https://random.colorado.edu/api/curbyq/round/latest/data";
 const CURBY_META_URL: &str = "https://random.colorado.edu/api/curbyq/round/latest";
 const NIST_URL: &str = "https://beacon.nist.gov/beacon/2.0/pulse/last";
@@ -129,13 +131,6 @@ fn make_failed(id: EntropySourceId, message: String) -> FailedSource {
     }
 }
 
-fn timeout_agent() -> ureq::Agent {
-    let cfg = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(10)))
-        .build();
-    ureq::Agent::new_with_config(cfg)
-}
-
 fn parse_exact_64_hex(hex: &str, source: &str) -> Result<[u8; ENTROPY_WIDTH], String> {
     let bytes = crate::halo::util::hex_decode(hex)?;
     if bytes.len() != ENTROPY_WIDTH {
@@ -189,8 +184,7 @@ fn extract_curby_meta_timestamp(meta: &Value) -> Option<String> {
 }
 
 fn fetch_curby_legacy_json_sample() -> Result<SourceSample, String> {
-    let resp = timeout_agent()
-        .get(CURBY_URL)
+    let resp = http_client::get_with_timeout(CURBY_URL, Duration::from_secs(10))?
         .call()
         .map_err(|e| format!("curby request failed: {e}"))?;
     let body: Value = resp
@@ -221,8 +215,7 @@ fn fetch_curby_legacy_json_sample() -> Result<SourceSample, String> {
 }
 
 fn fetch_curby_chain_sample() -> Result<SourceSample, String> {
-    let data_resp = timeout_agent()
-        .get(CURBY_URL)
+    let data_resp = http_client::get_with_timeout(CURBY_URL, Duration::from_secs(10))?
         .call()
         .map_err(|e| format!("curby data request failed: {e}"))?;
     let raw_data = data_resp
@@ -233,8 +226,7 @@ fn fetch_curby_chain_sample() -> Result<SourceSample, String> {
         return Err("curby data payload was empty".to_string());
     }
 
-    let meta = timeout_agent()
-        .get(CURBY_META_URL)
+    let meta = http_client::get_with_timeout(CURBY_META_URL, Duration::from_secs(10))?
         .call()
         .ok()
         .and_then(|resp| resp.into_body().read_json::<Value>().ok());
@@ -273,8 +265,7 @@ fn fetch_curby_sample() -> Result<SourceSample, String> {
 }
 
 fn fetch_nist_sample() -> Result<SourceSample, String> {
-    let resp = timeout_agent()
-        .get(NIST_URL)
+    let resp = http_client::get_with_timeout(NIST_URL, Duration::from_secs(10))?
         .call()
         .map_err(|e| format!("nist request failed: {e}"))?;
     let body: Value = resp
@@ -306,8 +297,7 @@ fn fetch_nist_sample() -> Result<SourceSample, String> {
 }
 
 fn fetch_drand_sample() -> Result<SourceSample, String> {
-    let resp = timeout_agent()
-        .get(DRAND_URL)
+    let resp = http_client::get_with_timeout(DRAND_URL, Duration::from_secs(10))?
         .call()
         .map_err(|e| format!("drand request failed: {e}"))?;
     let body: Value = resp

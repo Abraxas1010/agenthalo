@@ -25,6 +25,7 @@ use crate::halo::auth::{
 use crate::halo::config;
 use crate::halo::crypto_scope::CryptoScope;
 use crate::halo::encrypted_file;
+use crate::halo::http_client;
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::pq::has_wallet;
 use crate::halo::schema::{
@@ -1362,7 +1363,7 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, (StatusCode, Json
 fn provider_test_request(provider: &str, api_key: &str) -> Result<(), String> {
     match provider {
         "anthropic" => {
-            let resp = ureq::get("https://api.anthropic.com/v1/models")
+            let resp = http_client::get("https://api.anthropic.com/v1/models")?
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
                 .call()
@@ -1377,7 +1378,7 @@ fn provider_test_request(provider: &str, api_key: &str) -> Result<(), String> {
             }
         }
         "openai" | "openclaw" => {
-            let resp = ureq::get("https://api.openai.com/v1/models")
+            let resp = http_client::get("https://api.openai.com/v1/models")?
                 .header("Authorization", &format!("Bearer {api_key}"))
                 .call()
                 .map_err(|e| sanitize_proxy_error("openai", &e))?;
@@ -1393,7 +1394,7 @@ fn provider_test_request(provider: &str, api_key: &str) -> Result<(), String> {
         "google" => {
             let url =
                 format!("https://generativelanguage.googleapis.com/v1beta/models?key={api_key}");
-            let resp = ureq::get(&url)
+            let resp = http_client::get(&url)?
                 .call()
                 .map_err(|e| sanitize_proxy_error("google", &e))?;
             if resp.status().is_success() {
@@ -1406,7 +1407,7 @@ fn provider_test_request(provider: &str, api_key: &str) -> Result<(), String> {
             }
         }
         "openrouter" => {
-            let resp = ureq::get("https://openrouter.ai/api/v1/models")
+            let resp = http_client::get("https://openrouter.ai/api/v1/models")?
                 .header("Authorization", &format!("Bearer {api_key}"))
                 .header("X-Title", "AgentHALO")
                 .call()
@@ -1421,7 +1422,7 @@ fn provider_test_request(provider: &str, api_key: &str) -> Result<(), String> {
             }
         }
         "pinata" => {
-            let resp = ureq::get("https://api.pinata.cloud/data/testAuthentication")
+            let resp = http_client::get("https://api.pinata.cloud/data/testAuthentication")?
                 .header("Authorization", &format!("Bearer {api_key}"))
                 .call()
                 .map_err(|e| sanitize_proxy_error("pinata", &e))?;
@@ -3844,7 +3845,8 @@ async fn api_agentaddress_generate(
         AgentAddressSource::External => {
             let base = agentaddress_api_base();
             let endpoint = format!("{}/api/external/agentaddress", base.trim_end_matches('/'));
-            let resp = ureq::post(&endpoint)
+            let resp = http_client::post(&endpoint)
+                .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?
                 .header("Content-Type", "application/json")
                 .send_json(json!({}))
                 .map_err(|e| {

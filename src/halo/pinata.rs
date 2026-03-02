@@ -21,6 +21,7 @@
 //! shared with the LLM proxy for unified billing.
 
 use crate::halo::api_keys::CustomerKeyStore;
+use crate::halo::http_client;
 use crate::halo::vault::Vault;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -214,7 +215,7 @@ fn call_pinata_pin_json(
         }
     }
 
-    let resp = ureq::post(&url)
+    let resp = http_client::post(&url)?
         .header("Authorization", &format!("Bearer {jwt}"))
         .content_type("application/json")
         .send_json(payload)
@@ -245,7 +246,7 @@ fn call_pinata_list_pins(
         "{api_base}/data/pinList?metadata[keyvalues][customer_id]={{\"value\":\"{customer_key_id}\",\"op\":\"eq\"}}"
     );
 
-    let resp = ureq::get(&url)
+    let resp = http_client::get(&url)?
         .header("Authorization", &format!("Bearer {jwt}"))
         .call()
         .map_err(|e| sanitize_pinata_error(&e))?;

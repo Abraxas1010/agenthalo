@@ -17,11 +17,14 @@ use nucleusdb::halo::config;
 use nucleusdb::halo::detect::AgentType;
 use nucleusdb::halo::did;
 use nucleusdb::halo::genesis_seed;
+use nucleusdb::halo::http_client;
+use nucleusdb::halo::nym;
 use nucleusdb::halo::onchain::{
     deploy_trust_verifier, load_onchain_config_or_default, onchain_config_path, post_attestation,
     query_attestation, save_onchain_config, signer_mode_label, SignerMode,
 };
 use nucleusdb::halo::pq::{has_wallet, keygen_pq, sign_pq_payload};
+use nucleusdb::halo::privacy_controller;
 use nucleusdb::halo::runner::AgentRunner;
 use nucleusdb::halo::schema::{SessionMetadata, SessionStatus};
 use nucleusdb::halo::trace::{
@@ -82,6 +85,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "agentaddress" => cmd_agentaddress(&args[2..]),
         "wallet" => cmd_wallet(&args[2..]),
         "genesis" => cmd_genesis(&args[2..]),
+        "nym" => cmd_nym(&args[2..]),
+        "privacy" => cmd_privacy(&args[2..]),
         "access" => cmd_access(&args[2..]),
         "proof-gate" => cmd_proof_gate(&args[2..]),
         "zk" => cmd_zk(&args[2..]),
@@ -2477,7 +2482,7 @@ fn dashboard_api_get(path: &str) -> Result<serde_json::Value, String> {
         base.trim_end_matches('/'),
         path.trim_start_matches('/')
     );
-    let mut req = ureq::get(&url);
+    let mut req = http_client::get(&url)?;
     if let Some(token) = dashboard_api_bearer_token() {
         req = req.header("Authorization", &format!("Bearer {token}"));
     }
@@ -2496,7 +2501,7 @@ fn dashboard_api_post(path: &str, body: serde_json::Value) -> Result<serde_json:
         base.trim_end_matches('/'),
         path.trim_start_matches('/')
     );
-    let mut req = ureq::post(&url).header("Content-Type", "application/json");
+    let mut req = http_client::post(&url)?.header("Content-Type", "application/json");
     if let Some(token) = dashboard_api_bearer_token() {
         req = req.header("Authorization", &format!("Bearer {token}"));
     }
@@ -2883,6 +2888,42 @@ fn cmd_genesis(args: &[String]) -> Result<(), String> {
             print_json(&out)
         }
         _ => Err("usage: agenthalo genesis [status | harvest | reset [reason]]".to_string()),
+    }
+}
+
+fn cmd_nym(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "status" => {
+            let out = serde_json::to_value(nym::status())
+                .map_err(|e| format!("serialize nym status: {e}"))?;
+            print_json(&out)
+        }
+        _ => Err("usage: agenthalo nym status".to_string()),
+    }
+}
+
+fn cmd_privacy(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("classify");
+    match sub {
+        "classify" => {
+            let url = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo privacy classify <url>".to_string())?;
+            let level = privacy_controller::classify_url(url);
+            let nym_status = nym::status();
+            let via_mixnet = nym::should_route_via_mixnet(url);
+            let out = serde_json::json!({
+                "status": "ok",
+                "url": url,
+                "privacy_level": level,
+                "via_mixnet": via_mixnet,
+                "socks5_proxy": nym_status.socks5_proxy,
+                "fail_closed": nym_status.fail_closed,
+            });
+            print_json(&out)
+        }
+        _ => Err("usage: agenthalo privacy classify <url>".to_string()),
     }
 }
 
@@ -4131,6 +4172,6 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony status/harvest/reset via API bridge\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony status/harvest/reset via API bridge\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_CLOSED=1           Block external egress when SOCKS5 is unavailable"
     );
 }

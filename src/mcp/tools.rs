@@ -824,8 +824,12 @@ impl NucleusDbMcpService {
     }
 
     fn run_cast(args: &[String]) -> Result<String, McpError> {
-        let out = Command::new("cast")
-            .args(args)
+        let mut cmd = Command::new("cast");
+        cmd.args(args);
+        crate::halo::nym::apply_proxy_env_for_cast(&mut cmd, args).map_err(|e| {
+            McpError::internal_error(format!("cast privacy routing failed: {e}"), None)
+        })?;
+        let out = cmd
             .output()
             .map_err(|e| McpError::internal_error(format!("failed to run cast: {e}"), None))?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();

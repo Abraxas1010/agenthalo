@@ -19,6 +19,7 @@
 //! This separation keeps the namespaces clean and lets AgentPMT
 //! evolve independently.
 
+use crate::halo::http_client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -295,7 +296,7 @@ fn mcp_call(method: &str, params: Value) -> Result<Value, String> {
     let endpoint = resolved_mcp_endpoint(&cfg);
     let token = resolved_bearer_token(&cfg);
 
-    let mut req = ureq::post(&endpoint)
+    let mut req = http_client::post(&endpoint)?
         .header("Accept", "application/json")
         .content_type("application/json");
     if let Some(token) = token {

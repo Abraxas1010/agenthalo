@@ -20,10 +20,13 @@ use nucleusdb::halo::circuit::{
 use nucleusdb::halo::config;
 use nucleusdb::halo::crypto_scope::CryptoScope;
 use nucleusdb::halo::encrypted_file;
+use nucleusdb::halo::http_client;
 use nucleusdb::halo::migration;
+use nucleusdb::halo::nym;
 use nucleusdb::halo::onchain::{load_onchain_config_or_default, post_attestation};
 use nucleusdb::halo::password;
 use nucleusdb::halo::pq::{has_wallet, sign_pq_payload};
+use nucleusdb::halo::privacy_controller;
 use nucleusdb::halo::session_manager::SessionManager;
 use nucleusdb::halo::trace::{
     list_sessions, now_unix_secs, record_paid_operation_for_halo, session_summary,
@@ -966,6 +969,25 @@ async fn mcp(
                         "required": ["receipt"]
                     }
                 }),
+                json!({
+                    "name": "nym_status",
+                    "description": "Get current Nym/SOCKS5 privacy transport status.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "privacy_classify",
+                    "description": "Classify a URL under the privacy controller and show routing expectations.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "url": {"type": "string"}
+                        },
+                        "required": ["url"]
+                    }
+                }),
             ];
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
@@ -1124,6 +1146,8 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "zk_verify_anonymous_membership" => tool_zk_verify_anonymous_membership(arguments),
         "zk_compute_prove" => tool_zk_compute_prove(arguments),
         "zk_compute_verify" => tool_zk_compute_verify(arguments),
+        "nym_status" => tool_nym_status(arguments),
+        "privacy_classify" => tool_privacy_classify(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -1808,7 +1832,7 @@ fn tool_agentaddress_generate(arguments: Value) -> Result<Value, String> {
         McpAgentAddressSource::External => {
             let base = mcp_agentaddress_api_base();
             let endpoint = format!("{}/api/external/agentaddress", base.trim_end_matches('/'));
-            let resp = ureq::post(&endpoint)
+            let resp = http_client::post(&endpoint)?
                 .header("Content-Type", "application/json")
                 .send_json(json!({}))
                 .map_err(|e| format!("AgentAddress request failed: {e}"))?;
@@ -4438,6 +4462,44 @@ fn tool_halo_status(_arguments: Value) -> Result<Value, String> {
         "db_path": db_path.to_string_lossy(),
         "version": "0.3.0",
     }))
+}
+
+fn tool_nym_status(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    serde_json::to_value(nym::status()).map_err(|e| format!("serialize nym status: {e}"))
+}
+
+fn tool_privacy_classify(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let url = arguments
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "url is required".to_string())?;
+    let level = privacy_controller::classify_url(url);
+    let via_mixnet = nym::should_route_via_mixnet(url);
+    let route = nym::ensure_route_allowed(url).map(|v| {
+        v.map(|proxy| json!({"transport": "socks5", "proxy": proxy}))
+            .unwrap_or_else(|| json!({"transport": "direct"}))
+    });
+    match route {
+        Ok(route_info) => Ok(json!({
+            "status": "ok",
+            "url": url,
+            "privacy_level": level,
+            "via_mixnet": via_mixnet,
+            "route": route_info,
+            "fail_closed": nym::is_fail_closed(),
+        })),
+        Err(err) => Ok(json!({
+            "status": "blocked",
+            "url": url,
+            "privacy_level": level,
+            "via_mixnet": via_mixnet,
+            "route": json!({"transport": "blocked"}),
+            "fail_closed": nym::is_fail_closed(),
+            "error": err,
+        })),
+    }
 }
 
 fn tool_halo_export(arguments: Value) -> Result<Value, String> {
