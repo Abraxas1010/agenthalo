@@ -4,6 +4,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bip39::{Language, Mnemonic};
 use nucleusdb::halo::addons;
+use nucleusdb::halo::agent_auth;
 use nucleusdb::halo::agentpmt;
 use nucleusdb::halo::attest::{
     attest_session, resolve_session_id, save_attestation, AttestationRequest,
@@ -17,8 +18,13 @@ use nucleusdb::halo::circuit::{
     public_inputs_json_array, verify_attestation_proof,
 };
 use nucleusdb::halo::config;
+use nucleusdb::halo::crypto_scope::CryptoScope;
+use nucleusdb::halo::encrypted_file;
+use nucleusdb::halo::migration;
 use nucleusdb::halo::onchain::{load_onchain_config_or_default, post_attestation};
+use nucleusdb::halo::password;
 use nucleusdb::halo::pq::{has_wallet, sign_pq_payload};
+use nucleusdb::halo::session_manager::SessionManager;
 use nucleusdb::halo::trace::{
     list_sessions, now_unix_secs, record_paid_operation_for_halo, session_summary,
 };
@@ -31,6 +37,7 @@ use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Clone)]
 struct AppState {
@@ -384,6 +391,69 @@ async fn mcp(
                     }
                 }),
                 json!({
+                    "name": "profile_get",
+                    "description": "Return current profile state (display name, avatar metadata, revision/lock state).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "profile_set",
+                    "description": "Update profile fields and append immutable profile update ledger event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "display_name": {"type": "string"},
+                            "avatar_type": {"type": "string"},
+                            "avatar_data": {"type": "string"},
+                            "rename": {"type": "boolean", "default": false}
+                        }
+                    }
+                }),
+                json!({
+                    "name": "identity_device_scan",
+                    "description": "Collect local device identity components and entropy tiers (read-only scan).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "identity_device_save",
+                    "description": "Persist selected device identity components and append immutable identity ledger event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "browser_fingerprint": {"type": "string"},
+                            "selected_components": {"type": "array", "items": {"type": "string"}}
+                        }
+                    }
+                }),
+                json!({
+                    "name": "identity_network_probe",
+                    "description": "Probe local network identity hints (local IP and MAC where available).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "identity_network_save",
+                    "description": "Persist network sharing preferences and hashed identifiers; append immutable identity ledger event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "share_local_ip": {"type": "boolean", "default": false},
+                            "share_public_ip": {"type": "boolean", "default": false},
+                            "share_mac": {"type": "boolean", "default": false},
+                            "local_ip": {"type": "string"},
+                            "public_ip": {"type": "string"},
+                            "mac_addresses": {"type": "array", "items": {"type": "string"}}
+                        }
+                    }
+                }),
+                json!({
                     "name": "identity_tier_set",
                     "description": "Persist identity safety tier (max-safe/less-safe/low-security) and append immutable ledger event.",
                     "inputSchema": {
@@ -394,6 +464,17 @@ async fn mcp(
                             "step_failures": {"type": "integer", "description": "Number of best-effort steps skipped during application.", "default": 0}
                         },
                         "required": ["tier"]
+                    }
+                }),
+                json!({
+                    "name": "identity_anonymous_set",
+                    "description": "Enable or disable anonymous identity mode; when enabled, clears stored device/network identity fields.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "enabled": {"type": "boolean", "description": "Set true to enable anonymous mode, false to disable."}
+                        },
+                        "required": ["enabled"]
                     }
                 }),
                 json!({
@@ -447,6 +528,162 @@ async fn mcp(
                             "grantee_puf_hex": {"type": "string", "description": "32-byte hex grantee PUF used for grant enforcement."},
                             "require_grants": {"type": "boolean", "description": "If true, only return keys granted to grantee_puf_hex.", "default": false}
                         }
+                    }
+                }),
+                json!({
+                    "name": "genesis_status",
+                    "description": "Return Genesis ceremony completion state, ledger summary, and sealed seed status.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "genesis_harvest",
+                    "description": "Run Genesis entropy harvest and append immutable completed event when successful.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "genesis_reset",
+                    "description": "Append a Genesis reset event (policy-gated; disabled by default).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "reason": {"type": "string", "description": "Optional reset reason for ledger payload.", "default": "operator_requested"}
+                        }
+                    }
+                }),
+                json!({
+                    "name": "crypto_status",
+                    "description": "Return cryptographic lock state, migration status, and unlocked scopes for agent operations.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "crypto_create_password",
+                    "description": "Create the unified cryptographic password (or migrate v1 to v2), set verifier, and unlock scoped session.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "password": {"type": "string", "description": "New vault password."},
+                            "confirm": {"type": "string", "description": "Confirmation password (defaults to password)."}
+                        },
+                        "required": ["password"]
+                    }
+                }),
+                json!({
+                    "name": "crypto_unlock",
+                    "description": "Unlock cryptographic scopes using password-derived master key with throttling protection.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "password": {"type": "string", "description": "Configured cryptographic password."}
+                        },
+                        "required": ["password"]
+                    }
+                }),
+                json!({
+                    "name": "crypto_lock",
+                    "description": "Lock cryptographic session and clear all scoped keys from memory.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "crypto_change_password",
+                    "description": "Rotate password and re-encrypt all v2 scoped files and agent encapsulations.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "current_password": {"type": "string"},
+                            "new_password": {"type": "string"},
+                            "confirm": {"type": "string"}
+                        },
+                        "required": ["current_password", "new_password", "confirm"]
+                    }
+                }),
+                json!({
+                    "name": "agents_list",
+                    "description": "List ML-KEM agent credentials currently authorized in the local credential store.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "agents_authorize",
+                    "description": "Authorize a new ML-KEM agent with selected scopes and optional expiry; returns one-time secret key.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string", "description": "Human-readable label for the credential."},
+                            "scopes": {"type": "array", "items": {"type": "string"}, "description": "Scopes: sign|vault|wallet|identity|genesis"},
+                            "expires_days": {"type": "integer", "description": "Optional expiration in days."}
+                        },
+                        "required": ["label", "scopes"]
+                    }
+                }),
+                json!({
+                    "name": "agents_revoke",
+                    "description": "Revoke a previously authorized agent credential.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "agent_id": {"type": "string", "description": "Credential agent_id to revoke."}
+                        },
+                        "required": ["agent_id"]
+                    }
+                }),
+                json!({
+                    "name": "agentaddress_status",
+                    "description": "Return AgentAddress connection state and persisted public address metadata.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "agentaddress_chains",
+                    "description": "List EVM-compatible chains exposed by AgentAddress integration.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "agentaddress_generate",
+                    "description": "Generate AgentAddress identity externally or derive from local genesis seed, then persist/stash credentials.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string", "description": "external|genesis", "default": "external"},
+                            "persist_public_address": {"type": "boolean", "description": "Persist public address in identity state.", "default": true}
+                        }
+                    }
+                }),
+                json!({
+                    "name": "agentaddress_credentials",
+                    "description": "Fetch locally stored AgentAddress credentials from encrypted vault. Secrets are redacted unless reveal=true is explicitly provided.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "reveal": {"type": "boolean", "description": "When true, include plaintext private_key and mnemonic. Defaults to false."},
+                            "acknowledge_plaintext": {"type": "string", "description": "Required when reveal=true. Must equal I_UNDERSTAND_PLAINTEXT_RISK."}
+                        }
+                    }
+                }),
+                json!({
+                    "name": "agentaddress_disconnect",
+                    "description": "Disconnect persisted AgentAddress identity metadata and append immutable ledger event.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
                     }
                 }),
                 json!({
@@ -654,11 +891,34 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "halo_export" => tool_halo_export(arguments),
         "halo_capabilities" => tool_halo_capabilities(arguments),
         "identity_status" => tool_identity_status(arguments),
+        "profile_get" => tool_profile_get(arguments),
+        "profile_set" => tool_profile_set(arguments),
+        "identity_device_scan" => tool_identity_device_scan(arguments),
+        "identity_device_save" => tool_identity_device_save(arguments),
+        "identity_network_probe" => tool_identity_network_probe(arguments),
+        "identity_network_save" => tool_identity_network_save(arguments),
         "identity_tier_set" => tool_identity_tier_set(arguments),
+        "identity_anonymous_set" => tool_identity_anonymous_set(arguments),
         "identity_social_connect" => tool_identity_social_connect(arguments),
         "identity_social_revoke" => tool_identity_social_revoke(arguments),
         "identity_super_secure_set" => tool_identity_super_secure_set(arguments),
         "identity_pod_share" => tool_identity_pod_share(arguments),
+        "genesis_status" => tool_genesis_status(arguments),
+        "genesis_harvest" => tool_genesis_harvest(arguments),
+        "genesis_reset" => tool_genesis_reset(arguments),
+        "crypto_status" => tool_crypto_status(arguments),
+        "crypto_create_password" => tool_crypto_create_password(arguments),
+        "crypto_unlock" => tool_crypto_unlock(arguments),
+        "crypto_lock" => tool_crypto_lock(arguments),
+        "crypto_change_password" => tool_crypto_change_password(arguments),
+        "agents_list" => tool_agents_list(arguments),
+        "agents_authorize" => tool_agents_authorize(arguments),
+        "agents_revoke" => tool_agents_revoke(arguments),
+        "agentaddress_status" => tool_agentaddress_status(arguments),
+        "agentaddress_chains" => tool_agentaddress_chains(arguments),
+        "agentaddress_generate" => tool_agentaddress_generate(arguments),
+        "agentaddress_credentials" => tool_agentaddress_credentials(arguments),
+        "agentaddress_disconnect" => tool_agentaddress_disconnect(arguments),
         "wallet_status" => tool_wallet_status(arguments),
         "wallet_create" => tool_wallet_create(arguments),
         "wallet_import" => tool_wallet_import(arguments),
@@ -809,7 +1069,796 @@ fn mcp_clear_social_token(provider: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug)]
+struct McpCryptoState {
+    session: SessionManager,
+    migration_status: migration::MigrationStatus,
+}
+
+impl McpCryptoState {
+    fn new() -> Self {
+        Self {
+            session: SessionManager::new(),
+            migration_status: migration::detect_migration_status(),
+        }
+    }
+}
+
+fn mcp_crypto_mutex() -> &'static Mutex<McpCryptoState> {
+    static CRYPTO: OnceLock<Mutex<McpCryptoState>> = OnceLock::new();
+    CRYPTO.get_or_init(|| Mutex::new(McpCryptoState::new()))
+}
+
+fn with_mcp_crypto_state<T>(
+    f: impl FnOnce(&mut McpCryptoState) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = mcp_crypto_mutex()
+        .lock()
+        .map_err(|e| format!("crypto state lock poisoned: {e}"))?;
+    f(&mut guard)
+}
+
+fn mcp_migration_status_name(status: &migration::MigrationStatus) -> &'static str {
+    match status {
+        migration::MigrationStatus::Fresh => "fresh",
+        migration::MigrationStatus::NeedsPasswordCreation => "needs_password_creation",
+        migration::MigrationStatus::V2Locked => "v2_locked",
+        migration::MigrationStatus::V2Unlocked => "v2_unlocked",
+    }
+}
+
+fn mcp_header_salt_bytes(header: &encrypted_file::CryptoHeader) -> Result<[u8; 32], String> {
+    let raw = hex::decode(&header.kdf.salt_hex).map_err(|e| format!("kdf salt decode: {e}"))?;
+    if raw.len() != 32 {
+        return Err(format!(
+            "crypto header salt must be 32 bytes, got {}",
+            raw.len()
+        ));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&raw);
+    Ok(out)
+}
+
+fn mcp_crypto_scope_targets() -> Vec<(std::path::PathBuf, CryptoScope)> {
+    vec![
+        (config::pq_wallet_v2_path(), CryptoScope::Sign),
+        (config::vault_v2_path(), CryptoScope::Vault),
+        (config::wdk_seed_v2_path(), CryptoScope::Wallet),
+        (config::identity_v2_path(), CryptoScope::Identity),
+        (config::profile_v2_path(), CryptoScope::Identity),
+        (config::genesis_seed_v2_path(), CryptoScope::Genesis),
+    ]
+}
+
+fn mcp_derive_scope_key_from_master(
+    master: &[u8; 32],
+    scope: CryptoScope,
+) -> Result<[u8; 32], String> {
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"agenthalo-scope-v2"), master);
+    let mut out = [0u8; 32];
+    hk.expand(scope.hkdf_info(), &mut out)
+        .map_err(|_| "hkdf expand failed".to_string())?;
+    Ok(out)
+}
+
+fn mcp_verify_master_key(
+    header: &encrypted_file::CryptoHeader,
+    master: &[u8; 32],
+) -> Result<bool, String> {
+    if encrypted_file::verify_password_with_header(header, master) {
+        return Ok(true);
+    }
+    let targets = mcp_crypto_scope_targets();
+    if !targets.iter().any(|(path, _)| path.exists()) {
+        return Ok(false);
+    }
+    for (path, scope) in targets {
+        if !path.exists() {
+            continue;
+        }
+        let mut scope_key = mcp_derive_scope_key_from_master(master, scope)?;
+        let file = encrypted_file::EncryptedFileV2::load(&path)?;
+        let ok = file.decrypt(&scope_key).is_ok();
+        scope_key.zeroize();
+        if ok {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn mcp_require_scope(scope: CryptoScope) -> Result<(), String> {
+    if !encrypted_file::header_exists() {
+        return Ok(());
+    }
+    with_mcp_crypto_state(|crypto| {
+        crypto
+            .session
+            .get_scope_key(scope)
+            .map(|_| ())
+            .map_err(|_| format!("unlock required (scope: {})", scope.as_str()))
+    })
+}
+
+fn mcp_genesis_is_completed_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "completed" | "sealed" | "committed"
+    )
+}
+
+fn mcp_genesis_reset_enabled() -> bool {
+    std::env::var("AGENTHALO_ENABLE_GENESIS_RESET")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+fn mcp_normalize_genesis_reset_reason(input: Option<&str>) -> String {
+    input
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("operator_requested")
+        .to_string()
+}
+
+fn tool_crypto_status(_arguments: Value) -> Result<Value, String> {
+    let header = encrypted_file::load_header()?;
+    with_mcp_crypto_state(|crypto| {
+        crypto.session.reap_expired();
+        let mut scopes = crypto
+            .session
+            .active_scopes()
+            .into_iter()
+            .map(|s| s.as_str().to_string())
+            .collect::<Vec<_>>();
+        scopes.sort();
+        Ok(json!({
+            "status": "ok",
+            "password_configured": header.is_some(),
+            "unlocked": crypto.session.is_unlocked(),
+            "active_scopes": scopes,
+            "failed_attempts": crypto.session.failed_attempts(),
+            "locked_until_unix": crypto.session.locked_until_unix(),
+            "migration_status": mcp_migration_status_name(&crypto.migration_status),
+        }))
+    })
+}
+
+fn tool_crypto_create_password(arguments: Value) -> Result<Value, String> {
+    let password_raw = arguments
+        .get("password")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "password is required".to_string())?;
+    let confirm_raw = arguments
+        .get("confirm")
+        .and_then(|v| v.as_str())
+        .unwrap_or(password_raw);
+    password::validate_password_pair(password_raw, confirm_raw)?;
+
+    let status = migration::detect_migration_status();
+    let mut migrated_files = Vec::new();
+    if matches!(status, migration::MigrationStatus::NeedsPasswordCreation) {
+        let report = migration::migrate_v1_to_v2(password_raw)?;
+        migrated_files = report.files_migrated;
+    } else {
+        let _ = encrypted_file::create_header_if_missing()?;
+    }
+
+    let header = encrypted_file::load_header()?
+        .ok_or_else(|| "crypto header missing after password creation".to_string())?;
+    let mut verify_master = header.kdf.derive_master_key(password_raw)?;
+    let mut updated_header = header.clone();
+    updated_header.password_verifier_hex =
+        Some(encrypted_file::password_verifier_hex(&verify_master));
+    encrypted_file::save_header(&updated_header)?;
+    verify_master.zeroize();
+    let salt = mcp_header_salt_bytes(&header)?;
+
+    with_mcp_crypto_state(|crypto| {
+        crypto.session.unlock_with_password(password_raw, &salt)?;
+        crypto.migration_status = migration::MigrationStatus::V2Unlocked;
+        Ok(())
+    })?;
+
+    let mut scopes = with_mcp_crypto_state(|crypto| {
+        Ok(crypto
+            .session
+            .active_scopes()
+            .into_iter()
+            .map(|s| s.as_str().to_string())
+            .collect::<Vec<_>>())
+    })?;
+    scopes.sort();
+
+    Ok(json!({
+        "status": "ok",
+        "migrated_files": migrated_files,
+        "active_scopes": scopes,
+        "migration_status": "v2_unlocked",
+    }))
+}
+
+fn tool_crypto_unlock(arguments: Value) -> Result<Value, String> {
+    let password = arguments
+        .get("password")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "password is required".to_string())?;
+    let header =
+        encrypted_file::load_header()?.ok_or_else(|| "password not configured".to_string())?;
+
+    with_mcp_crypto_state(|crypto| {
+        let now = now_unix_secs();
+        if let Err((until, _)) = crypto.session.check_throttle(now) {
+            return Err(format!(
+                "too many failed unlock attempts; retry in {}s",
+                until.saturating_sub(now)
+            ));
+        }
+        Ok(())
+    })?;
+
+    let mut candidate_master = header.kdf.derive_master_key(password)?;
+    let verified = mcp_verify_master_key(&header, &candidate_master)?;
+    if !verified {
+        with_mcp_crypto_state(|crypto| {
+            let now = now_unix_secs();
+            if let Err((until, _)) = crypto.session.check_throttle(now) {
+                candidate_master.zeroize();
+                return Err(format!(
+                    "too many failed unlock attempts; retry in {}s",
+                    until.saturating_sub(now)
+                ));
+            }
+            candidate_master.zeroize();
+            crypto.session.record_failed_attempt(now);
+            Err(format!(
+                "invalid password; retry in {}s",
+                crypto.session.locked_until_unix().saturating_sub(now)
+            ))
+        })?;
+    }
+
+    let verifier_upgrade = if header.password_verifier_hex.is_none() {
+        Some(encrypted_file::password_verifier_hex(&candidate_master))
+    } else {
+        None
+    };
+
+    with_mcp_crypto_state(|crypto| {
+        let now = now_unix_secs();
+        if let Err((until, _)) = crypto.session.check_throttle(now) {
+            candidate_master.zeroize();
+            return Err(format!(
+                "too many failed unlock attempts; retry in {}s",
+                until.saturating_sub(now)
+            ));
+        }
+        crypto.session.unlock_with_master_key(candidate_master)?;
+        crypto.migration_status = migration::MigrationStatus::V2Unlocked;
+        Ok(())
+    })?;
+
+    if let Some(verifier) = verifier_upgrade {
+        let mut upgraded = header.clone();
+        upgraded.password_verifier_hex = Some(verifier);
+        if let Err(err) = encrypted_file::save_header(&upgraded) {
+            eprintln!(
+                "warning: failed to persist password verifier upgrade after MCP unlock: {}",
+                err
+            );
+        }
+    }
+
+    let mut scopes = with_mcp_crypto_state(|crypto| {
+        Ok(crypto
+            .session
+            .active_scopes()
+            .into_iter()
+            .map(|s| s.as_str().to_string())
+            .collect::<Vec<_>>())
+    })?;
+    scopes.sort();
+
+    Ok(json!({
+        "status": "ok",
+        "mode": "password",
+        "unlocked_scopes": scopes,
+    }))
+}
+
+fn tool_crypto_lock(_arguments: Value) -> Result<Value, String> {
+    with_mcp_crypto_state(|crypto| {
+        crypto.session.lock();
+        crypto.migration_status = if encrypted_file::header_exists() {
+            migration::MigrationStatus::V2Locked
+        } else {
+            migration::detect_migration_status()
+        };
+        Ok(())
+    })?;
+    Ok(json!({"status":"ok","locked":true}))
+}
+
+fn tool_crypto_change_password(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let current_password = arguments
+        .get("current_password")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "current_password is required".to_string())?;
+    let new_password = arguments
+        .get("new_password")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "new_password is required".to_string())?;
+    let confirm = arguments
+        .get("confirm")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "confirm is required".to_string())?;
+    password::validate_password_pair(new_password, confirm)?;
+
+    let old_header =
+        encrypted_file::load_header()?.ok_or_else(|| "password not configured".to_string())?;
+    let mut old_master = old_header.kdf.derive_master_key(current_password)?;
+    let old_verified = mcp_verify_master_key(&old_header, &old_master)?;
+    if !old_verified {
+        old_master.zeroize();
+        return Err("current password is incorrect".to_string());
+    }
+
+    let new_kdf = encrypted_file::KdfParams::random_v2();
+    let mut new_master = new_kdf.derive_master_key(new_password)?;
+
+    for (path, scope) in mcp_crypto_scope_targets() {
+        if !path.exists() {
+            continue;
+        }
+        let mut old_scope_key = mcp_derive_scope_key_from_master(&old_master, scope)?;
+        let file = encrypted_file::EncryptedFileV2::load(&path)?;
+        let plain = Zeroizing::new(file.decrypt(&old_scope_key)?);
+        old_scope_key.zeroize();
+        let mut new_scope_key = mcp_derive_scope_key_from_master(&new_master, scope)?;
+        let rebuilt = encrypted_file::EncryptedFileV2::encrypt(
+            plain.as_slice(),
+            &new_scope_key,
+            scope,
+            &new_kdf,
+        )?;
+        new_scope_key.zeroize();
+        rebuilt.save(&path)?;
+    }
+
+    let new_header = encrypted_file::CryptoHeader {
+        schema: encrypted_file::CRYPTO_HEADER_SCHEMA.to_string(),
+        kdf: new_kdf.clone(),
+        created_at: now_unix_secs(),
+        password_protected: true,
+        password_verifier_hex: Some(encrypted_file::password_verifier_hex(&new_master)),
+    };
+    encrypted_file::save_header(&new_header)?;
+    old_master.zeroize();
+    new_master.zeroize();
+
+    let salt = mcp_header_salt_bytes(&new_header)?;
+    let agents_reencapsulated = with_mcp_crypto_state(|crypto| {
+        crypto.session.unlock_with_password(new_password, &salt)?;
+        let reencapsulated = agent_auth::reencapsulate_all_agents(&mut crypto.session).unwrap_or(0);
+        crypto.migration_status = migration::MigrationStatus::V2Unlocked;
+        Ok(reencapsulated)
+    })?;
+
+    Ok(json!({
+        "status": "ok",
+        "agents_reencapsulated": agents_reencapsulated,
+    }))
+}
+
+fn tool_agents_list(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let agents = agent_auth::list_agents()?;
+    Ok(json!({"status":"ok","agents":agents}))
+}
+
+fn tool_agents_authorize(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Sign)?;
+    let label = arguments
+        .get("label")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "label is required".to_string())?;
+    let scopes_json = arguments
+        .get("scopes")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "scopes must be an array".to_string())?;
+    let mut scopes = Vec::new();
+    for raw in scopes_json {
+        let Some(name) = raw.as_str() else {
+            continue;
+        };
+        if let Some(scope) = CryptoScope::parse(name) {
+            if scope != CryptoScope::Admin {
+                scopes.push(scope);
+            }
+        }
+    }
+    if scopes.is_empty() {
+        return Err("at least one valid scope is required".to_string());
+    }
+    let expires_days = arguments.get("expires_days").and_then(|v| v.as_u64());
+    let (cred, secret) = with_mcp_crypto_state(|crypto| {
+        agent_auth::authorize_agent(&mut crypto.session, label, &scopes, expires_days)
+    })?;
+
+    Ok(json!({
+        "status": "ok",
+        "agent_id": cred.agent_id,
+        "label": cred.label,
+        "scopes": cred.scopes.keys().cloned().collect::<Vec<_>>(),
+        "expires_at": cred.expires_at,
+        "agent_sk": secret.secret_key_hex,
+        "algorithm": secret.algorithm,
+        "warning": "This secret key is shown once. Copy and store it securely."
+    }))
+}
+
+fn tool_agents_revoke(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let agent_id = arguments
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "agent_id is required".to_string())?;
+    agent_auth::revoke_agent(agent_id)?;
+    Ok(json!({"status":"ok","agent_id":agent_id,"revoked":true}))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum McpAgentAddressSource {
+    External,
+    Genesis,
+}
+
+fn mcp_parse_agentaddress_source(raw: Option<&str>) -> Result<McpAgentAddressSource, String> {
+    let Some(source) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(McpAgentAddressSource::External);
+    };
+    match source.to_ascii_lowercase().as_str() {
+        "external" | "agentpmt_external_noauth" | "agentpmt" => Ok(McpAgentAddressSource::External),
+        "genesis" | "genesis_derived" => Ok(McpAgentAddressSource::Genesis),
+        other => Err(format!(
+            "unsupported source '{other}' (expected 'external' or 'genesis')"
+        )),
+    }
+}
+
+fn mcp_agentaddress_supported_chains() -> Vec<&'static str> {
+    vec![
+        "Ethereum",
+        "Base",
+        "Arbitrum",
+        "Optimism",
+        "Polygon",
+        "BNB Chain",
+        "Avalanche",
+        "zkSync",
+        "Linea",
+        "Scroll",
+        "Blast",
+        "Mantle",
+        "Fantom",
+        "Gnosis",
+        "Cronos",
+        "Celo",
+        "Moonbeam",
+        "Harmony",
+        "Zora",
+        "Metis",
+        "Aurora",
+        "Taiko",
+        "Sei",
+        "Sepolia",
+        "Holesky",
+        "Base Sepolia",
+        "Arbitrum Sepolia",
+        "OP Sepolia",
+    ]
+}
+
+fn mcp_agentaddress_api_base() -> String {
+    std::env::var("AGENTHALO_AGENTADDRESS_API_BASE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "https://www.agentpmt.com".to_string())
+}
+
+fn mcp_is_evm_address(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    let Some(hex) = trimmed.strip_prefix("0x") else {
+        return false;
+    };
+    hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn mcp_open_vault() -> Result<nucleusdb::halo::vault::Vault, String> {
+    let pq_wallet_path = config::pq_wallet_path();
+    let vault_path = config::vault_path();
+    if !pq_wallet_path.exists() {
+        return Err("pq wallet not found; vault unavailable".to_string());
+    }
+    nucleusdb::halo::vault::Vault::open(&pq_wallet_path, &vault_path)
+}
+
+fn tool_agentaddress_status(_arguments: Value) -> Result<Value, String> {
+    let identity = nucleusdb::halo::identity::load();
+    let entry = identity.agent_address.clone();
+    Ok(json!({
+        "status": "ok",
+        "connected": entry.is_some(),
+        "agent_address": entry.as_ref().map(|a| a.evm_address.clone()),
+        "generated_at": entry.as_ref().map(|a| a.generated_at.clone()),
+        "source": entry.as_ref().and_then(|a| a.source.clone()),
+    }))
+}
+
+fn tool_agentaddress_chains(_arguments: Value) -> Result<Value, String> {
+    let chains = mcp_agentaddress_supported_chains();
+    Ok(json!({
+        "status": "ok",
+        "count": chains.len(),
+        "chains": chains,
+        "note": "+30 more EVM-compatible networks are supported by AgentAddress."
+    }))
+}
+
+fn tool_agentaddress_generate(arguments: Value) -> Result<Value, String> {
+    let source = mcp_parse_agentaddress_source(arguments.get("source").and_then(|v| v.as_str()))?;
+    let (provider, endpoint, source_tag, data, genesis_seed_sha256) = match source {
+        McpAgentAddressSource::External => {
+            let base = mcp_agentaddress_api_base();
+            let endpoint = format!("{}/api/external/agentaddress", base.trim_end_matches('/'));
+            let resp = ureq::post(&endpoint)
+                .header("Content-Type", "application/json")
+                .send_json(json!({}))
+                .map_err(|e| format!("AgentAddress request failed: {e}"))?;
+            let payload: Value = resp
+                .into_body()
+                .read_json()
+                .map_err(|e| format!("parse AgentAddress response: {e}"))?;
+            let data = payload
+                .get("data")
+                .cloned()
+                .unwrap_or_else(|| payload.clone());
+            (
+                "AgentAddress",
+                endpoint,
+                "agentpmt_external_noauth".to_string(),
+                data,
+                None,
+            )
+        }
+        McpAgentAddressSource::Genesis => {
+            mcp_require_scope(CryptoScope::Wallet)?;
+            let mnemonic =
+                nucleusdb::halo::genesis_seed::derive_wallet_mnemonic()?.ok_or_else(|| {
+                    "genesis seed not available; complete Genesis ceremony first".to_string()
+                })?;
+            let derived = nucleusdb::halo::evm_wallet::derive_from_mnemonic(&mnemonic, None)?;
+            let seed_hash = nucleusdb::halo::genesis_seed::load_seed_sha256()?.unwrap_or_default();
+            let data = json!({
+                "evmAddress": derived.evm_address,
+                "evmPrivateKey": derived.private_key_hex,
+                "mnemonic": mnemonic,
+                "derivationPath": derived.derivation_path,
+            });
+            (
+                "LocalGenesis",
+                "local://genesis-seed-derivation".to_string(),
+                "genesis_derived".to_string(),
+                data,
+                Some(seed_hash),
+            )
+        }
+    };
+    let address = data
+        .get("evmAddress")
+        .and_then(Value::as_str)
+        .or_else(|| data.get("evm_address").and_then(Value::as_str))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !mcp_is_evm_address(&address) {
+        return Err("AgentAddress response missing a valid evmAddress".to_string());
+    }
+
+    let persist_public = arguments
+        .get("persist_public_address")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let private_key = data
+        .get("evmPrivateKey")
+        .or_else(|| data.get("evm_private_key"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let mnemonic = data
+        .get("mnemonic")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let mut vault_stored = false;
+    let mut vault_error = None::<String>;
+    match mcp_open_vault() {
+        Ok(vault) => {
+            let mut all_ok = true;
+            if !private_key.is_empty() {
+                if let Err(e) = vault.set_key(
+                    "agent_wallet_private_key",
+                    "AGENT_WALLET_PRIVATE_KEY",
+                    &private_key,
+                ) {
+                    vault_error = Some(format!("store private key: {e}"));
+                    all_ok = false;
+                }
+            }
+            if !mnemonic.is_empty() {
+                if let Err(e) =
+                    vault.set_key("agent_wallet_mnemonic", "AGENT_WALLET_MNEMONIC", &mnemonic)
+                {
+                    let msg = format!("store mnemonic: {e}");
+                    vault_error = Some(match vault_error {
+                        Some(prev) => format!("{prev}; {msg}"),
+                        None => msg,
+                    });
+                    all_ok = false;
+                }
+            }
+            vault_stored = all_ok && (!private_key.is_empty() || !mnemonic.is_empty());
+        }
+        Err(e) => {
+            vault_error = Some(format!(
+                "vault not available — credentials shown but not stored: {e}"
+            ));
+        }
+    }
+
+    let mut ledger_logged = false;
+    let mut ledger_error = None::<String>;
+    if persist_public {
+        let mut identity = nucleusdb::halo::identity::load();
+        identity.agent_address = Some(nucleusdb::halo::identity::AgentAddressIdentity {
+            evm_address: address.clone(),
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            source: Some(source_tag.clone()),
+        });
+        nucleusdb::halo::identity::save(&identity)?;
+        let ledger_kind = match source {
+            McpAgentAddressSource::Genesis => {
+                nucleusdb::halo::identity_ledger::IdentityLedgerKind::WalletCreated
+            }
+            McpAgentAddressSource::External => {
+                nucleusdb::halo::identity_ledger::IdentityLedgerKind::WalletImported
+            }
+        };
+        match nucleusdb::halo::identity_ledger::append_wallet_event(
+            ledger_kind,
+            "agent_address_generated",
+            json!({
+                "provider": "agentaddress",
+                "source": source_tag,
+                "evm_address": address,
+                "vault_stored": vault_stored,
+                "genesis_seed_sha256": genesis_seed_sha256,
+            }),
+        ) {
+            Ok(_) => ledger_logged = true,
+            Err(e) => ledger_error = Some(e),
+        }
+    }
+
+    let safe_data = if vault_stored {
+        let mut d = data.clone();
+        if let Some(obj) = d.as_object_mut() {
+            obj.remove("evmPrivateKey");
+            obj.remove("evm_private_key");
+            obj.remove("mnemonic");
+        }
+        d
+    } else {
+        data
+    };
+
+    Ok(json!({
+        "status": "ok",
+        "provider": provider,
+        "source": match source {
+            McpAgentAddressSource::External => "external",
+            McpAgentAddressSource::Genesis => "genesis",
+        },
+        "endpoint": endpoint,
+        "persist_public_address": persist_public,
+        "vault_stored": vault_stored,
+        "vault_error": vault_error,
+        "ledger_logged": ledger_logged,
+        "ledger_error": ledger_error,
+        "genesis_seed_sha256": genesis_seed_sha256,
+        "data": safe_data,
+    }))
+}
+
+fn tool_agentaddress_credentials(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
+    let reveal = arguments
+        .get("reveal")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if reveal {
+        let ack = arguments
+            .get("acknowledge_plaintext")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if ack != "I_UNDERSTAND_PLAINTEXT_RISK" {
+            return Err(
+                "reveal=true requires acknowledge_plaintext=I_UNDERSTAND_PLAINTEXT_RISK"
+                    .to_string(),
+            );
+        }
+    }
+    let identity = nucleusdb::halo::identity::load();
+    let address = identity
+        .agent_address
+        .as_ref()
+        .map(|a| a.evm_address.clone())
+        .unwrap_or_default();
+    let vault = mcp_open_vault()?;
+    let private_key = vault.get_key("agent_wallet_private_key").ok();
+    let mnemonic = vault.get_key("agent_wallet_mnemonic").ok();
+    Ok(json!({
+        "status": "ok",
+        "address": address,
+        "has_private_key": private_key.is_some(),
+        "private_key": match (reveal, private_key) {
+            (true, value) => value,
+            (false, Some(_)) => Some("REDACTED".to_string()),
+            (false, None) => None,
+        },
+        "has_mnemonic": mnemonic.is_some(),
+        "mnemonic": match (reveal, mnemonic) {
+            (true, value) => value,
+            (false, Some(_)) => Some("REDACTED".to_string()),
+            (false, None) => None,
+        },
+        "revealed": reveal,
+        "reveal_transport_warning": if reveal {
+            Some("plaintext secrets returned over MCP stdio; do not use reveal=true over remote/network transports")
+        } else {
+            None
+        },
+    }))
+}
+
+fn tool_agentaddress_disconnect(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let mut identity = nucleusdb::halo::identity::load();
+    let prev = identity.agent_address.take();
+    nucleusdb::halo::identity::save(&identity)?;
+    let address = prev
+        .as_ref()
+        .map(|x| x.evm_address.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = nucleusdb::halo::identity_ledger::append_wallet_event(
+        nucleusdb::halo::identity_ledger::IdentityLedgerKind::WalletDeleted,
+        "agent_address_disconnected",
+        json!({
+            "provider": "agentaddress",
+            "evm_address": address,
+        }),
+    );
+    Ok(json!({"status":"ok","disconnected":true}))
+}
+
 fn tool_identity_status(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
     let profile = nucleusdb::halo::profile::load();
     let identity = nucleusdb::halo::identity::load();
     let ledger = nucleusdb::halo::identity_ledger::project_ledger_status(now_unix_secs())?;
@@ -821,7 +1870,320 @@ fn tool_identity_status(_arguments: Value) -> Result<Value, String> {
     }))
 }
 
+fn tool_profile_get(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let profile = nucleusdb::halo::profile::load();
+    Ok(json!({
+        "status": "ok",
+        "profile": profile,
+    }))
+}
+
+fn tool_profile_set(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let mut profile = nucleusdb::halo::profile::load();
+    let previous_profile = profile.clone();
+    let rename = arguments
+        .get("rename")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let old_name = profile.display_name.clone();
+
+    if let Some(name_raw) = arguments.get("display_name").and_then(|v| v.as_str()) {
+        let name = name_raw.trim();
+        if name.is_empty() {
+            return Err("display_name must not be empty".to_string());
+        }
+        let changed = old_name
+            .as_ref()
+            .map(|prev| prev.trim() != name)
+            .unwrap_or(true);
+        if changed && profile.name_locked && profile.has_name() && !rename {
+            return Err("profile name is locked; set rename=true to rotate it".to_string());
+        }
+        if changed && profile.has_name() {
+            profile.name_revision = profile.name_revision.saturating_add(1);
+        }
+        profile.display_name = Some(name.to_string());
+        profile.name_locked = true;
+    }
+
+    if let Some(avatar_type) = arguments.get("avatar_type").and_then(|v| v.as_str()) {
+        profile.avatar_type = Some(avatar_type.to_string());
+    }
+    if let Some(avatar_data) = arguments.get("avatar_data").and_then(|v| v.as_str()) {
+        if avatar_data.len() > 512 * 1024 {
+            return Err("avatar_data exceeds 512KB limit".to_string());
+        }
+        profile.avatar_data = Some(avatar_data.to_string());
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    if profile.created_at.is_none() {
+        profile.created_at = Some(now.clone());
+    }
+    profile.updated_at = Some(now);
+    nucleusdb::halo::profile::save(&profile)?;
+    if let Err(e) = nucleusdb::halo::identity_ledger::append_profile_update(
+        profile.display_name.as_deref(),
+        profile.avatar_type.as_deref(),
+        profile.name_locked,
+        profile.name_revision,
+    ) {
+        let _ = nucleusdb::halo::profile::save(&previous_profile);
+        return Err(format!(
+            "identity ledger append failed; profile update rolled back: {e}"
+        ));
+    }
+    Ok(json!({
+        "status": "ok",
+        "profile": profile,
+    }))
+}
+
+fn tool_identity_device_scan(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let tier = nucleusdb::puf::core::PufTier::detect();
+    let components: Vec<Value> = nucleusdb::puf::core::collect_auto()
+        .map(|result| {
+            result
+                .components
+                .iter()
+                .map(|c| {
+                    json!({
+                        "name": c.name,
+                        "entropy_bits": c.entropy_bits,
+                        "stable": c.stable,
+                        "value_preview": String::from_utf8_lossy(&c.value[..c.value.len().min(32)]).to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(json!({
+        "status": "ok",
+        "tier": format!("{tier:?}"),
+        "components": components,
+    }))
+}
+
+fn tool_identity_device_save(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let browser_fp = arguments
+        .get("browser_fingerprint")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let selected: Vec<String> = arguments
+        .get("selected_components")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let puf_result = nucleusdb::puf::core::collect_auto();
+    let puf_fingerprint_hex = puf_result.as_ref().map(|r| {
+        format!(
+            "sha256:{}",
+            nucleusdb::transparency::ct6962::hex_encode(&r.fingerprint)
+        )
+    });
+    let puf_tier = puf_result
+        .as_ref()
+        .map(|r| format!("{:?}", r.tier).to_ascii_lowercase());
+    let mut components = puf_result
+        .as_ref()
+        .map(|result| result.components.clone())
+        .unwrap_or_default();
+    if !selected.is_empty() {
+        components.retain(|c| selected.contains(&c.name));
+    }
+
+    let mut entropy_bits = components.iter().map(|c| c.entropy_bits).sum::<u32>();
+    if let Some(fp) = browser_fp.clone() {
+        components.push(nucleusdb::puf::core::PufComponent {
+            name: "browser_fingerprint".to_string(),
+            value: fp.into_bytes(),
+            entropy_bits: 32,
+            stable: true,
+        });
+        entropy_bits = entropy_bits.saturating_add(32);
+    }
+    if components.is_empty() {
+        return Err("no identity components selected".to_string());
+    }
+
+    let digest = nucleusdb::puf::core::canonical_fingerprint(&components);
+    let hex = format!(
+        "sha256:{}",
+        nucleusdb::transparency::ct6962::hex_encode(&digest)
+    );
+
+    let mut cfg = nucleusdb::halo::identity::load();
+    let previous_cfg = cfg.clone();
+    cfg.version = Some(1);
+    cfg.device = Some(nucleusdb::halo::identity::DeviceIdentity {
+        enabled: true,
+        browser_fingerprint: browser_fp,
+        selected_components: selected,
+        composite_fingerprint_hex: Some(hex.clone()),
+        puf_fingerprint_hex: puf_fingerprint_hex.clone(),
+        puf_tier: puf_tier.clone(),
+        entropy_bits,
+        last_collected: Some(chrono::Utc::now().to_rfc3339()),
+    });
+    nucleusdb::halo::identity::save(&cfg)?;
+    if let Err(e) = nucleusdb::halo::identity_ledger::append_device_update(
+        true,
+        entropy_bits,
+        components.len(),
+        cfg.device
+            .as_ref()
+            .and_then(|d| d.browser_fingerprint.as_deref())
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false),
+        puf_fingerprint_hex.as_deref(),
+        puf_tier.as_deref(),
+    ) {
+        let _ = nucleusdb::halo::identity::save(&previous_cfg);
+        return Err(format!(
+            "identity ledger append failed; device update rolled back: {e}"
+        ));
+    }
+
+    Ok(json!({
+        "status": "ok",
+        "fingerprint_hex": hex,
+        "entropy_bits": entropy_bits,
+        "puf_fingerprint_hex": puf_fingerprint_hex,
+        "puf_tier": puf_tier,
+    }))
+}
+
+fn tool_identity_network_probe(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let local_ip = (|| -> Option<String> {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        socket.connect("8.8.8.8:80").ok()?;
+        socket.local_addr().ok().map(|addr| addr.ip().to_string())
+    })();
+    let mac_address = mac_address::get_mac_address()
+        .ok()
+        .flatten()
+        .map(|mac| mac.to_string());
+    Ok(json!({
+        "status": "ok",
+        "local_ip": local_ip,
+        "mac_address": mac_address,
+    }))
+}
+
+fn tool_identity_network_save(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let share_local_ip = arguments
+        .get("share_local_ip")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let share_public_ip = arguments
+        .get("share_public_ip")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let share_mac = arguments
+        .get("share_mac")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let local_ip_hash = if share_local_ip {
+        arguments
+            .get("local_ip")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|ip| {
+                let mut h = sha2::Sha256::new();
+                use sha2::Digest;
+                h.update(ip.as_bytes());
+                format!(
+                    "sha256:{}",
+                    nucleusdb::transparency::ct6962::hex_encode(&h.finalize())
+                )
+            })
+    } else {
+        None
+    };
+    let public_ip_hash = if share_public_ip {
+        arguments
+            .get("public_ip")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|ip| {
+                let mut h = sha2::Sha256::new();
+                use sha2::Digest;
+                h.update(ip.as_bytes());
+                format!(
+                    "sha256:{}",
+                    nucleusdb::transparency::ct6962::hex_encode(&h.finalize())
+                )
+            })
+    } else {
+        None
+    };
+    let mac_addresses: Vec<String> = if share_mac {
+        arguments
+            .get("mac_addresses")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let mut cfg = nucleusdb::halo::identity::load();
+    let previous_cfg = cfg.clone();
+    cfg.version = Some(1);
+    cfg.network = Some(nucleusdb::halo::identity::NetworkIdentity {
+        share_local_ip,
+        share_public_ip,
+        share_mac,
+        local_ip_hash,
+        public_ip_hash,
+        mac_addresses,
+    });
+    nucleusdb::halo::identity::save(&cfg)?;
+    let network = cfg.network.as_ref();
+    if let Err(e) = nucleusdb::halo::identity_ledger::append_network_update(
+        network.map(|n| n.share_local_ip).unwrap_or(false),
+        network.map(|n| n.share_public_ip).unwrap_or(false),
+        network.map(|n| n.share_mac).unwrap_or(false),
+        network
+            .and_then(|n| n.local_ip_hash.as_deref())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false),
+        network
+            .and_then(|n| n.public_ip_hash.as_deref())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false),
+        network.map(|n| n.mac_addresses.len()).unwrap_or(0),
+    ) {
+        let _ = nucleusdb::halo::identity::save(&previous_cfg);
+        return Err(format!(
+            "identity ledger append failed; network update rolled back: {e}"
+        ));
+    }
+
+    Ok(json!({
+        "status": "ok",
+        "network": cfg.network,
+    }))
+}
+
 fn tool_identity_tier_set(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
     let tier_raw = arguments
         .get("tier")
         .and_then(|v| v.as_str())
@@ -861,7 +2223,45 @@ fn tool_identity_tier_set(arguments: Value) -> Result<Value, String> {
     }))
 }
 
+fn tool_identity_anonymous_set(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let enabled = arguments
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| "enabled is required (true|false)".to_string())?;
+    let mut cfg = nucleusdb::halo::identity::load();
+    let previous_cfg = cfg.clone();
+    cfg.version = Some(1);
+    cfg.anonymous_mode = enabled;
+    let mut cleared_device = false;
+    let mut cleared_network = false;
+    if enabled {
+        cleared_device = cfg.device.is_some();
+        cleared_network = cfg.network.is_some();
+        cfg.device = None;
+        cfg.network = None;
+    }
+    nucleusdb::halo::identity::save(&cfg)?;
+    if let Err(e) = nucleusdb::halo::identity_ledger::append_anonymous_mode_update(
+        enabled,
+        cleared_device,
+        cleared_network,
+    ) {
+        let _ = nucleusdb::halo::identity::save(&previous_cfg);
+        return Err(format!(
+            "identity ledger append failed; anonymous mode update rolled back: {e}"
+        ));
+    }
+    Ok(json!({
+        "status": "ok",
+        "anonymous_mode": enabled,
+        "cleared_device": cleared_device,
+        "cleared_network": cleared_network,
+    }))
+}
+
 fn tool_identity_social_connect(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
     let provider = arguments
         .get("provider")
         .and_then(|v| v.as_str())
@@ -932,6 +2332,7 @@ fn tool_identity_social_connect(arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_identity_social_revoke(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
     let provider = arguments
         .get("provider")
         .and_then(|v| v.as_str())
@@ -1110,6 +2511,165 @@ fn tool_identity_pod_share(arguments: Value) -> Result<Value, String> {
     }))
 }
 
+fn tool_genesis_status(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let seed_stored = nucleusdb::halo::genesis_seed::seed_exists();
+    let seed_hash = nucleusdb::halo::genesis_seed::load_seed_sha256()
+        .ok()
+        .flatten();
+    let latest = nucleusdb::halo::identity_ledger::latest_genesis_event()?;
+    if let Some(entry) = latest {
+        let completed = mcp_genesis_is_completed_status(&entry.status);
+        let curby_pulse_id = entry.payload.get("curby_pulse_id").and_then(|v| v.as_u64());
+        let sources_count = entry
+            .payload
+            .get("policy")
+            .and_then(|p| p.get("actual_sources"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let combined_entropy_sha256 = entry
+            .payload
+            .get("combined_entropy_sha256")
+            .cloned()
+            .unwrap_or(Value::Null);
+        return Ok(json!({
+            "status": "ok",
+            "completed": completed,
+            "genesis_status": entry.status,
+            "summary": entry.payload,
+            "genesis_entropy_sha256": entry.genesis_entropy_sha256,
+            "curby_pulse_id": curby_pulse_id,
+            "sources_count": sources_count,
+            "combined_entropy_sha256": combined_entropy_sha256,
+            "seed_stored": seed_stored,
+            "seed_hash_sha256": seed_hash,
+            "seq": entry.seq,
+            "timestamp": entry.timestamp,
+            "entry_hash": entry.entry_hash,
+            "signed": entry.signature.is_some(),
+            "signature_required_for_genesis": true,
+        }));
+    }
+    Ok(json!({
+        "status": "ok",
+        "completed": false,
+        "genesis_status": "missing",
+        "seed_stored": seed_stored,
+        "seed_hash_sha256": seed_hash,
+        "signature_required_for_genesis": true,
+    }))
+}
+
+fn tool_genesis_harvest(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Genesis)?;
+    if !nucleusdb::halo::pq::has_wallet() {
+        let _ = nucleusdb::halo::pq::keygen_pq(false)?;
+    }
+
+    if let Some(latest) = nucleusdb::halo::identity_ledger::latest_genesis_event()? {
+        if mcp_genesis_is_completed_status(&latest.status) {
+            return Ok(json!({
+                "status": "ok",
+                "success": true,
+                "already_completed": true,
+                "completed": true,
+                "sources_count": latest
+                    .payload
+                    .get("policy")
+                    .and_then(|p| p.get("actual_sources"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                "curby_pulse_id": latest.payload.get("curby_pulse_id").and_then(|v| v.as_u64()),
+                "combined_entropy_sha256": latest.payload.get("combined_entropy_sha256").cloned().unwrap_or(Value::Null),
+                "genesis_entropy_sha256": latest.genesis_entropy_sha256,
+            }));
+        }
+    }
+
+    let result = nucleusdb::halo::genesis_entropy::harvest_entropy()
+        .map_err(|err| format!("{}: {}", err.error_code, err.message.trim()))?;
+
+    match nucleusdb::halo::genesis_seed::load_seed_sha256() {
+        Ok(Some(existing)) if existing == result.combined_entropy_sha256 => {}
+        Ok(Some(existing)) => {
+            return Err(format!(
+                "GENESIS_SEED_MISMATCH: existing sealed genesis seed hash does not match harvested value (existing={}, new={})",
+                existing, result.combined_entropy_sha256
+            ));
+        }
+        Ok(None) => {
+            nucleusdb::halo::genesis_seed::store_seed_once(
+                &result.combined_entropy,
+                &result.combined_entropy_sha256,
+            )?;
+        }
+        Err(e) => {
+            return Err(format!(
+                "SEED_READ_FAILURE: could not read existing sealed genesis seed: {e}"
+            ));
+        }
+    }
+
+    let payload = json!({
+        "combined_entropy_sha256": result.combined_entropy_sha256,
+        "sources": result.sources,
+        "failed_sources": result.failed_sources,
+        "policy": {
+            "min_sources": 2,
+            "actual_sources": result.sources_count,
+        },
+        "curby_pulse_id": result.curby_pulse_id,
+        "drand_normalization": "sha512",
+        "duration_ms": result.duration_ms,
+    });
+    let entry = nucleusdb::halo::identity_ledger::append_genesis_event("completed", payload)?;
+    Ok(json!({
+        "status": "ok",
+        "success": true,
+        "completed": true,
+        "sources_count": result.sources_count,
+        "curby_pulse_id": result.curby_pulse_id,
+        "combined_entropy_sha256": result.combined_entropy_sha256,
+        "sources": result.sources,
+        "failed_sources": result.failed_sources,
+        "duration_ms": result.duration_ms,
+        "ledger_seq": entry.seq,
+        "ledger_entry_hash": entry.entry_hash,
+        "ledger_signed": entry.signature.is_some(),
+        "genesis_entropy_sha256": entry.genesis_entropy_sha256,
+    }))
+}
+
+fn tool_genesis_reset(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Genesis)?;
+    if !mcp_genesis_reset_enabled() {
+        return Err(
+            "genesis reset is disabled by policy (set AGENTHALO_ENABLE_GENESIS_RESET=1 to enable)"
+                .to_string(),
+        );
+    }
+    if matches!(
+        nucleusdb::halo::identity_ledger::latest_completed_genesis_hash(),
+        Ok(Some(_))
+    ) {
+        return Err("genesis reset is blocked after a completed genesis commit".to_string());
+    }
+    let reason =
+        mcp_normalize_genesis_reset_reason(arguments.get("reason").and_then(|v| v.as_str()));
+    let payload = json!({
+        "reason": reason,
+        "reset_at": now_unix_secs(),
+    });
+    let entry = nucleusdb::halo::identity_ledger::append_genesis_event("reset", payload)?;
+    Ok(json!({
+        "status": "ok",
+        "completed": false,
+        "genesis_status": "reset",
+        "ledger_seq": entry.seq,
+        "ledger_entry_hash": entry.entry_hash,
+    }))
+}
+
 fn wdk_manager_mutex() -> &'static Mutex<nucleusdb::halo::wdk_proxy::WdkManager> {
     static WDK_MANAGER: OnceLock<Mutex<nucleusdb::halo::wdk_proxy::WdkManager>> = OnceLock::new();
     WDK_MANAGER.get_or_init(|| Mutex::new(nucleusdb::halo::wdk_proxy::WdkManager::new()))
@@ -1224,6 +2784,7 @@ fn validate_wdk_transfer(
 }
 
 fn tool_wallet_status(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
     let available = nucleusdb::halo::wdk_proxy::WdkManager::is_available();
     let wallet_exists = nucleusdb::halo::wdk_proxy::wallet_exists();
     if !available {
@@ -1254,6 +2815,7 @@ fn tool_wallet_status(_arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_wallet_create(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
     let passphrase = arguments
         .get("passphrase")
         .and_then(|v| v.as_str())
@@ -1316,6 +2878,7 @@ fn tool_wallet_create(arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_wallet_import(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
     let seed = arguments
         .get("seed")
         .and_then(|v| v.as_str())
@@ -1374,6 +2937,7 @@ fn tool_wallet_import(arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_wallet_unlock(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
     let passphrase = arguments
         .get("passphrase")
         .and_then(|v| v.as_str())
@@ -1403,6 +2967,7 @@ fn tool_wallet_unlock(arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_wallet_accounts(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
     with_wdk_manager(|mgr| {
         if !mgr.is_running() {
             return Err("wallet is locked; unlock it first".to_string());
@@ -1417,6 +2982,7 @@ fn tool_wallet_accounts(_arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_wallet_balances(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
     with_wdk_manager(|mgr| {
         if !mgr.is_running() {
             return Err("wallet is locked; unlock it first".to_string());
@@ -1431,6 +2997,7 @@ fn tool_wallet_balances(_arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_wallet_quote(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
     let chain = arguments
         .get("chain")
         .and_then(|v| v.as_str())
@@ -1464,6 +3031,7 @@ fn tool_wallet_quote(arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_wallet_send(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
     let chain = arguments
         .get("chain")
         .and_then(|v| v.as_str())
@@ -1497,6 +3065,7 @@ fn tool_wallet_send(arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_wallet_fees(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
     with_wdk_manager(|mgr| {
         if !mgr.is_running() {
             return Err("wallet is locked; unlock it first".to_string());
@@ -1510,6 +3079,7 @@ fn tool_wallet_fees(_arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_wallet_lock(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
     with_wdk_manager(|mgr| {
         if mgr.is_running() {
             let _ = mgr.post("/destroy", &json!({}));
@@ -1530,6 +3100,7 @@ fn tool_wallet_lock(_arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_wallet_delete(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Wallet)?;
     let confirm = arguments
         .get("confirm")
         .and_then(|v| v.as_str())
@@ -2520,7 +4091,122 @@ mod tests {
     }
 
     #[test]
+    fn profile_set_roundtrip() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_profile_roundtrip_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let out = tool_profile_set(json!({
+            "display_name": "MCP Profile",
+            "avatar_type": "initials",
+            "rename": false
+        }))
+        .expect("profile set");
+        assert_eq!(out["status"], "ok");
+        assert_eq!(out["profile"]["display_name"], "MCP Profile");
+
+        let got = tool_profile_get(json!({})).expect("profile get");
+        assert_eq!(got["status"], "ok");
+        assert_eq!(got["profile"]["display_name"], "MCP Profile");
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn identity_device_and_network_probe_tools_return_ok() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_identity_probe_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let device = tool_identity_device_scan(json!({})).expect("device scan");
+        assert_eq!(device["status"], "ok");
+        assert!(device.get("components").is_some());
+
+        let network = tool_identity_network_probe(json!({})).expect("network probe");
+        assert_eq!(network["status"], "ok");
+        assert!(network.get("local_ip").is_some());
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn identity_anonymous_set_roundtrip() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_identity_anon_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let enabled = tool_identity_anonymous_set(json!({"enabled": true})).expect("anon enable");
+        assert_eq!(enabled["status"], "ok");
+        assert_eq!(enabled["anonymous_mode"], true);
+
+        let status = tool_identity_status(json!({})).expect("identity status");
+        assert_eq!(status["identity"]["anonymous_mode"], true);
+
+        let disabled =
+            tool_identity_anonymous_set(json!({"enabled": false})).expect("anon disable");
+        assert_eq!(disabled["anonymous_mode"], false);
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn genesis_status_tool_returns_non_error_payload() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_genesis_status_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let out = tool_call_response("genesis_status", json!({}));
+        assert_eq!(out.get("isError").and_then(|v| v.as_bool()), Some(false));
+        let payload = out
+            .get("structuredContent")
+            .and_then(|v| v.as_object())
+            .expect("structuredContent object");
+        assert_eq!(payload.get("status").and_then(|v| v.as_str()), Some("ok"));
+        assert!(payload.contains_key("completed"));
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn wallet_status_tool_returns_non_error_payload() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_wallet_status_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
         let out = tool_call_response("wallet_status", json!({}));
         assert_eq!(out.get("isError").and_then(|v| v.as_bool()), Some(false));
         let payload = out
@@ -2530,25 +4216,165 @@ mod tests {
         assert_eq!(payload.get("status").and_then(|v| v.as_str()), Some("ok"));
         assert!(payload.contains_key("available"));
         assert!(payload.contains_key("wallet_exists"));
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
     fn wallet_import_rejects_invalid_mnemonic() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_wallet_import_invalid_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
         let err = tool_wallet_import(json!({
             "seed": "apple banana cherry dog elephant fish grape house igloo jelly kite lemon",
             "passphrase": "passphrase123"
         }))
         .expect_err("invalid mnemonic should fail");
         assert!(err.to_ascii_lowercase().contains("bip-39"));
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
     fn wallet_create_rejects_short_passphrase() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_wallet_create_short_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
         let err = tool_wallet_create(json!({
             "passphrase": "short"
         }))
         .expect_err("short passphrase should fail");
         assert!(err.to_ascii_lowercase().contains("at least 8"));
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn crypto_tools_password_roundtrip() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_crypto_roundtrip_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let created = tool_crypto_create_password(json!({
+            "password": "StrongPass123!",
+            "confirm": "StrongPass123!"
+        }))
+        .expect("create password");
+        assert_eq!(created["status"], "ok");
+        assert_eq!(created["migration_status"], "v2_unlocked");
+
+        let locked = tool_crypto_lock(json!({})).expect("lock");
+        assert_eq!(locked["locked"], true);
+
+        let status_locked = tool_crypto_status(json!({})).expect("status locked");
+        assert_eq!(status_locked["unlocked"], false);
+        assert_eq!(status_locked["password_configured"], true);
+
+        let unlocked = tool_crypto_unlock(json!({
+            "password": "StrongPass123!"
+        }))
+        .expect("unlock");
+        assert_eq!(unlocked["status"], "ok");
+        assert_eq!(unlocked["mode"], "password");
+
+        let status_unlocked = tool_crypto_status(json!({})).expect("status unlocked");
+        assert_eq!(status_unlocked["unlocked"], true);
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn crypto_unlock_rejects_wrong_password_mcp() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_crypto_wrong_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let _ = tool_crypto_create_password(json!({
+            "password": "StrongPass123!",
+            "confirm": "StrongPass123!"
+        }))
+        .expect("create password");
+        let _ = tool_crypto_lock(json!({})).expect("lock");
+        let err = tool_crypto_unlock(json!({"password": "WrongPass123!"}))
+            .expect_err("wrong password should fail");
+        assert!(err.to_ascii_lowercase().contains("invalid password"));
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn agents_tools_roundtrip_mcp() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_mcp_agents_roundtrip_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let _ = tool_crypto_create_password(json!({
+            "password": "StrongPass123!",
+            "confirm": "StrongPass123!"
+        }))
+        .expect("create password");
+
+        let created = tool_agents_authorize(json!({
+            "label": "MCP Test Agent",
+            "scopes": ["sign", "identity"]
+        }))
+        .expect("authorize");
+        assert_eq!(created["status"], "ok");
+        let agent_id = created["agent_id"].as_str().expect("agent id").to_string();
+
+        let listed = tool_agents_list(json!({})).expect("list");
+        assert_eq!(listed["status"], "ok");
+        let listed_arr = listed["agents"].as_array().cloned().unwrap_or_default();
+        assert!(
+            listed_arr
+                .iter()
+                .any(|a| a["agent_id"].as_str() == Some(agent_id.as_str())),
+            "created agent not listed: {listed}"
+        );
+
+        let revoked = tool_agents_revoke(json!({"agent_id": agent_id})).expect("revoke");
+        assert_eq!(revoked["status"], "ok");
+        assert_eq!(revoked["revoked"], true);
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

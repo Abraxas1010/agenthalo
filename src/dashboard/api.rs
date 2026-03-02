@@ -19,7 +19,8 @@ use crate::halo::attest::{
     attest_session, resolve_session_id, save_attestation, AttestationRequest,
 };
 use crate::halo::auth::{
-    dashboard_auth_required, is_dashboard_authenticated, load_credentials, save_credentials,
+    dashboard_auth_required, is_authenticated, is_dashboard_authenticated, load_credentials,
+    save_credentials,
 };
 use crate::halo::config;
 use crate::halo::crypto_scope::CryptoScope;
@@ -5293,7 +5294,12 @@ async fn api_attestation_verify(
     AxumState(state): AxumState<DashboardState>,
     Json(req): Json<VerifyRequest>,
 ) -> ApiResult {
-    require_scope(&state, CryptoScope::Sign)?;
+    if !is_authenticated(&state.credentials_path) {
+        return Err(api_err(
+            StatusCode::UNAUTHORIZED,
+            "authentication required to verify attestations",
+        ));
+    }
     use crate::halo::attest::AttestationResult;
 
     // 1. Find the stored attestation by digest

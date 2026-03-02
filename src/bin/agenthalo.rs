@@ -69,6 +69,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "license" => cmd_license(&args[2..]),
         "vault" => cmd_vault(&args[2..]),
         "identity" => cmd_identity(&args[2..]),
+        "crypto" => cmd_crypto(&args[2..]),
+        "agents" => cmd_agents(&args[2..]),
+        "agentaddress" => cmd_agentaddress(&args[2..]),
+        "wallet" => cmd_wallet(&args[2..]),
+        "genesis" => cmd_genesis(&args[2..]),
         "x402" => cmd_x402(&args[2..]),
         "wrap" => cmd_wrap(&args[2..]),
         "unwrap" => cmd_unwrap(&args[2..]),
@@ -1600,6 +1605,237 @@ fn cmd_identity(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "profile" => {
+            let profile_sub = args.get(1).map(|s| s.as_str()).unwrap_or("get");
+            match profile_sub {
+                "get" | "status" => {
+                    let out = dashboard_api_get("/profile")?;
+                    print_json(&out)
+                }
+                "set" => {
+                    let display_name = args.get(2).ok_or_else(|| {
+                        "usage: agenthalo identity profile set <display_name> [--rename true|false] [--avatar-type TYPE]".to_string()
+                    })?;
+                    let mut rename = false;
+                    let mut avatar_type = "initials".to_string();
+                    let mut idx = 3usize;
+                    while idx < args.len() {
+                        match args[idx].as_str() {
+                            "--rename" => {
+                                idx += 1;
+                                rename =
+                                    parse_boolish(args.get(idx).ok_or("--rename requires value")?)?;
+                            }
+                            "--avatar-type" => {
+                                idx += 1;
+                                avatar_type = args
+                                    .get(idx)
+                                    .ok_or("--avatar-type requires value")?
+                                    .clone();
+                            }
+                            other => {
+                                return Err(format!(
+                                    "unknown flag for identity profile set: {other}"
+                                ));
+                            }
+                        }
+                        idx += 1;
+                    }
+                    let out = dashboard_api_post(
+                        "/profile",
+                        serde_json::json!({
+                            "display_name": display_name,
+                            "avatar_type": avatar_type,
+                            "rename": rename,
+                        }),
+                    )?;
+                    print_json(&out)
+                }
+                _ => Err(
+                    "usage: agenthalo identity profile [get | set <display_name> [--rename true|false] [--avatar-type TYPE]]".to_string(),
+                ),
+            }
+        }
+        "device" => {
+            let device_sub = args.get(1).map(|s| s.as_str()).unwrap_or("scan");
+            match device_sub {
+                "scan" | "status" => {
+                    let out = dashboard_api_get("/identity/device")?;
+                    print_json(&out)
+                }
+                "save" => {
+                    let mut browser_fingerprint: Option<String> = None;
+                    let mut selected_components: Vec<String> = Vec::new();
+                    let mut idx = 2usize;
+                    while idx < args.len() {
+                        match args[idx].as_str() {
+                            "--browser-fingerprint" => {
+                                idx += 1;
+                                browser_fingerprint = Some(
+                                    args.get(idx)
+                                        .ok_or("--browser-fingerprint requires value")?
+                                        .clone(),
+                                );
+                            }
+                            "--selected" => {
+                                idx += 1;
+                                selected_components = args
+                                    .get(idx)
+                                    .ok_or("--selected requires comma-separated value")?
+                                    .split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect();
+                            }
+                            other => {
+                                return Err(format!(
+                                    "unknown flag for identity device save: {other}"
+                                ));
+                            }
+                        }
+                        idx += 1;
+                    }
+                    let out = dashboard_api_post(
+                        "/identity/device",
+                        serde_json::json!({
+                            "browser_fingerprint": browser_fingerprint,
+                            "selected_components": selected_components,
+                        }),
+                    )?;
+                    print_json(&out)
+                }
+                _ => Err(
+                    "usage: agenthalo identity device [scan | save [--browser-fingerprint FP] [--selected c1,c2,...]]".to_string(),
+                ),
+            }
+        }
+        "network" => {
+            let network_sub = args.get(1).map(|s| s.as_str()).unwrap_or("probe");
+            match network_sub {
+                "probe" | "status" => {
+                    let out = dashboard_api_get("/identity/network")?;
+                    print_json(&out)
+                }
+                "save" => {
+                    let mut share_local_ip = false;
+                    let mut share_public_ip = false;
+                    let mut share_mac = false;
+                    let mut local_ip: Option<String> = None;
+                    let mut public_ip: Option<String> = None;
+                    let mut mac_addresses: Vec<String> = Vec::new();
+                    let mut idx = 2usize;
+                    while idx < args.len() {
+                        match args[idx].as_str() {
+                            "--share-local-ip" => {
+                                idx += 1;
+                                share_local_ip = parse_boolish(
+                                    args.get(idx).ok_or("--share-local-ip requires true|false")?,
+                                )?;
+                            }
+                            "--share-public-ip" => {
+                                idx += 1;
+                                share_public_ip = parse_boolish(
+                                    args.get(idx).ok_or("--share-public-ip requires true|false")?,
+                                )?;
+                            }
+                            "--share-mac" => {
+                                idx += 1;
+                                share_mac =
+                                    parse_boolish(args.get(idx).ok_or("--share-mac requires true|false")?)?;
+                            }
+                            "--local-ip" => {
+                                idx += 1;
+                                local_ip = Some(args.get(idx).ok_or("--local-ip requires value")?.clone());
+                            }
+                            "--public-ip" => {
+                                idx += 1;
+                                public_ip =
+                                    Some(args.get(idx).ok_or("--public-ip requires value")?.clone());
+                            }
+                            "--macs" => {
+                                idx += 1;
+                                mac_addresses = args
+                                    .get(idx)
+                                    .ok_or("--macs requires comma-separated value")?
+                                    .split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect();
+                            }
+                            other => {
+                                return Err(format!(
+                                    "unknown flag for identity network save: {other}"
+                                ));
+                            }
+                        }
+                        idx += 1;
+                    }
+                    let out = dashboard_api_post(
+                        "/identity/network",
+                        serde_json::json!({
+                            "share_local_ip": share_local_ip,
+                            "share_public_ip": share_public_ip,
+                            "share_mac": share_mac,
+                            "local_ip": local_ip,
+                            "public_ip": public_ip,
+                            "mac_addresses": mac_addresses,
+                        }),
+                    )?;
+                    print_json(&out)
+                }
+                _ => Err(
+                    "usage: agenthalo identity network [probe | save --share-local-ip <true|false> --share-public-ip <true|false> --share-mac <true|false> [--local-ip IP] [--public-ip IP] [--macs m1,m2,...]]".to_string(),
+                ),
+            }
+        }
+        "pod-share" | "pod_share" => {
+            let mut key_patterns: Vec<String> = Vec::new();
+            let mut include_ledger = false;
+            let mut grantee_puf_hex: Option<String> = None;
+            let mut require_grants = false;
+            let mut idx = 1usize;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--patterns" => {
+                        idx += 1;
+                        key_patterns = args
+                            .get(idx)
+                            .ok_or("--patterns requires comma-separated value")?
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                    "--include-ledger" => {
+                        idx += 1;
+                        include_ledger =
+                            parse_boolish(args.get(idx).ok_or("--include-ledger requires true|false")?)?;
+                    }
+                    "--grantee-puf-hex" => {
+                        idx += 1;
+                        grantee_puf_hex =
+                            Some(args.get(idx).ok_or("--grantee-puf-hex requires value")?.clone());
+                    }
+                    "--require-grants" => {
+                        idx += 1;
+                        require_grants =
+                            parse_boolish(args.get(idx).ok_or("--require-grants requires true|false")?)?;
+                    }
+                    other => return Err(format!("unknown flag for identity pod-share: {other}")),
+                }
+                idx += 1;
+            }
+            let out = dashboard_api_post(
+                "/identity/pod-share",
+                serde_json::json!({
+                    "key_patterns": key_patterns,
+                    "include_ledger": include_ledger,
+                    "grantee_puf_hex": grantee_puf_hex,
+                    "require_grants": require_grants,
+                }),
+            )?;
+            print_json(&out)
+        }
         "tier" => {
             let tier_sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
             match tier_sub {
@@ -1883,6 +2119,65 @@ fn cmd_identity(args: &[String]) -> Result<(), String> {
                 ),
             }
         }
+        "anonymous" => {
+            let anonymous_sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
+            match anonymous_sub {
+                "status" => {
+                    let cfg = nucleusdb::halo::identity::load();
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "anonymous_mode": cfg.anonymous_mode
+                        }))
+                        .map_err(|e| format!("serialize anonymous status: {e}"))?
+                    );
+                    Ok(())
+                }
+                "set" => {
+                    let enabled_raw = args.get(2).ok_or_else(|| {
+                        "usage: agenthalo identity anonymous set <true|false>".to_string()
+                    })?;
+                    let enabled = parse_boolish(enabled_raw)?;
+                    let mut cfg = nucleusdb::halo::identity::load();
+                    let previous_cfg = cfg.clone();
+                    cfg.version = Some(1);
+                    cfg.anonymous_mode = enabled;
+                    let mut cleared_device = false;
+                    let mut cleared_network = false;
+                    if enabled {
+                        cleared_device = cfg.device.is_some();
+                        cleared_network = cfg.network.is_some();
+                        cfg.device = None;
+                        cfg.network = None;
+                    }
+                    nucleusdb::halo::identity::save(&cfg)?;
+                    if let Err(e) = nucleusdb::halo::identity_ledger::append_anonymous_mode_update(
+                        enabled,
+                        cleared_device,
+                        cleared_network,
+                    ) {
+                        let _ = nucleusdb::halo::identity::save(&previous_cfg);
+                        return Err(format!(
+                            "identity ledger append failed; anonymous mode update rolled back: {e}"
+                        ));
+                    }
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "ok": true,
+                            "anonymous_mode": enabled,
+                            "cleared_device": cleared_device,
+                            "cleared_network": cleared_network,
+                        }))
+                        .map_err(|e| format!("serialize anonymous set output: {e}"))?
+                    );
+                    Ok(())
+                }
+                _ => Err(
+                    "usage: agenthalo identity anonymous [status | set <true|false>]".to_string(),
+                ),
+            }
+        }
         "super-secure" | "super_secure" => {
             let super_sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
             match super_sub {
@@ -1997,7 +2292,7 @@ fn cmd_identity(args: &[String]) -> Result<(), String> {
             }
         }
         _ => Err(
-            "usage: agenthalo identity [status [--json] | tier <...> | social <...> | super-secure <...>]"
+            "usage: agenthalo identity [status [--json] | profile <...> | device <...> | network <...> | pod-share <...> | tier <...> | social <...> | anonymous <...> | super-secure <...>]"
                 .to_string(),
         ),
     }
@@ -2149,6 +2444,434 @@ fn cmd_x402(args: &[String]) -> Result<(), String> {
             "usage: agenthalo x402 [status|enable|disable|config|check|pay|balance]\n  config flags: --upc-contract <addr> --network <base|base-sepolia> --max-auto-approve <units>\n  pay flags: --body <json> [--option <id>]\n  balance: no flags required"
                 .to_string(),
         ),
+    }
+}
+
+fn dashboard_api_base() -> String {
+    std::env::var("AGENTHALO_DASHBOARD_API_BASE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:3100/api".to_string())
+}
+
+fn dashboard_api_bearer_token() -> Option<String> {
+    let creds_path = config::credentials_path();
+    resolve_api_key(&creds_path)
+}
+
+fn dashboard_api_get(path: &str) -> Result<serde_json::Value, String> {
+    let base = dashboard_api_base();
+    let url = format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
+    let mut req = ureq::get(&url);
+    if let Some(token) = dashboard_api_bearer_token() {
+        req = req.header("Authorization", &format!("Bearer {token}"));
+    }
+    let resp = req
+        .call()
+        .map_err(|e| format!("dashboard GET {url} failed: {e}"))?;
+    resp.into_body()
+        .read_json()
+        .map_err(|e| format!("parse dashboard JSON from {url}: {e}"))
+}
+
+fn dashboard_api_post(path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
+    let base = dashboard_api_base();
+    let url = format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
+    let mut req = ureq::post(&url).header("Content-Type", "application/json");
+    if let Some(token) = dashboard_api_bearer_token() {
+        req = req.header("Authorization", &format!("Bearer {token}"));
+    }
+    let resp = req
+        .send_json(body)
+        .map_err(|e| format!("dashboard POST {url} failed: {e}"))?;
+    resp.into_body()
+        .read_json()
+        .map_err(|e| format!("parse dashboard JSON from {url}: {e}"))
+}
+
+fn print_json(value: &serde_json::Value) -> Result<(), String> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).map_err(|e| format!("serialize JSON output: {e}"))?
+    );
+    Ok(())
+}
+
+fn prompt_nonempty_value(prompt: &str) -> Result<String, String> {
+    print!("{prompt}");
+    io::stdout()
+        .flush()
+        .map_err(|e| format!("flush stdout: {e}"))?;
+    let value = read_line_trimmed()?;
+    if value.trim().is_empty() {
+        return Err("input must not be empty".to_string());
+    }
+    Ok(value)
+}
+
+fn cmd_crypto(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "status" => {
+            let out = dashboard_api_get("/crypto/status")?;
+            print_json(&out)
+        }
+        "create-password" => {
+            let password = if let Some(v) = args.get(1) {
+                v.clone()
+            } else {
+                prompt_nonempty_value("New password: ")?
+            };
+            let confirm = if let Some(v) = args.get(2) {
+                v.clone()
+            } else {
+                prompt_nonempty_value("Confirm password: ")?
+            };
+            let out = dashboard_api_post(
+                "/crypto/create-password",
+                serde_json::json!({
+                    "password": password,
+                    "confirm": confirm,
+                }),
+            )?;
+            print_json(&out)
+        }
+        "unlock" => {
+            let password = if let Some(v) = args.get(1) {
+                v.clone()
+            } else {
+                prompt_nonempty_value("Password: ")?
+            };
+            let out = dashboard_api_post(
+                "/crypto/unlock",
+                serde_json::json!({
+                    "password": password,
+                }),
+            )?;
+            print_json(&out)
+        }
+        "lock" => {
+            let out = dashboard_api_post("/crypto/lock", serde_json::json!({}))?;
+            print_json(&out)
+        }
+        "change-password" => {
+            let current = if let Some(v) = args.get(1) {
+                v.clone()
+            } else {
+                prompt_nonempty_value("Current password: ")?
+            };
+            let new_password = if let Some(v) = args.get(2) {
+                v.clone()
+            } else {
+                prompt_nonempty_value("New password: ")?
+            };
+            let confirm = if let Some(v) = args.get(3) {
+                v.clone()
+            } else {
+                prompt_nonempty_value("Confirm new password: ")?
+            };
+            let out = dashboard_api_post(
+                "/crypto/change-password",
+                serde_json::json!({
+                    "current_password": current,
+                    "new_password": new_password,
+                    "confirm": confirm,
+                }),
+            )?;
+            print_json(&out)
+        }
+        _ => Err("usage: agenthalo crypto [status | create-password [password] [confirm] | unlock [password] | lock | change-password [current] [new] [confirm]]".to_string()),
+    }
+}
+
+fn cmd_agents(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
+    match sub {
+        "list" => {
+            let out = dashboard_api_get("/agents/list")?;
+            print_json(&out)
+        }
+        "authorize" => {
+            let label = args.get(1).ok_or_else(|| {
+                "usage: agenthalo agents authorize <label> <scopes_csv> [--expires-days N]"
+                    .to_string()
+            })?;
+            let scopes_csv = args.get(2).ok_or_else(|| {
+                "usage: agenthalo agents authorize <label> <scopes_csv> [--expires-days N]"
+                    .to_string()
+            })?;
+            let scopes = scopes_csv
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>();
+            if scopes.is_empty() {
+                return Err("at least one scope must be provided".to_string());
+            }
+            let mut expires_days = None::<u64>;
+            let mut idx = 3usize;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--expires-days" => {
+                        idx += 1;
+                        let raw = args
+                            .get(idx)
+                            .ok_or_else(|| "--expires-days requires a value".to_string())?;
+                        expires_days = Some(
+                            raw.parse::<u64>()
+                                .map_err(|_| "--expires-days must be a positive integer")?,
+                        );
+                    }
+                    other => return Err(format!("unknown flag for agents authorize: {other}")),
+                }
+                idx += 1;
+            }
+            let out = dashboard_api_post(
+                "/agents/authorize",
+                serde_json::json!({
+                    "label": label,
+                    "scopes": scopes,
+                    "expires_days": expires_days,
+                }),
+            )?;
+            print_json(&out)
+        }
+        "revoke" => {
+            let agent_id = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo agents revoke <agent_id>".to_string())?;
+            let out = dashboard_api_post(
+                "/agents/revoke",
+                serde_json::json!({
+                    "agent_id": agent_id
+                }),
+            )?;
+            print_json(&out)
+        }
+        _ => Err("usage: agenthalo agents [list | authorize <label> <scopes_csv> [--expires-days N] | revoke <agent_id>]".to_string()),
+    }
+}
+
+fn cmd_agentaddress(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "status" => {
+            let out = dashboard_api_get("/agentaddress/status")?;
+            print_json(&out)
+        }
+        "chains" => {
+            let out = dashboard_api_get("/agentaddress/chains")?;
+            print_json(&out)
+        }
+        "generate" => {
+            let mut source = "external".to_string();
+            let mut persist_public = true;
+            let mut idx = 1usize;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--source" => {
+                        idx += 1;
+                        source = args
+                            .get(idx)
+                            .ok_or_else(|| "--source requires a value".to_string())?
+                            .to_string();
+                    }
+                    "--persist-public" => {
+                        idx += 1;
+                        let raw = args
+                            .get(idx)
+                            .ok_or_else(|| "--persist-public requires true|false".to_string())?;
+                        persist_public = parse_boolish(raw)?;
+                    }
+                    other => return Err(format!("unknown flag for agentaddress generate: {other}")),
+                }
+                idx += 1;
+            }
+            let out = dashboard_api_post(
+                "/agentaddress/generate",
+                serde_json::json!({
+                    "source": source,
+                    "persist_public_address": persist_public,
+                }),
+            )?;
+            print_json(&out)
+        }
+        "credentials" => {
+            let out = dashboard_api_get("/agentaddress/credentials")?;
+            print_json(&out)
+        }
+        "disconnect" => {
+            let out = dashboard_api_post("/agentaddress/disconnect", serde_json::json!({}))?;
+            print_json(&out)
+        }
+        _ => Err("usage: agenthalo agentaddress [status | chains | generate [--source external|genesis] [--persist-public true|false] | credentials | disconnect]".to_string()),
+    }
+}
+
+fn cmd_wallet(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "available" => {
+            let out = dashboard_api_get("/wdk/available")?;
+            print_json(&out)
+        }
+        "status" => {
+            let out = dashboard_api_get("/wdk/status")?;
+            print_json(&out)
+        }
+        "create" => {
+            let passphrase = if let Some(v) = args.get(1) {
+                v.clone()
+            } else {
+                prompt_nonempty_value("Wallet passphrase: ")?
+            };
+            let out = dashboard_api_post(
+                "/wdk/create",
+                serde_json::json!({
+                    "passphrase": passphrase,
+                }),
+            )?;
+            print_json(&out)
+        }
+        "import" => {
+            let seed = if let Some(v) = args.get(1) {
+                v.clone()
+            } else {
+                prompt_nonempty_value("Seed phrase (12 or 24 words): ")?
+            };
+            let passphrase = if let Some(v) = args.get(2) {
+                v.clone()
+            } else {
+                prompt_nonempty_value("Wallet passphrase: ")?
+            };
+            let out = dashboard_api_post(
+                "/wdk/import",
+                serde_json::json!({
+                    "seed": seed,
+                    "passphrase": passphrase,
+                }),
+            )?;
+            print_json(&out)
+        }
+        "unlock" => {
+            let passphrase = if let Some(v) = args.get(1) {
+                v.clone()
+            } else {
+                prompt_nonempty_value("Wallet passphrase: ")?
+            };
+            let out = dashboard_api_post(
+                "/wdk/unlock",
+                serde_json::json!({
+                    "passphrase": passphrase,
+                }),
+            )?;
+            print_json(&out)
+        }
+        "accounts" => {
+            let out = dashboard_api_get("/wdk/accounts")?;
+            print_json(&out)
+        }
+        "balances" => {
+            let out = dashboard_api_get("/wdk/balances")?;
+            print_json(&out)
+        }
+        "quote" => {
+            let chain = args.get(1).ok_or_else(|| {
+                "usage: agenthalo wallet quote <chain> <to> <amount>".to_string()
+            })?;
+            let to = args.get(2).ok_or_else(|| {
+                "usage: agenthalo wallet quote <chain> <to> <amount>".to_string()
+            })?;
+            let amount = args.get(3).ok_or_else(|| {
+                "usage: agenthalo wallet quote <chain> <to> <amount>".to_string()
+            })?;
+            let out = dashboard_api_post(
+                "/wdk/quote",
+                serde_json::json!({
+                    "chain": chain,
+                    "to": to,
+                    "amount": amount,
+                }),
+            )?;
+            print_json(&out)
+        }
+        "send" => {
+            let chain = args.get(1).ok_or_else(|| {
+                "usage: agenthalo wallet send <chain> <to> <amount>".to_string()
+            })?;
+            let to = args.get(2).ok_or_else(|| {
+                "usage: agenthalo wallet send <chain> <to> <amount>".to_string()
+            })?;
+            let amount = args.get(3).ok_or_else(|| {
+                "usage: agenthalo wallet send <chain> <to> <amount>".to_string()
+            })?;
+            let out = dashboard_api_post(
+                "/wdk/send",
+                serde_json::json!({
+                    "chain": chain,
+                    "to": to,
+                    "amount": amount,
+                }),
+            )?;
+            print_json(&out)
+        }
+        "fees" => {
+            let out = dashboard_api_get("/wdk/fees")?;
+            print_json(&out)
+        }
+        "lock" => {
+            let out = dashboard_api_post("/wdk/lock", serde_json::json!({}))?;
+            print_json(&out)
+        }
+        "delete" => {
+            let confirm = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo wallet delete <DELETE>".to_string())?;
+            let out = dashboard_api_post(
+                "/wdk/delete",
+                serde_json::json!({
+                    "confirm": confirm,
+                }),
+            )?;
+            print_json(&out)
+        }
+        _ => Err("usage: agenthalo wallet [available | status | create [passphrase] | import [seed_phrase] [passphrase] | unlock [passphrase] | accounts | balances | quote <chain> <to> <amount> | send <chain> <to> <amount> | fees | lock | delete <DELETE>]".to_string()),
+    }
+}
+
+fn cmd_genesis(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "status" => {
+            let out = dashboard_api_get("/genesis/status")?;
+            print_json(&out)
+        }
+        "harvest" => {
+            let out = dashboard_api_post("/genesis/harvest", serde_json::json!({}))?;
+            print_json(&out)
+        }
+        "reset" => {
+            let reason = args
+                .get(1)
+                .map(|s| s.as_str())
+                .unwrap_or("operator_requested");
+            let out = dashboard_api_post(
+                "/genesis/reset",
+                serde_json::json!({
+                    "reason": reason,
+                }),
+            )?;
+            print_json(&out)
+        }
+        _ => Err("usage: agenthalo genesis [status | harvest | reset [reason]]".to_string()),
     }
 }
 
@@ -2476,6 +3199,6 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault & credentials:\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony status/harvest/reset via API bridge\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
     );
 }

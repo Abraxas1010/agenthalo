@@ -353,6 +353,7 @@ async fn attestation_verify_is_cryptographic() {
         "AGENTHALO_HOME",
         Some(halo_home.to_str().expect("temp home utf8 path")),
     );
+    let _api_key_guard = EnvVarGuard::set("AGENTHALO_API_KEY", Some("test-key-attest-verify"));
 
     let (state, db_path) = test_state("attest_verify");
     let session_id = format!("sess-verify-{}", now_unix_secs());
@@ -396,6 +397,21 @@ async fn attestation_verify_is_cryptographic() {
 
 #[tokio::test]
 async fn attestation_verify_nonexistent_returns_not_found() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_attest_missing_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("0"));
+    let _api_key_guard = EnvVarGuard::set("AGENTHALO_API_KEY", Some("test-key-attest-miss"));
+
     let (state, db_path) = test_state("attest_miss");
 
     let (status, val) = api_post(
@@ -409,6 +425,7 @@ async fn attestation_verify_nonexistent_returns_not_found() {
     assert_eq!(val["verified"], false);
 
     let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&halo_home);
 }
 
 // ---------------------------------------------------------------------------
