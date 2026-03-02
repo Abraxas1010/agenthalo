@@ -159,6 +159,32 @@ async fn api_post(state: DashboardState, path: &str, body: Value) -> (StatusCode
     (status, val)
 }
 
+async fn api_post_with_headers(
+    state: DashboardState,
+    path: &str,
+    body: Value,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Value) {
+    let app = api_router(state.clone()).with_state(state);
+    let mut builder = Request::builder()
+        .uri(path)
+        .method("POST")
+        .header("content-type", "application/json");
+    for (k, v) in headers {
+        builder = builder.header(*k, *v);
+    }
+    let req = builder
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let val: Value = serde_json::from_slice(&body).unwrap_or(json!(null));
+    (status, val)
+}
+
 async fn api_delete(state: DashboardState, path: &str) -> (StatusCode, Value) {
     let app = api_router(state.clone()).with_state(state);
     let req = Request::builder()
@@ -2761,4 +2787,146 @@ async fn cockpit_create_requires_auth_and_returns_setup_payload() {
         .contains("GitHub or Google"));
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn funding_webhook_missing_signature_rejected() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("funding-webhook-secret"));
+    let _stub = EnvVarGuard::set("AGENTHALO_ONCHAIN_STUB", Some("1"));
+
+    let (state, db_path) = test_state("funding_webhook_missing_sig");
+    let (created_status, created) = api_post(
+        state.clone(),
+        "/admin/keys",
+        json!({"label":"Webhook Key","initial_balance_usd":0.0}),
+    )
+    .await;
+    assert_eq!(
+        created_status,
+        StatusCode::OK,
+        "key creation failed: {created}"
+    );
+    let key_id = created["key"]["key_id"]
+        .as_str()
+        .or_else(|| created["key"]["id"].as_str())
+        .expect("key id")
+        .to_string();
+
+    let (status, body) = api_post(
+        state,
+        &format!("/admin/keys/{key_id}/fund"),
+        json!({
+            "source":{
+                "type":"agentpmt_tokens",
+                "receipt_id":"rcpt_missing_sig",
+                "amount_usd": 10.0,
+                "signature":"deadbeef"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "expected 401: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("X-AgentPMT-Signature"),
+        "missing header message expected: {body}"
+    );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn funding_webhook_invalid_signature_rejected() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("funding-webhook-secret"));
+    let _stub = EnvVarGuard::set("AGENTHALO_ONCHAIN_STUB", Some("1"));
+
+    let (state, db_path) = test_state("funding_webhook_invalid_sig");
+    let (created_status, created) = api_post(
+        state.clone(),
+        "/admin/keys",
+        json!({"label":"Webhook Key 2","initial_balance_usd":0.0}),
+    )
+    .await;
+    assert_eq!(
+        created_status,
+        StatusCode::OK,
+        "key creation failed: {created}"
+    );
+    let key_id = created["key"]["key_id"]
+        .as_str()
+        .or_else(|| created["key"]["id"].as_str())
+        .expect("key id")
+        .to_string();
+
+    let source = json!({
+        "type":"x402_direct",
+        "transaction_hash":"0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        "amount_base_units": 1_000_000u64,
+        "network":"base"
+    });
+    let request_body = json!({ "source": source });
+    let (status, body) = api_post_with_headers(
+        state,
+        &format!("/admin/keys/{key_id}/fund"),
+        request_body,
+        &[("x-agentpmt-signature", "deadbeef")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "expected 401: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("webhook signature verification failed"),
+        "invalid signature message expected: {body}"
+    );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn funding_operator_credit_bypasses_webhook_signature() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("funding-webhook-secret"));
+
+    let (state, db_path) = test_state("funding_operator_credit_bypass_sig");
+    let (created_status, created) = api_post(
+        state.clone(),
+        "/admin/keys",
+        json!({"label":"Operator Credit Key","initial_balance_usd":0.0}),
+    )
+    .await;
+    assert_eq!(
+        created_status,
+        StatusCode::OK,
+        "key creation failed: {created}"
+    );
+    let key_id = created["key"]["key_id"]
+        .as_str()
+        .or_else(|| created["key"]["id"].as_str())
+        .expect("key id")
+        .to_string();
+
+    let (status, body) = api_post(
+        state,
+        &format!("/admin/keys/{key_id}/fund"),
+        json!({
+            "source": {
+                "type":"operator_credit",
+                "reason":"manual adjustment"
+            },
+            "amount_usd": 5.0
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "operator funding should pass: {body}"
+    );
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["funded_usd"], 5.0);
+    let _ = std::fs::remove_file(&db_path);
 }

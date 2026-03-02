@@ -5106,14 +5106,30 @@ async fn api_admin_set_proxy_config(
 async fn api_admin_fund_balance(
     AxumState(state): AxumState<DashboardState>,
     Path(key_id): Path<String>,
+    headers: HeaderMap,
     Json(req): Json<FundBalanceRequest>,
 ) -> ApiResult {
     use crate::halo::funding;
 
-    // Operator credits require admin auth.  AgentPMT/x402 funding can
-    // come via webhook (TODO: add webhook signature verification).
+    // Operator credits require admin auth.
     if matches!(req.source, funding::FundingSource::OperatorCredit { .. }) {
         require_sensitive_access(&state)?;
+    } else {
+        // Non-operator funding requests are webhook-driven and must include
+        // a verified HMAC signature header.
+        let sig = headers
+            .get("x-agentpmt-signature")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .unwrap_or("");
+        if sig.is_empty() {
+            return Err(api_err(
+                StatusCode::UNAUTHORIZED,
+                "missing X-AgentPMT-Signature header",
+            ));
+        }
+        funding::verify_webhook_signature(&key_id, &req.source, req.amount_usd, sig)
+            .map_err(|e| api_err(StatusCode::UNAUTHORIZED, &e))?;
     }
 
     // Validate the funding source.
