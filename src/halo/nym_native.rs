@@ -301,7 +301,7 @@ pub use imp::*;
 
 #[cfg(test)]
 mod tests {
-    use super::NativeMixnetConfig;
+    use super::{send_message_with_surbs, status_snapshot, NativeMixnetConfig};
 
     #[test]
     fn native_mixnet_config_parses_env_defaults() {
@@ -316,5 +316,28 @@ mod tests {
         assert_eq!(cfg.include_surbs, 32);
         assert_eq!(cfg.cover_traffic_interval_secs, 0);
         assert!(cfg.register_inbound);
+    }
+
+    #[test]
+    fn status_snapshot_reports_disabled_by_default() {
+        let status = status_snapshot();
+        assert!(!status.enabled);
+        assert!(!status.connected);
+        assert!(status.address.is_none());
+    }
+
+    #[test]
+    fn send_without_native_feature_returns_error() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(send_message_with_surbs("recipient", b"hello", 5))
+            .expect_err("sending should fail without active native transport");
+        #[cfg(not(feature = "nym-native"))]
+        assert!(err.contains("not enabled"));
+        #[cfg(feature = "nym-native")]
+        assert!(!err.trim().is_empty());
     }
 }

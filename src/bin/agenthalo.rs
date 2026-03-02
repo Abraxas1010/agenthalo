@@ -34,7 +34,6 @@ use nucleusdb::halo::trace::{
 use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::util::digest_json;
 use nucleusdb::halo::x402;
-#[cfg(feature = "zk-compute")]
 use nucleusdb::halo::zk_compute;
 use nucleusdb::halo::zk_credential;
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
@@ -3894,129 +3893,144 @@ fn cmd_zk_compute(args: &[String]) -> Result<(), String> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("");
     match sub {
         "prove" => {
-            #[cfg(feature = "zk-compute")]
-            {
-                let mut guest: Option<String> = None;
-                let mut public_input: Option<String> = None;
-                let mut private_input: Option<String> = None;
-                let mut compute_id: Option<String> = None;
-                let mut requester_did: Option<String> = None;
-                let mut out_path: Option<String> = None;
-                let mut i = 1usize;
-                while i < args.len() {
-                    match args[i].as_str() {
-                        "--guest" => {
-                            i += 1;
-                            guest = Some(args.get(i).ok_or_else(|| "--guest requires a value".to_string())?.to_string());
-                        }
-                        "--input" => {
-                            i += 1;
-                            public_input = Some(args.get(i).ok_or_else(|| "--input requires a value".to_string())?.to_string());
-                        }
-                        "--private" => {
-                            i += 1;
-                            private_input = Some(args.get(i).ok_or_else(|| "--private requires a value".to_string())?.to_string());
-                        }
-                        "--compute-id" => {
-                            i += 1;
-                            compute_id = Some(args.get(i).ok_or_else(|| "--compute-id requires a value".to_string())?.to_string());
-                        }
-                        "--requester-did" => {
-                            i += 1;
-                            requester_did = Some(args.get(i).ok_or_else(|| "--requester-did requires a value".to_string())?.to_string());
-                        }
-                        "--out" => {
-                            i += 1;
-                            out_path = Some(args.get(i).ok_or_else(|| "--out requires a value".to_string())?.to_string());
-                        }
-                        other => return Err(format!("unknown flag for zk compute prove: {other}")),
+            let mut guest: Option<String> = None;
+            let mut public_input: Option<String> = None;
+            let mut private_input: Option<String> = None;
+            let mut compute_id: Option<String> = None;
+            let mut requester_did: Option<String> = None;
+            let mut out_path: Option<String> = None;
+            let mut i = 1usize;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--guest" => {
+                        i += 1;
+                        guest = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--guest requires a value".to_string())?
+                                .to_string(),
+                        );
                     }
-                    i += 1;
+                    "--input" => {
+                        i += 1;
+                        public_input = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--input requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--private" => {
+                        i += 1;
+                        private_input = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--private requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--compute-id" => {
+                        i += 1;
+                        compute_id = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--compute-id requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--requester-did" => {
+                        i += 1;
+                        requester_did = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--requester-did requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    "--out" => {
+                        i += 1;
+                        out_path = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--out requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    other => return Err(format!("unknown flag for zk compute prove: {other}")),
                 }
-                let guest_path = guest.ok_or_else(|| "--guest is required".to_string())?;
-                let input_path = public_input.ok_or_else(|| "--input is required".to_string())?;
-                let private_path = private_input.ok_or_else(|| "--private is required".to_string())?;
-                let guest_elf = std::fs::read(&guest_path)
-                    .map_err(|e| format!("read guest ELF {guest_path}: {e}"))?;
-                let public_inputs = std::fs::read(&input_path)
-                    .map_err(|e| format!("read input file {input_path}: {e}"))?;
-                let private_inputs = std::fs::read(&private_path)
-                    .map_err(|e| format!("read private file {private_path}: {e}"))?;
-                let requester_did = if let Some(did) = requester_did {
-                    did
-                } else {
-                    load_local_did_identity()?.did
-                };
-                let request = zk_compute::ComputeRequest {
-                    compute_id: compute_id.unwrap_or_else(|| format!("compute-{}", now_unix_secs())),
-                    guest_elf,
-                    public_inputs,
-                    private_inputs,
-                    requester_did,
-                };
-                let receipt = zk_compute::prove_computation(&request)?;
-                emit_json_output(
-                    &serde_json::json!({
-                        "status": "ok",
-                        "receipt": receipt,
-                    }),
-                    out_path.as_deref(),
-                )
+                i += 1;
             }
-            #[cfg(not(feature = "zk-compute"))]
-            {
-                let _ = args;
-                Err("`agenthalo zk compute prove` requires cargo feature `zk-compute`".to_string())
-            }
+            let guest_path = guest.ok_or_else(|| "--guest is required".to_string())?;
+            let input_path = public_input.ok_or_else(|| "--input is required".to_string())?;
+            let private_path = private_input.ok_or_else(|| "--private is required".to_string())?;
+            let guest_elf = std::fs::read(&guest_path)
+                .map_err(|e| format!("read guest ELF {guest_path}: {e}"))?;
+            let public_inputs = std::fs::read(&input_path)
+                .map_err(|e| format!("read input file {input_path}: {e}"))?;
+            let private_inputs = std::fs::read(&private_path)
+                .map_err(|e| format!("read private file {private_path}: {e}"))?;
+            let requester_did = if let Some(did) = requester_did {
+                did
+            } else {
+                load_local_did_identity()?.did
+            };
+            let request = zk_compute::ComputeRequest {
+                compute_id: compute_id.unwrap_or_else(|| format!("compute-{}", now_unix_secs())),
+                guest_elf,
+                public_inputs,
+                private_inputs,
+                requester_did,
+            };
+            let receipt = zk_compute::prove_computation(&request)?;
+            emit_json_output(
+                &serde_json::json!({
+                    "status": "ok",
+                    "receipt": receipt,
+                }),
+                out_path.as_deref(),
+            )
         }
         "verify" => {
-            #[cfg(feature = "zk-compute")]
-            {
-                let mut receipt_path: Option<String> = None;
-                let mut image_id: Option<String> = None;
-                let mut i = 1usize;
-                while i < args.len() {
-                    match args[i].as_str() {
-                        "--receipt" => {
-                            i += 1;
-                            receipt_path = Some(args.get(i).ok_or_else(|| "--receipt requires a value".to_string())?.to_string());
-                        }
-                        "--image-id" => {
-                            i += 1;
-                            image_id = Some(args.get(i).ok_or_else(|| "--image-id requires a value".to_string())?.to_string());
-                        }
-                        other => return Err(format!("unknown flag for zk compute verify: {other}")),
+            let mut receipt_path: Option<String> = None;
+            let mut image_id: Option<String> = None;
+            let mut i = 1usize;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--receipt" => {
+                        i += 1;
+                        receipt_path = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--receipt requires a value".to_string())?
+                                .to_string(),
+                        );
                     }
-                    i += 1;
+                    "--image-id" => {
+                        i += 1;
+                        image_id = Some(
+                            args.get(i)
+                                .ok_or_else(|| "--image-id requires a value".to_string())?
+                                .to_string(),
+                        );
+                    }
+                    other => return Err(format!("unknown flag for zk compute verify: {other}")),
                 }
-                let receipt_path =
-                    receipt_path.ok_or_else(|| "--receipt is required".to_string())?;
-                let raw = std::fs::read_to_string(&receipt_path)
-                    .map_err(|e| format!("read receipt file {receipt_path}: {e}"))?;
-                let value: serde_json::Value = serde_json::from_str(&raw)
-                    .map_err(|e| format!("parse receipt file {receipt_path}: {e}"))?;
-                let receipt_value = value.get("receipt").cloned().unwrap_or(value);
-                let receipt: zk_compute::ComputeReceipt = serde_json::from_value(receipt_value)
-                    .map_err(|e| format!("parse compute receipt: {e}"))?;
-                let verified = if let Some(expected_image_id) = image_id {
-                    zk_compute::verify_receipt_minimal(
-                        &receipt.receipt_bytes,
-                        &expected_image_id,
-                        &receipt.journal,
-                    )?
-                } else {
-                    zk_compute::verify_computation(&receipt)?
-                };
-                print_json(&serde_json::json!({
-                    "status": "ok",
-                    "verified": verified,
-                }))
+                i += 1;
             }
-            #[cfg(not(feature = "zk-compute"))]
-            {
-                let _ = args;
-                Err("`agenthalo zk compute verify` requires cargo feature `zk-compute`".to_string())
-            }
+            let receipt_path = receipt_path.ok_or_else(|| "--receipt is required".to_string())?;
+            let raw = std::fs::read_to_string(&receipt_path)
+                .map_err(|e| format!("read receipt file {receipt_path}: {e}"))?;
+            let value: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| format!("parse receipt file {receipt_path}: {e}"))?;
+            let receipt_value = value.get("receipt").cloned().unwrap_or(value);
+            let receipt: zk_compute::ComputeReceipt = serde_json::from_value(receipt_value)
+                .map_err(|e| format!("parse compute receipt: {e}"))?;
+            let verified = if let Some(expected_image_id) = image_id {
+                zk_compute::verify_receipt_minimal(
+                    &receipt.receipt_bytes,
+                    &expected_image_id,
+                    &receipt.journal,
+                )?
+            } else {
+                zk_compute::verify_computation(&receipt)?
+            };
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "verified": verified,
+            }))
         }
         _ => Err("usage: agenthalo zk compute [prove --guest <elf-path> --input <json-file> --private <json-file> [--compute-id <id>] [--requester-did <did>] [--out <path>] | verify --receipt <json-file> [--image-id <hex>]]".to_string()),
     }

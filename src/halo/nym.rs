@@ -388,4 +388,22 @@ mod tests {
         let _open = EnvVarGuard::set("NYM_FAIL_OPEN", Some("true"));
         assert!(!is_fail_closed());
     }
+
+    #[test]
+    fn status_reports_disabled_when_no_proxy_no_native() {
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _socks = EnvVarGuard::set("SOCKS5_PROXY", None);
+        let _all_proxy = EnvVarGuard::set("ALL_PROXY", None);
+        let _https_proxy = EnvVarGuard::set("HTTPS_PROXY", None);
+        let _nym_bin = EnvVarGuard::set("NYM_BINARY", None);
+        let _nym_cfg = EnvVarGuard::set("NYM_CONFIG_DIR", None);
+        let _native_enabled = EnvVarGuard::set("NYM_NATIVE_ENABLED", None);
+        let _legacy = EnvVarGuard::set("NYM_FAIL_CLOSED", None);
+        let _open = EnvVarGuard::set("NYM_FAIL_OPEN", None);
+
+        let s = status();
+        assert_eq!(s.mode, NymMode::Disabled);
+        assert!(!s.healthy);
+        assert!(s.fail_closed);
+    }
 }

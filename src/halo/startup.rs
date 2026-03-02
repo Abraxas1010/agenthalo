@@ -231,4 +231,17 @@ mod tests {
         assert!(stack.discovery.is_none());
         assert!(stack.a2a_bridge_task.is_none());
     }
+
+    #[tokio::test]
+    async fn startup_with_nym_disabled_skips_transport() {
+        let seed = [0x7bu8; 64];
+        let config = StartupConfig {
+            nym_enabled: false,
+            p2p_enabled: false,
+            ..StartupConfig::default()
+        };
+        let stack = start(&seed, config).await.expect("startup");
+        assert!(!stack.nym_status.healthy);
+        assert_eq!(stack.nym_status.mode, crate::halo::nym::NymMode::Disabled);
+    }
 }

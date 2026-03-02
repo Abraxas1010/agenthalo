@@ -113,6 +113,20 @@ impl DIDCommHandler {
                 ))
             })
         });
+
+        self.on_message(message_types::TASK_CANCEL, |message| {
+            Box::pin(async move {
+                Some(DIDCommMessage::new(
+                    message_types::TASK_STATUS,
+                    None,
+                    message.from.into_iter().collect(),
+                    json!({
+                        "reply_to": message.id,
+                        "status": "canceled"
+                    }),
+                ))
+            })
+        });
     }
 
     pub async fn handle_incoming<F>(
@@ -440,6 +454,43 @@ mod tests {
 
         assert_eq!(status_message.type_, message_types::TASK_STATUS);
         assert_eq!(status_message.body["status"], "submitted");
+    }
+
+    #[tokio::test]
+    async fn task_cancel_handler_returns_canceled_status() {
+        let sender =
+            Arc::new(crate::halo::did::did_from_genesis_seed(&seed(0x29)).expect("sender"));
+        let recipient =
+            Arc::new(crate::halo::did::did_from_genesis_seed(&seed(0x2A)).expect("recipient"));
+        let recipient_key =
+            crate::halo::didcomm::extract_x25519_public_key_from_doc(&recipient.did_document)
+                .expect("recipient x25519");
+
+        let task_cancel = DIDCommMessage::new(
+            message_types::TASK_CANCEL,
+            Some(&sender.did),
+            vec![recipient.did.clone()],
+            json!({ "task_id": "task-1234" }),
+        );
+        let packed = pack_authcrypt(&task_cancel, &sender, &recipient_key).expect("pack cancel");
+
+        let mut handler = DIDCommHandler::new(recipient.clone());
+        handler.register_builtin_handlers();
+        let packed_status = handler
+            .handle_incoming(&packed, resolver(&sender, &recipient))
+            .await
+            .expect("handle incoming")
+            .expect("task status response");
+
+        let (status_message, _) = crate::halo::didcomm::unpack_with_resolver(
+            &packed_status,
+            &sender,
+            resolver(&recipient, &sender),
+        )
+        .expect("unpack status");
+
+        assert_eq!(status_message.type_, message_types::TASK_STATUS);
+        assert_eq!(status_message.body["status"], "canceled");
     }
 
     #[tokio::test]

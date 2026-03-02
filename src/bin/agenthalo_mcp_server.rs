@@ -37,7 +37,6 @@ use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::util::digest_json;
 use nucleusdb::halo::viewer;
 use nucleusdb::halo::x402;
-#[cfg(feature = "zk-compute")]
 use nucleusdb::halo::zk_compute;
 use nucleusdb::halo::zk_credential;
 use nucleusdb::pod::access_policy::{AccessContext, PolicyStore};
@@ -3742,48 +3741,32 @@ fn tool_zk_verify_anonymous_membership(arguments: Value) -> Result<Value, String
 
 fn tool_zk_compute_prove(arguments: Value) -> Result<Value, String> {
     mcp_require_scope(CryptoScope::Sign)?;
-    #[cfg(feature = "zk-compute")]
-    {
-        let req_value = arguments
-            .get("request")
-            .cloned()
-            .ok_or_else(|| "request is required".to_string())?;
-        let request: zk_compute::ComputeRequest =
-            serde_json::from_value(req_value).map_err(|e| format!("parse request: {e}"))?;
-        let receipt = zk_compute::prove_computation(&request)?;
-        Ok(json!({
-            "status": "ok",
-            "receipt": receipt,
-        }))
-    }
-    #[cfg(not(feature = "zk-compute"))]
-    {
-        let _ = arguments;
-        Err("zk_compute_prove requires the `zk-compute` cargo feature".to_string())
-    }
+    let req_value = arguments
+        .get("request")
+        .cloned()
+        .ok_or_else(|| "request is required".to_string())?;
+    let request: zk_compute::ComputeRequest =
+        serde_json::from_value(req_value).map_err(|e| format!("parse request: {e}"))?;
+    let receipt = zk_compute::prove_computation(&request)?;
+    Ok(json!({
+        "status": "ok",
+        "receipt": receipt,
+    }))
 }
 
 fn tool_zk_compute_verify(arguments: Value) -> Result<Value, String> {
     mcp_require_scope(CryptoScope::Identity)?;
-    #[cfg(feature = "zk-compute")]
-    {
-        let receipt_value = arguments
-            .get("receipt")
-            .cloned()
-            .ok_or_else(|| "receipt is required".to_string())?;
-        let receipt: zk_compute::ComputeReceipt =
-            serde_json::from_value(receipt_value).map_err(|e| format!("parse receipt: {e}"))?;
-        let verified = zk_compute::verify_computation(&receipt)?;
-        Ok(json!({
-            "status": "ok",
-            "verified": verified,
-        }))
-    }
-    #[cfg(not(feature = "zk-compute"))]
-    {
-        let _ = arguments;
-        Err("zk_compute_verify requires the `zk-compute` cargo feature".to_string())
-    }
+    let receipt_value = arguments
+        .get("receipt")
+        .cloned()
+        .ok_or_else(|| "receipt is required".to_string())?;
+    let receipt: zk_compute::ComputeReceipt =
+        serde_json::from_value(receipt_value).map_err(|e| format!("parse receipt: {e}"))?;
+    let verified = zk_compute::verify_computation(&receipt)?;
+    Ok(json!({
+        "status": "ok",
+        "verified": verified,
+    }))
 }
 
 fn tool_attest(arguments: Value) -> Result<Value, String> {

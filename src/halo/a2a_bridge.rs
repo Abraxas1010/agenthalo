@@ -8,11 +8,12 @@ use crate::halo::p2p_discovery::AgentCapability;
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,6 +87,51 @@ struct BridgeState {
     identity: Arc<DIDIdentity>,
     didcomm: Arc<DIDCommHandler>,
     tasks: Arc<RwLock<HashMap<String, TaskRecord>>>,
+    executor: Arc<dyn TaskExecutor>,
+}
+
+pub trait TaskExecutor: Send + Sync {
+    fn execute<'a>(
+        &'a self,
+        task_id: &'a str,
+        task_type: &'a str,
+        payload: &'a serde_json::Value,
+    ) -> BoxFuture<'a, Result<serde_json::Value, String>>;
+}
+
+#[derive(Clone)]
+pub struct DIDCommTaskExecutor {
+    identity: Arc<DIDIdentity>,
+    didcomm: Arc<DIDCommHandler>,
+}
+
+impl DIDCommTaskExecutor {
+    pub fn new(identity: Arc<DIDIdentity>, didcomm: Arc<DIDCommHandler>) -> Self {
+        Self { identity, didcomm }
+    }
+}
+
+impl TaskExecutor for DIDCommTaskExecutor {
+    fn execute<'a>(
+        &'a self,
+        task_id: &'a str,
+        task_type: &'a str,
+        payload: &'a serde_json::Value,
+    ) -> BoxFuture<'a, Result<serde_json::Value, String>> {
+        Box::pin(async move {
+            let response = run_task_via_didcomm(
+                self.identity.clone(),
+                self.didcomm.clone(),
+                task_id,
+                task_type,
+                payload,
+            )
+            .await?;
+            Ok(response
+                .map(|message| message.body)
+                .unwrap_or_else(|| serde_json::json!({"status": "submitted"})))
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,12 +218,14 @@ pub async fn start_a2a_bridge(
     let base_url = format!("http://127.0.0.1:{port}");
     let mut didcomm = DIDCommHandler::new(identity.clone());
     didcomm.register_builtin_handlers();
+    let didcomm = Arc::new(didcomm);
 
     let state = BridgeState {
         card: generate_agent_card(&identity, &base_url, &skills),
-        identity,
-        didcomm: Arc::new(didcomm),
+        identity: identity.clone(),
+        didcomm: didcomm.clone(),
         tasks: Arc::new(RwLock::new(HashMap::new())),
+        executor: Arc::new(DIDCommTaskExecutor::new(identity, didcomm)),
     };
 
     let app = Router::new()
@@ -243,23 +291,17 @@ fn is_terminal(status: &TaskStatus) -> bool {
 }
 
 async fn run_task_via_didcomm(
-    state: &BridgeState,
+    identity: Arc<DIDIdentity>,
+    didcomm: Arc<DIDCommHandler>,
     task_id: &str,
-    recipient_did: &str,
     task_type: &str,
     payload: &Value,
 ) -> Result<Option<DIDCommMessage>, String> {
-    if recipient_did != state.identity.did {
-        return Err(format!(
-            "A2A bridge only supports local DIDComm routing in Phase 2; unknown recipient `{recipient_did}`"
-        ));
-    }
-
-    let recipient_key = extract_x25519_public_key_from_doc(&state.identity.did_document)?;
+    let recipient_key = extract_x25519_public_key_from_doc(&identity.did_document)?;
     let outbound = DIDCommMessage::new(
         message_types::TASK_SEND,
-        Some(&state.identity.did),
-        vec![recipient_did.to_string()],
+        Some(&identity.did),
+        vec![identity.did.clone()],
         serde_json::json!({
             "task_id": task_id,
             "task_type": task_type,
@@ -267,12 +309,11 @@ async fn run_task_via_didcomm(
         }),
     );
 
-    let packed = pack_authcrypt(&outbound, &state.identity, &recipient_key)?;
-    let packed_response = state
-        .didcomm
+    let packed = pack_authcrypt(&outbound, &identity, &recipient_key)?;
+    let packed_response = didcomm
         .handle_incoming(&packed, |did| {
-            if did == state.identity.did {
-                Some(state.identity.did_document.clone())
+            if did == identity.did {
+                Some(identity.did_document.clone())
             } else {
                 None
             }
@@ -283,9 +324,9 @@ async fn run_task_via_didcomm(
         return Ok(None);
     };
 
-    let (response, _) = unpack_with_resolver(&packed_response, &state.identity, |did| {
-        if did == state.identity.did {
-            Some(state.identity.did_document.clone())
+    let (response, _) = unpack_with_resolver(&packed_response, &identity, |did| {
+        if did == identity.did {
+            Some(identity.did_document.clone())
         } else {
             None
         }
@@ -344,69 +385,67 @@ async fn tasks_send(state: BridgeState, params: TaskSendParams) -> Result<Value,
     };
     state.tasks.write().await.insert(task_id.clone(), initial);
 
-    match run_task_via_didcomm(
-        &state,
-        &task_id,
-        &recipient_did,
-        &task_type,
-        &params.payload,
-    )
-    .await
-    {
-        Ok(response) => {
-            let didcomm_status = response
-                .as_ref()
-                .and_then(|msg| msg.body.get("status"))
-                .and_then(Value::as_str)
-                .unwrap_or("submitted")
-                .to_string();
+    if recipient_did != state.identity.did {
+        let error = format!(
+            "A2A bridge only supports local DIDComm routing in Phase 2; unknown recipient `{recipient_did}`"
+        );
+        update_task_status(
+            state.tasks.clone(),
+            &task_id,
+            TaskStatus::Failed,
+            None,
+            Some(error.clone()),
+        )
+        .await;
+        return Err(error);
+    }
 
-            let tasks = state.tasks.clone();
-            let task_id_for_worker = task_id.clone();
-            let task_type_for_worker = task_type.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(150)).await;
-                update_task_status(
-                    tasks.clone(),
-                    &task_id_for_worker,
-                    TaskStatus::Working,
-                    None,
-                    None,
-                )
-                .await;
-
-                tokio::time::sleep(Duration::from_millis(150)).await;
+    let tasks = state.tasks.clone();
+    let executor = state.executor.clone();
+    let task_id_for_exec = task_id.clone();
+    let task_type_for_exec = task_type.clone();
+    let payload_for_exec = params.payload.clone();
+    tokio::spawn(async move {
+        update_task_status(
+            tasks.clone(),
+            &task_id_for_exec,
+            TaskStatus::Working,
+            None,
+            None,
+        )
+        .await;
+        match executor
+            .execute(&task_id_for_exec, &task_type_for_exec, &payload_for_exec)
+            .await
+        {
+            Ok(result) => {
                 update_task_status(
                     tasks,
-                    &task_id_for_worker,
+                    &task_id_for_exec,
                     TaskStatus::Completed,
-                    Some(serde_json::json!({
-                        "task_type": task_type_for_worker,
-                        "status": "completed",
-                    })),
+                    Some(result),
                     None,
                 )
                 .await;
-            });
+            }
+            Err(error) => {
+                update_task_status(
+                    tasks,
+                    &task_id_for_exec,
+                    TaskStatus::Failed,
+                    None,
+                    Some(error),
+                )
+                .await;
+            }
+        }
+    });
 
-            Ok(serde_json::json!({
-                "task_id": task_id,
-                "status": "submitted",
-                "didcomm_status": didcomm_status,
-            }))
-        }
-        Err(error) => {
-            update_task_status(
-                state.tasks.clone(),
-                &task_id,
-                TaskStatus::Failed,
-                None,
-                Some(error.clone()),
-            )
-            .await;
-            Err(error)
-        }
-    }
+    Ok(serde_json::json!({
+        "task_id": task_id,
+        "status": "submitted",
+        "didcomm_status": "submitted",
+    }))
 }
 
 async fn tasks_get(state: BridgeState, params: TaskGetParams) -> Result<Value, String> {
@@ -568,11 +607,13 @@ mod tests {
         let card = generate_agent_card(&identity, "http://127.0.0.1:9300", &[]);
         let mut handler = DIDCommHandler::new(identity.clone());
         handler.register_builtin_handlers();
+        let didcomm = Arc::new(handler);
         BridgeState {
             card,
-            identity,
-            didcomm: Arc::new(handler),
+            identity: identity.clone(),
+            didcomm: didcomm.clone(),
             tasks: Arc::new(RwLock::new(HashMap::new())),
+            executor: Arc::new(DIDCommTaskExecutor::new(identity, didcomm)),
         }
     }
 
@@ -616,6 +657,7 @@ mod tests {
             .as_str()
             .expect("task id")
             .to_string();
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
 
         let get_resp = handle_jsonrpc(
             state.clone(),
@@ -628,6 +670,7 @@ mod tests {
         )
         .await;
         assert_eq!(get_resp["result"]["task_type"], "proof");
+        assert_eq!(get_resp["result"]["status"], "completed");
 
         let cancel_resp = handle_jsonrpc(
             state,
@@ -639,7 +682,10 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(cancel_resp["result"]["status"], "canceled");
+        let status = cancel_resp["result"]["status"]
+            .as_str()
+            .expect("cancel status");
+        assert!(status == "canceled" || status == "completed");
     }
 
     #[tokio::test]

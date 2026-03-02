@@ -8,6 +8,7 @@ inductive MessageKind where
   | ping
   | ack
   | taskSend
+  | taskCancel
   | taskStatus
   | agentCardRequest
   | agentCardResponse
@@ -18,6 +19,7 @@ inductive MessageKind where
 def builtinResponse : MessageKind → Option MessageKind
   | .ping => some .ack
   | .taskSend => some .taskStatus
+  | .taskCancel => some .taskStatus
   | .agentCardRequest => some .agentCardResponse
   | .ack => none
   | .taskStatus => none
@@ -30,6 +32,10 @@ theorem ping_routes_to_ack :
 
 theorem task_send_routes_to_task_status :
     builtinResponse .taskSend = some .taskStatus := by
+  rfl
+
+theorem task_cancel_routes_to_task_status :
+    builtinResponse .taskCancel = some .taskStatus := by
   rfl
 
 theorem unsupported_has_no_builtin_response :
