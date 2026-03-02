@@ -4363,9 +4363,9 @@ async fn api_wdk_send(
     Json(req): Json<WdkTransferRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    require_scope(&state, CryptoScope::Wallet)?;
     let (chain, to, amount) =
         validate_wdk_transfer(&req).map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    require_scope(&state, CryptoScope::Wallet)?;
     let mgr = lock_wdk_manager(&state)?;
     if !mgr.is_running() {
         return Err(api_err(
@@ -4390,9 +4390,9 @@ async fn api_wdk_quote(
     Json(req): Json<WdkTransferRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    require_scope(&state, CryptoScope::Wallet)?;
     let (chain, to, amount) =
         validate_wdk_transfer(&req).map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    require_scope(&state, CryptoScope::Wallet)?;
     let mgr = lock_wdk_manager(&state)?;
     if !mgr.is_running() {
         return Err(api_err(
