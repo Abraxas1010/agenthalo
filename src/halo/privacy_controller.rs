@@ -33,13 +33,16 @@ impl PrivacyConfig {
         if let Some(forced) = self.force_level {
             return forced;
         }
+        let host = extract_host(url).unwrap_or_default();
         for pat in &self.always_none {
-            if !pat.trim().is_empty() && url.contains(pat) {
+            let p = pat.trim();
+            if !p.is_empty() && host.contains(p) {
                 return PrivacyLevel::None;
             }
         }
         for pat in &self.always_maximum {
-            if !pat.trim().is_empty() && url.contains(pat) {
+            let p = pat.trim();
+            if !p.is_empty() && host.contains(p) {
                 return PrivacyLevel::Maximum;
             }
         }
@@ -62,14 +65,7 @@ fn extract_host(url: &str) -> Option<String> {
         return None;
     }
 
-    let without_scheme = trimmed
-        .strip_prefix("https://")
-        .or_else(|| trimmed.strip_prefix("http://"))
-        .or_else(|| trimmed.strip_prefix("wss://"))
-        .or_else(|| trimmed.strip_prefix("ws://"))
-        .or_else(|| trimmed.strip_prefix("socks5://"))
-        .or_else(|| trimmed.strip_prefix("tcp://"))
-        .unwrap_or(trimmed);
+    let without_scheme = strip_scheme(trimmed);
 
     let authority = without_scheme.split('/').next().unwrap_or("");
     if authority.is_empty() {
@@ -78,6 +74,22 @@ fn extract_host(url: &str) -> Option<String> {
 
     let authority = authority.split('@').next_back().unwrap_or(authority);
     parse_host_port(authority).map(|(h, _)| h.to_ascii_lowercase())
+}
+
+fn strip_scheme(url: &str) -> &str {
+    for (prefix, len) in [
+        (b"https://" as &[u8], 8),
+        (b"http://", 7),
+        (b"wss://", 6),
+        (b"ws://", 5),
+        (b"socks5://", 9),
+        (b"tcp://", 6),
+    ] {
+        if url.len() >= len && url.as_bytes()[..len].eq_ignore_ascii_case(prefix) {
+            return &url[len..];
+        }
+    }
+    url
 }
 
 fn parse_host_port(authority: &str) -> Option<(String, Option<u16>)> {
@@ -189,6 +201,12 @@ mod tests {
             classify_url("https://sepolia.base.org"),
             PrivacyLevel::Maximum
         );
+        assert_eq!(
+            classify_url("HTTPS://api.openai.com/v1/models"),
+            PrivacyLevel::Maximum
+        );
+        assert_eq!(classify_url("Http://Example.Com"), PrivacyLevel::Maximum);
+        assert_eq!(classify_url("hTTpS://foo.bar"), PrivacyLevel::Maximum);
     }
 
     #[test]
@@ -215,6 +233,20 @@ mod tests {
             cfg.classify("https://foo.example.com"),
             PrivacyLevel::Maximum
         );
+    }
+
+    #[test]
+    fn always_none_matches_host_not_path() {
+        let cfg = PrivacyConfig {
+            force_level: None,
+            always_maximum: Vec::new(),
+            always_none: vec!["127".into()],
+        };
+        assert_eq!(
+            cfg.classify("https://evil.com/path/127/data"),
+            PrivacyLevel::Maximum
+        );
+        assert_eq!(cfg.classify("http://127.0.0.1:3000"), PrivacyLevel::None);
     }
 
     #[test]

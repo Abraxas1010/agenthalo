@@ -16,7 +16,7 @@ pub fn agent_for_url_with_timeout(url: &str, timeout: Duration) -> Result<ureq::
         PrivacyLevel::Maximum | PrivacyLevel::P2P => {
             let maybe_proxy = nym::ensure_route_allowed(url)?;
             if let Some(proxy_uri) = maybe_proxy {
-                Ok(build_socks5_agent(&proxy_uri, timeout.max(MIXNET_TIMEOUT)))
+                build_socks5_agent(&proxy_uri, timeout.max(MIXNET_TIMEOUT))
             } else {
                 Ok(build_direct_agent(timeout))
             }
@@ -57,13 +57,14 @@ fn build_direct_agent(timeout: Duration) -> ureq::Agent {
         .into()
 }
 
-fn build_socks5_agent(proxy_uri: &str, timeout: Duration) -> ureq::Agent {
-    let proxy = ureq::Proxy::new(proxy_uri).expect("invalid SOCKS5 proxy URI");
-    ureq::Agent::config_builder()
+fn build_socks5_agent(proxy_uri: &str, timeout: Duration) -> Result<ureq::Agent, String> {
+    let proxy = ureq::Proxy::new(proxy_uri)
+        .map_err(|e| format!("invalid SOCKS5 proxy URI `{proxy_uri}`: {e}"))?;
+    Ok(ureq::Agent::config_builder()
         .proxy(Some(proxy))
         .timeout_global(Some(timeout))
         .build()
-        .into()
+        .into())
 }
 
 #[cfg(test)]
@@ -126,5 +127,12 @@ mod tests {
         let _fail = EnvVarGuard::set("NYM_FAIL_CLOSED", Some("true"));
         let _socks = EnvVarGuard::set("SOCKS5_PROXY", Some("127.0.0.1:1080"));
         assert!(agent_for_url("https://api.openai.com/v1/models").is_ok());
+    }
+
+    #[test]
+    fn invalid_proxy_uri_returns_error() {
+        let err = build_socks5_agent("socks5://", Duration::from_secs(1))
+            .expect_err("invalid URI should error");
+        assert!(err.contains("invalid SOCKS5 proxy URI"));
     }
 }

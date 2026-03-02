@@ -30,8 +30,10 @@ pub fn status() -> NymStatus {
         let healthy = proxy_healthcheck(&proxy);
         let mode = if std::env::var("SOCKS5_PROXY").ok().is_some() {
             NymMode::External
-        } else {
+        } else if std::env::var("NYM_BINARY").is_ok() || std::env::var("NYM_CONFIG_DIR").is_ok() {
             NymMode::Local
+        } else {
+            NymMode::External
         };
         return NymStatus {
             mode,
@@ -56,15 +58,25 @@ pub fn status() -> NymStatus {
 }
 
 pub fn is_fail_closed() -> bool {
-    std::env::var("NYM_FAIL_CLOSED")
-        .ok()
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    // Fail-closed by default: set NYM_FAIL_OPEN=true to allow direct fallback.
+    if let Ok(v) = std::env::var("NYM_FAIL_OPEN") {
+        if matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ) {
+            return false;
+        }
+    }
+    // Legacy compatibility: NYM_FAIL_CLOSED=false means fail-open.
+    if let Ok(v) = std::env::var("NYM_FAIL_CLOSED") {
+        if matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ) {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn resolve_socks5_proxy() -> Option<String> {
@@ -86,10 +98,6 @@ pub fn resolve_socks5_proxy() -> Option<String> {
     }
 
     if std::env::var("NYM_BINARY").is_ok() || std::env::var("NYM_CONFIG_DIR").is_ok() {
-        return Some(format!("socks5://{DEFAULT_SOCKS5_ADDR}"));
-    }
-
-    if tcp_healthcheck(DEFAULT_SOCKS5_ADDR) {
         return Some(format!("socks5://{DEFAULT_SOCKS5_ADDR}"));
     }
 
@@ -278,5 +286,32 @@ mod tests {
         let err =
             ensure_route_allowed("https://api.openai.com/v1/models").expect_err("should block");
         assert!(err.contains("outbound blocked"));
+    }
+
+    #[test]
+    fn no_auto_detect_without_env() {
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _socks = EnvVarGuard::set("SOCKS5_PROXY", None);
+        let _all_proxy = EnvVarGuard::set("ALL_PROXY", None);
+        let _https_proxy = EnvVarGuard::set("HTTPS_PROXY", None);
+        let _nym_bin = EnvVarGuard::set("NYM_BINARY", None);
+        let _nym_cfg = EnvVarGuard::set("NYM_CONFIG_DIR", None);
+        assert_eq!(resolve_socks5_proxy(), None);
+    }
+
+    #[test]
+    fn fail_closed_default_true() {
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _legacy = EnvVarGuard::set("NYM_FAIL_CLOSED", None);
+        let _open = EnvVarGuard::set("NYM_FAIL_OPEN", None);
+        assert!(is_fail_closed());
+    }
+
+    #[test]
+    fn fail_open_override_supported() {
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _legacy = EnvVarGuard::set("NYM_FAIL_CLOSED", None);
+        let _open = EnvVarGuard::set("NYM_FAIL_OPEN", Some("true"));
+        assert!(!is_fail_closed());
     }
 }
