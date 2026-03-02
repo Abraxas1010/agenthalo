@@ -1,0 +1,167 @@
+use crate::halo::did::{did_from_genesis_seed, DIDIdentity};
+use crate::halo::didcomm_handler::DIDCommHandler;
+use crate::halo::nym::{self, NymStatus};
+use crate::halo::p2p_discovery::{
+    announcement_for_identity, sign_announcement, topic_general, AgentDiscovery,
+};
+use crate::halo::p2p_node::{P2pConfig, P2pNode};
+use std::sync::Arc;
+use std::time::Duration;
+
+pub struct HaloStack {
+    pub identity: Arc<DIDIdentity>,
+    pub p2p_node: Option<P2pNode>,
+    pub didcomm_handler: Option<DIDCommHandler>,
+    pub discovery: Option<AgentDiscovery>,
+    pub nym_status: NymStatus,
+}
+
+#[derive(Clone, Debug)]
+pub struct StartupConfig {
+    pub nym_enabled: bool,
+    pub nym_max_retries: u32,
+    pub nym_retry_delay: Duration,
+    pub p2p_enabled: bool,
+    pub p2p_config: P2pConfig,
+}
+
+impl Default for StartupConfig {
+    fn default() -> Self {
+        Self {
+            nym_enabled: true,
+            nym_max_retries: 10,
+            nym_retry_delay: Duration::from_secs(2),
+            p2p_enabled: true,
+            p2p_config: P2pConfig::default(),
+        }
+    }
+}
+
+impl StartupConfig {
+    pub fn from_env() -> Result<Self, String> {
+        let nym_enabled = std::env::var("NYM_ENABLED")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(true);
+
+        let nym_max_retries = std::env::var("NYM_MAX_RETRIES")
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .unwrap_or(10);
+
+        let nym_retry_delay_secs = std::env::var("NYM_RETRY_DELAY_SECS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(2);
+
+        let p2p_config = P2pConfig::from_env()?;
+        let p2p_enabled = std::env::var("P2P_ENABLED")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(true);
+
+        Ok(Self {
+            nym_enabled,
+            nym_max_retries,
+            nym_retry_delay: Duration::from_secs(nym_retry_delay_secs),
+            p2p_enabled,
+            p2p_config,
+        })
+    }
+}
+
+pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, String> {
+    let identity = Arc::new(did_from_genesis_seed(seed)?);
+    eprintln!("[AgentHalo/Startup][1/5] identity loaded: {}", identity.did);
+
+    let mut nym_status = nym::status();
+    if config.nym_enabled {
+        for attempt in 0..=config.nym_max_retries {
+            nym_status = nym::status();
+            if nym_status.healthy || nym_status.socks5_proxy.is_none() {
+                break;
+            }
+            if attempt == config.nym_max_retries {
+                break;
+            }
+            tokio::time::sleep(config.nym_retry_delay).await;
+        }
+        if !nym_status.healthy && nym::is_fail_closed() && nym_status.socks5_proxy.is_some() {
+            return Err("Nym SOCKS5 is configured but unhealthy in fail-closed mode".to_string());
+        }
+    }
+    eprintln!("[AgentHalo/Startup][2/5] nym mode: {:?}", nym_status.mode);
+
+    let mut p2p_node = None;
+    let mut discovery = None;
+    let mut didcomm_handler = None;
+
+    if config.p2p_enabled && config.p2p_config.enabled {
+        let mut node = P2pNode::create_from_did(&identity, &config.p2p_config)?;
+        eprintln!("[AgentHalo/Startup][3/5] p2p peer id: {}", node.peer_id());
+
+        let mut handler = DIDCommHandler::new(identity.clone());
+        handler.register_builtin_handlers();
+        eprintln!("[AgentHalo/Startup][4/5] didcomm handlers ready");
+
+        let mut agent_discovery = AgentDiscovery::new();
+        agent_discovery.subscribe(&topic_general(), node.gossipsub_mut())?;
+        let mut announcement = announcement_for_identity(
+            &identity,
+            *node.peer_id(),
+            Vec::new(),
+            node.listen_addresses()
+                .into_iter()
+                .map(|addr| addr.to_string())
+                .collect(),
+        );
+        sign_announcement(&identity, &mut announcement)?;
+        agent_discovery.upsert_verified(announcement.clone());
+        let _ = agent_discovery.announce(&topic_general(), &announcement, node.gossipsub_mut());
+        let _ = agent_discovery.publish_to_dht(&announcement, node.kademlia_mut());
+        eprintln!("[AgentHalo/Startup][5/5] discovery bootstrapped");
+
+        didcomm_handler = Some(handler);
+        discovery = Some(agent_discovery);
+        p2p_node = Some(node);
+    } else {
+        eprintln!("[AgentHalo/Startup][3-5/5] p2p/didcomm/discovery disabled");
+    }
+
+    Ok(HaloStack {
+        identity,
+        p2p_node,
+        didcomm_handler,
+        discovery,
+        nym_status,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn startup_without_p2p_still_loads_identity() {
+        let seed = [0x7au8; 64];
+        let config = StartupConfig {
+            nym_enabled: false,
+            p2p_enabled: false,
+            ..StartupConfig::default()
+        };
+        let stack = start(&seed, config).await.expect("startup without p2p");
+        assert!(stack.identity.did.starts_with("did:key:"));
+        assert!(stack.p2p_node.is_none());
+        assert!(stack.discovery.is_none());
+    }
+}

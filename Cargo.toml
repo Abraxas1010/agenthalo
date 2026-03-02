@@ -105,6 +105,22 @@ ml-kem = { version = "0.2", features = ["zeroize"] }
 zeroize = { version = "1.8", features = ["derive"] }
 subtle = "2.6"
 risc0-zkvm = { version = "1.2", optional = true }
+libp2p = { version = "0.54", features = [
+    "tokio",
+    "tcp",
+    "noise",
+    "yamux",
+    "kad",
+    "gossipsub",
+    "mdns",
+    "identify",
+    "autonat",
+    "relay",
+    "dcutr",
+    "macros",
+    "ed25519",
+    "serde",
+] }
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
