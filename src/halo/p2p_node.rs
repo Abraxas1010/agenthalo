@@ -1,19 +1,24 @@
 use crate::halo::did::DIDIdentity;
-use crate::halo::p2p_discovery::topic_general;
+use crate::halo::p2p_discovery::{
+    announcement_for_identity, sign_announcement, topic_general, AgentDiscovery, TOPIC_PREFIX,
+};
 use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use futures_util::StreamExt;
 use libp2p::autonat;
+use libp2p::dcutr;
 use libp2p::gossipsub::{self, IdentTopic, MessageAuthenticity};
 use libp2p::identify;
 use libp2p::kad::{self, store::MemoryStore};
 use libp2p::mdns;
 use libp2p::noise;
+use libp2p::relay;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::yamux;
 use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::Duration;
+use tokio::time::{self, MissedTickBehavior};
 
 pub const PROTOCOL_DIDCOMM: &str = "/agenthalo/didcomm/1.0.0";
 pub const PROTOCOL_DISCOVERY: &str = "/agenthalo/discovery/1.0.0";
@@ -86,6 +91,8 @@ pub struct HaloBehaviour {
     pub identify: identify::Behaviour,
     pub kademlia: kad::Behaviour<MemoryStore>,
     pub gossipsub: gossipsub::Behaviour,
+    pub relay_client: relay::client::Behaviour,
+    pub dcutr: dcutr::Behaviour,
     pub mdns: mdns::tokio::Behaviour,
     pub autonat: autonat::Behaviour,
 }
@@ -95,6 +102,8 @@ pub enum HaloBehaviourEvent {
     Identify(Box<identify::Event>),
     Kademlia(Box<kad::Event>),
     Gossipsub(Box<gossipsub::Event>),
+    RelayClient(Box<relay::client::Event>),
+    Dcutr(Box<dcutr::Event>),
     Mdns(Box<mdns::Event>),
     Autonat(Box<autonat::Event>),
 }
@@ -114,6 +123,18 @@ impl From<kad::Event> for HaloBehaviourEvent {
 impl From<gossipsub::Event> for HaloBehaviourEvent {
     fn from(value: gossipsub::Event) -> Self {
         Self::Gossipsub(Box::new(value))
+    }
+}
+
+impl From<relay::client::Event> for HaloBehaviourEvent {
+    fn from(value: relay::client::Event) -> Self {
+        Self::RelayClient(Box::new(value))
+    }
+}
+
+impl From<dcutr::Event> for HaloBehaviourEvent {
+    fn from(value: dcutr::Event) -> Self {
+        Self::Dcutr(Box::new(value))
     }
 }
 
@@ -161,7 +182,9 @@ impl P2pNode {
                 yamux::Config::default,
             )
             .map_err(|e| format!("build TCP transport: {e}"))?
-            .with_behaviour(|identity_key| {
+            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .map_err(|e| format!("build relay client transport: {e}"))?
+            .with_behaviour(|identity_key, relay_client| {
                 let local_peer_id = identity_key.public().to_peer_id();
                 let mut kad_behaviour =
                     kad::Behaviour::new(local_peer_id, MemoryStore::new(local_peer_id));
@@ -189,6 +212,8 @@ impl P2pNode {
                     )),
                     kademlia: kad_behaviour,
                     gossipsub,
+                    relay_client,
+                    dcutr: dcutr::Behaviour::new(local_peer_id),
                     mdns: mdns_behaviour,
                     autonat: autonat::Behaviour::new(local_peer_id, autonat::Config::default()),
                 })
@@ -267,6 +292,12 @@ impl P2pNode {
                 SwarmEvent::Behaviour(HaloBehaviourEvent::Gossipsub(event)) => {
                     eprintln!("[AgentHalo/P2P] gossipsub event: {event:?}");
                 }
+                SwarmEvent::Behaviour(HaloBehaviourEvent::RelayClient(event)) => {
+                    eprintln!("[AgentHalo/P2P] relay client event: {event:?}");
+                }
+                SwarmEvent::Behaviour(HaloBehaviourEvent::Dcutr(event)) => {
+                    eprintln!("[AgentHalo/P2P] dcutr event: {event:?}");
+                }
                 SwarmEvent::Behaviour(HaloBehaviourEvent::Mdns(event)) => match *event {
                     mdns::Event::Discovered(peers) => {
                         for (peer, addr) in peers {
@@ -312,6 +343,136 @@ impl P2pNode {
                     eprintln!("[AgentHalo/P2P] incoming connection error: {error}");
                 }
                 _ => {}
+            }
+        }
+    }
+
+    pub async fn run_with_discovery(
+        &mut self,
+        identity: &DIDIdentity,
+        discovery: &mut AgentDiscovery,
+        reannounce_ttl_secs: u64,
+    ) -> Result<(), String> {
+        let reannounce_every = Duration::from_secs(reannounce_ttl_secs.max(2) / 2);
+        let mut reannounce_tick = time::interval(reannounce_every);
+        reannounce_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = reannounce_tick.tick() => {
+                    discovery.prune_expired();
+                    let mut announcement = announcement_for_identity(
+                        identity,
+                        self.peer_id,
+                        Vec::new(),
+                        self.listen_addresses().into_iter().map(|addr| addr.to_string()).collect(),
+                    );
+                    announcement.ttl = reannounce_ttl_secs;
+                    sign_announcement(identity, &mut announcement)?;
+                    discovery.upsert_verified(announcement.clone());
+                    if let Err(error) = discovery.announce(&topic_general(), &announcement, self.gossipsub_mut()) {
+                        eprintln!("[AgentHalo/P2P] periodic gossip announce failed: {error}");
+                    }
+                    if let Err(error) = discovery.publish_to_dht(&announcement, self.kademlia_mut()) {
+                        eprintln!("[AgentHalo/P2P] periodic DHT announce failed: {error}");
+                    }
+                }
+                maybe_event = self.swarm.next() => {
+                    let Some(event) = maybe_event else {
+                        return Err("p2p swarm stream ended unexpectedly".to_string());
+                    };
+                    match event {
+                        SwarmEvent::Behaviour(HaloBehaviourEvent::Identify(event)) => {
+                            eprintln!("[AgentHalo/P2P] identify event: {event:?}");
+                        }
+                        SwarmEvent::Behaviour(HaloBehaviourEvent::Kademlia(event)) => {
+                            eprintln!("[AgentHalo/P2P] kad event: {event:?}");
+                        }
+                        SwarmEvent::Behaviour(HaloBehaviourEvent::Gossipsub(event)) => match *event {
+                            gossipsub::Event::Message {
+                                propagation_source,
+                                message_id,
+                                message,
+                            } => {
+                                if message.topic.as_str().starts_with(TOPIC_PREFIX) {
+                                    match discovery.handle_gossipsub_message(&message.data, |did| {
+                                        if did == identity.did {
+                                            Some(identity.did_document.clone())
+                                        } else {
+                                            None
+                                        }
+                                    }) {
+                                        Ok(announcement) => {
+                                            eprintln!(
+                                                "[AgentHalo/P2P] accepted announcement from {propagation_source} did={} msg={message_id}",
+                                                announcement.did
+                                            );
+                                        }
+                                        Err(error) => {
+                                            eprintln!(
+                                                "[AgentHalo/P2P] rejected gossipsub announcement from {propagation_source}: {error}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            other => {
+                                eprintln!("[AgentHalo/P2P] gossipsub event: {other:?}");
+                            }
+                        },
+                        SwarmEvent::Behaviour(HaloBehaviourEvent::RelayClient(event)) => {
+                            eprintln!("[AgentHalo/P2P] relay client event: {event:?}");
+                        }
+                        SwarmEvent::Behaviour(HaloBehaviourEvent::Dcutr(event)) => {
+                            eprintln!("[AgentHalo/P2P] dcutr event: {event:?}");
+                        }
+                        SwarmEvent::Behaviour(HaloBehaviourEvent::Mdns(event)) => match *event {
+                            mdns::Event::Discovered(peers) => {
+                                for (peer, addr) in peers {
+                                    self.swarm
+                                        .behaviour_mut()
+                                        .kademlia
+                                        .add_address(&peer, addr.clone());
+                                    self.swarm
+                                        .behaviour_mut()
+                                        .gossipsub
+                                        .add_explicit_peer(&peer);
+                                }
+                            }
+                            mdns::Event::Expired(peers) => {
+                                for (peer, addr) in peers {
+                                    self.swarm
+                                        .behaviour_mut()
+                                        .kademlia
+                                        .remove_address(&peer, &addr);
+                                    self.swarm
+                                        .behaviour_mut()
+                                        .gossipsub
+                                        .remove_explicit_peer(&peer);
+                                }
+                            }
+                        },
+                        SwarmEvent::Behaviour(HaloBehaviourEvent::Autonat(event)) => {
+                            eprintln!("[AgentHalo/P2P] autonat event: {event:?}");
+                        }
+                        SwarmEvent::NewListenAddr { address, .. } => {
+                            eprintln!("[AgentHalo/P2P] listening on {address}");
+                        }
+                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                            eprintln!("[AgentHalo/P2P] connection established to {peer_id}");
+                        }
+                        SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                            eprintln!(
+                                "[AgentHalo/P2P] outgoing connection error to {:?}: {error}",
+                                peer_id
+                            );
+                        }
+                        SwarmEvent::IncomingConnectionError { error, .. } => {
+                            eprintln!("[AgentHalo/P2P] incoming connection error: {error}");
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
@@ -380,5 +541,29 @@ mod tests {
         let peer_id_b = node2.peer_id().to_string();
 
         assert_eq!(peer_id_a, peer_id_b);
+    }
+
+    #[test]
+    fn peer_id_and_did_share_same_key_material() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x52)).expect("identity");
+        let mut keypair_bytes = identity.ed25519_signing_key.to_keypair_bytes();
+        let libp2p_ed25519 = identity::ed25519::Keypair::try_from_bytes(&mut keypair_bytes)
+            .expect("libp2p ed25519 keypair");
+        let libp2p_public_bytes = libp2p_ed25519.public().to_bytes();
+
+        let method = identity
+            .did_document
+            .verification_method
+            .iter()
+            .find(|m| m.type_ == "Ed25519VerificationKey2020")
+            .expect("DID Ed25519 verification method");
+        let (_, decoded) =
+            multibase::decode(&method.public_key_multibase).expect("decode DID Ed25519 key");
+        assert!(decoded.starts_with(&[0xed, 0x01]));
+        let did_public_bytes: [u8; 32] = decoded[2..]
+            .try_into()
+            .expect("DID Ed25519 key must be 32 bytes");
+
+        assert_eq!(libp2p_public_bytes, did_public_bytes);
     }
 }

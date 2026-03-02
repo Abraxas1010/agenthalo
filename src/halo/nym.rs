@@ -57,6 +57,8 @@ pub fn status() -> NymStatus {
     }
 }
 
+/// Returns true when external traffic requiring mixnet routing must be blocked
+/// if no healthy SOCKS5 proxy is available.
 pub fn is_fail_closed() -> bool {
     // Fail-closed by default: set NYM_FAIL_OPEN=true to allow direct fallback.
     if let Ok(v) = std::env::var("NYM_FAIL_OPEN") {

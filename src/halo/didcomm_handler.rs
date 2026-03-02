@@ -61,6 +61,20 @@ impl DIDCommHandler {
                 ))
             })
         });
+
+        self.on_message(message_types::TASK_SEND, |message| {
+            Box::pin(async move {
+                Some(DIDCommMessage::new(
+                    message_types::TASK_STATUS,
+                    None,
+                    message.from.into_iter().collect(),
+                    json!({
+                        "reply_to": message.id,
+                        "status": "submitted"
+                    }),
+                ))
+            })
+        });
     }
 
     pub async fn handle_incoming<F>(
@@ -156,5 +170,55 @@ mod tests {
             })
             .expect("unpack ack");
         assert_eq!(ack_message.type_, message_types::ACK);
+    }
+
+    #[tokio::test]
+    async fn task_send_handler_returns_task_status() {
+        let sender =
+            Arc::new(crate::halo::did::did_from_genesis_seed(&seed(0x21)).expect("sender"));
+        let recipient =
+            Arc::new(crate::halo::did::did_from_genesis_seed(&seed(0x22)).expect("recipient"));
+        let recipient_key =
+            crate::halo::didcomm::extract_x25519_public_key_from_doc(&recipient.did_document)
+                .expect("recipient x25519");
+
+        let task_send = DIDCommMessage::new(
+            message_types::TASK_SEND,
+            Some(&sender.did),
+            vec![recipient.did.clone()],
+            json!({ "task": "compile", "payload": {"goal": "proof"} }),
+        );
+        let packed = pack_authcrypt(&task_send, &sender, &recipient_key).expect("pack task");
+
+        let mut handler = DIDCommHandler::new(recipient.clone());
+        handler.register_builtin_handlers();
+        let packed_status = handler
+            .handle_incoming(&packed, |did| {
+                if did == sender.did {
+                    Some(sender.did_document.clone())
+                } else if did == recipient.did {
+                    Some(recipient.did_document.clone())
+                } else {
+                    None
+                }
+            })
+            .await
+            .expect("handle incoming")
+            .expect("task status response");
+
+        let (status_message, _) =
+            crate::halo::didcomm::unpack_with_resolver(&packed_status, &sender, |did| {
+                if did == recipient.did {
+                    Some(recipient.did_document.clone())
+                } else if did == sender.did {
+                    Some(sender.did_document.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("unpack status");
+
+        assert_eq!(status_message.type_, message_types::TASK_STATUS);
+        assert_eq!(status_message.body["status"], "submitted");
     }
 }

@@ -14,6 +14,17 @@
 #     nucleusdb-mcp:latest \
 #     --transport http --host 0.0.0.0 --port 8443 --auth --jwt-secret <secret>
 
+FROM debian:bookworm-slim AS nym_builder
+
+ARG NYM_SOCKS5_CLIENT_URL="https://github.com/nymtech/nym/releases/latest/download/nym-socks5-client"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl -fL "${NYM_SOCKS5_CLIENT_URL}" -o /usr/local/bin/nym-socks5-client && \
+    chmod +x /usr/local/bin/nym-socks5-client
+
 FROM rust:1.84-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -41,6 +52,7 @@ RUN curl -L https://foundry.paradigm.xyz | bash && \
     rm -rf /root/.foundry
 
 COPY --from=builder /build/target/release/nucleusdb-mcp /usr/local/bin/nucleusdb-mcp
+COPY --from=nym_builder /usr/local/bin/nym-socks5-client /usr/local/bin/nym-socks5-client
 
 # Default DB path inside container.
 RUN mkdir -p /data

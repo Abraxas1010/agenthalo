@@ -133,10 +133,11 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn random_nonce() -> [u8; 12] {
+fn random_nonce() -> Result<[u8; 12], String> {
     let mut nonce = [0u8; 12];
-    getrandom::getrandom(&mut nonce).expect("OS entropy unavailable for DIDComm nonce");
-    nonce
+    getrandom::getrandom(&mut nonce)
+        .map_err(|e| format!("OS entropy unavailable for DIDComm nonce: {e}"))?;
+    Ok(nonce)
 }
 
 fn derive_key(shared_secret: &[u8], info: &[u8]) -> Result<[u8; 32], String> {
@@ -193,7 +194,7 @@ pub fn pack_authcrypt(
         .diffie_hellman(&X25519PublicKey::from(*recipient_x25519_public_key));
 
     let mut key = derive_key(shared_secret.as_bytes(), HKDF_AUTHCRYPT_INFO)?;
-    let nonce = random_nonce();
+    let nonce = random_nonce()?;
     let ciphertext = encrypt_with_key(&key, &plaintext, &nonce)?;
     let (ed_sig, pq_sig) = dual_sign(sender, &ciphertext)?;
 
@@ -228,7 +229,7 @@ pub fn pack_anoncrypt(
         ephemeral_secret.diffie_hellman(&X25519PublicKey::from(*recipient_x25519_public_key));
 
     let mut key = derive_key(shared_secret.as_bytes(), HKDF_ANONCRYPT_INFO)?;
-    let nonce = random_nonce();
+    let nonce = random_nonce()?;
     let ciphertext = encrypt_with_key(&key, &plaintext, &nonce)?;
 
     let envelope = AnoncryptEnvelope {

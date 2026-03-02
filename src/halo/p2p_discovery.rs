@@ -57,6 +57,8 @@ pub struct AgentAnnouncement {
     pub version: String,
     pub timestamp: u64,
     pub ttl: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_document: Option<DIDDocument>,
     pub ed25519_signature: Option<Vec<u8>>,
     pub mldsa65_signature: Option<Vec<u8>>,
 }
@@ -73,6 +75,7 @@ struct AgentAnnouncementPayload {
     version: String,
     timestamp: u64,
     ttl: u64,
+    did_document: Option<DIDDocument>,
 }
 
 impl From<&AgentAnnouncement> for AgentAnnouncementPayload {
@@ -88,6 +91,7 @@ impl From<&AgentAnnouncement> for AgentAnnouncementPayload {
             version: value.version.clone(),
             timestamp: value.timestamp,
             ttl: value.ttl,
+            did_document: value.did_document.clone(),
         }
     }
 }
@@ -220,11 +224,37 @@ impl AgentDiscovery {
         Ok(())
     }
 
-    pub fn handle_gossipsub_message(&mut self, data: &[u8]) -> Result<AgentAnnouncement, String> {
+    pub fn handle_gossipsub_message<F>(
+        &mut self,
+        data: &[u8],
+        resolve_document: F,
+    ) -> Result<AgentAnnouncement, String>
+    where
+        F: Fn(&str) -> Option<DIDDocument>,
+    {
         let announcement: AgentAnnouncement = serde_json::from_slice(data)
             .map_err(|e| format!("decode gossipsub message as announcement: {e}"))?;
-        self.known_agents
-            .insert(announcement.did.clone(), announcement.clone());
+        let did_document = announcement
+            .did_document
+            .clone()
+            .or_else(|| resolve_document(&announcement.did))
+            .ok_or_else(|| {
+                format!(
+                    "announcement for `{}` missing DID document for signature verification",
+                    announcement.did
+                )
+            })?;
+        if did_document.id != announcement.did {
+            return Err("announcement DID document id does not match announcement DID".to_string());
+        }
+        let verified = verify_announcement(&announcement, &did_document)?;
+        if !verified {
+            return Err(format!(
+                "announcement signatures failed verification for `{}`",
+                announcement.did
+            ));
+        }
+        self.upsert_verified(announcement.clone());
         Ok(announcement)
     }
 
@@ -279,6 +309,7 @@ pub fn announcement_for_identity(
         version: env!("CARGO_PKG_VERSION").to_string(),
         timestamp: now_unix(),
         ttl: 300,
+        did_document: Some(identity.did_document.clone()),
         ed25519_signature: None,
         mldsa65_signature: None,
     }
@@ -332,6 +363,7 @@ mod tests {
             version: "1".to_string(),
             timestamp: now_unix(),
             ttl: 60,
+            did_document: None,
             ed25519_signature: None,
             mldsa65_signature: None,
         });
@@ -352,6 +384,7 @@ mod tests {
             version: "1".to_string(),
             timestamp: now_unix(),
             ttl: 60,
+            did_document: None,
             ed25519_signature: None,
             mldsa65_signature: None,
         });
@@ -359,5 +392,32 @@ mod tests {
         let coding = discovery.find_by_capability("coding");
         assert_eq!(coding.len(), 1);
         assert_eq!(coding[0].peer_id, "peer-1");
+    }
+
+    #[test]
+    fn handle_gossipsub_message_requires_signature_verification() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x53)).expect("identity");
+        let announcement = announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+        let payload = serde_json::to_vec(&announcement).expect("serialize");
+        let mut discovery = AgentDiscovery::new();
+        let err = discovery
+            .handle_gossipsub_message(&payload, |_did| None)
+            .expect_err("unsigned gossip must fail");
+        assert!(err.contains("missing Ed25519 signature"));
+    }
+
+    #[test]
+    fn handle_gossipsub_message_accepts_signed_announcement() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x54)).expect("identity");
+        let mut announcement = announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+        sign_announcement(&identity, &mut announcement).expect("sign");
+        let payload = serde_json::to_vec(&announcement).expect("serialize");
+
+        let mut discovery = AgentDiscovery::new();
+        let accepted = discovery
+            .handle_gossipsub_message(&payload, |_did| None)
+            .expect("verified gossip");
+        assert_eq!(accepted.did, identity.did);
+        assert!(discovery.known_agents().contains_key(&identity.did));
     }
 }

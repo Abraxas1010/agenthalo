@@ -34,7 +34,7 @@ services:
     environment:
       NYM_ENABLED: "true"
       NYM_FAIL_OPEN: "false"
-      SOCKS5_PROXY: nym-socks5:1080
+      SOCKS5_PROXY: socks5h://nym-socks5:1080
       ALL_PROXY: socks5h://nym-socks5:1080
       HTTP_PROXY: socks5h://nym-socks5:1080
       HTTPS_PROXY: socks5h://nym-socks5:1080

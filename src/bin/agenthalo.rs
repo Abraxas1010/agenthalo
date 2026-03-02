@@ -2995,12 +2995,20 @@ fn cmd_comms(args: &[String]) -> Result<(), String> {
                 .build()
                 .map_err(|e| format!("build tokio runtime: {e}"))?;
             let mut stack = rt.block_on(startup::start(&seed, cfg))?;
+            let identity = stack.identity.clone();
+            let mut discovery = stack.discovery.take();
             let Some(mut node) = stack.p2p_node.take() else {
                 return Err(
                     "p2p is disabled; set P2P_ENABLED=true to run comms event loop".to_string(),
                 );
             };
-            rt.block_on(async move { node.run().await })
+            rt.block_on(async move {
+                if let Some(discovery) = discovery.as_mut() {
+                    node.run_with_discovery(&identity, discovery, 300).await
+                } else {
+                    node.run().await
+                }
+            })
         }
         _ => Err("usage: agenthalo comms [status|bootstrap|run]".to_string()),
     }
