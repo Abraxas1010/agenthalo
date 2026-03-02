@@ -11,6 +11,7 @@ pub mod circuit_policy;
 pub mod config;
 pub mod crypto_scope;
 pub mod detect;
+pub mod did;
 pub mod encrypted_file;
 pub mod evm_wallet;
 pub mod funding;

@@ -201,6 +201,29 @@ fn derive_wallet_entropy32_from_seed(seed: &[u8; 64]) -> Result<[u8; 32], String
     Ok(out)
 }
 
+/// Derive deterministic identity key material from the genesis seed.
+/// The output is suitable as Ed25519 secret-key bytes.
+pub fn derive_p2p_identity(seed: &[u8; 64]) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(Some(b"agenthalo-genesis-identity-v1"), seed.as_slice());
+    let mut out = [0u8; 32];
+    hk.expand(b"agenthalo-p2p-identity-v1", &mut out)
+        .expect("HKDF expand should succeed for fixed 32-byte output");
+    out
+}
+
+/// Derive deterministic DIDComm agreement material from the genesis seed.
+/// Returns `(x25519_secret_bytes, mlkem768_seed_bytes)`.
+pub fn derive_did_agreement_keys(seed: &[u8; 64]) -> ([u8; 32], [u8; 64]) {
+    let hk = Hkdf::<Sha256>::new(Some(b"agenthalo-genesis-identity-v1"), seed.as_slice());
+    let mut x25519 = [0u8; 32];
+    hk.expand(b"agenthalo-didcomm-x25519-v1", &mut x25519)
+        .expect("HKDF expand should succeed for fixed 32-byte output");
+    let mut mlkem768 = [0u8; 64];
+    hk.expand(b"agenthalo-didcomm-mlkem768-v1", &mut mlkem768)
+        .expect("HKDF expand should succeed for fixed 64-byte output");
+    (x25519, mlkem768)
+}
+
 pub fn derive_wallet_entropy32() -> Result<Option<[u8; 32]>, String> {
     let Some(seed) = load_seed_bytes()? else {
         return Ok(None);
