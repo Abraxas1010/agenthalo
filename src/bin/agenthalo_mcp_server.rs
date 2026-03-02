@@ -3397,6 +3397,17 @@ fn requested_permissions_from_action(
     }
 }
 
+fn cached_credential_keypair() -> Result<&'static zk_credential::CredentialKeypair, String> {
+    static KEYS: OnceLock<zk_credential::CredentialKeypair> = OnceLock::new();
+    if let Some(keys) = KEYS.get() {
+        return Ok(keys);
+    }
+    let keys = zk_credential::setup_credential_circuit()?;
+    let _ = KEYS.set(keys);
+    KEYS.get()
+        .ok_or_else(|| "failed to initialize cached credential keypair".to_string())
+}
+
 fn tool_access_grant(arguments: Value) -> Result<Value, String> {
     mcp_require_scope(CryptoScope::Identity)?;
     let grantee_did = arguments
@@ -3619,7 +3630,7 @@ fn tool_zk_prove_credential(arguments: Value) -> Result<Value, String> {
         .and_then(|v| v.as_u64())
         .unwrap_or_else(now_unix_secs);
 
-    let (pk, _vk) = zk_credential::setup_credential_circuit()?;
+    let (pk, _vk) = cached_credential_keypair()?;
     let bundle = zk_credential::prove_credential(&pk, &grant, grantee_did, requested, now)?;
     Ok(json!({
         "status": "ok",
@@ -3635,7 +3646,7 @@ fn tool_zk_verify_credential(arguments: Value) -> Result<Value, String> {
         .ok_or_else(|| "proof_bundle is required".to_string())?;
     let bundle: zk_credential::CredentialProofBundle =
         serde_json::from_value(bundle_value).map_err(|e| format!("parse proof_bundle: {e}"))?;
-    let (_pk, vk) = zk_credential::setup_credential_circuit()?;
+    let (_pk, vk) = cached_credential_keypair()?;
     let verified = zk_credential::verify_credential_proof(&vk, &bundle)?;
     Ok(json!({
         "status": "ok",
@@ -3671,7 +3682,7 @@ fn tool_zk_prove_anonymous_membership(arguments: Value) -> Result<Value, String>
         .and_then(|v| v.as_u64())
         .unwrap_or_else(now_unix_secs);
 
-    let (pk, _vk) = zk_credential::setup_credential_circuit()?;
+    let (pk, _vk) = cached_credential_keypair()?;
     let bundle = zk_credential::prove_anonymous_membership(
         &pk,
         &grant,
@@ -3694,7 +3705,7 @@ fn tool_zk_verify_anonymous_membership(arguments: Value) -> Result<Value, String
         .ok_or_else(|| "proof_bundle is required".to_string())?;
     let bundle: zk_credential::AnonymousCredentialProofBundle =
         serde_json::from_value(bundle_value).map_err(|e| format!("parse proof_bundle: {e}"))?;
-    let (_pk, vk) = zk_credential::setup_credential_circuit()?;
+    let (_pk, vk) = cached_credential_keypair()?;
     let verified = zk_credential::verify_anonymous_membership_proof(&vk, &bundle)?;
     Ok(json!({
         "status": "ok",

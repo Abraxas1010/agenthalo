@@ -107,7 +107,7 @@ pub type SharedGrantStore = Arc<RwLock<GrantStore>>;
 
 impl AccessGrant {
     /// Compute the grant ID as SHA-256(grantor | grantee | pattern | created_at | nonce).
-    fn compute_id(
+    pub(crate) fn compute_id(
         grantor_puf: &[u8; 32],
         grantee_puf: &[u8; 32],
         key_pattern: &str,

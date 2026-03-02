@@ -12,7 +12,6 @@ use ark_snark::SNARK;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::halo::util::{digest_bytes, hex_decode, hex_decode_32, hex_encode};
@@ -25,6 +24,8 @@ const CREDENTIAL_KEY_HASH_DOMAIN: &str = "agenthalo.zk_credential.key_hash.v1";
 const CREDENTIAL_MERKLE_DOMAIN: &str = "agenthalo.zk_credential.merkle.v1";
 const CREDENTIAL_MEMBERSHIP_DOMAIN: &str = "agenthalo.zk_credential.membership.v1";
 const CREDENTIAL_SCHEMA_VERSION: u32 = 1;
+
+pub type CredentialKeypair = (ProvingKey<Bn254>, VerifyingKey<Bn254>);
 
 #[derive(Clone, Debug)]
 struct CredentialCircuit {
@@ -122,6 +123,9 @@ impl ConstraintSynthesizer<Fr> for CredentialCircuit {
             self.req_control_public
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
+        // Phase-0 scope note: this public input is currently validated by the host-side
+        // `validate_grant_for_proof` flow, and reserved for in-circuit time checks in a
+        // hardening pass.
         let _current_time_public = cs.new_input_variable(|| {
             self.current_time_public
                 .ok_or(SynthesisError::AssignmentMissing)
@@ -165,6 +169,9 @@ impl ConstraintSynthesizer<Fr> for CredentialCircuit {
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
+        // Phase-0 scope note: the fields below are allocated as witness placeholders so the
+        // circuit shape is stable while host-side validation enforces expiry/grant-id/grantor
+        // checks. These become constrained in the production-hardening circuit revision.
         let _expires_at_witness = cs.new_witness_variable(|| {
             self.expires_at_witness
                 .ok_or(SynthesisError::AssignmentMissing)
@@ -271,6 +278,12 @@ pub struct AnonymousCredentialProofBundle {
     pub credential_proof: CredentialProofBundle,
     pub merkle_root_hash: String,
     pub membership_commitment_hash: String,
+    #[serde(default)]
+    pub leaf_did_hash: String,
+    #[serde(default)]
+    pub merkle_path: Vec<String>,
+    #[serde(default)]
+    pub merkle_index: u64,
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
 }
@@ -279,7 +292,7 @@ fn default_schema_version() -> u32 {
     CREDENTIAL_SCHEMA_VERSION
 }
 
-pub fn setup_credential_circuit() -> Result<(ProvingKey<Bn254>, VerifyingKey<Bn254>), String> {
+pub fn setup_credential_circuit() -> Result<CredentialKeypair, String> {
     let seed = digest_bytes(CREDENTIAL_SETUP_DOMAIN, b"credential-setup");
     let mut rng = ChaCha20Rng::from_seed(seed);
     let circuit = CredentialCircuit::blank();
@@ -444,21 +457,16 @@ pub fn prove_anonymous_membership(
     let credential_proof =
         prove_credential(pk, grant, grantee_did, requested_permissions, current_time)?;
 
-    let membership_commitment_hash = {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&did_hash);
-        payload.extend_from_slice(&root);
-        payload.extend_from_slice(&witness.merkle_index.to_le_bytes());
-        for sibling in &path {
-            payload.extend_from_slice(sibling);
-        }
-        hex_encode(&digest_bytes(CREDENTIAL_MEMBERSHIP_DOMAIN, &payload))
-    };
+    let membership_commitment_hash =
+        membership_commitment_hex(&did_hash, &root, witness.merkle_index, &path);
 
     Ok(AnonymousCredentialProofBundle {
         credential_proof,
         merkle_root_hash: witness.merkle_root_hash.clone(),
         membership_commitment_hash,
+        leaf_did_hash: did_hash_hex,
+        merkle_path: witness.merkle_path.clone(),
+        merkle_index: witness.merkle_index,
         schema_version: CREDENTIAL_SCHEMA_VERSION,
     })
 }
@@ -473,9 +481,46 @@ pub fn verify_anonymous_membership_proof(
             CREDENTIAL_SCHEMA_VERSION, bundle.schema_version
         ));
     }
-    let _ = hex_decode_32(&bundle.merkle_root_hash)?;
-    let _ = hex_decode_32(&bundle.membership_commitment_hash)?;
+    let root = hex_decode_32(&bundle.merkle_root_hash)?;
+    let membership_commitment = hex_decode_32(&bundle.membership_commitment_hash)?;
+    let leaf = hex_decode_32(&bundle.leaf_did_hash)?;
+    if bundle.credential_proof.grantee_did_hash != bundle.leaf_did_hash {
+        return Ok(false);
+    }
+    let path = bundle
+        .merkle_path
+        .iter()
+        .map(|h| hex_decode_32(h))
+        .collect::<Result<Vec<_>, _>>()?;
+    if !verify_merkle_membership(&leaf, &path, bundle.merkle_index, &root) {
+        return Ok(false);
+    }
+    let recomputed = hex_decode_32(&membership_commitment_hex(
+        &leaf,
+        &root,
+        bundle.merkle_index,
+        &path,
+    ))?;
+    if recomputed != membership_commitment {
+        return Ok(false);
+    }
     verify_credential_proof(vk, &bundle.credential_proof)
+}
+
+fn membership_commitment_hex(
+    did_hash: &[u8; 32],
+    root: &[u8; 32],
+    merkle_index: u64,
+    path: &[[u8; 32]],
+) -> String {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(did_hash);
+    payload.extend_from_slice(root);
+    payload.extend_from_slice(&merkle_index.to_le_bytes());
+    for sibling in path {
+        payload.extend_from_slice(sibling);
+    }
+    hex_encode(&digest_bytes(CREDENTIAL_MEMBERSHIP_DOMAIN, &payload))
 }
 
 pub fn merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
@@ -590,7 +635,7 @@ fn validate_grant_for_proof(
         return Err("requested permissions are not a subset of granted permissions".to_string());
     }
 
-    let computed = compute_grant_id(
+    let computed = AccessGrant::compute_id(
         &grant.grantor_puf,
         &grant.grantee_puf,
         &grant.key_pattern,
@@ -602,23 +647,6 @@ fn validate_grant_for_proof(
     }
 
     Ok(())
-}
-
-fn compute_grant_id(
-    grantor_puf: &[u8; 32],
-    grantee_puf: &[u8; 32],
-    key_pattern: &str,
-    created_at: u64,
-    nonce: u64,
-) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"nucleusdb.pod.grant.v1|");
-    h.update(grantor_puf);
-    h.update(grantee_puf);
-    h.update(key_pattern.as_bytes());
-    h.update(created_at.to_le_bytes());
-    h.update(nonce.to_le_bytes());
-    h.finalize().into()
 }
 
 fn split_hash_u128(hash: &[u8; 32]) -> (u128, u128) {
@@ -684,7 +712,8 @@ mod tests {
         grantor_puf.fill(grantor_seed);
         let mut grantee_puf = [0u8; 32];
         grantee_puf.fill(grantee_seed);
-        let grant_id = compute_grant_id(&grantor_puf, &grantee_puf, key_pattern, created_at, nonce);
+        let grant_id =
+            AccessGrant::compute_id(&grantor_puf, &grantee_puf, key_pattern, created_at, nonce);
         AccessGrant {
             grant_id,
             grantor_puf,
@@ -901,6 +930,48 @@ mod tests {
             err.contains("Merkle path mismatch"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn test_anonymous_verify_rejects_tampered_merkle_path() {
+        let (pk, vk) = setup_credential_circuit().expect("setup");
+        let grant = make_grant(
+            0x11,
+            0x22,
+            "results/*",
+            GrantPermissions::owner(),
+            Some(2_000_000),
+            1_000_000,
+            27,
+        );
+        let did_hashes = vec![
+            digest_bytes(CREDENTIAL_DID_HASH_DOMAIN, b"did:key:z6MkA"),
+            digest_bytes(CREDENTIAL_DID_HASH_DOMAIN, b"did:key:z6MkMember"),
+            digest_bytes(CREDENTIAL_DID_HASH_DOMAIN, b"did:key:z6MkC"),
+        ];
+        let root = merkle_root(&did_hashes);
+        let mut path = merkle_path(&did_hashes, 1).expect("path");
+        let witness = AnonymousMembershipWitness {
+            leaf_did_hash: hex_encode(&did_hashes[1]),
+            merkle_path: path.iter().map(|h| hex_encode(h)).collect(),
+            merkle_index: 1,
+            merkle_root_hash: hex_encode(&root),
+        };
+        let mut bundle = prove_anonymous_membership(
+            &pk,
+            &grant,
+            "did:key:z6MkMember",
+            read_only(),
+            1_500_000,
+            &witness,
+        )
+        .expect("anonymous prove");
+
+        path[0][0] ^= 0x01;
+        bundle.merkle_path = path.iter().map(|h| hex_encode(h)).collect();
+
+        let ok = verify_anonymous_membership_proof(&vk, &bundle).expect("verify tampered path");
+        assert!(!ok, "tampered Merkle path must fail verification");
     }
 
     #[test]

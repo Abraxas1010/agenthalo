@@ -20,7 +20,9 @@ structure AnonCredentialProof where
 def hasPatternInRegistry (pattern : Nat) (registry : List AgentCredential) : Prop :=
   ∃ c ∈ registry, pattern ∈ c.authorizedPatterns
 
-/-- Verification predicate does not depend on which holder index is used. -/
+/-- Verification predicate does not depend on which holder index is used.
+Phase-0 note: this is a semantic holder-independence model, not a
+cryptographic indistinguishability theorem over proof transcripts. -/
 def AnonCredentialAnonymity : Prop :=
   ∀ (_agent1 _agent2 : Nat) (pattern : Nat) (registry : List AgentCredential),
     hasPatternInRegistry pattern registry ↔ hasPatternInRegistry pattern registry
