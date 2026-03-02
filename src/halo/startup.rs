@@ -13,6 +13,7 @@ pub struct HaloStack {
     pub p2p_node: Option<P2pNode>,
     pub didcomm_handler: Option<DIDCommHandler>,
     pub discovery: Option<AgentDiscovery>,
+    pub a2a_bridge_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
     pub nym_status: NymStatus,
 }
 
@@ -23,6 +24,7 @@ pub struct StartupConfig {
     pub nym_retry_delay: Duration,
     pub p2p_enabled: bool,
     pub p2p_config: P2pConfig,
+    pub a2a_bridge_port: Option<u16>,
 }
 
 impl Default for StartupConfig {
@@ -33,6 +35,7 @@ impl Default for StartupConfig {
             nym_retry_delay: Duration::from_secs(2),
             p2p_enabled: true,
             p2p_config: P2pConfig::default(),
+            a2a_bridge_port: None,
         }
     }
 }
@@ -69,6 +72,10 @@ impl StartupConfig {
                 )
             })
             .unwrap_or(true);
+        let a2a_bridge_port = std::env::var("A2A_BRIDGE_PORT")
+            .ok()
+            .and_then(|value| value.trim().parse::<u16>().ok())
+            .and_then(|value| if value == 0 { None } else { Some(value) });
 
         Ok(Self {
             nym_enabled,
@@ -76,6 +83,7 @@ impl StartupConfig {
             nym_retry_delay: Duration::from_secs(nym_retry_delay_secs),
             p2p_enabled,
             p2p_config,
+            a2a_bridge_port,
         })
     }
 }
@@ -105,6 +113,7 @@ pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, 
     let mut p2p_node = None;
     let mut discovery = None;
     let mut didcomm_handler = None;
+    let mut a2a_bridge_task = None;
 
     if config.p2p_enabled && config.p2p_config.enabled {
         let mut node = P2pNode::create_from_did(&identity, &config.p2p_config)?;
@@ -138,11 +147,20 @@ pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, 
         eprintln!("[AgentHalo/Startup][3-5/5] p2p/didcomm/discovery disabled");
     }
 
+    if let Some(port) = config.a2a_bridge_port {
+        let identity_for_bridge = identity.clone();
+        a2a_bridge_task = Some(tokio::spawn(async move {
+            crate::halo::a2a_bridge::start_a2a_bridge(identity_for_bridge, port, Vec::new()).await
+        }));
+        eprintln!("[AgentHalo/Startup] A2A bridge task spawned on port {port}");
+    }
+
     Ok(HaloStack {
         identity,
         p2p_node,
         didcomm_handler,
         discovery,
+        a2a_bridge_task,
         nym_status,
     })
 }
@@ -163,5 +181,6 @@ mod tests {
         assert!(stack.identity.did.starts_with("did:key:"));
         assert!(stack.p2p_node.is_none());
         assert!(stack.discovery.is_none());
+        assert!(stack.a2a_bridge_task.is_none());
     }
 }
