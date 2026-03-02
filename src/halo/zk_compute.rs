@@ -90,6 +90,11 @@ pub fn prove_computation(request: &ComputeRequest) -> Result<ComputeReceipt, Str
     if request.guest_elf.is_empty() {
         return Err("guest_elf cannot be empty".to_string());
     }
+    if crate::halo::zk_guests::image_ids::has_placeholders() {
+        return Err(
+            "zkVM guest programs are placeholders; real RISC-V ELF images are required".to_string(),
+        );
+    }
 
     // Prepares canonical commitments used by all verification paths.
     let image_id = hex_encode(&digest_bytes(COMPUTE_IMAGE_DOMAIN, &request.guest_elf));
@@ -275,14 +280,15 @@ mod tests {
         assert!(!crate::halo::zk_guests::image_ids::SET_MEMBERSHIP.is_empty());
         assert!(!crate::halo::zk_guests::image_ids::SECURE_AGGREGATION.is_empty());
         assert!(!crate::halo::zk_guests::image_ids::ALGORITHM_COMPLIANCE.is_empty());
+        assert!(crate::halo::zk_guests::image_ids::has_placeholders());
     }
 
     #[cfg(feature = "zk-compute")]
     #[test]
     fn test_range_proof_valid() {
-        let receipt = prove_builtin_range(42, 1, 100, "did:key:z6MkRange").expect("prove range");
-        let ok = verify_computation(&receipt).expect("verify range receipt");
-        assert!(ok);
+        let err = prove_builtin_range(42, 1, 100, "did:key:z6MkRange")
+            .expect_err("placeholder guests should not execute");
+        assert!(err.contains("placeholders"));
     }
 
     #[cfg(feature = "zk-compute")]
