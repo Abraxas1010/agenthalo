@@ -6066,10 +6066,14 @@ async fn api_nucleusdb_grants_create(
             "key_pattern '*' is only supported as trailing glob suffix",
         ));
     }
-    if !req.permissions.read && !req.permissions.write && !req.permissions.append {
+    if !req.permissions.read
+        && !req.permissions.write
+        && !req.permissions.append
+        && !req.permissions.control
+    {
         return Err(api_err(
             StatusCode::BAD_REQUEST,
-            "permissions must enable at least one of read/write/append",
+            "permissions must enable at least one of read/write/append/control",
         ));
     }
     if let Some(expires_at) = req.expires_at {

@@ -32,6 +32,9 @@ use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::util::digest_json;
 use nucleusdb::halo::viewer;
 use nucleusdb::halo::x402;
+use nucleusdb::pod::access_policy::{AccessContext, PolicyStore};
+use nucleusdb::pod::capability::{self, AccessMode, CapabilityStore};
+use nucleusdb::verifier::gate as proof_gate;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -797,6 +800,96 @@ async fn mcp(
                         "required": ["confirm"]
                     }
                 }),
+                json!({
+                    "name": "access_grant",
+                    "description": "Create and persist a DID-signed capability token granting resource access to a remote DID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "grantee_did": {"type": "string"},
+                            "pattern": {"type": "string", "description": "Resource key pattern (e.g., results/*)."},
+                            "modes": {"type": "array", "items": {"type": "string"}, "description": "Access modes: read|write|append|control."},
+                            "ttl_seconds": {"type": "integer", "default": 3600},
+                            "delegatable": {"type": "boolean", "default": false}
+                        },
+                        "required": ["grantee_did", "pattern"]
+                    }
+                }),
+                json!({
+                    "name": "access_revoke",
+                    "description": "Revoke a capability token by token_id hex.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "token_id_hex": {"type": "string"}
+                        },
+                        "required": ["token_id_hex"]
+                    }
+                }),
+                json!({
+                    "name": "access_list",
+                    "description": "List capability tokens, optionally filtered to active tokens and/or grantee DID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "active_only": {"type": "boolean", "default": false},
+                            "grantee_did": {"type": "string"}
+                        }
+                    }
+                }),
+                json!({
+                    "name": "access_verify",
+                    "description": "Verify a capability token payload provided inline.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "token": {"type": "object"}
+                        },
+                        "required": ["token"]
+                    }
+                }),
+                json!({
+                    "name": "access_evaluate",
+                    "description": "Evaluate ACP-style policy decision for agent/resource/mode.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "agent_did": {"type": "string"},
+                            "resource_key": {"type": "string"},
+                            "mode": {"type": "string"},
+                            "agent_tier": {"type": "integer"},
+                            "agent_puf_hex": {"type": "string"}
+                        },
+                        "required": ["agent_did", "resource_key", "mode"]
+                    }
+                }),
+                json!({
+                    "name": "proof_gate_status",
+                    "description": "Show proof-gate configuration and requirement summary.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }),
+                json!({
+                    "name": "proof_gate_verify",
+                    "description": "Verify a lean4export proof certificate file.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"]
+                    }
+                }),
+                json!({
+                    "name": "proof_gate_submit",
+                    "description": "Copy a proof certificate into the proof-gate certificate directory.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"}
+                        },
+                        "required": ["path"]
+                    }
+                }),
             ];
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
@@ -871,6 +964,17 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
     if let Some(pmt_tool) = agentpmt::is_proxied_tool(name) {
         return tool_agentpmt_proxy(&pmt_tool, arguments);
     }
+    if let Ok(gate_cfg) = proof_gate::load_gate_config() {
+        if gate_cfg.has_requirements(name) {
+            let gate = gate_cfg.evaluate(name);
+            if !gate.passed {
+                return Err(format!(
+                    "proof gate failed for tool '{}': {}/{} requirements met",
+                    name, gate.requirements_met, gate.requirements_checked
+                ));
+            }
+        }
+    }
     match name {
         "attest" => tool_attest(arguments),
         "sign_pq" => tool_sign_pq(arguments),
@@ -930,6 +1034,14 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "wallet_fees" => tool_wallet_fees(arguments),
         "wallet_lock" => tool_wallet_lock(arguments),
         "wallet_delete" => tool_wallet_delete(arguments),
+        "access_grant" => tool_access_grant(arguments),
+        "access_revoke" => tool_access_revoke(arguments),
+        "access_list" => tool_access_list(arguments),
+        "access_verify" => tool_access_verify(arguments),
+        "access_evaluate" => tool_access_evaluate(arguments),
+        "proof_gate_status" => tool_proof_gate_status(arguments),
+        "proof_gate_verify" => tool_proof_gate_verify(arguments),
+        "proof_gate_submit" => tool_proof_gate_submit(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -2410,17 +2522,23 @@ fn tool_identity_super_secure_set(arguments: Value) -> Result<Value, String> {
     }))
 }
 
-fn decode_hex_32_mcp(input: &str) -> Result<[u8; 32], String> {
+fn decode_hex_32_mcp_field(input: &str, field_name: &str) -> Result<[u8; 32], String> {
     let raw = input.trim().strip_prefix("0x").unwrap_or(input.trim());
     if raw.len() != 64 {
-        return Err("grantee_puf_hex must be exactly 64 hex chars".to_string());
+        return Err(format!("{field_name} must be exactly 64 hex chars"));
     }
     let mut out = [0u8; 32];
     for (idx, chunk) in raw.as_bytes().chunks_exact(2).enumerate() {
-        let pair = std::str::from_utf8(chunk).map_err(|_| "invalid hex".to_string())?;
-        out[idx] = u8::from_str_radix(pair, 16).map_err(|_| "invalid hex".to_string())?;
+        let pair =
+            std::str::from_utf8(chunk).map_err(|_| format!("{field_name} must be valid hex"))?;
+        out[idx] =
+            u8::from_str_radix(pair, 16).map_err(|_| format!("{field_name} must be valid hex"))?;
     }
     Ok(out)
+}
+
+fn decode_hex_32_mcp(input: &str) -> Result<[u8; 32], String> {
+    decode_hex_32_mcp_field(input, "grantee_puf_hex")
 }
 
 fn load_grants_for_mcp() -> nucleusdb::pod::acl::GrantStore {
@@ -3134,6 +3252,233 @@ fn tool_wallet_delete(arguments: Value) -> Result<Value, String> {
             "ledger_error": ledger_error,
         }))
     })
+}
+
+fn parse_access_mode_mcp(input: &str) -> Result<AccessMode, String> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "read" => Ok(AccessMode::Read),
+        "write" => Ok(AccessMode::Write),
+        "append" => Ok(AccessMode::Append),
+        "control" => Ok(AccessMode::Control),
+        other => Err(format!(
+            "unknown access mode: {other} (expected read|write|append|control)"
+        )),
+    }
+}
+
+fn parse_access_modes_mcp(arguments: &Value) -> Result<Vec<AccessMode>, String> {
+    let Some(items) = arguments.get("modes").and_then(|v| v.as_array()) else {
+        return Ok(vec![AccessMode::Read]);
+    };
+    let modes = items
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(parse_access_mode_mcp)
+        .collect::<Result<Vec<_>, _>>()?;
+    if modes.is_empty() {
+        return Err("modes must include at least one value".to_string());
+    }
+    Ok(modes)
+}
+
+fn tool_access_grant(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let grantee_did = arguments
+        .get("grantee_did")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "grantee_did is required".to_string())?;
+    let pattern = arguments
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "pattern is required".to_string())?;
+    let ttl_seconds = arguments
+        .get("ttl_seconds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3600);
+    let delegatable = arguments
+        .get("delegatable")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let modes = parse_access_modes_mcp(&arguments)?;
+
+    let seed = nucleusdb::halo::genesis_seed::load_seed_bytes()?
+        .ok_or_else(|| "genesis seed is required before issuing capability tokens".to_string())?;
+    let identity = nucleusdb::halo::did::did_from_genesis_seed(&seed)?;
+    let now = now_unix_secs();
+    let token = capability::create_capability(
+        &identity,
+        grantee_did,
+        capability::AgentClass::Specific {
+            did_uri: grantee_did.to_string(),
+        },
+        &[pattern.to_string()],
+        &modes,
+        now,
+        now.saturating_add(ttl_seconds),
+        delegatable,
+    )?;
+
+    let path = config::capability_store_path();
+    let mut store = CapabilityStore::load_or_default(&path)?;
+    store.create(token.clone());
+    store.save(&path)?;
+
+    Ok(json!({
+        "status": "ok",
+        "token_id_hex": format!("0x{}", nucleusdb::halo::util::hex_encode(&token.token_id)),
+        "grantor_did": token.grantor_did,
+        "grantee_did": token.grantee_did,
+        "modes": token.modes,
+        "pattern": pattern,
+        "expires_at": token.expires_at,
+        "delegatable": token.delegatable,
+    }))
+}
+
+fn tool_access_revoke(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let token_id_hex = arguments
+        .get("token_id_hex")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "token_id_hex is required".to_string())?;
+    let token_id = decode_hex_32_mcp_field(token_id_hex, "token_id_hex")?;
+    let path = config::capability_store_path();
+    let mut store = CapabilityStore::load_or_default(&path)?;
+    let revoked = store.revoke(&token_id);
+    if revoked {
+        store.save(&path)?;
+    }
+    Ok(json!({
+        "status": "ok",
+        "revoked": revoked,
+        "token_id_hex": token_id_hex,
+    }))
+}
+
+fn tool_access_list(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let active_only = arguments
+        .get("active_only")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let grantee_did = arguments
+        .get("grantee_did")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let now = now_unix_secs();
+    let store = CapabilityStore::load_or_default(&config::capability_store_path())?;
+    let mut tokens = if active_only {
+        store
+            .list_active(now)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        store.list_all().to_vec()
+    };
+    if let Some(grantee) = grantee_did.as_ref() {
+        tokens.retain(|t| &t.grantee_did == grantee);
+    }
+    Ok(json!({
+        "status": "ok",
+        "count": tokens.len(),
+        "active_only": active_only,
+        "grantee_did": grantee_did,
+        "tokens": tokens,
+    }))
+}
+
+fn tool_access_verify(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let token_value = arguments
+        .get("token")
+        .cloned()
+        .ok_or_else(|| "token object is required".to_string())?;
+    let token: capability::CapabilityToken =
+        serde_json::from_value(token_value).map_err(|e| format!("parse capability token: {e}"))?;
+    let now = now_unix_secs();
+    let result = capability::verify_capability(&token, now);
+    Ok(json!({
+        "status": if result.is_ok() { "ok" } else { "error" },
+        "verified": result.is_ok(),
+        "error": result.err(),
+        "token_id_hex": format!("0x{}", nucleusdb::halo::util::hex_encode(&token.token_id)),
+    }))
+}
+
+fn tool_access_evaluate(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let agent_did = arguments
+        .get("agent_did")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "agent_did is required".to_string())?;
+    let resource_key = arguments
+        .get("resource_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "resource_key is required".to_string())?;
+    let mode = parse_access_mode_mcp(
+        arguments
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "mode is required".to_string())?,
+    )?;
+    let agent_tier = arguments
+        .get("agent_tier")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u8);
+    let agent_puf = arguments
+        .get("agent_puf_hex")
+        .and_then(|v| v.as_str())
+        .map(|hex| decode_hex_32_mcp_field(hex, "agent_puf_hex"))
+        .transpose()?;
+    let store = PolicyStore::load_or_default(&config::access_policy_store_path())?;
+    let decision = store.evaluate(AccessContext {
+        agent_did: Some(agent_did),
+        agent_tier,
+        agent_puf: agent_puf.as_ref(),
+        resource_key,
+        mode,
+        now: now_unix_secs(),
+    });
+    Ok(json!({
+        "status": "ok",
+        "decision": decision,
+    }))
+}
+
+fn tool_proof_gate_status(_arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let cfg = proof_gate::load_gate_config()?;
+    Ok(json!({
+        "status": "ok",
+        "enabled": cfg.enabled,
+        "certificate_dir": cfg.certificate_dir,
+        "tool_count": cfg.requirements.len(),
+        "requirements_total": cfg.requirements.values().map(|v| v.len()).sum::<usize>(),
+    }))
+}
+
+fn tool_proof_gate_verify(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Identity)?;
+    let path = arguments
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "path is required".to_string())?;
+    let out = proof_gate::verify_certificate(Path::new(path))?;
+    serde_json::to_value(out).map_err(|e| format!("serialize verification result: {e}"))
+}
+
+fn tool_proof_gate_submit(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Sign)?;
+    let path = arguments
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "path is required".to_string())?;
+    let stored = proof_gate::submit_certificate(Path::new(path))?;
+    Ok(json!({
+        "status": "ok",
+        "stored_at": stored,
+    }))
 }
 
 fn tool_attest(arguments: Value) -> Result<Value, String> {

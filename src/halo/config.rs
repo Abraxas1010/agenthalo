@@ -112,6 +112,22 @@ pub fn identity_social_ledger_path() -> PathBuf {
     halo_dir().join("identity_social_ledger.jsonl")
 }
 
+pub fn capability_store_path() -> PathBuf {
+    halo_dir().join("capabilities.json")
+}
+
+pub fn access_policy_store_path() -> PathBuf {
+    halo_dir().join("access_policies.json")
+}
+
+pub fn proof_gate_config_path() -> PathBuf {
+    halo_dir().join("proof_gate.json")
+}
+
+pub fn proof_certificates_dir() -> PathBuf {
+    halo_dir().join("proof_certificates")
+}
+
 pub fn genesis_seed_path() -> PathBuf {
     halo_dir().join("genesis_seed.enc")
 }
@@ -150,6 +166,23 @@ pub fn ensure_agent_credentials_dir() -> Result<(), String> {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
             format!(
                 "chmod agent credentials dir {} to 0700: {e}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+pub fn ensure_proof_certificates_dir() -> Result<(), String> {
+    let path = proof_certificates_dir();
+    std::fs::create_dir_all(&path)
+        .map_err(|e| format!("create proof certificates dir {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
+            format!(
+                "chmod proof certificates dir {} to 0700: {e}",
                 path.display()
             )
         })?;

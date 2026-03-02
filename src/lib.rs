@@ -31,6 +31,7 @@ pub mod typed_value;
 pub mod vc;
 pub mod vcs;
 pub mod vector_index;
+pub mod verifier;
 pub mod witness;
 
 pub use multitenant::{

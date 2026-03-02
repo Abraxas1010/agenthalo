@@ -15,6 +15,8 @@ use nucleusdb::halo::circuit::{
 use nucleusdb::halo::circuit_policy::CircuitPolicy;
 use nucleusdb::halo::config;
 use nucleusdb::halo::detect::AgentType;
+use nucleusdb::halo::did;
+use nucleusdb::halo::genesis_seed;
 use nucleusdb::halo::onchain::{
     deploy_trust_verifier, load_onchain_config_or_default, onchain_config_path, post_attestation,
     query_attestation, save_onchain_config, signer_mode_label, SignerMode,
@@ -30,6 +32,9 @@ use nucleusdb::halo::util::digest_json;
 use nucleusdb::halo::x402;
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
 use nucleusdb::license;
+use nucleusdb::pod::access_policy::{AccessContext, AccessPolicy, PolicyStore};
+use nucleusdb::pod::capability::{self, AccessMode, CapabilityStore};
+use nucleusdb::verifier::gate as proof_gate;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -74,6 +79,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "agentaddress" => cmd_agentaddress(&args[2..]),
         "wallet" => cmd_wallet(&args[2..]),
         "genesis" => cmd_genesis(&args[2..]),
+        "access" => cmd_access(&args[2..]),
+        "proof-gate" => cmd_proof_gate(&args[2..]),
         "x402" => cmd_x402(&args[2..]),
         "wrap" => cmd_wrap(&args[2..]),
         "unwrap" => cmd_unwrap(&args[2..]),
@@ -2875,6 +2882,346 @@ fn cmd_genesis(args: &[String]) -> Result<(), String> {
     }
 }
 
+fn decode_hex_32_cli(input: &str, field_name: &str) -> Result<[u8; 32], String> {
+    let raw = input.trim().strip_prefix("0x").unwrap_or(input.trim());
+    if raw.len() != 64 {
+        return Err(format!(
+            "{field_name} must be exactly 32 bytes (64 hex chars)"
+        ));
+    }
+    let mut out = [0u8; 32];
+    for (idx, chunk) in raw.as_bytes().chunks_exact(2).enumerate() {
+        let pair = std::str::from_utf8(chunk).map_err(|_| format!("{field_name} must be hex"))?;
+        out[idx] = u8::from_str_radix(pair, 16).map_err(|_| format!("{field_name} must be hex"))?;
+    }
+    Ok(out)
+}
+
+fn parse_access_mode(mode: &str) -> Result<AccessMode, String> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "read" => Ok(AccessMode::Read),
+        "write" => Ok(AccessMode::Write),
+        "append" => Ok(AccessMode::Append),
+        "control" => Ok(AccessMode::Control),
+        other => Err(format!(
+            "unknown access mode: {other} (expected read|write|append|control)"
+        )),
+    }
+}
+
+fn parse_access_modes_csv(csv: &str) -> Result<Vec<AccessMode>, String> {
+    let modes = csv
+        .split(',')
+        .map(parse_access_mode)
+        .collect::<Result<Vec<_>, _>>()?;
+    if modes.is_empty() {
+        return Err("at least one access mode is required".to_string());
+    }
+    Ok(modes)
+}
+
+fn load_local_did_identity() -> Result<did::DIDIdentity, String> {
+    let seed = genesis_seed::load_seed_bytes()?.ok_or_else(|| {
+        "genesis seed not available: run `agenthalo genesis harvest` first".to_string()
+    })?;
+    did::did_from_genesis_seed(&seed)
+}
+
+fn cmd_access_policy(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
+    let path = config::access_policy_store_path();
+    let mut store = PolicyStore::load_or_default(&path)?;
+    match sub {
+        "list" => {
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "path": path,
+                "count": store.list().len(),
+                "policies": store.list(),
+            }))
+        }
+        "add" => {
+            let file = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo access policy add <policy-json-file>".to_string())?;
+            let raw = std::fs::read_to_string(file)
+                .map_err(|e| format!("read policy file {file}: {e}"))?;
+            let policy: AccessPolicy = serde_json::from_str(&raw)
+                .map_err(|e| format!("parse policy file {file}: {e}"))?;
+            store.add(policy);
+            store.save(&path)?;
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "path": path,
+                "count": store.list().len(),
+            }))
+        }
+        "remove" => {
+            let policy_id = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo access policy remove <policy-id>".to_string())?;
+            let removed = store.remove(policy_id);
+            if removed {
+                store.save(&path)?;
+            }
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "removed": removed,
+                "policy_id": policy_id,
+            }))
+        }
+        "evaluate" => {
+            let agent_did = args.get(1).ok_or_else(|| {
+                "usage: agenthalo access policy evaluate <agent-did> <resource-key> <mode> [--tier N] [--puf HEX]".to_string()
+            })?;
+            let resource_key = args.get(2).ok_or_else(|| {
+                "usage: agenthalo access policy evaluate <agent-did> <resource-key> <mode> [--tier N] [--puf HEX]".to_string()
+            })?;
+            let mode = parse_access_mode(args.get(3).ok_or_else(|| {
+                "usage: agenthalo access policy evaluate <agent-did> <resource-key> <mode> [--tier N] [--puf HEX]".to_string()
+            })?)?;
+
+            let mut agent_tier: Option<u8> = None;
+            let mut agent_puf: Option<[u8; 32]> = None;
+            let mut idx = 4usize;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--tier" => {
+                        idx += 1;
+                        agent_tier = Some(
+                            args.get(idx)
+                                .ok_or_else(|| "--tier requires a value".to_string())?
+                                .parse::<u8>()
+                                .map_err(|_| "--tier must be an integer 0..255".to_string())?,
+                        );
+                    }
+                    "--puf" => {
+                        idx += 1;
+                        let raw = args
+                            .get(idx)
+                            .ok_or_else(|| "--puf requires a 32-byte hex value".to_string())?;
+                        agent_puf = Some(decode_hex_32_cli(raw, "puf")?);
+                    }
+                    other => return Err(format!("unknown flag for access policy evaluate: {other}")),
+                }
+                idx += 1;
+            }
+
+            let decision = store.evaluate(AccessContext {
+                agent_did: Some(agent_did),
+                agent_tier,
+                agent_puf: agent_puf.as_ref(),
+                resource_key,
+                mode,
+                now: now_unix_secs(),
+            });
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "decision": decision,
+            }))
+        }
+        _ => Err("usage: agenthalo access policy [list | add <policy-json-file> | remove <policy-id> | evaluate <agent-did> <resource-key> <mode> [--tier N] [--puf HEX]]".to_string()),
+    }
+}
+
+fn cmd_access(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
+    let path = config::capability_store_path();
+    let mut store = CapabilityStore::load_or_default(&path)?;
+    match sub {
+        "grant" => {
+            let grantee_did = args.get(1).ok_or_else(|| {
+                "usage: agenthalo access grant <grantee-did> <pattern> [--modes read,write] [--ttl 3600] [--delegatable true|false]".to_string()
+            })?;
+            let pattern = args.get(2).ok_or_else(|| {
+                "usage: agenthalo access grant <grantee-did> <pattern> [--modes read,write] [--ttl 3600] [--delegatable true|false]".to_string()
+            })?;
+            let mut modes = vec![AccessMode::Read];
+            let mut ttl_secs = 3600u64;
+            let mut delegatable = false;
+            let mut idx = 3usize;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--modes" => {
+                        idx += 1;
+                        modes = parse_access_modes_csv(
+                            args.get(idx)
+                                .ok_or_else(|| "--modes requires csv value".to_string())?,
+                        )?;
+                    }
+                    "--ttl" => {
+                        idx += 1;
+                        ttl_secs = args
+                            .get(idx)
+                            .ok_or_else(|| "--ttl requires value".to_string())?
+                            .parse::<u64>()
+                            .map_err(|_| "--ttl must be a positive integer".to_string())?;
+                    }
+                    "--delegatable" => {
+                        idx += 1;
+                        delegatable = parse_boolish(
+                            args.get(idx)
+                                .ok_or_else(|| "--delegatable requires true|false".to_string())?,
+                        )?;
+                    }
+                    other => return Err(format!("unknown flag for access grant: {other}")),
+                }
+                idx += 1;
+            }
+            let identity = load_local_did_identity()?;
+            let now = now_unix_secs();
+            let token = capability::create_capability(
+                &identity,
+                grantee_did,
+                capability::AgentClass::Specific {
+                    did_uri: grantee_did.to_string(),
+                },
+                &[pattern.to_string()],
+                &modes,
+                now,
+                now.saturating_add(ttl_secs),
+                delegatable,
+            )?;
+            store.create(token.clone());
+            store.save(&path)?;
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "token_id_hex": format!("0x{}", nucleusdb::halo::util::hex_encode(&token.token_id)),
+                "grantor_did": token.grantor_did,
+                "grantee_did": token.grantee_did,
+                "expires_at": token.expires_at,
+                "delegatable": token.delegatable,
+            }))
+        }
+        "revoke" => {
+            let token_id_hex = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo access revoke <token-id-hex>".to_string())?;
+            let token_id = decode_hex_32_cli(token_id_hex, "token_id_hex")?;
+            let revoked = store.revoke(&token_id);
+            if revoked {
+                store.save(&path)?;
+            }
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "revoked": revoked,
+                "token_id_hex": token_id_hex,
+            }))
+        }
+        "list" => {
+            let mut only_active = false;
+            let mut grantee: Option<&str> = None;
+            let mut idx = 1usize;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--active" => only_active = true,
+                    "--grantee" => {
+                        idx += 1;
+                        grantee = Some(
+                            args.get(idx)
+                                .ok_or_else(|| "--grantee requires DID value".to_string())?,
+                        );
+                    }
+                    other => return Err(format!("unknown flag for access list: {other}")),
+                }
+                idx += 1;
+            }
+            let now = now_unix_secs();
+            let mut tokens: Vec<capability::CapabilityToken> = if only_active {
+                store.list_active(now).into_iter().cloned().collect()
+            } else {
+                store.list_all().to_vec()
+            };
+            if let Some(did) = grantee {
+                tokens.retain(|t| t.grantee_did == did);
+            }
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "count": tokens.len(),
+                "tokens": tokens,
+            }))
+        }
+        "verify" => {
+            let token_file = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo access verify <token-json-file>".to_string())?;
+            let raw = std::fs::read_to_string(token_file)
+                .map_err(|e| format!("read token file {token_file}: {e}"))?;
+            let token: capability::CapabilityToken = serde_json::from_str(&raw)
+                .map_err(|e| format!("parse token file {token_file}: {e}"))?;
+            let now = now_unix_secs();
+            let verify = capability::verify_capability(&token, now);
+            print_json(&serde_json::json!({
+                "status": if verify.is_ok() { "ok" } else { "error" },
+                "token_id_hex": format!("0x{}", nucleusdb::halo::util::hex_encode(&token.token_id)),
+                "verified": verify.is_ok(),
+                "error": verify.err(),
+            }))
+        }
+        "policy" => cmd_access_policy(&args[1..]),
+        _ => Err("usage: agenthalo access [grant <grantee-did> <pattern> [--modes read,write] [--ttl 3600] [--delegatable true|false] | revoke <token-id-hex> | list [--active] [--grantee <did>] | verify <token-json-file> | policy <...>]".to_string()),
+    }
+}
+
+fn cmd_proof_gate(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "status" => {
+            let cfg = proof_gate::load_gate_config()?;
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "enabled": cfg.enabled,
+                "certificate_dir": cfg.certificate_dir,
+                "tool_count": cfg.requirements.len(),
+                "requirements_total": cfg.requirements.values().map(|v| v.len()).sum::<usize>(),
+            }))
+        }
+        "verify" => {
+            let path = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo proof-gate verify <export-file>".to_string())?;
+            let out = proof_gate::verify_certificate(Path::new(path))?;
+            print_json(&serde_json::to_value(out).map_err(|e| format!("serialize output: {e}"))?)
+        }
+        "submit" => {
+            let path = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo proof-gate submit <export-file>".to_string())?;
+            let dest = proof_gate::submit_certificate(Path::new(path))?;
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "stored_at": dest,
+            }))
+        }
+        "requirements" => {
+            let cfg = proof_gate::load_gate_config()?;
+            let mut tool: Option<&str> = None;
+            let mut idx = 1usize;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--tool" => {
+                        idx += 1;
+                        tool = Some(
+                            args.get(idx)
+                                .ok_or_else(|| "--tool requires a value".to_string())?,
+                        );
+                    }
+                    other => return Err(format!("unknown flag for proof-gate requirements: {other}")),
+                }
+                idx += 1;
+            }
+            let reqs = cfg.requirements_for_tool(tool);
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "enabled": cfg.enabled,
+                "tool": tool,
+                "requirements": reqs,
+            }))
+        }
+        _ => Err("usage: agenthalo proof-gate [status | verify <export-file> | submit <export-file> | requirements [--tool <tool-name>]]".to_string()),
+    }
+}
+
 fn cmd_wrap(args: &[String]) -> Result<(), String> {
     let rc = wrap::detect_shell_rc();
     if args.first().map(|s| s.as_str()) == Some("--all") {
@@ -3199,6 +3546,6 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony status/harvest/reset via API bridge\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony status/harvest/reset via API bridge\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes"
     );
 }

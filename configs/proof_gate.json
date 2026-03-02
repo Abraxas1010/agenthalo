@@ -1,0 +1,22 @@
+{
+  "certificate_dir": "~/.agenthalo/proof_certificates",
+  "enabled": false,
+  "requirements": {
+    "nucleusdb_execute_sql": [
+      {
+        "tool_name": "nucleusdb_execute_sql",
+        "required_theorem": "HeytingLean.NucleusDB.Comms.AccessControl.broken_chain_rejects_did",
+        "description": "Authorization chain rejects requests with invalid DID identity",
+        "enforced": false
+      }
+    ],
+    "nucleusdb_container_launch": [
+      {
+        "tool_name": "nucleusdb_container_launch",
+        "required_theorem": "HeytingLean.NucleusDB.Core.replay_preserves",
+        "description": "Container state transitions preserve system invariants",
+        "enforced": false
+      }
+    ]
+  }
+}

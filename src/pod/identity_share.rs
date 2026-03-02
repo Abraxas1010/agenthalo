@@ -37,6 +37,10 @@ pub struct IdentityShareProofEnvelope {
     pub ledger_signed_entries: usize,
     pub ledger_unsigned_entries: usize,
     pub ledger_fully_signed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grantor_did_uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grantor_did_document_json: Option<String>,
     pub patterns: Vec<String>,
     pub require_grants: bool,
     pub grantee_puf_hex: Option<String>,
@@ -406,6 +410,15 @@ fn compute_provenance_hash_hex(
     format!("sha256:{}", hex_encode(&h.finalize()))
 }
 
+fn maybe_grantor_did() -> Option<(String, String)> {
+    let seed = crate::halo::genesis_seed::load_seed_bytes()
+        .ok()
+        .flatten()?;
+    let identity = crate::halo::did::did_from_genesis_seed(&seed).ok()?;
+    let doc_json = crate::halo::did::did_document_to_json(&identity.did_document).to_string();
+    Some((identity.did, doc_json))
+}
+
 pub fn build_share_envelope(
     records: &[IdentityShareRecord],
     ledger: &LedgerProjection,
@@ -442,6 +455,9 @@ pub fn build_share_envelope(
     } else {
         None
     };
+    let (grantor_did_uri, grantor_did_document_json) = maybe_grantor_did()
+        .map(|(did, doc)| (Some(did), Some(doc)))
+        .unwrap_or((None, None));
 
     Ok(IdentityShareProofEnvelope {
         version: 1,
@@ -456,6 +472,8 @@ pub fn build_share_envelope(
         ledger_signed_entries: ledger.signed_entries,
         ledger_unsigned_entries: ledger.unsigned_entries,
         ledger_fully_signed: ledger.fully_signed,
+        grantor_did_uri,
+        grantor_did_document_json,
         patterns: patterns.to_vec(),
         require_grants,
         grantee_puf_hex: grantee_puf_hex.map(str::to_string),

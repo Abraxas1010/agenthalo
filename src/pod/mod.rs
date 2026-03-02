@@ -1,4 +1,7 @@
+pub mod access_policy;
 pub mod acl;
+pub mod capability;
+pub mod did_acl_bridge;
 pub mod discovery;
 pub mod envelope;
 pub mod identity_share;

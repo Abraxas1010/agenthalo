@@ -18,6 +18,8 @@ pub struct GrantPermissions {
     pub read: bool,
     pub write: bool,
     pub append: bool,
+    #[serde(default)]
+    pub control: bool,
 }
 
 impl GrantPermissions {
@@ -26,6 +28,7 @@ impl GrantPermissions {
             read: true,
             write: false,
             append: false,
+            control: false,
         }
     }
 
@@ -34,6 +37,7 @@ impl GrantPermissions {
             read: true,
             write: true,
             append: false,
+            control: false,
         }
     }
 
@@ -42,6 +46,16 @@ impl GrantPermissions {
             read: true,
             write: true,
             append: true,
+            control: false,
+        }
+    }
+
+    pub fn owner() -> Self {
+        Self {
+            read: true,
+            write: true,
+            append: true,
+            control: true,
         }
     }
 }
@@ -233,6 +247,16 @@ impl GrantStore {
                 && g.matches_key(key)
         })
     }
+
+    /// Check if a grantee has control access to a specific key.
+    pub fn can_control(&self, grantee_puf: &[u8; 32], key: &str) -> bool {
+        self.grants.iter().any(|g| {
+            &g.grantee_puf == grantee_puf
+                && g.is_active()
+                && g.permissions.control
+                && g.matches_key(key)
+        })
+    }
 }
 
 static GRANT_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -413,6 +437,7 @@ mod tests {
         assert!(deserialized.permissions.read);
         assert!(deserialized.permissions.write);
         assert!(!deserialized.permissions.append);
+        assert!(!deserialized.permissions.control);
     }
 
     #[test]
@@ -420,5 +445,19 @@ mod tests {
         let shared = GrantStore::shared();
         let guard = shared.read().expect("rwlock read");
         assert_eq!(guard.list_all().len(), 0);
+    }
+
+    #[test]
+    fn control_permission_is_enforced() {
+        let mut store = GrantStore::new();
+        store.create(GrantRequest {
+            grantor_puf: puf_a(),
+            grantee_puf: puf_b(),
+            key_pattern: "acl/*".to_string(),
+            permissions: GrantPermissions::owner(),
+            expires_at: None,
+        });
+        assert!(store.can_control(&puf_b(), "acl/ruleset"));
+        assert!(!store.can_control(&puf_b(), "other/ruleset"));
     }
 }

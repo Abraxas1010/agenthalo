@@ -75,7 +75,13 @@ impl ToolScope {
             | "abraxas_query_records"
             | "abraxas_record_status"
             | "abraxas_merge_status"
-            | "abraxas_workspace_diff" => Self::Read,
+            | "abraxas_workspace_diff"
+            | "access_list"
+            | "access_verify"
+            | "access_evaluate"
+            | "proof_gate_status"
+            | "proof_gate_verify"
+            | "proof_gate_requirements" => Self::Read,
             // Trust verification (read-only chain queries)
             "nucleusdb_verify_agent" | "verify_agent_multichain" | "register_chain" => {
                 Self::TrustVerify
@@ -89,7 +95,10 @@ impl ToolScope {
             | "abraxas_resolve_conflict"
             | "abraxas_export_git"
             | "abraxas_workspace_init"
-            | "abraxas_workspace_submit" => Self::Write,
+            | "abraxas_workspace_submit"
+            | "access_grant"
+            | "access_revoke"
+            | "proof_gate_submit" => Self::Write,
             // Trust attestation (on-chain submit)
             "nucleusdb_agent_register" | "submit_composite_attestation" => Self::TrustAttest,
             // Container
@@ -548,6 +557,12 @@ mod tests {
             "abraxas_record_status",
             "abraxas_merge_status",
             "abraxas_workspace_diff",
+            "access_list",
+            "access_verify",
+            "access_evaluate",
+            "proof_gate_status",
+            "proof_gate_verify",
+            "proof_gate_requirements",
         ];
         for t in &db_tools {
             assert_eq!(ToolScope::for_tool(t), ToolScope::Read, "tool {t}");
@@ -572,6 +587,9 @@ mod tests {
             "abraxas_export_git",
             "abraxas_workspace_init",
             "abraxas_workspace_submit",
+            "access_grant",
+            "access_revoke",
+            "proof_gate_submit",
         ];
         for t in &write_tools {
             assert_eq!(ToolScope::for_tool(t), ToolScope::Write, "tool {t}");

@@ -960,6 +960,19 @@ async fn deploy_catalog_and_preflight_shell() {
 
 #[tokio::test]
 async fn vault_set_list_delete_via_api() {
+    let _guard = env_lock().lock().expect("lock env");
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_vault_set_list_delete_via_api_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+
     let (mut state, db_path) = test_state("vault_api");
     let (vault, wallet_path, vault_path) = test_vault("vault_api");
     state.vault = Some(vault);
@@ -983,6 +996,7 @@ async fn vault_set_list_delete_via_api() {
 
     let _ = std::fs::remove_file(&wallet_path);
     let _ = std::fs::remove_file(&vault_path);
+    let _ = std::fs::remove_dir_all(&halo_home);
     let _ = std::fs::remove_file(&db_path);
 }
 
