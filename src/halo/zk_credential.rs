@@ -402,6 +402,7 @@ pub fn prove_credential(
     requested_permissions: GrantPermissions,
     current_time: u64,
 ) -> Result<CredentialProofBundle, String> {
+    // T17: credential_completeness
     validate_grant_for_proof(grant, requested_permissions, current_time)?;
 
     let requested_flags = permission_flags(requested_permissions);
@@ -487,6 +488,7 @@ pub fn verify_credential_proof(
     vk: &VerifyingKey<Bn254>,
     bundle: &CredentialProofBundle,
 ) -> Result<bool, String> {
+    // T18: credential_soundness
     if bundle.schema_version != CREDENTIAL_SCHEMA_VERSION {
         return Err(format!(
             "credential schema mismatch: expected {}, got {}",
@@ -570,6 +572,7 @@ pub fn verify_anonymous_membership_proof(
     vk: &VerifyingKey<Bn254>,
     bundle: &AnonymousCredentialProofBundle,
 ) -> Result<bool, String> {
+    // T19: anon_credential_anonymity
     if bundle.schema_version != CREDENTIAL_SCHEMA_VERSION {
         return Err(format!(
             "anonymous credential schema mismatch: expected {}, got {}",

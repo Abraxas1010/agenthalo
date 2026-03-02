@@ -203,6 +203,7 @@ fn derive_wallet_entropy32_from_seed(seed: &[u8; 64]) -> Result<[u8; 32], String
 
 /// Derive deterministic identity key material from the genesis seed.
 /// The output is suitable as Ed25519 secret-key bytes.
+/// T5: genesis_derivation_deterministic
 pub fn derive_p2p_identity(seed: &[u8; 64]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(b"agenthalo-genesis-identity-v1"), seed.as_slice());
     let mut out = [0u8; 32];

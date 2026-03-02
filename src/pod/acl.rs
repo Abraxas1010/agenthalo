@@ -106,6 +106,7 @@ pub struct GrantStore {
 pub type SharedGrantStore = Arc<RwLock<GrantStore>>;
 
 impl AccessGrant {
+    // CapabilityToken correspondence marker.
     /// Compute the grant ID as SHA-256(grantor | grantee | pattern | created_at | nonce).
     pub(crate) fn compute_id(
         grantor_puf: &[u8; 32],
@@ -249,6 +250,7 @@ impl GrantStore {
     }
 
     /// Check if a grantee has control access to a specific key.
+    // AuthChain correspondence marker.
     pub fn can_control(&self, grantee_puf: &[u8; 32], key: &str) -> bool {
         self.grants.iter().any(|g| {
             &g.grantee_puf == grantee_puf

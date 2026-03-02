@@ -149,6 +149,7 @@ fn build_did_document_from_parts(
     x25519_public_key: &[u8; 32],
     mlkem768_public_key: &[u8],
 ) -> DIDDocument {
+    // T7: did_document_wellformed
     let ed_key_id = did_fragment(did, "key-ed25519-1");
     let pq_key_id = did_fragment(did, "key-mldsa65-1");
     let x25519_key_id = did_fragment(did, "key-x25519-1");
