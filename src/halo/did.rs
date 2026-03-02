@@ -12,12 +12,13 @@ use ml_kem::{EncodedSizeUser, KemCore, MlKem768};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
+use zeroize::Zeroizing;
 
 const HKDF_IDENTITY_SALT: &[u8] = b"agenthalo-genesis-identity-v1";
 const HKDF_DID_PQ_SIGNING_INFO: &[u8] = b"agenthalo-did-pq-signing-v1";
-const MLDSA65_CONTEXT: &[u8] = b"";
+const MLDSA65_CONTEXT: &[u8] = b"agenthalo-did-v1";
 
 const MULTICODEC_ED25519_PUB: &[u8] = &[0xed, 0x01];
 const MULTICODEC_X25519_PUB: &[u8] = &[0xec, 0x01];
@@ -90,6 +91,12 @@ fn encode_multibase_key(prefix: &[u8], public_key: &[u8]) -> String {
     multibase::encode(multibase::Base::Base58Btc, payload)
 }
 
+/// ML-DSA/ML-KEM do not currently have stable did:key multicodec assignments in this stack.
+/// We therefore emit raw key bytes in multibase and rely on `verificationMethod.type` as key type.
+fn encode_multibase_untyped_key(public_key: &[u8]) -> String {
+    encode_multibase_key(&[], public_key)
+}
+
 fn decode_multibase_key(encoded: &str, expected_prefix: &[u8]) -> Result<Vec<u8>, String> {
     let (_, decoded) = multibase::decode(encoded)
         .map_err(|e| format!("multibase decode failed for key material: {e}"))?;
@@ -100,6 +107,13 @@ fn decode_multibase_key(encoded: &str, expected_prefix: &[u8]) -> Result<Vec<u8>
         return Err("decoded multibase key has unexpected multicodec prefix".to_string());
     }
     Ok(decoded[expected_prefix.len()..].to_vec())
+}
+
+/// Counterpart of `encode_multibase_untyped_key` for PQ verification materials.
+fn decode_multibase_untyped_key(encoded: &str) -> Result<Vec<u8>, String> {
+    let (_, decoded) = multibase::decode(encoded)
+        .map_err(|e| format!("multibase decode failed for untyped key material: {e}"))?;
+    Ok(decoded)
 }
 
 fn did_from_ed25519_public_key(public_key: &[u8; 32]) -> String {
@@ -139,7 +153,7 @@ fn build_did_document_from_parts(
                 id: pq_key_id.clone(),
                 type_: TYPE_MLDSA65.to_string(),
                 controller: did.to_string(),
-                public_key_multibase: encode_multibase_key(&[], mldsa65_public_key),
+                public_key_multibase: encode_multibase_untyped_key(mldsa65_public_key),
             },
         ],
         key_agreement: vec![
@@ -156,7 +170,7 @@ fn build_did_document_from_parts(
                 id: mlkem_key_id,
                 type_: TYPE_MLKEM768.to_string(),
                 controller: did.to_string(),
-                public_key_multibase: encode_multibase_key(&[], mlkem768_public_key),
+                public_key_multibase: encode_multibase_untyped_key(mlkem768_public_key),
             },
         ],
         authentication: vec![ed_key_id.clone(), pq_key_id.clone()],
@@ -165,23 +179,25 @@ fn build_did_document_from_parts(
 }
 
 pub fn did_from_genesis_seed(seed: &[u8; 64]) -> Result<DIDIdentity, String> {
-    let ed25519_seed = crate::halo::genesis_seed::derive_p2p_identity(seed);
+    let ed25519_seed = Zeroizing::new(crate::halo::genesis_seed::derive_p2p_identity(seed));
     let ed25519_signing_key = Ed25519SigningKey::from_bytes(&ed25519_seed);
     let ed25519_public_key = ed25519_signing_key.verifying_key().to_bytes();
 
-    let mldsa65_seed_bytes = hkdf_expand::<32>(seed, HKDF_DID_PQ_SIGNING_INFO)?;
+    let mldsa65_seed_bytes = Zeroizing::new(hkdf_expand::<32>(seed, HKDF_DID_PQ_SIGNING_INFO)?);
     let mldsa65_seed = ml_dsa::Seed::try_from(mldsa65_seed_bytes.as_slice())
         .map_err(|_| "failed to build ML-DSA-65 seed from HKDF output".to_string())?;
     let mldsa65_keypair = MlDsa65::from_seed(&mldsa65_seed);
 
-    let (x25519_secret_bytes, mlkem_seed_bytes) =
+    let (x25519_secret_bytes_raw, mlkem_seed_bytes_raw) =
         crate::halo::genesis_seed::derive_did_agreement_keys(seed);
-    let x25519_agreement_key = X25519StaticSecret::from(x25519_secret_bytes);
+    let x25519_secret_bytes = Zeroizing::new(x25519_secret_bytes_raw);
+    let mlkem_seed_bytes = Zeroizing::new(mlkem_seed_bytes_raw);
+    let x25519_agreement_key = X25519StaticSecret::from(*x25519_secret_bytes);
 
-    let mlkem_rng_seed = Sha256::digest(mlkem_seed_bytes);
     let mut chacha_seed = [0u8; 32];
-    chacha_seed.copy_from_slice(mlkem_rng_seed.as_slice());
-    let mut mlkem_rng = ChaCha20Rng::from_seed(chacha_seed);
+    chacha_seed.copy_from_slice(&mlkem_seed_bytes[..32]);
+    let chacha_seed = Zeroizing::new(chacha_seed);
+    let mut mlkem_rng = ChaCha20Rng::from_seed(*chacha_seed);
     let (mlkem768_decapsulation_key, _) = MlKem768::generate(&mut mlkem_rng);
 
     let did = did_from_ed25519_public_key(&ed25519_public_key);
@@ -272,8 +288,7 @@ pub fn dual_verify(
         .map_err(|e| format!("invalid Ed25519 signature bytes: {e}"))?;
     let ed_ok = ed_vk.verify(message, &ed_signature).is_ok();
 
-    let (_, pq_public_key_raw) = multibase::decode(&pq_method.public_key_multibase)
-        .map_err(|e| format!("failed decoding ML-DSA key multibase: {e}"))?;
+    let pq_public_key_raw = decode_multibase_untyped_key(&pq_method.public_key_multibase)?;
     let pq_encoded_vk = MlDsaEncodedVerifyingKey::<MlDsa65>::try_from(pq_public_key_raw.as_slice())
         .map_err(|_| "invalid ML-DSA verifying key encoding in DID document".to_string())?;
     let pq_vk = MlDsaVerifyingKey::<MlDsa65>::decode(&pq_encoded_vk);

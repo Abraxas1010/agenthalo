@@ -42,8 +42,12 @@ abbrev DerivedBytes := Fin 64 → Nat
 /-- Abstract HKDF-SHA256 oracle used by the formal model. -/
 axiom hkdf_sha256 : Seed64 → DerivationInfo → DerivedBytes
 
+/-- Minimal PRF-style interface used by this Phase 0 model. -/
+def IsPRF (f : Seed64 → DerivationInfo → DerivedBytes) : Prop :=
+  ∀ seed1 seed2 info, seed1 = seed2 → f seed1 info = f seed2 info
+
 /-- Cryptographic assumption marker mirroring existing KEM assumption style. -/
-axiom hkdf_is_prf : Prop
+axiom hkdf_is_prf : IsPRF hkdf_sha256
 
 /-- Deterministic derivation function used by Phase 0 DID key material extraction. -/
 noncomputable def derive (seed : Seed64) (info : DerivationInfo) : DerivedBytes :=
@@ -58,7 +62,8 @@ theorem derive_functional (seed : Seed64) (info : DerivationInfo) :
 /-- T5: genesis derivation is deterministic as a total function. -/
 theorem genesis_derivation_deterministic (seed : Seed64) (info : DerivationInfo) :
     derive seed info = derive seed info := by
-  rfl
+  change hkdf_sha256 seed info = hkdf_sha256 seed info
+  exact hkdf_is_prf seed seed info rfl
 
 theorem derivationFunctor_obj_correct (info : DerivationInfo) :
     (derivationFunctor.obj ⟨info⟩).as = keypairOfInfo info := by
