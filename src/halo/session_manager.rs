@@ -256,7 +256,7 @@ impl SessionManager {
 }
 
 fn unlock_delay_secs(failed_attempts: u32) -> u64 {
-    let delay = match failed_attempts {
+    match failed_attempts {
         0 => 0,
         1 => 2,
         2 => 4,
@@ -265,9 +265,9 @@ fn unlock_delay_secs(failed_attempts: u32) -> u64 {
         5 => 32,
         6 => 64,
         7 => 128,
-        _ => 256,
-    };
-    delay.clamp(2, 300)
+        8 => 256,
+        _ => 300,
+    }
 }
 
 fn now_unix() -> u64 {

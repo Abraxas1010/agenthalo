@@ -8,6 +8,9 @@ use ml_kem::{Encoded, EncodedSizeUser, KemCore, MlKem1024};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub const AGENT_CRED_SCHEMA: &str = "agenthalo.agent-credential.v1";
@@ -74,10 +77,6 @@ pub fn authorize_agent(
 
     let mut encapsulations = HashMap::new();
     for scope in scopes.iter().copied().filter(|s| *s != CryptoScope::Admin) {
-        let scope_key = *session
-            .get_scope_key(scope)
-            .map_err(|_| format!("scope unavailable: {}", scope.as_str()))?
-            .key_bytes();
         let (ct, shared) = ek
             .encapsulate(&mut rng)
             .map_err(|_| "ml-kem encapsulate failed".to_string())?;
@@ -85,8 +84,11 @@ pub fn authorize_agent(
         getrandom::getrandom(&mut nonce).map_err(|e| format!("rng: {e}"))?;
         let cipher = Aes256Gcm::new_from_slice(shared.as_slice())
             .map_err(|e| format!("cipher init: {e}"))?;
+        let scope_key = session
+            .get_scope_key(scope)
+            .map_err(|_| format!("scope unavailable: {}", scope.as_str()))?;
         let wrapped = cipher
-            .encrypt(Nonce::from_slice(&nonce), scope_key.as_slice())
+            .encrypt(Nonce::from_slice(&nonce), scope_key.key_bytes().as_slice())
             .map_err(|e| format!("wrap scope key: {e}"))?;
 
         encapsulations.insert(
@@ -252,10 +254,6 @@ pub fn reencapsulate_all_agents(session: &mut SessionManager) -> Result<usize, S
         for scope_name in cred.scopes.keys().cloned().collect::<Vec<_>>() {
             let scope = CryptoScope::parse(&scope_name)
                 .ok_or_else(|| format!("unknown stored scope: {}", scope_name))?;
-            let scope_key = *session
-                .get_scope_key(scope)
-                .map_err(|_| format!("scope unavailable during re-encapsulation: {scope_name}"))?
-                .key_bytes();
             let (ct, shared) = ek
                 .encapsulate(&mut rng)
                 .map_err(|_| "ml-kem encapsulate failed".to_string())?;
@@ -263,8 +261,11 @@ pub fn reencapsulate_all_agents(session: &mut SessionManager) -> Result<usize, S
             getrandom::getrandom(&mut nonce).map_err(|e| format!("rng: {e}"))?;
             let cipher = Aes256Gcm::new_from_slice(shared.as_slice())
                 .map_err(|e| format!("cipher init: {e}"))?;
+            let scope_key = session
+                .get_scope_key(scope)
+                .map_err(|_| format!("scope unavailable during re-encapsulation: {scope_name}"))?;
             let wrapped = cipher
-                .encrypt(Nonce::from_slice(&nonce), scope_key.as_slice())
+                .encrypt(Nonce::from_slice(&nonce), scope_key.key_bytes().as_slice())
                 .map_err(|e| format!("wrap scope key: {e}"))?;
 
             new_scopes.insert(
@@ -278,9 +279,7 @@ pub fn reencapsulate_all_agents(session: &mut SessionManager) -> Result<usize, S
         }
 
         cred.scopes = new_scopes;
-        let raw = serde_json::to_vec_pretty(&cred)
-            .map_err(|e| format!("serialize {}: {e}", path.display()))?;
-        std::fs::write(&path, raw).map_err(|e| format!("write {}: {e}", path.display()))?;
+        write_credential_at_path(&path, &cred)?;
         updated = updated.saturating_add(1);
     }
 
@@ -294,8 +293,22 @@ fn credential_path(agent_id: &str) -> std::path::PathBuf {
 fn save_credential(cred: &AgentCredential) -> Result<(), String> {
     config::ensure_agent_credentials_dir()?;
     let path = credential_path(&cred.agent_id);
+    write_credential_at_path(&path, cred)
+}
+
+fn write_credential_at_path(path: &Path, cred: &AgentCredential) -> Result<(), String> {
     let raw = serde_json::to_vec_pretty(cred).map_err(|e| format!("serialize credential: {e}"))?;
-    std::fs::write(&path, raw).map_err(|e| format!("write {}: {e}", path.display()))
+    let tmp = path.with_extension("kem.tmp");
+    std::fs::write(&tmp, &raw).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("chmod 600 {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), path.display()))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("chmod 600 {}: {e}", path.display()))?;
+    Ok(())
 }
 
 fn load_credential(agent_id: &str) -> Result<AgentCredential, String> {

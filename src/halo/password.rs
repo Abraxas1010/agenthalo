@@ -41,6 +41,9 @@ pub fn validate_password(password: &str) -> Result<(), String> {
     ) {
         return Err("password is too weak".to_string());
     }
+    if is_common_password(password) {
+        return Err("password is too common".to_string());
+    }
     Ok(())
 }
 
@@ -91,6 +94,33 @@ fn char_classes(password: &str) -> usize {
         .count()
 }
 
+fn is_common_password(password: &str) -> bool {
+    const COMMON: &[&str] = &[
+        "password",
+        "password123",
+        "password1",
+        "123456",
+        "12345678",
+        "123456789",
+        "1234567890",
+        "qwerty",
+        "qwerty123",
+        "abc123",
+        "letmein",
+        "welcome",
+        "admin",
+        "iloveyou",
+        "monkey",
+        "dragon",
+        "football",
+        "baseball",
+        "princess",
+        "sunshine",
+    ];
+    let normalized = password.trim().to_ascii_lowercase();
+    COMMON.iter().any(|item| *item == normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +146,12 @@ mod tests {
             estimate_strength("Abcdefgh1234!@#$"),
             PasswordStrength::VeryStrong
         );
+    }
+
+    #[test]
+    fn rejects_common_passwords() {
+        assert!(validate_password("Password123").is_err());
+        assert!(validate_password("Qwerty123").is_err());
+        assert!(validate_password("Uncommon_Str0ng_Password!").is_ok());
     }
 }
