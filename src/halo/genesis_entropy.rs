@@ -369,7 +369,7 @@ fn run_fixture(mode: &str) -> Result<HarvestOutcome, GenesisError> {
     let mut successes = Vec::<SourceSample>::new();
     let mut failures = Vec::<FailedSource>::new();
     match mode {
-        "success" => {
+        "success" | "pass" => {
             successes.push(mk(
                 EntropySourceId::Curby,
                 0x11,
@@ -565,6 +565,19 @@ mod tests {
         let _guard = env_lock().lock().expect("lock");
         std::env::set_var("AGENTHALO_GENESIS_TEST_MODE", "success");
         let out = harvest_entropy().expect("harvest success");
+        std::env::remove_var("AGENTHALO_GENESIS_TEST_MODE");
+
+        assert_eq!(out.sources_count, 4);
+        assert_eq!(out.failed_sources.len(), 0);
+        assert!(out.curby_pulse_id.is_some());
+        assert!(out.combined_entropy_sha256.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn fixture_pass_alias_has_expected_shape() {
+        let _guard = env_lock().lock().expect("lock");
+        std::env::set_var("AGENTHALO_GENESIS_TEST_MODE", "pass");
+        let out = harvest_entropy().expect("harvest pass alias");
         std::env::remove_var("AGENTHALO_GENESIS_TEST_MODE");
 
         assert_eq!(out.sources_count, 4);

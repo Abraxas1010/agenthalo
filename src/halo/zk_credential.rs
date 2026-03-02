@@ -222,7 +222,9 @@ impl ConstraintSynthesizer<Fr> for CredentialCircuit {
 
         // Nonce must be non-zero: nonce * inv = 1
         let nonce_inv_witness = cs.new_witness_variable(|| {
-            let nonce = self.nonce_witness.ok_or(SynthesisError::AssignmentMissing)?;
+            let nonce = self
+                .nonce_witness
+                .ok_or(SynthesisError::AssignmentMissing)?;
             nonce.inverse().ok_or(SynthesisError::Unsatisfiable)
         })?;
         cs.enforce_constraint(
@@ -234,10 +236,18 @@ impl ConstraintSynthesizer<Fr> for CredentialCircuit {
         // Enforce created_at <= current_time by introducing created_delta where:
         // current_time = created_at + created_delta
         let created_delta_witness = cs.new_witness_variable(|| {
-            let current = fr_to_u64(&self.current_time_public.ok_or(SynthesisError::AssignmentMissing)?)
-                .ok_or(SynthesisError::Unsatisfiable)?;
-            let created = fr_to_u64(&self.created_at_witness.ok_or(SynthesisError::AssignmentMissing)?)
-                .ok_or(SynthesisError::Unsatisfiable)?;
+            let current = fr_to_u64(
+                &self
+                    .current_time_public
+                    .ok_or(SynthesisError::AssignmentMissing)?,
+            )
+            .ok_or(SynthesisError::Unsatisfiable)?;
+            let created = fr_to_u64(
+                &self
+                    .created_at_witness
+                    .ok_or(SynthesisError::AssignmentMissing)?,
+            )
+            .ok_or(SynthesisError::Unsatisfiable)?;
             if current < created {
                 return Err(SynthesisError::Unsatisfiable);
             }
@@ -253,8 +263,12 @@ impl ConstraintSynthesizer<Fr> for CredentialCircuit {
         // has_expiry = 0 -> expires_at = 0
         // has_expiry = 1 -> expires_at = current_time + expiry_delta + 1
         let has_expiry_witness = cs.new_witness_variable(|| {
-            let expires = fr_to_u64(&self.expires_at_witness.ok_or(SynthesisError::AssignmentMissing)?)
-                .ok_or(SynthesisError::Unsatisfiable)?;
+            let expires = fr_to_u64(
+                &self
+                    .expires_at_witness
+                    .ok_or(SynthesisError::AssignmentMissing)?,
+            )
+            .ok_or(SynthesisError::Unsatisfiable)?;
             Ok(if expires == 0 {
                 Fr::from(0u64)
             } else {
@@ -264,13 +278,21 @@ impl ConstraintSynthesizer<Fr> for CredentialCircuit {
         enforce_boolean(cs.clone(), has_expiry_witness)?;
 
         let expiry_delta_witness = cs.new_witness_variable(|| {
-            let expires = fr_to_u64(&self.expires_at_witness.ok_or(SynthesisError::AssignmentMissing)?)
-                .ok_or(SynthesisError::Unsatisfiable)?;
+            let expires = fr_to_u64(
+                &self
+                    .expires_at_witness
+                    .ok_or(SynthesisError::AssignmentMissing)?,
+            )
+            .ok_or(SynthesisError::Unsatisfiable)?;
             if expires == 0 {
                 return Ok(Fr::from(0u64));
             }
-            let current = fr_to_u64(&self.current_time_public.ok_or(SynthesisError::AssignmentMissing)?)
-                .ok_or(SynthesisError::Unsatisfiable)?;
+            let current = fr_to_u64(
+                &self
+                    .current_time_public
+                    .ok_or(SynthesisError::AssignmentMissing)?,
+            )
+            .ok_or(SynthesisError::Unsatisfiable)?;
             if expires <= current {
                 return Err(SynthesisError::Unsatisfiable);
             }
@@ -293,8 +315,12 @@ impl ConstraintSynthesizer<Fr> for CredentialCircuit {
         // Bind previously unconstrained grant identity/grantor witness fields by requiring
         // non-zero affine combinations.
         let grant_id_mix_inv = cs.new_witness_variable(|| {
-            let lo = self.grant_id_lo_witness.ok_or(SynthesisError::AssignmentMissing)?;
-            let hi = self.grant_id_hi_witness.ok_or(SynthesisError::AssignmentMissing)?;
+            let lo = self
+                .grant_id_lo_witness
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            let hi = self
+                .grant_id_hi_witness
+                .ok_or(SynthesisError::AssignmentMissing)?;
             let mix = lo + hi + Fr::from(1u64);
             mix.inverse().ok_or(SynthesisError::Unsatisfiable)
         })?;

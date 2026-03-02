@@ -2874,7 +2874,22 @@ fn cmd_genesis(args: &[String]) -> Result<(), String> {
             print_json(&out)
         }
         "harvest" => {
-            let out = dashboard_api_post("/genesis/harvest", serde_json::json!({}))?;
+            let mut via_dashboard = false;
+            for arg in args.iter().skip(1) {
+                match arg.as_str() {
+                    "--via-dashboard" => via_dashboard = true,
+                    other => {
+                        return Err(format!(
+                            "unknown flag for genesis harvest: {other}\nusage: agenthalo genesis harvest [--via-dashboard]"
+                        ))
+                    }
+                }
+            }
+            let out = if via_dashboard {
+                dashboard_api_post("/genesis/harvest", serde_json::json!({}))?
+            } else {
+                cmd_genesis_harvest_direct()?
+            };
             print_json(&out)
         }
         "reset" => {
@@ -2890,8 +2905,92 @@ fn cmd_genesis(args: &[String]) -> Result<(), String> {
             )?;
             print_json(&out)
         }
-        _ => Err("usage: agenthalo genesis [status | harvest | reset [reason]]".to_string()),
+        _ => Err(
+            "usage: agenthalo genesis [status | harvest [--via-dashboard] | reset [reason]]"
+                .to_string(),
+        ),
     }
+}
+
+fn cmd_genesis_harvest_direct() -> Result<serde_json::Value, String> {
+    if !has_wallet() {
+        let _ = keygen_pq(false)?;
+    }
+
+    if let Some(latest) = nucleusdb::halo::identity_ledger::latest_genesis_event()? {
+        if genesis_completed_status(&latest.status) {
+            return Ok(serde_json::json!({
+                "success": true,
+                "already_completed": true,
+                "completed": true,
+                "sources_count": latest
+                    .payload
+                    .get("policy")
+                    .and_then(|p| p.get("actual_sources"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                "curby_pulse_id": latest.payload.get("curby_pulse_id").and_then(|v| v.as_u64()),
+                "combined_entropy_sha256": latest.payload.get("combined_entropy_sha256").cloned().unwrap_or(serde_json::Value::Null),
+                "genesis_entropy_sha256": latest.genesis_entropy_sha256,
+            }));
+        }
+    }
+
+    let result = nucleusdb::halo::genesis_entropy::harvest_entropy()
+        .map_err(|err| format!("{}: {}", err.error_code, err.message.trim()))?;
+
+    match genesis_seed::load_seed_sha256() {
+        Ok(Some(existing)) if existing == result.combined_entropy_sha256 => {}
+        Ok(Some(existing)) => {
+            return Err(format!(
+                "GENESIS_SEED_MISMATCH: existing sealed genesis seed hash does not match harvested value (existing={}, new={})",
+                existing, result.combined_entropy_sha256
+            ));
+        }
+        Ok(None) => {
+            genesis_seed::store_seed_once(
+                &result.combined_entropy,
+                &result.combined_entropy_sha256,
+            )?;
+        }
+        Err(e) => {
+            return Err(format!(
+                "SEED_READ_FAILURE: could not read existing sealed genesis seed: {e}"
+            ));
+        }
+    }
+
+    let payload = serde_json::json!({
+        "combined_entropy_sha256": result.combined_entropy_sha256,
+        "sources": result.sources,
+        "failed_sources": result.failed_sources,
+        "policy": {
+            "min_sources": 2,
+            "actual_sources": result.sources_count,
+        },
+        "curby_pulse_id": result.curby_pulse_id,
+        "drand_normalization": "sha512",
+        "duration_ms": result.duration_ms,
+    });
+    let entry = nucleusdb::halo::identity_ledger::append_genesis_event("completed", payload)?;
+    Ok(serde_json::json!({
+        "success": true,
+        "completed": true,
+        "sources_count": result.sources_count,
+        "curby_pulse_id": result.curby_pulse_id,
+        "combined_entropy_sha256": result.combined_entropy_sha256,
+        "sources": result.sources,
+        "failed_sources": result.failed_sources,
+        "duration_ms": result.duration_ms,
+        "ledger_seq": entry.seq,
+        "ledger_entry_hash": entry.entry_hash,
+        "ledger_signed": entry.signature.is_some(),
+        "genesis_entropy_sha256": entry.genesis_entropy_sha256,
+    }))
+}
+
+fn genesis_completed_status(status: &str) -> bool {
+    status.eq_ignore_ascii_case("completed")
 }
 
 fn cmd_nym(args: &[String]) -> Result<(), String> {
@@ -4259,7 +4358,7 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony status/harvest/reset via API bridge\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_STUB=1    Disable real RPC posting and return deterministic stub tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
   NYM_FAIL_CLOSED=0           Legacy equivalent of NYM_FAIL_OPEN=1"
     );
 }

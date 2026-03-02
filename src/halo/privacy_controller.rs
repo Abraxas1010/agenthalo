@@ -53,8 +53,8 @@ impl PrivacyConfig {
 pub fn classify_url(url: &str) -> PrivacyLevel {
     let host = extract_host(url);
     match host.as_deref() {
-        Some(h) if is_local(h) => PrivacyLevel::None,
         Some(h) if is_peer_endpoint(h) => PrivacyLevel::P2P,
+        Some(h) if is_local(h) => PrivacyLevel::None,
         _ => PrivacyLevel::Maximum,
     }
 }
@@ -203,6 +203,7 @@ mod tests {
             PrivacyLevel::P2P
         );
         assert_eq!(classify_url("https://halo-worker-2"), PrivacyLevel::P2P);
+        assert_eq!(classify_url("https://halo-peer-1.local"), PrivacyLevel::P2P);
         assert_eq!(classify_url("tcp://node.libp2p:4001"), PrivacyLevel::P2P);
     }
 

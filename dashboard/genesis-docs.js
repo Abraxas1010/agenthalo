@@ -94,6 +94,21 @@ const DOCS_PAGES = [
       { val: 'EVM', lbl: 'On-chain' },
     ],
   },
+  {
+    id: 'communication',
+    title: 'Communication',
+    subtitle: 'Privacy Transport, Capabilities & Zero-Knowledge Proofs',
+    icon: '\u26A1',
+    color: 'amber',
+    status: 'live',
+    summary: 'How the genesis-rooted identity reaches the outside world. DID:key documents enable dual-signed (Ed25519 + ML-DSA-65) capability tokens for peer access control. Groth16 zero-knowledge proofs let agents prove access rights without revealing who granted them. All external traffic is classified and routed through SOCKS5/Nym mixnet privacy transport with fail-closed enforcement.',
+    stats: [
+      { val: 'did:key', lbl: 'Identity' },
+      { val: 'Groth16', lbl: 'ZK Proofs' },
+      { val: 'Nym', lbl: 'Mixnet' },
+      { val: 'SOCKS5', lbl: 'Transport' },
+    ],
+  },
 ];
 
 function renderDocsOverview() {
@@ -1080,7 +1095,7 @@ function renderIdentification() {
             <div class="gdoc-hero-stat-lbl">PQ Signing</div>
           </div>
           <div class="gdoc-hero-stat">
-            <div class="gdoc-hero-stat-val">ML-KEM-1024</div>
+            <div class="gdoc-hero-stat-val">ML-KEM-768</div>
             <div class="gdoc-hero-stat-lbl">PQ Encryption</div>
           </div>
           <div class="gdoc-hero-stat">
@@ -1264,15 +1279,23 @@ function idOverview() {
           The 64-byte genesis nucleus feeds into <strong>HKDF-SHA-256</strong> key derivation,
           producing deterministic cryptographic key material. From this single root:
           <ul style="margin:8px 0 0 16px;list-style:disc">
+            <li><strong>Ed25519 signing keypair</strong> \u2014 classical digital signatures for
+                authentication and assertion; the Ed25519 public key also defines the
+                agent's <code>did:key:z6Mk...</code> decentralized identifier</li>
             <li><strong>ML-DSA-65 signing keypair</strong> (FIPS 204) \u2014 post-quantum digital signatures
                 that bind every identity ledger entry to the agent</li>
-            <li><strong>ML-KEM-1024 encapsulation keys</strong> (FIPS 203) \u2014 post-quantum key encapsulation
+            <li><strong>X25519 key agreement</strong> \u2014 classical Diffie-Hellman for DIDComm encrypted channels</li>
+            <li><strong>ML-KEM-768 encapsulation keys</strong> (FIPS 203) \u2014 post-quantum key encapsulation
                 for agent-to-agent credential exchange</li>
             <li><strong>Scope-derived AES-256-GCM keys</strong> \u2014 6 independent encryption scopes
                 (Sign, Vault, Wallet, Identity, Genesis, Admin) each with separate TTLs</li>
           </ul>
+          Together these form a <strong>DID Document</strong> with 4 verification/agreement methods,
+          enabling both classical and post-quantum secure communication.
           The master key never leaves encrypted memory. Scope keys are derived on-demand via HKDF
           and auto-expire after their TTL (30s to 30min depending on sensitivity).
+          See the <a href="#/communication" style="color:#00ff9d">Communication</a> page for
+          how the DID identity is used for peer-to-peer capability tokens and ZK proofs.
         </div>
 
         <div class="gdoc-pipeline-arrow">\u25BC</div>
@@ -1375,7 +1398,7 @@ function idOverview() {
           <div class="gdoc-card-head">Quantum Resistance</div>
           <div class="gdoc-card-body">
             The signing and encryption layers use NIST FIPS 203/204 post-quantum algorithms
-            (ML-KEM-1024, ML-DSA-65). These are designed to resist both classical and quantum
+            (ML-KEM-768, ML-DSA-65). These are designed to resist both classical and quantum
             computer attacks. The identity ledger's PQ signatures ensure that even a future
             quantum adversary cannot forge historical entries.
           </div>
@@ -1465,7 +1488,7 @@ Genesis Nucleus (64 bytes, from entropy ceremony)
 \u2502   \u251C\u2500\u2500 Signing Key (sk) \u2014 encrypted in PQ wallet file
 \u2502   \u2514\u2500\u2500 Verifying Key (vk) \u2014 public, in wallet + ledger entries
 \u2502
-\u251C\u2500\u2500 ML-KEM-1024 KeyGen (FIPS 203)
+\u251C\u2500\u2500 ML-KEM-768 KeyGen (FIPS 203)
 \u2502   \u251C\u2500\u2500 Encapsulation Key (ek) \u2014 public, shared with agent credentials
 \u2502   \u2514\u2500\u2500 Decapsulation Key (dk) \u2014 encrypted, per-agent scope access
 \u2502
@@ -1505,10 +1528,10 @@ Genesis Nucleus (64 bytes, from entropy ceremony)
           </div>
         </div>
         <div class="gdoc-card gdoc-card--blue" style="flex:1">
-          <div class="gdoc-card-head">ML-KEM-1024 (FIPS 203)</div>
+          <div class="gdoc-card-head">ML-KEM-768 (FIPS 203)</div>
           <div class="gdoc-card-body">
-            <strong>Module-Lattice Key Encapsulation Mechanism</strong>. Security level 5
-            (equivalent to AES-256). Used for agent credential encapsulation: when a new agent
+            <strong>Module-Lattice Key Encapsulation Mechanism</strong>. Security level 3
+            (equivalent to AES-192). Used for agent credential encapsulation: when a new agent
             is authorized, each scope key is wrapped via KEM \u2192 shared-secret \u2192 AES-GCM.
             The encapsulated key can only be decrypted by the agent's decapsulation key.
             <br><br>
@@ -1779,13 +1802,13 @@ Ledger: WalletCreated event written (seq 3)</pre>
       </div>
 
       <div class="gdoc-code-block">
-        <div class="gdoc-code-title">Authorize agent credential (ML-KEM-1024)</div>
+        <div class="gdoc-code-title">Authorize agent credential (ML-KEM-768)</div>
         <pre class="gdoc-pre gdoc-code">$ agenthalo agents authorize --label "claude-prod" --scopes sign,vault
 Agent authorized:
   ID:     agent_1709312400_a3f7
   Label:  claude-prod
   Scopes: sign, vault
-  Algorithm: ML-KEM-1024 (FIPS 203)
+  Algorithm: ML-KEM-768 (FIPS 203)
   Credential file written to .halo/agent_credentials/</pre>
       </div>
 
@@ -1833,7 +1856,7 @@ Attestation recorded on-chain.</pre>
             <div class="gdoc-tool-badge gdoc-tool-badge--guard">Guarded</div>
           </div>
           <div class="gdoc-tool-desc">
-            Unlocks the session with password or agent credentials (ML-KEM-1024).
+            Unlocks the session with password or agent credentials (ML-KEM-768).
             Supports dual-path: human password OR agent_id + agent_sk + scopes.
           </div>
         </div>
@@ -1843,7 +1866,7 @@ Attestation recorded on-chain.</pre>
             <div class="gdoc-tool-badge gdoc-tool-badge--admin">Requires Sign scope</div>
           </div>
           <div class="gdoc-tool-desc">
-            Authorizes a new agent credential. Generates ML-KEM-1024 keypair, encapsulates
+            Authorizes a new agent credential. Generates ML-KEM-768 keypair, encapsulates
             scope keys, writes credential file. Returns agent_id + agent_sk (display once).
           </div>
         </div>
@@ -1902,6 +1925,438 @@ Attestation recorded on-chain.</pre>
           </div>
         </div>
       </div>
+    </div>
+  `;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   COMMUNICATION PAGE
+   ───────────────────────────────────────────────────────────────────────────── */
+
+function renderCommunication() {
+  const pg = DOCS_PAGES.communication;
+  const content = document.getElementById('content');
+  content.innerHTML = `
+    <div class="gdoc-hero" style="--accent: var(--amber)">
+      <div class="gdoc-hero-icon">${pg.icon}</div>
+      <h1>${pg.title}</h1>
+      <p class="gdoc-hero-sub">${pg.subtitle}</p>
+      <div class="gdoc-hero-stats">
+        ${pg.stats.map(s => `<div class="gdoc-stat"><div class="gdoc-stat-value">${s.value}</div><div class="gdoc-stat-label">${s.label}</div></div>`).join('')}
+      </div>
+    </div>
+
+    <div class="gdoc-tabs">
+      <button class="gdoc-tab active" onclick="commTab('comm-overview')">Overview</button>
+      <button class="gdoc-tab" onclick="commTab('comm-technical')">Technical</button>
+      <button class="gdoc-tab" onclick="commTab('comm-access')">Access &amp; CLI</button>
+    </div>
+
+    <div id="comm-overview">${commOverview()}</div>
+    <div id="comm-technical" style="display:none">${commTechnical()}</div>
+    <div id="comm-access" style="display:none">${commAccess()}</div>
+  `;
+  hydrateCommRuntimePanel();
+}
+
+function commTab(id) {
+  document.querySelectorAll('[id^="comm-"]').forEach(el => {
+    if (el.id === id) { el.style.display = ''; }
+    else if (['comm-overview','comm-technical','comm-access'].includes(el.id)) { el.style.display = 'none'; }
+  });
+  document.querySelectorAll('.gdoc-tabs .gdoc-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.trim() === (
+      id === 'comm-overview' ? 'Overview' :
+      id === 'comm-technical' ? 'Technical' : 'Access & CLI'
+    ));
+  });
+}
+
+function hydrateCommRuntimePanel() {
+  const panel = document.getElementById('comm-runtime-panel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="gdoc-loading">Querying transport status\u2026</div>';
+  Promise.all([
+    fetch('/api/status').then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch('/api/genesis/status').then(r => r.ok ? r.json() : null).catch(() => null)
+  ]).then(([status, genesis]) => {
+    const nym = status?.nym || {};
+    const did = genesis?.did_uri || '\u2014';
+    const nymMode = nym.mode || 'unknown';
+    const nymHealthy = nym.healthy === true;
+    const failClosed = nym.fail_closed !== false;
+    panel.innerHTML = `
+      <div class="gdoc-runtime-grid">
+        <div class="gdoc-runtime-card">
+          <div class="gdoc-runtime-label">DID Identity</div>
+          <div class="gdoc-runtime-value" style="font-size:0.75rem;word-break:break-all">${did}</div>
+        </div>
+        <div class="gdoc-runtime-card">
+          <div class="gdoc-runtime-label">Nym Mode</div>
+          <div class="gdoc-runtime-value">${nymMode} ${nymHealthy ? '<span style="color:var(--green)">\u2713 healthy</span>' : '<span style="color:var(--red)">\u2717 down</span>'}</div>
+        </div>
+        <div class="gdoc-runtime-card">
+          <div class="gdoc-runtime-label">Fail-Closed</div>
+          <div class="gdoc-runtime-value">${failClosed ? '<span style="color:var(--green)">ENFORCED</span>' : '<span style="color:var(--amber)">OPEN (degraded)</span>'}</div>
+        </div>
+        <div class="gdoc-runtime-card">
+          <div class="gdoc-runtime-label">SOCKS5 Proxy</div>
+          <div class="gdoc-runtime-value">${nym.socks5_proxy || 'none'}</div>
+        </div>
+      </div>
+    `;
+  });
+}
+
+function commOverview() {
+  return `
+    <div class="gdoc-section">
+      <h2>How Identity Threads Into Communication</h2>
+      <p>
+        Once the <a href="#/genesis">Genesis</a> phase creates the seed and <a href="#/identification">Identification</a>
+        derives keys, the communication stack uses that identity at every layer.
+        Nothing leaves this node unsigned, unclassified, or unrouted.
+      </p>
+
+      <div id="comm-runtime-panel"></div>
+
+      <div class="gdoc-card-grid" style="margin-top:1.5rem">
+        <div class="gdoc-card">
+          <div class="gdoc-card-icon" style="color:var(--cyan)">\u{1F511}</div>
+          <h3>Layer 1 \u2014 DID Identity</h3>
+          <p>
+            Every message carries a <strong>dual signature</strong>: Ed25519 (classical) + ML-DSA-65
+            (post-quantum). Both must verify. The DID Document publishes four verification/agreement
+            methods so any peer can authenticate without a central authority.
+          </p>
+          <div class="gdoc-code-inline">did:key:z6Mk\u2026 \u2192 Ed25519 + ML-DSA-65 + X25519 + ML-KEM-768</div>
+        </div>
+
+        <div class="gdoc-card">
+          <div class="gdoc-card-icon" style="color:var(--green)">\u{1F6E1}\uFE0F</div>
+          <h3>Layer 2 \u2014 Capability Tokens</h3>
+          <p>
+            Access control uses <strong>Solid WAC/ACP-inspired capability tokens</strong> \u2014
+            time-bounded, dual-signed grants that specify resource patterns and access modes
+            (Read, Write, Append, Control). The GrantStore is keyed by PUF fingerprints:
+            hardware-bound authorization.
+          </p>
+          <div class="gdoc-code-inline">CapabilityToken { grantor_did, grantee_did, modes, not_after, ed_sig, pq_sig }</div>
+        </div>
+
+        <div class="gdoc-card">
+          <div class="gdoc-card-icon" style="color:var(--purple)">\u{1F52E}</div>
+          <h3>Layer 3 \u2014 ZK Credential Proofs</h3>
+          <p>
+            When you need to prove you <em>have</em> a capability without revealing <em>which</em> one
+            or <em>who</em> granted it, the ZK credential circuit generates a <strong>Groth16 proof
+            on BN254</strong> with 9 public inputs. The verifier learns only that a valid,
+            non-revoked capability exists.
+          </p>
+          <div class="gdoc-code-inline">Groth16/BN254 \u2192 9 public inputs \u2192 \u2713 valid capability, \u2717 identity hidden</div>
+        </div>
+
+        <div class="gdoc-card">
+          <div class="gdoc-card-icon" style="color:var(--amber)">\u{1F310}</div>
+          <h3>Layer 4 \u2014 Privacy Transport (Nym)</h3>
+          <p>
+            Every outbound HTTP request passes through the <strong>Privacy Controller</strong>,
+            which classifies the destination URL and routes accordingly:
+            local traffic goes direct, external traffic routes through a SOCKS5/Nym mixnet proxy.
+            <strong>Fail-closed by default</strong> \u2014 if no proxy is available, external requests are blocked.
+          </p>
+          <div class="gdoc-code-inline">classify_url() \u2192 None | P2P | Maximum \u2192 direct | SOCKS5 proxy</div>
+        </div>
+      </div>
+
+      <h2 style="margin-top:2rem">Why Does This Matter?</h2>
+      <div class="gdoc-card-grid">
+        <div class="gdoc-card">
+          <h3>Sovereign Identity</h3>
+          <p>No certificate authority, no OAuth provider, no platform lock-in.
+          Your DID is derived from your own entropy + hardware. You own it.</p>
+        </div>
+        <div class="gdoc-card">
+          <h3>Hardware-Bound Authorization</h3>
+          <p>Capability grants are tied to PUF fingerprints. Stolen credentials
+          don't work on different hardware.</p>
+        </div>
+        <div class="gdoc-card">
+          <h3>Selective Disclosure</h3>
+          <p>ZK proofs let you prove authorization without revealing identity,
+          capability details, or the grantor. Privacy by construction.</p>
+        </div>
+        <div class="gdoc-card">
+          <h3>Network Privacy</h3>
+          <p>Nym mixnet routing prevents traffic analysis. The fail-closed default
+          means even a misconfigured node can't accidentally leak metadata.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:2rem">On-Chain Integration</h2>
+      <div class="gdoc-section">
+        <p>
+          The communication stack bridges to EVM chains for durable attestation.
+          Session proofs (Merkle root over event digests) are posted on-chain via
+          <code>verifyAndRecord()</code> or anonymously via <code>verifyAndRecordAnonymous()</code>.
+          All on-chain calls route through the same Nym privacy transport \u2014
+          <code>cast</code> commands get SOCKS5 proxy environment variables injected automatically.
+        </p>
+      </div>
+
+      <h2 style="margin-top:2rem">Payment Channel Network (PCN)</h2>
+      <div class="gdoc-section">
+        <p>
+          For micropayment and resource-metering use cases, the PCN adapter generates
+          <strong>compliance witnesses</strong> that prove channel conservation
+          (<code>balance_left + balance_right == capacity</code>) and replay protection.
+          These witnesses feed into the attestation circuit for on-chain settlement.
+        </p>
+      </div>
+    </div>
+  `;
+}
+
+function commTechnical() {
+  return `
+    <div class="gdoc-section">
+      <h2>DID Derivation Tree</h2>
+      <div class="gdoc-pre-wrap">
+Genesis Seed (64 bytes, AES-256-GCM at rest)
+\u2502
+\u251C\u2500 HKDF("agenthalo-p2p-identity-v1") \u2500\u2500\u2500\u2500\u2192 Ed25519 secret (32 bytes)
+\u2502    \u251C\u2500 Public key \u2192 multicodec 0xed01 + base58btc \u2192 did:key:z6Mk\u2026
+\u2502    \u2514\u2500 ML-DSA-65 keypair (post-quantum signing)
+\u2502
+\u251C\u2500 HKDF("agenthalo-did-agreement-v1") \u2500\u2500\u2500\u2500\u2192 X25519 secret (32 bytes)
+\u2502    \u2514\u2500 ML-KEM-768 seed (post-quantum key exchange)
+\u2502
+\u2514\u2500 HKDF("agenthalo-wallet-entropy-v1") \u2500\u2500\u2500\u2192 32 bytes \u2192 BIP-39 mnemonic (24 words)
+     \u2514\u2500 EVM address (Alloy signer)
+      </div>
+
+      <h2 style="margin-top:2rem">Dual Signature Protocol</h2>
+      <p>
+        Every signed payload carries two signatures. Both must verify for the message to be accepted.
+        This provides <strong>hybrid classical + post-quantum security</strong>:
+      </p>
+      <div class="gdoc-pre-wrap">
+Message M
+\u2502
+\u251C\u2500 Ed25519.sign(M) \u2500\u2500\u2192 sig_ed (64 bytes)   [classical, fast]
+\u2514\u2500 ML-DSA-65.sign(M) \u2192 sig_pq (3309 bytes) [post-quantum, NIST FIPS 204]
+
+dual_verify(doc, M, sig_ed, sig_pq):
+  \u2713 Ed25519.verify(doc.ed25519_pk, M, sig_ed)  AND
+  \u2713 ML-DSA-65.verify(doc.mldsa65_pk, M, sig_pq)
+  \u2192 both must pass
+      </div>
+
+      <h2 style="margin-top:2rem">Capability Token Structure</h2>
+      <table class="gdoc-table">
+        <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>grantor_did</td><td>String</td><td>DID URI of the granting agent</td></tr>
+          <tr><td>grantee_did</td><td>String</td><td>DID URI of the receiving agent</td></tr>
+          <tr><td>resource_patterns</td><td>Vec&lt;String&gt;</td><td>Glob patterns for accessible resources</td></tr>
+          <tr><td>modes</td><td>Vec&lt;AccessMode&gt;</td><td>Read, Write, Append, Control</td></tr>
+          <tr><td>not_before / not_after</td><td>u64</td><td>Unix timestamps bounding validity</td></tr>
+          <tr><td>agent_class</td><td>AgentClass</td><td>Public | Authenticated | Verified{min_tier} | Specific{did}</td></tr>
+          <tr><td>ed_signature</td><td>[u8; 64]</td><td>Ed25519 signature from grantor</td></tr>
+          <tr><td>pq_signature</td><td>Vec&lt;u8&gt;</td><td>ML-DSA-65 signature from grantor</td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top:0.5rem">
+        <strong>GrantStore</strong> materializes accepted capabilities keyed by PUF fingerprint.
+        <code>accept_capability()</code> verifies both signatures before storing.
+      </p>
+
+      <h2 style="margin-top:2rem">ZK Circuit Architecture</h2>
+      <div class="gdoc-pre-wrap">
+ZK Credential Circuit (Groth16 / BN254)
+\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+Public Inputs (9):
+  [0]   identity_commit_lo    \u2502 Pedersen(did_secret)
+  [1]   identity_commit_hi    \u2502
+  [2]   resource_commit_lo    \u2502 Pedersen(resource_pattern)
+  [3]   resource_commit_hi    \u2502
+  [4]   action_mask           \u2502 bitfield: R=1 W=2 A=4 C=8
+  [5]   epoch_lo              \u2502 current epoch
+  [6]   epoch_hi              \u2502
+  [7]   revocation_root_lo    \u2502 Merkle root of revocation set
+  [8]   revocation_root_hi    \u2502
+
+Witness (private, 16+ fields):
+  - did_secret, grant_blob, grantor_secret
+  - resource_preimage, action_preimage
+  - revocation_merkle_path + siblings
+  - time bounds, nonce
+
+Proves:
+  \u2713 I hold a valid capability token
+  \u2713 The token covers this resource + action
+  \u2713 The token is not expired
+  \u2713 The token has not been revoked
+  \u2717 Does NOT reveal: which token, who granted it, grantee identity
+      </div>
+
+      <h2 style="margin-top:2rem">Privacy Transport Architecture</h2>
+      <div class="gdoc-pre-wrap">
+Outbound HTTP Request
+\u2502
+\u251C\u2500 classify_url(url)
+\u2502   \u251C\u2500 is_local(host)?  \u2192 PrivacyLevel::None    \u2192 direct
+\u2502   \u251C\u2500 is_peer(host)?   \u2192 PrivacyLevel::P2P     \u2192 SOCKS5 if available
+\u2502   \u2514\u2500 otherwise        \u2192 PrivacyLevel::Maximum  \u2192 SOCKS5 required
+\u2502
+\u251C\u2500 resolve_socks5_proxy()
+\u2502   \u251C\u2500 $SOCKS5_PROXY  \u2192 normalize \u2192 socks5://host:port
+\u2502   \u251C\u2500 $ALL_PROXY     \u2192 if socks5:// scheme
+\u2502   \u251C\u2500 $NYM_BINARY    \u2192 socks5://127.0.0.1:1080
+\u2502   \u2514\u2500 none found     \u2192 None
+\u2502
+\u2514\u2500 ensure_route_allowed(url)
+    \u251C\u2500 proxy found    \u2192 Ok(Some(proxy_uri))
+    \u251C\u2500 fail-closed    \u2192 Err("outbound blocked: ... requires mixnet")
+    \u2514\u2500 fail-open      \u2192 Ok(None) \u2192 direct fallback (degraded)
+      </div>
+
+      <h3 style="margin-top:1.5rem">Cast RPC Proxy Injection</h3>
+      <p>
+        On-chain transactions via Foundry <code>cast</code> inherit the same routing.
+        <code>apply_proxy_env_for_cast()</code> extracts <code>--rpc-url</code> from args,
+        classifies it, and injects <code>ALL_PROXY</code>, <code>HTTPS_PROXY</code>,
+        <code>SOCKS5_PROXY</code> into the child process environment.
+      </p>
+
+      <h2 style="margin-top:2rem">Attestation Circuit</h2>
+      <div class="gdoc-pre-wrap">
+Attestation Circuit (Groth16 / BN254)
+\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+Public Inputs (5):
+  [0] merkle_root_lo     \u2502 Merkle root over session events
+  [1] merkle_root_hi     \u2502
+  [2] digest_lo          \u2502 SHA-256 of session digest
+  [3] digest_hi          \u2502
+  [4] event_count        \u2502 number of events in session
+
+Posted on-chain via:
+  verifyAndRecord(proof, pubInputs)           \u2192 identified attestation
+  verifyAndRecordAnonymous(proof, pubInputs)  \u2192 anonymous attestation
+      </div>
+
+      <h2 style="margin-top:2rem">PCN Compliance Witness</h2>
+      <div class="gdoc-pre-wrap">
+PcnComplianceWitness {
+  feasibility_root: [u8; 32],    // Merkle root of channel states
+  replay_seq: u64,               // monotonic sequence for replay protection
+  channel_count: usize,
+  valid_channels: usize,
+  invalid_channels: usize,
+}
+
+Conservation invariant (per channel):
+  balance_left + balance_right == capacity
+  \u2200 ch \u2208 channels: ch.balance_left + ch.balance_right == ch.capacity
+      </div>
+    </div>
+  `;
+}
+
+function commAccess() {
+  return `
+    <div class="gdoc-section">
+      <h2>CLI Commands</h2>
+      <table class="gdoc-table">
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>nucleusdb nym status</code></td><td>Show Nym transport mode, proxy URI, health, fail-closed state</td></tr>
+          <tr><td><code>nucleusdb privacy classify &lt;url&gt;</code></td><td>Show privacy level (None/P2P/Maximum) for a URL</td></tr>
+          <tr><td><code>nucleusdb onchain attest</code></td><td>Generate attestation proof and post to chain (identified)</td></tr>
+          <tr><td><code>nucleusdb onchain attest --anonymous</code></td><td>Post attestation without revealing DID identity</td></tr>
+          <tr><td><code>nucleusdb zk prove-capability --resource &lt;pat&gt;</code></td><td>Generate ZK credential proof for a capability</td></tr>
+          <tr><td><code>nucleusdb capability grant --to &lt;did&gt; --resource &lt;pat&gt;</code></td><td>Issue a dual-signed capability token</td></tr>
+          <tr><td><code>nucleusdb capability list</code></td><td>List active capabilities in GrantStore</td></tr>
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:2rem">MCP Tools</h2>
+      <table class="gdoc-table">
+        <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>nym_status</code></td><td>Query Nym transport status (mode, health, proxy, fail-closed)</td></tr>
+          <tr><td><code>privacy_classify</code></td><td>Classify a URL's privacy level and routing decision</td></tr>
+          <tr><td><code>onchain_attest</code></td><td>Generate and post an attestation proof</td></tr>
+          <tr><td><code>zk_credential_prove</code></td><td>Generate a ZK credential proof for anonymous authorization</td></tr>
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:2rem">Environment Variables</h2>
+      <table class="gdoc-table">
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>SOCKS5_PROXY</code></td><td>\u2014</td><td>SOCKS5 proxy address (e.g. <code>127.0.0.1:1080</code>)</td></tr>
+          <tr><td><code>ALL_PROXY</code></td><td>\u2014</td><td>Fallback proxy (must be socks5:// scheme)</td></tr>
+          <tr><td><code>NYM_BINARY</code></td><td>\u2014</td><td>Path to Nym client binary (auto-configures local mode)</td></tr>
+          <tr><td><code>NYM_CONFIG_DIR</code></td><td>\u2014</td><td>Nym config directory (auto-configures local mode)</td></tr>
+          <tr><td><code>NYM_FAIL_OPEN</code></td><td><code>false</code></td><td>Set <code>true</code> to allow direct fallback (degrades privacy)</td></tr>
+          <tr><td><code>NYM_FAIL_CLOSED</code></td><td><code>true</code></td><td>Legacy: set <code>false</code> for fail-open (prefer NYM_FAIL_OPEN)</td></tr>
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:2rem">Formal Verification Bridge</h2>
+      <p>
+        The Lean categorical model in <code>lean/AgentHALO/</code> mirrors the Rust runtime.
+        Key correspondences for the communication stack:
+      </p>
+      <div class="gdoc-bridge">
+        <div class="gdoc-bridge-col">
+          <div class="gdoc-bridge-heading">Lean Category-Theoretic Model \u2192 Rust Runtime</div>
+          <div class="gdoc-bridge-row">
+            <div class="gdoc-bridge-item">DID/Derivation.lean<br><span>did_from_seed functor</span></div>
+            <div class="gdoc-bridge-arrow">\u2192</div>
+            <div class="gdoc-bridge-item">did.rs<br><span>did_from_genesis_seed()</span></div>
+          </div>
+          <div class="gdoc-bridge-row">
+            <div class="gdoc-bridge-item">DID/DualSign.lean<br><span>dual_sign morphism</span></div>
+            <div class="gdoc-bridge-arrow">\u2192</div>
+            <div class="gdoc-bridge-item">did.rs<br><span>dual_sign() + dual_verify()</span></div>
+          </div>
+          <div class="gdoc-bridge-row">
+            <div class="gdoc-bridge-item">Capability/Token.lean<br><span>CapabilityToken type</span></div>
+            <div class="gdoc-bridge-arrow">\u2192</div>
+            <div class="gdoc-bridge-item">capability.rs<br><span>CapabilityToken struct</span></div>
+          </div>
+          <div class="gdoc-bridge-row">
+            <div class="gdoc-bridge-item">ZK/Credential.lean<br><span>credential_circuit</span></div>
+            <div class="gdoc-bridge-arrow">\u2192</div>
+            <div class="gdoc-bridge-item">zk_credential.rs<br><span>ZkCredentialCircuit</span></div>
+          </div>
+          <div class="gdoc-bridge-row">
+            <div class="gdoc-bridge-item">Privacy/Controller.lean<br><span>classify functor</span></div>
+            <div class="gdoc-bridge-arrow">\u2192</div>
+            <div class="gdoc-bridge-item">privacy_controller.rs<br><span>classify_url()</span></div>
+          </div>
+        </div>
+      </div>
+
+      <h2 style="margin-top:2rem">Source Files</h2>
+      <table class="gdoc-table">
+        <thead><tr><th>File</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td><code>src/halo/did.rs</code></td><td>DID derivation, dual signing, DID Document</td></tr>
+          <tr><td><code>src/pod/capability.rs</code></td><td>Capability tokens, AccessMode, AgentClass</td></tr>
+          <tr><td><code>src/pod/did_acl_bridge.rs</code></td><td>DID-to-ACL bridge, GrantStore</td></tr>
+          <tr><td><code>src/halo/zk_credential.rs</code></td><td>ZK credential circuit (Groth16/BN254)</td></tr>
+          <tr><td><code>src/halo/privacy_controller.rs</code></td><td>URL classification, privacy levels</td></tr>
+          <tr><td><code>src/halo/nym.rs</code></td><td>Nym status, proxy resolution, fail-closed enforcement</td></tr>
+          <tr><td><code>src/halo/http_client.rs</code></td><td>Privacy-aware HTTP agent factory</td></tr>
+          <tr><td><code>src/halo/circuit.rs</code></td><td>Attestation circuit (session Merkle proof)</td></tr>
+          <tr><td><code>src/halo/onchain.rs</code></td><td>On-chain attestation posting + query</td></tr>
+          <tr><td><code>src/trust/onchain.rs</code></td><td>Trust bridge (PUF attestation + cast proxy)</td></tr>
+          <tr><td><code>src/pcn/adapter.rs</code></td><td>PCN compliance witness + conservation</td></tr>
+        </tbody>
+      </table>
     </div>
   `;
 }

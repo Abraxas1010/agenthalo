@@ -58,7 +58,7 @@ const PROVIDER_INFO = {
 // -- Routing ------------------------------------------------------------------
 const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
-  identification: renderIdentificationPage,
+  identification: renderIdentificationPage, communication: renderCommunicationPage,
   trust: renderTrust, nucleusdb: renderNucleusDB, cockpit: renderCockpit, deploy: renderDeploy };
 
 // Genesis + Overview hub + Identification pages — rendering logic in genesis-docs.js (loaded after app.js)
@@ -69,6 +69,10 @@ function renderGenesisPage() {
 function renderIdentificationPage() {
   if (typeof renderIdentification === 'function') renderIdentification();
   else content.innerHTML = '<div class="loading">Identification docs module not loaded.</div>';
+}
+function renderCommunicationPage() {
+  if (typeof renderCommunication === 'function') renderCommunication();
+  else content.innerHTML = '<div class="loading">Communication docs module not loaded.</div>';
 }
 function renderOverviewHub() {
   if (typeof renderDocsOverview === 'function') renderDocsOverview();

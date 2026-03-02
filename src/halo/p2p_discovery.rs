@@ -150,7 +150,9 @@ fn verify_did_document_binding(
     let did_key_ed25519 = decode_did_key_ed25519_public(&announcement.did)?;
     let document_ed25519 = decode_document_ed25519_public(did_document)?;
     if did_key_ed25519 != document_ed25519 {
-        return Err("announcement DID document Ed25519 key does not match did:key identifier".to_string());
+        return Err(
+            "announcement DID document Ed25519 key does not match did:key identifier".to_string(),
+        );
     }
     Ok(())
 }
@@ -482,7 +484,8 @@ mod tests {
     #[test]
     fn handle_gossipsub_message_accepts_signed_announcement() {
         let identity = crate::halo::did::did_from_genesis_seed(&seed(0x54)).expect("identity");
-        let mut announcement = announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+        let mut announcement =
+            announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
         sign_announcement(&identity, &mut announcement).expect("sign");
         let payload = serde_json::to_vec(&announcement).expect("serialize");
 
@@ -498,7 +501,8 @@ mod tests {
     fn handle_gossipsub_message_rejects_did_key_mismatch() {
         let alice = crate::halo::did::did_from_genesis_seed(&seed(0x61)).expect("alice");
         let mallory = crate::halo::did::did_from_genesis_seed(&seed(0x62)).expect("mallory");
-        let mut announcement = announcement_for_identity(&mallory, PeerId::random(), vec![], vec![]);
+        let mut announcement =
+            announcement_for_identity(&mallory, PeerId::random(), vec![], vec![]);
         announcement.did = alice.did.clone();
         let mut tampered_document = mallory.did_document.clone();
         tampered_document.id = alice.did.clone();
@@ -534,7 +538,8 @@ mod tests {
     #[test]
     fn ingest_kad_record_accepts_signed_announcement() {
         let identity = crate::halo::did::did_from_genesis_seed(&seed(0x64)).expect("identity");
-        let mut announcement = announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+        let mut announcement =
+            announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
         sign_announcement(&identity, &mut announcement).expect("sign");
         let value = serde_json::to_vec(&announcement).expect("serialize");
         let record = Record {
