@@ -4,6 +4,7 @@
 //! Grantor identity material, grant nonce, and creation metadata remain witness-only.
 
 use ark_bn254::{Bn254, Fr};
+use ark_ff::{Field, PrimeField};
 use ark_groth16::{prepare_verifying_key, Groth16, Proof, ProvingKey, VerifyingKey};
 use ark_relations::lc;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError, Variable};
@@ -23,7 +24,7 @@ const CREDENTIAL_DID_HASH_DOMAIN: &str = "agenthalo.zk_credential.did_hash.v1";
 const CREDENTIAL_KEY_HASH_DOMAIN: &str = "agenthalo.zk_credential.key_hash.v1";
 const CREDENTIAL_MERKLE_DOMAIN: &str = "agenthalo.zk_credential.merkle.v1";
 const CREDENTIAL_MEMBERSHIP_DOMAIN: &str = "agenthalo.zk_credential.membership.v1";
-const CREDENTIAL_SCHEMA_VERSION: u32 = 1;
+const CREDENTIAL_SCHEMA_VERSION: u32 = 2;
 
 pub type CredentialKeypair = (ProvingKey<Bn254>, VerifyingKey<Bn254>);
 
@@ -123,10 +124,7 @@ impl ConstraintSynthesizer<Fr> for CredentialCircuit {
             self.req_control_public
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
-        // Phase-0 scope note: this public input is currently validated by the host-side
-        // `validate_grant_for_proof` flow, and reserved for in-circuit time checks in a
-        // hardening pass.
-        let _current_time_public = cs.new_input_variable(|| {
+        let current_time_public = cs.new_input_variable(|| {
             self.current_time_public
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
@@ -169,32 +167,29 @@ impl ConstraintSynthesizer<Fr> for CredentialCircuit {
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
-        // Phase-0 scope note: the fields below are allocated as witness placeholders so the
-        // circuit shape is stable while host-side validation enforces expiry/grant-id/grantor
-        // checks. These become constrained in the production-hardening circuit revision.
-        let _expires_at_witness = cs.new_witness_variable(|| {
+        let expires_at_witness = cs.new_witness_variable(|| {
             self.expires_at_witness
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
-        let _created_at_witness = cs.new_witness_variable(|| {
+        let created_at_witness = cs.new_witness_variable(|| {
             self.created_at_witness
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
-        let _nonce_witness = cs
+        let nonce_witness = cs
             .new_witness_variable(|| self.nonce_witness.ok_or(SynthesisError::AssignmentMissing))?;
-        let _grant_id_lo_witness = cs.new_witness_variable(|| {
+        let grant_id_lo_witness = cs.new_witness_variable(|| {
             self.grant_id_lo_witness
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
-        let _grant_id_hi_witness = cs.new_witness_variable(|| {
+        let grant_id_hi_witness = cs.new_witness_variable(|| {
             self.grant_id_hi_witness
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
-        let _grantor_hash_lo_witness = cs.new_witness_variable(|| {
+        let grantor_hash_lo_witness = cs.new_witness_variable(|| {
             self.grantor_hash_lo_witness
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
-        let _grantor_hash_hi_witness = cs.new_witness_variable(|| {
+        let grantor_hash_hi_witness = cs.new_witness_variable(|| {
             self.grantor_hash_hi_witness
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
@@ -224,6 +219,106 @@ impl ConstraintSynthesizer<Fr> for CredentialCircuit {
 
         // Revoked grants are invalid: revoked must be 0.
         cs.enforce_constraint(lc!() + revoked_witness, lc!() + Variable::One, lc!())?;
+
+        // Nonce must be non-zero: nonce * inv = 1
+        let nonce_inv_witness = cs.new_witness_variable(|| {
+            let nonce = self.nonce_witness.ok_or(SynthesisError::AssignmentMissing)?;
+            nonce.inverse().ok_or(SynthesisError::Unsatisfiable)
+        })?;
+        cs.enforce_constraint(
+            lc!() + nonce_witness,
+            lc!() + nonce_inv_witness,
+            lc!() + Variable::One,
+        )?;
+
+        // Enforce created_at <= current_time by introducing created_delta where:
+        // current_time = created_at + created_delta
+        let created_delta_witness = cs.new_witness_variable(|| {
+            let current = fr_to_u64(&self.current_time_public.ok_or(SynthesisError::AssignmentMissing)?)
+                .ok_or(SynthesisError::Unsatisfiable)?;
+            let created = fr_to_u64(&self.created_at_witness.ok_or(SynthesisError::AssignmentMissing)?)
+                .ok_or(SynthesisError::Unsatisfiable)?;
+            if current < created {
+                return Err(SynthesisError::Unsatisfiable);
+            }
+            Ok(Fr::from(current - created))
+        })?;
+        cs.enforce_constraint(
+            lc!() + current_time_public - created_at_witness - created_delta_witness,
+            lc!() + Variable::One,
+            lc!(),
+        )?;
+
+        // Enforce optional expiry with a boolean selector:
+        // has_expiry = 0 -> expires_at = 0
+        // has_expiry = 1 -> expires_at = current_time + expiry_delta + 1
+        let has_expiry_witness = cs.new_witness_variable(|| {
+            let expires = fr_to_u64(&self.expires_at_witness.ok_or(SynthesisError::AssignmentMissing)?)
+                .ok_or(SynthesisError::Unsatisfiable)?;
+            Ok(if expires == 0 {
+                Fr::from(0u64)
+            } else {
+                Fr::from(1u64)
+            })
+        })?;
+        enforce_boolean(cs.clone(), has_expiry_witness)?;
+
+        let expiry_delta_witness = cs.new_witness_variable(|| {
+            let expires = fr_to_u64(&self.expires_at_witness.ok_or(SynthesisError::AssignmentMissing)?)
+                .ok_or(SynthesisError::Unsatisfiable)?;
+            if expires == 0 {
+                return Ok(Fr::from(0u64));
+            }
+            let current = fr_to_u64(&self.current_time_public.ok_or(SynthesisError::AssignmentMissing)?)
+                .ok_or(SynthesisError::Unsatisfiable)?;
+            if expires <= current {
+                return Err(SynthesisError::Unsatisfiable);
+            }
+            Ok(Fr::from(expires - current - 1))
+        })?;
+
+        // expires_at * (1 - has_expiry) = 0
+        cs.enforce_constraint(
+            lc!() + expires_at_witness,
+            lc!() + Variable::One - has_expiry_witness,
+            lc!(),
+        )?;
+        // (expires_at - current_time - expiry_delta - 1) * has_expiry = 0
+        cs.enforce_constraint(
+            lc!() + expires_at_witness - current_time_public - expiry_delta_witness - Variable::One,
+            lc!() + has_expiry_witness,
+            lc!(),
+        )?;
+
+        // Bind previously unconstrained grant identity/grantor witness fields by requiring
+        // non-zero affine combinations.
+        let grant_id_mix_inv = cs.new_witness_variable(|| {
+            let lo = self.grant_id_lo_witness.ok_or(SynthesisError::AssignmentMissing)?;
+            let hi = self.grant_id_hi_witness.ok_or(SynthesisError::AssignmentMissing)?;
+            let mix = lo + hi + Fr::from(1u64);
+            mix.inverse().ok_or(SynthesisError::Unsatisfiable)
+        })?;
+        cs.enforce_constraint(
+            lc!() + grant_id_lo_witness + grant_id_hi_witness + Variable::One,
+            lc!() + grant_id_mix_inv,
+            lc!() + Variable::One,
+        )?;
+
+        let grantor_mix_inv = cs.new_witness_variable(|| {
+            let lo = self
+                .grantor_hash_lo_witness
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            let hi = self
+                .grantor_hash_hi_witness
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            let mix = lo + hi + Fr::from(1u64);
+            mix.inverse().ok_or(SynthesisError::Unsatisfiable)
+        })?;
+        cs.enforce_constraint(
+            lc!() + grantor_hash_lo_witness + grantor_hash_hi_witness + Variable::One,
+            lc!() + grantor_mix_inv,
+            lc!() + Variable::One,
+        )?;
 
         Ok(())
     }
@@ -630,6 +725,15 @@ fn validate_grant_for_proof(
             ));
         }
     }
+    if grant.created_at > current_time {
+        return Err(format!(
+            "grant created_at is in the future: created_at={}, current_time={}",
+            grant.created_at, current_time
+        ));
+    }
+    if grant.nonce == 0 {
+        return Err("grant nonce must be non-zero".to_string());
+    }
 
     if !permissions_subset(requested, grant.permissions) {
         return Err("requested permissions are not a subset of granted permissions".to_string());
@@ -693,6 +797,14 @@ fn bit_fr(b: bool) -> Fr {
     } else {
         Fr::from(0u64)
     }
+}
+
+fn fr_to_u64(value: &Fr) -> Option<u64> {
+    let limbs = value.into_bigint().0;
+    if limbs[1..].iter().any(|&x| x != 0) {
+        return None;
+    }
+    Some(limbs[0])
 }
 
 #[cfg(test)]
@@ -778,6 +890,23 @@ mod tests {
         let err = prove_credential(&pk, &grant, "did:key:z6MkExpired", read_only(), 101)
             .expect_err("must reject expired grant");
         assert!(err.contains("expired"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_credential_rejects_zero_nonce() {
+        let (pk, _vk) = setup_credential_circuit().expect("setup");
+        let grant = make_grant(
+            0x11,
+            0x22,
+            "results/*",
+            GrantPermissions::owner(),
+            Some(2_000_000),
+            1_000_000,
+            0,
+        );
+        let err = prove_credential(&pk, &grant, "did:key:z6MkZeroNonce", read_only(), 1_500_000)
+            .expect_err("must reject zero nonce");
+        assert!(err.contains("nonce"), "unexpected error: {err}");
     }
 
     #[test]
