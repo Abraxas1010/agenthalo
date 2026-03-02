@@ -20,6 +20,7 @@
 //! through AgentPMT or on-chain, making it infeasible to bypass billing.
 
 use hmac::{Hmac, Mac};
+use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
@@ -328,6 +329,7 @@ fn verify_x402_transaction(
         .get("logs")
         .and_then(|v| v.as_array())
         .ok_or_else(|| "transaction receipt missing logs array".to_string())?;
+    let expected_amount = BigUint::from(expected_amount_base_units);
     for log in logs {
         let topic0 = log
             .get("topics")
@@ -338,12 +340,10 @@ fn verify_x402_transaction(
             continue;
         }
         let data = log.get("data").and_then(|v| v.as_str()).unwrap_or("");
-        let hex = data.strip_prefix("0x").unwrap_or(data);
-        if hex.is_empty() {
+        let Some(amount) = parse_evm_uint256_hex(data) else {
             continue;
-        }
-        let amount = u128::from_str_radix(hex, 16).unwrap_or(0);
-        if amount >= expected_amount_base_units as u128 {
+        };
+        if amount >= expected_amount {
             return Ok(());
         }
     }
@@ -352,6 +352,18 @@ fn verify_x402_transaction(
         "USDC transfer of >= {} base units not found in transaction logs",
         expected_amount_base_units
     ))
+}
+
+fn parse_evm_uint256_hex(data: &str) -> Option<BigUint> {
+    let hex = data.strip_prefix("0x").unwrap_or(data);
+    if hex.is_empty() {
+        return None;
+    }
+    let trimmed = hex.trim_start_matches('0');
+    if trimmed.is_empty() {
+        return Some(BigUint::from(0u8));
+    }
+    BigUint::parse_bytes(trimmed.as_bytes(), 16)
 }
 
 /// Check whether a funding source is an accepted customer-facing channel.
@@ -652,5 +664,19 @@ mod tests {
         assert_eq!(loaded.key_id, "cust_123");
         assert_eq!(loaded.amount_usd, 25.0);
         assert_eq!(loaded.balance_after, 75.0);
+    }
+
+    #[test]
+    fn parse_uint256_accepts_zero_padded_64_char_log_data() {
+        let data = "0x0000000000000000000000000000000000000000000000000000000000989680";
+        let parsed = parse_evm_uint256_hex(data).expect("parse padded uint256");
+        assert_eq!(parsed, BigUint::from(10_000_000u64));
+    }
+
+    #[test]
+    fn parse_uint256_supports_values_larger_than_u128() {
+        let data = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        let parsed = parse_evm_uint256_hex(data).expect("parse uint256 max");
+        assert!(parsed > BigUint::from(u128::MAX));
     }
 }
