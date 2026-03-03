@@ -152,7 +152,7 @@ pub fn post_attestation(
 
     if onchain_simulation_enabled() {
         let digest = digest_bytes(
-            "agenthalo.onchain.sim.tx.v1",
+            "agenthalo.onchain.stub.tx.v1",
             format!(
                 "{}:{}:{}:{}:{}",
                 cfg.contract_address,
@@ -251,7 +251,7 @@ pub fn deploy_trust_verifier(cfg: &OnchainConfig) -> Result<String, String> {
     validate_chain(cfg)?;
     if onchain_simulation_enabled() {
         let digest = digest_bytes(
-            "agenthalo.onchain.sim.deploy.v1",
+            "agenthalo.onchain.stub.deploy.v1",
             format!(
                 "{}:{}:{}:{}:{}",
                 cfg.rpc_url,
@@ -682,11 +682,11 @@ mod tests {
 
     static SIMULATION_OVERRIDE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    struct StubOverrideGuard {
+    struct SimulationOverrideGuard {
         _guard: MutexGuard<'static, ()>,
     }
 
-    impl StubOverrideGuard {
+    impl SimulationOverrideGuard {
         fn new(val: bool) -> Self {
             let lock = SIMULATION_OVERRIDE_TEST_LOCK
                 .lock()
@@ -696,7 +696,7 @@ mod tests {
         }
     }
 
-    impl Drop for StubOverrideGuard {
+    impl Drop for SimulationOverrideGuard {
         fn drop(&mut self) {
             set_onchain_simulation_override(None);
         }
@@ -805,7 +805,7 @@ mod tests {
 
     #[test]
     fn test_query_attestation_not_found() {
-        let _guard = StubOverrideGuard::new(true);
+        let _guard = SimulationOverrideGuard::new(true);
         let cfg = OnchainConfig {
             contract_address: "0x1111111111111111111111111111111111111111".to_string(),
             ..OnchainConfig::default()
@@ -834,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_simulation_warning_message_present_when_enabled() {
-        let _guard = StubOverrideGuard::new(true);
+        let _guard = SimulationOverrideGuard::new(true);
         let msg = simulation_warning_message().expect("warning should be available");
         assert!(msg.contains("SECURITY WARNING"));
     }

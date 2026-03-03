@@ -5,7 +5,7 @@ Abstract interface for *incomparable encodings* as used by the `leanEthereum` Le
 XMSS construction.
 
 Design goal: stay executable-first and policy-compliant:
-- no proof-hole fallbacks?;
+- no proof-hole shortcuts;
 - no cryptographic postulates;
 - security claims are expressed as named `Prop` interfaces, mirroring
   `HeytingLean.Crypto.Signature.Spec`.

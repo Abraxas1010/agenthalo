@@ -702,7 +702,7 @@ CAB certificate verification is fully offline — no phone-home.
 | `AGENTHALO_ALLOW_GENERIC` | `0` | Set to `1`, `true`, or `yes` to enable custom agent wrapping |
 | `AGENTHALO_NO_TELEMETRY` | `1` | Always 1. Documented for transparency. |
 | `AGENTHALO_X402_PRIVATE_KEY` | (none) | Private key for x402 USDC payments (separate from attestation key) |
-| `AGENTHALO_ONCHAIN_STUB` | `0` | Set to `1` to disable real RPC posting (returns deterministic stub tx hashes) |
+| `AGENTHALO_ONCHAIN_SIMULATION` | `0` | Set to `1` to disable real RPC posting (returns deterministic simulated tx hashes) |
 
 ## Pricing Tables
 

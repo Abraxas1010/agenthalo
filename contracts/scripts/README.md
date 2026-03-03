@@ -76,7 +76,7 @@ Runs a full one-command mock-backed E2E validation on Base Sepolia:
 | `TRUST_TREASURY` | yes | no | deploy only | Constructor treasury address. |
 | `TRUST_VERIFIER_ADDRESS` | no | yes | e2e only | Deployed `TrustVerifier` address under test. |
 | `AGENTHALO_BIN` | no | yes | no | Defaults to `target/debug/agenthalo` then `target/release/agenthalo`. |
-| `AGENTHALO_ONCHAIN_STUB` | no | yes | no | Defaults to `1` for local/no-key smoke runs. |
+| `AGENTHALO_ONCHAIN_SIMULATION` | no | yes | no | Defaults to `1` for local/no-key smoke runs. |
 | `ETH_KEYSTORE` + `ETH_PASSWORD_FILE` | yes | yes | signer | Preferred signer mode. |
 | `PRIVATE_KEY` / `AGENTHALO_ONCHAIN_PRIVATE_KEY` | yes | yes | signer fallback | Used only when keystore is not configured. |
 | `BASESCAN_API_KEY` | yes | no | no | Enables `forge create --verify`. |

@@ -14,7 +14,7 @@ set -euo pipefail
 # Optional env:
 #   AGENTHALO_BIN                    (default: target/debug/agenthalo, then target/release/agenthalo)
 #   AGENTHALO_HOME                   (default: .tmp/agenthalo_phase5_e2e)
-#   AGENTHALO_ONCHAIN_STUB           (default: 1)
+#   AGENTHALO_ONCHAIN_SIMULATION     (default: 1)
 #   AGENTHALO_ONCHAIN_PRIVATE_KEY    (used when signer-mode private_key_env and non-stub)
 #   ETH_KEYSTORE + ETH_PASSWORD_FILE (used when signer-mode keystore)
 #   AGENT_ADDRESS                    (optional; auto-derived from signer if unset)
@@ -147,8 +147,8 @@ export AGENTHALO_HOME="${AGENTHALO_HOME:-${REPO_DIR}/.tmp/agenthalo_phase5_e2e}"
 mkdir -p "${AGENTHALO_HOME}"
 export AGENTHALO_API_KEY="${AGENTHALO_API_KEY:-phase5-dev-api-key}"
 export AGENTHALO_ALLOW_GENERIC="${AGENTHALO_ALLOW_GENERIC:-1}"
-export AGENTHALO_AGENTPMT_STUB="${AGENTHALO_AGENTPMT_STUB:-1}"
-export AGENTHALO_ONCHAIN_STUB="${AGENTHALO_ONCHAIN_STUB:-1}"
+export AGENTHALO_AGENTPMT_SIMULATION="${AGENTHALO_AGENTPMT_SIMULATION:-1}"
+export AGENTHALO_ONCHAIN_SIMULATION="${AGENTHALO_ONCHAIN_SIMULATION:-1}"
 export AGENTHALO_ONCHAIN_PRIVATE_KEY="${AGENTHALO_ONCHAIN_PRIVATE_KEY:-${PRIVATE_KEY:-}}"
 
 mkdir -p "${CONTRACTS_DIR}/artifacts/ops/agenthalo_phase5"
@@ -203,7 +203,7 @@ VERIFY_ANON="$(normalize_bool_output "${VERIFY_ANON_RAW}")"
 RECORD_NON_ANON="$(cast call --rpc-url "${RPC_URL_BASE_SEPOLIA}" "${TRUST_VERIFIER_ADDRESS}" "getAttestation(bytes32)((bytes32,bytes32,uint64,address,uint64,bool))" "${DIGEST_NON_ANON}" 2>/dev/null || true)"
 RECORD_ANON="$(cast call --rpc-url "${RPC_URL_BASE_SEPOLIA}" "${TRUST_VERIFIER_ADDRESS}" "getAttestation(bytes32)((bytes32,bytes32,uint64,address,uint64,bool))" "${DIGEST_ANON}" 2>/dev/null || true)"
 
-if [[ "${AGENTHALO_ONCHAIN_STUB}" == "1" || "${AGENTHALO_ONCHAIN_STUB}" == "true" ]]; then
+if [[ "${AGENTHALO_ONCHAIN_SIMULATION}" == "1" || "${AGENTHALO_ONCHAIN_SIMULATION}" == "true" ]]; then
   RECEIPT_NON_ANON_STATUS=-1
   RECEIPT_NON_ANON_GAS=-1
   RECEIPT_ANON_STATUS=-1
@@ -239,7 +239,7 @@ python3 - "${EVIDENCE_OUT}" \
   "${RECORD_ANON}" \
   "${SCRIPT_SHA256}" \
   "${DEPLOYMENT_EVIDENCE_SHA256}" \
-  "${AGENTHALO_ONCHAIN_STUB}" <<'PY'
+  "${AGENTHALO_ONCHAIN_SIMULATION}" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -264,7 +264,7 @@ from datetime import datetime, timezone
     record_anon,
     script_sha256,
     deployment_evidence_sha256,
-    stub_mode,
+    simulation_mode,
 ) = sys.argv[1:]
 
 payload = {
@@ -274,7 +274,7 @@ payload = {
     "chain_id": int(chain_id),
     "contract_address": contract_address,
     "session_id": session_id,
-    "stub_mode": stub_mode.lower() in {"1", "true", "yes"},
+    "simulation_mode": simulation_mode.lower() in {"1", "true", "yes"},
     "non_anonymous": {
         "attestation_digest": digest_non_anon,
         "tx_hash": tx_non_anon,
