@@ -12,11 +12,10 @@ use crate::halo::util::{digest_bytes, hex_decode, hex_decode_32, hex_encode, now
 use crate::halo::zk_guests;
 
 #[cfg(feature = "zk-compute")]
-use risc0_zkvm::{default_prover, ExecutorEnv};
+use risc0_zkvm::{
+    compute_image_id, default_prover, sha::Digest as Risc0Digest, ExecutorEnv, Receipt,
+};
 
-const COMPUTE_IMAGE_DOMAIN: &str = "agenthalo.zk_compute.image.v1";
-#[cfg(feature = "zk-compute")]
-const COMPUTE_JOURNAL_DOMAIN: &str = "agenthalo.zk_compute.journal.v1";
 const COMPUTE_PRIVATE_DOMAIN: &str = "agenthalo.zk_compute.private.v1";
 const COMPUTE_RECEIPT_DOMAIN: &str = "agenthalo.zk_compute.receipt.v1";
 #[cfg(feature = "zk-compute")]
@@ -72,6 +71,8 @@ struct ReceiptEnvelope {
     compute_id: String,
     image_id: String,
     journal_hex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    zk_receipt_hex: Option<String>,
     public_inputs_hash: String,
     private_inputs_commitment: String,
     timestamp: u64,
@@ -183,19 +184,38 @@ fn execute_builtin_guest(kind: BuiltinGuest, request: &ComputeRequest) -> Result
 }
 
 #[cfg(feature = "zk-compute")]
-fn prove_custom_elf(request: &ComputeRequest) -> Result<Vec<u8>, String> {
-    let private_commitment = digest_bytes(COMPUTE_PRIVATE_DOMAIN, &request.private_inputs);
-    let mut journal_payload =
-        Vec::with_capacity(request.public_inputs.len() + private_commitment.len());
-    journal_payload.extend_from_slice(&request.public_inputs);
-    journal_payload.extend_from_slice(&private_commitment);
-    let _ = ExecutorEnv::builder();
-    let _ = default_prover();
-    Ok(digest_bytes(COMPUTE_JOURNAL_DOMAIN, &journal_payload).to_vec())
+fn prove_custom_elf(request: &ComputeRequest) -> Result<(String, Vec<u8>, Option<String>), String> {
+    let mut env_builder = ExecutorEnv::builder();
+    env_builder.write_slice(&request.public_inputs);
+    env_builder.write_slice(&request.private_inputs);
+    let env = env_builder
+        .build()
+        .map_err(|e| format!("build zkVM executor env: {e}"))?;
+
+    let image_id =
+        compute_image_id(&request.guest_elf).map_err(|e| format!("compute zkVM image id: {e}"))?;
+    let prove_info = default_prover()
+        .prove(env, &request.guest_elf)
+        .map_err(|e| format!("zkVM prove custom ELF: {e}"))?;
+    prove_info
+        .receipt
+        .verify(image_id)
+        .map_err(|e| format!("zkVM receipt verification failed: {e}"))?;
+
+    let journal = prove_info.receipt.journal.bytes.clone();
+    let serialized_receipt =
+        serde_json::to_vec(&prove_info.receipt).map_err(|e| format!("encode zkVM receipt: {e}"))?;
+    Ok((
+        hex_encode(image_id.as_bytes()),
+        journal,
+        Some(hex_encode(&serialized_receipt)),
+    ))
 }
 
 #[cfg(not(feature = "zk-compute"))]
-fn prove_custom_elf(_request: &ComputeRequest) -> Result<Vec<u8>, String> {
+fn prove_custom_elf(
+    _request: &ComputeRequest,
+) -> Result<(String, Vec<u8>, Option<String>), String> {
     Err("custom guest ELF proving requires cargo feature `zk-compute`".to_string())
 }
 
@@ -207,17 +227,16 @@ pub fn prove_computation(request: &ComputeRequest) -> Result<ComputeReceipt, Str
         return Err("guest_elf cannot be empty".to_string());
     }
 
-    let (image_id, journal) = if let Some(kind) = decode_builtin_kind(&request.guest_elf) {
-        (
-            kind.image_id().to_string(),
-            execute_builtin_guest(kind, request)?,
-        )
-    } else {
-        (
-            hex_encode(&digest_bytes(COMPUTE_IMAGE_DOMAIN, &request.guest_elf)),
-            prove_custom_elf(request)?,
-        )
-    };
+    let (image_id, journal, zk_receipt_hex) =
+        if let Some(kind) = decode_builtin_kind(&request.guest_elf) {
+            (
+                kind.image_id().to_string(),
+                execute_builtin_guest(kind, request)?,
+                None,
+            )
+        } else {
+            prove_custom_elf(request)?
+        };
 
     let private_commitment = digest_bytes(COMPUTE_PRIVATE_DOMAIN, &request.private_inputs);
     let timestamp = now_unix_secs();
@@ -226,6 +245,7 @@ pub fn prove_computation(request: &ComputeRequest) -> Result<ComputeReceipt, Str
         compute_id: request.compute_id.clone(),
         image_id: image_id.clone(),
         journal_hex: hex_encode(&journal),
+        zk_receipt_hex,
         public_inputs_hash: hex_encode(&digest_bytes(
             COMPUTE_RECEIPT_DOMAIN,
             &request.public_inputs,
@@ -255,7 +275,39 @@ pub fn verify_computation(receipt: &ComputeReceipt) -> Result<bool, String> {
             COMPUTE_RECEIPT_SCHEMA, receipt.schema_version
         ));
     }
-    verify_receipt_minimal(&receipt.receipt_bytes, &receipt.image_id, &receipt.journal)
+    let minimal_ok =
+        verify_receipt_minimal(&receipt.receipt_bytes, &receipt.image_id, &receipt.journal)?;
+    if !minimal_ok {
+        return Ok(false);
+    }
+
+    let envelope: ReceiptEnvelope = serde_json::from_slice(&receipt.receipt_bytes)
+        .map_err(|e| format!("decode receipt envelope: {e}"))?;
+    if let Some(zk_receipt_hex) = envelope.zk_receipt_hex {
+        #[cfg(feature = "zk-compute")]
+        {
+            let receipt_raw = hex_decode(&zk_receipt_hex)?;
+            let risc0_receipt: Receipt = serde_json::from_slice(&receipt_raw)
+                .map_err(|e| format!("decode embedded zkVM receipt: {e}"))?;
+            let image_id_bytes = hex_decode_32(&envelope.image_id)?;
+            let image_id = Risc0Digest::try_from(image_id_bytes.as_slice())
+                .map_err(|e| format!("decode zkVM image id: {e}"))?;
+            risc0_receipt
+                .verify(image_id)
+                .map_err(|e| format!("verify embedded zkVM receipt: {e}"))?;
+            if risc0_receipt.journal.bytes != receipt.journal {
+                return Ok(false);
+            }
+        }
+        #[cfg(not(feature = "zk-compute"))]
+        {
+            let _ = zk_receipt_hex;
+            return Err(
+                "custom zkVM receipt verification requires cargo feature `zk-compute`".to_string(),
+            );
+        }
+    }
+    Ok(true)
 }
 
 pub fn verify_receipt_minimal(

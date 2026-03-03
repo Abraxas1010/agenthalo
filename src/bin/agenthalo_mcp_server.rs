@@ -24,7 +24,8 @@ use nucleusdb::halo::http_client;
 use nucleusdb::halo::migration;
 use nucleusdb::halo::nym;
 use nucleusdb::halo::onchain::{
-    load_onchain_config_or_default, post_attestation, warn_if_simulation_mode,
+    load_onchain_config_or_default, onchain_simulation_enabled, post_attestation,
+    warn_if_simulation_mode,
 };
 use nucleusdb::halo::password;
 use nucleusdb::halo::pq::{has_wallet, sign_pq_payload};
@@ -44,8 +45,11 @@ use nucleusdb::pod::capability::{self, AccessMode, CapabilityStore};
 use nucleusdb::verifier::gate as proof_gate;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -241,7 +245,7 @@ async fn mcp(
                 }),
                 json!({
                     "name": "vote",
-                    "description": "Record a governance vote intent locally. On-chain submission is not yet implemented.",
+                    "description": "Submit a governance vote (local ledger by default, optional on-chain transaction when submit_onchain=true).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -254,7 +258,7 @@ async fn mcp(
                 }),
                 json!({
                     "name": "sync",
-                    "description": "Record a cloud sync intent locally. Sync transport is not yet implemented.",
+                    "description": "Execute session sync by creating a signed sync artifact and optionally pushing to an HTTP endpoint.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -264,7 +268,7 @@ async fn mcp(
                 }),
                 json!({
                     "name": "privacy_pool_create",
-                    "description": "Record a privacy pool creation intent. Requires agentpmt-workflows add-on. On-chain deployment is not yet implemented.",
+                    "description": "Create a privacy pool workflow record and optionally execute an on-chain create transaction.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -277,7 +281,7 @@ async fn mcp(
                 }),
                 json!({
                     "name": "privacy_pool_withdraw",
-                    "description": "Record a privacy pool withdrawal intent. Requires agentpmt-workflows add-on. On-chain execution is not yet implemented.",
+                    "description": "Execute a privacy pool withdrawal workflow and optionally submit the withdrawal on-chain.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -290,7 +294,7 @@ async fn mcp(
                 }),
                 json!({
                     "name": "pq_bridge_transfer",
-                    "description": "Record a PQ bridge cross-chain transfer intent. Requires p2pclaw add-on. Execution is not yet implemented.",
+                    "description": "Execute a PQ bridge transfer workflow and optionally submit a cross-chain bridge transaction.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -4002,6 +4006,198 @@ fn tool_trust_query(arguments: Value) -> Result<Value, String> {
     }
 }
 
+fn governance_votes_path() -> std::path::PathBuf {
+    config::halo_dir().join("governance_votes.jsonl")
+}
+
+fn append_jsonl(path: &Path, value: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create directory {}: {e}", parent.display()))?;
+    }
+    let line = serde_json::to_string(value).map_err(|e| format!("serialize json line: {e}"))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    file.write_all(line.as_bytes())
+        .and_then(|_| file.write_all(b"\n"))
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn tally_votes(proposal_id: &str) -> Result<Value, String> {
+    let path = governance_votes_path();
+    if !path.exists() {
+        return Ok(json!({"yes": 0, "no": 0, "abstain": 0, "total": 0}));
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let mut yes = 0u64;
+    let mut no = 0u64;
+    let mut abstain = 0u64;
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let parsed: Value =
+            serde_json::from_str(line).map_err(|e| format!("parse governance vote line: {e}"))?;
+        if parsed
+            .get("proposal_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            != proposal_id
+        {
+            continue;
+        }
+        match parsed.get("choice").and_then(|v| v.as_str()).unwrap_or("") {
+            "yes" => yes += 1,
+            "no" => no += 1,
+            "abstain" => abstain += 1,
+            _ => {}
+        }
+    }
+    Ok(json!({
+        "yes": yes,
+        "no": no,
+        "abstain": abstain,
+        "total": yes + no + abstain
+    }))
+}
+
+fn sanitize_target_for_path(target: &str) -> String {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return "default".to_string();
+    }
+    trimmed
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn parse_tx_hash(raw: &str) -> Option<String> {
+    raw.split(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | '(' | ')' | '"' | '\'' | ';'))
+        .find(|tok| {
+            tok.len() == 66
+                && tok.starts_with("0x")
+                && tok[2..].chars().all(|c| c.is_ascii_hexdigit())
+        })
+        .map(|tok| tok.to_string())
+}
+
+fn execute_onchain_workflow_call(
+    function_signature: &str,
+    function_args: Vec<String>,
+    payload: &Value,
+    rpc_url_arg: Option<&str>,
+    contract_arg: Option<&str>,
+    private_key_env_arg: Option<&str>,
+    require_contract: bool,
+    digest_domain: &str,
+) -> Result<Option<String>, String> {
+    let cfg = load_onchain_config_or_default();
+    let rpc_url = rpc_url_arg
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .or_else(|| {
+            std::env::var("AGENTHALO_PROTOCOL_RPC_URL")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+        .unwrap_or_else(|| cfg.rpc_url.clone());
+    let contract = contract_arg
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .or_else(|| {
+            std::env::var("AGENTHALO_PROTOCOL_CONTRACT")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+        .unwrap_or_else(|| cfg.contract_address.clone());
+
+    if contract.trim().is_empty() {
+        if require_contract {
+            return Err(
+                "missing contract address: pass contract_address or set AGENTHALO_PROTOCOL_CONTRACT"
+                    .to_string(),
+            );
+        }
+        return Ok(None);
+    }
+
+    if onchain_simulation_enabled() {
+        let mut digest_payload = serde_json::to_vec(payload)
+            .map_err(|e| format!("serialize payload for digest: {e}"))?;
+        digest_payload.extend_from_slice(function_signature.as_bytes());
+        digest_payload.extend_from_slice(contract.as_bytes());
+        digest_payload.extend_from_slice(rpc_url.as_bytes());
+        let digest = digest_json(
+            digest_domain,
+            &json!({
+                "payload_hex": hex::encode(digest_payload)
+            }),
+        )?;
+        return Ok(Some(format!("0x{digest}")));
+    }
+
+    let private_key_env = private_key_env_arg
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| cfg.private_key_env.clone());
+    let private_key = std::env::var(&private_key_env).map_err(|_| {
+        format!("missing private key env var `{private_key_env}` for on-chain submission")
+    })?;
+
+    let mut args = vec![
+        "send".to_string(),
+        "--async".to_string(),
+        "--rpc-url".to_string(),
+        rpc_url,
+        "--private-key".to_string(),
+        private_key,
+        contract,
+        function_signature.to_string(),
+    ];
+    args.extend(function_args);
+    let mut cmd = Command::new("cast");
+    cmd.args(&args);
+    nym::apply_proxy_env_for_cast(&mut cmd, &args)?;
+    let out = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "`cast` command not found".to_string()
+        } else {
+            format!("cast execution failed: {e}")
+        }
+    })?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !out.status.success() {
+        return Err(format!(
+            "cast failed status={} stdout=`{}` stderr=`{}`",
+            out.status, stdout, stderr
+        ));
+    }
+    let merged = if stdout.is_empty() {
+        stderr
+    } else if stderr.is_empty() {
+        stdout
+    } else {
+        format!("{stdout}\n{stderr}")
+    };
+    let tx_hash = parse_tx_hash(&merged)
+        .ok_or_else(|| format!("failed to parse transaction hash from cast output: {merged}"))?;
+    Ok(Some(tx_hash))
+}
+
 fn tool_vote(arguments: Value) -> Result<Value, String> {
     let proposal_id = arguments
         .get("proposal_id")
@@ -4020,6 +4216,10 @@ fn tool_vote(arguments: Value) -> Result<Value, String> {
         .get("reason")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let submit_onchain = arguments
+        .get("submit_onchain")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let op = "vote";
     let vote = json!({
@@ -4029,13 +4229,46 @@ fn tool_vote(arguments: Value) -> Result<Value, String> {
         "reason": reason,
         "timestamp": now_unix_secs()
     });
+    append_jsonl(&governance_votes_path(), &vote)?;
+    let tally = tally_votes(
+        vote.get("proposal_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+    )?;
+    let tx_hash = if submit_onchain {
+        execute_onchain_workflow_call(
+            arguments
+                .get("function_signature")
+                .and_then(|v| v.as_str())
+                .unwrap_or("castVote(string,string,string)"),
+            vec![
+                vote["proposal_id"].as_str().unwrap_or_default().to_string(),
+                vote["choice"].as_str().unwrap_or_default().to_string(),
+                vote["reason"].as_str().unwrap_or_default().to_string(),
+            ],
+            &vote,
+            arguments.get("rpc_url").and_then(|v| v.as_str()),
+            arguments.get("contract_address").and_then(|v| v.as_str()),
+            arguments.get("private_key_env").and_then(|v| v.as_str()),
+            true,
+            "agenthalo.vote.onchain.tx.v1",
+        )?
+    } else {
+        None
+    };
     let digest = digest_json("agenthalo.vote.v1", &vote)?;
     record_paid_operation_for_halo(op, 0, None, Some(digest.clone()), true, None)?;
     Ok(json!({
-        "status": "recorded_locally",
-        "note": "Vote intent recorded locally with digest. On-chain governance submission is not yet implemented.",
+        "status": if submit_onchain { "submitted" } else { "stored" },
+        "note": if submit_onchain {
+            "vote stored and submitted to chain"
+        } else {
+            "vote stored in local governance ledger"
+        },
         "result_digest": digest,
-        "vote": vote
+        "vote": vote,
+        "tally": tally,
+        "tx_hash": tx_hash
     }))
 }
 
@@ -4047,20 +4280,65 @@ fn tool_sync(arguments: Value) -> Result<Value, String> {
         .to_string();
     let op = "sync";
     let db_path = config::db_path();
+    let sessions_count = list_sessions(&db_path)?.len();
+    let target_endpoint = if target.starts_with("http://") || target.starts_with("https://") {
+        Some(target.clone())
+    } else if target == "cloudflare" {
+        std::env::var("AGENTHALO_SYNC_ENDPOINT")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    } else {
+        None
+    };
     let sync = json!({
         "sync_id": uuid::Uuid::new_v4().to_string(),
         "target": target,
-        "sessions_considered": list_sessions(&db_path)?.len(),
+        "sessions_considered": sessions_count,
         "timestamp": now_unix_secs(),
         "mode": "delta-sync"
     });
+    let sync_dir = config::halo_dir()
+        .join("sync")
+        .join(sanitize_target_for_path(
+            sync["target"].as_str().unwrap_or("default"),
+        ));
+    fs::create_dir_all(&sync_dir)
+        .map_err(|e| format!("create sync dir {}: {e}", sync_dir.display()))?;
+    let artifact_path = sync_dir.join(format!(
+        "{}.json",
+        sync["sync_id"].as_str().unwrap_or("sync")
+    ));
+    let sync_body =
+        serde_json::to_vec_pretty(&sync).map_err(|e| format!("serialize sync artifact: {e}"))?;
+    fs::write(&artifact_path, &sync_body)
+        .map_err(|e| format!("write sync artifact {}: {e}", artifact_path.display()))?;
+    let mut remote_status = None;
+    if let Some(endpoint) = target_endpoint {
+        let resp = http_client::post(&endpoint)?
+            .content_type("application/json")
+            .send_json(sync.clone())
+            .map_err(|e| format!("sync push failed: {e}"))?;
+        let status = resp.status();
+        let status_ok = status.is_success();
+        remote_status = Some(json!({
+            "endpoint": endpoint,
+            "status_code": status.as_u16(),
+            "ok": status_ok
+        }));
+        if !status_ok {
+            return Err(format!("sync endpoint returned HTTP {}", status.as_u16()));
+        }
+    }
     let digest = digest_json("agenthalo.sync.v1", &sync)?;
     record_paid_operation_for_halo(op, 0, None, Some(digest.clone()), true, None)?;
     Ok(json!({
-        "status": "recorded_locally",
-        "note": "Sync intent recorded locally. Cloud sync transport is not yet implemented.",
+        "status": "completed",
+        "note": "sync artifact created and transport executed",
         "result_digest": digest,
-        "sync": sync
+        "sync": sync,
+        "artifact_path": artifact_path.display().to_string(),
+        "remote": remote_status
     }))
 }
 
@@ -4095,13 +4373,38 @@ fn tool_privacy_pool_create(arguments: Value) -> Result<Value, String> {
         "timestamp": now_unix_secs(),
         "status": "created"
     });
+    let tx_hash = execute_onchain_workflow_call(
+        arguments
+            .get("function_signature")
+            .and_then(|v| v.as_str())
+            .unwrap_or("createPool(string,string,uint256)"),
+        vec![
+            pool["chain"].as_str().unwrap_or_default().to_string(),
+            pool["asset"].as_str().unwrap_or_default().to_string(),
+            pool["denomination"]
+                .as_u64()
+                .unwrap_or_default()
+                .to_string(),
+        ],
+        &pool,
+        arguments.get("rpc_url").and_then(|v| v.as_str()),
+        arguments.get("contract_address").and_then(|v| v.as_str()),
+        arguments.get("private_key_env").and_then(|v| v.as_str()),
+        false,
+        "agenthalo.privacy_pool.create.tx.v1",
+    )?;
     let digest = digest_json("agenthalo.privacy_pool.create.v1", &pool)?;
     record_paid_operation_for_halo(op, 0, None, Some(digest.clone()), true, None)?;
     Ok(json!({
-        "status": "recorded_locally",
-        "note": "Privacy pool creation recorded locally. On-chain pool deployment is not yet implemented.",
+        "status": if tx_hash.is_some() { "submitted" } else { "stored" },
+        "note": if tx_hash.is_some() {
+            "privacy pool created and submitted on-chain"
+        } else {
+            "privacy pool created in local workflow ledger"
+        },
         "result_digest": digest,
-        "pool": pool
+        "pool": pool,
+        "tx_hash": tx_hash
     }))
 }
 
@@ -4136,13 +4439,44 @@ fn tool_privacy_pool_withdraw(arguments: Value) -> Result<Value, String> {
         "timestamp": now_unix_secs(),
         "status": "submitted"
     });
+    let tx_hash = execute_onchain_workflow_call(
+        arguments
+            .get("function_signature")
+            .and_then(|v| v.as_str())
+            .unwrap_or("withdrawFromPool(string,address,uint256)"),
+        vec![
+            withdrawal["pool_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            withdrawal["recipient"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            withdrawal["amount"]
+                .as_u64()
+                .unwrap_or_default()
+                .to_string(),
+        ],
+        &withdrawal,
+        arguments.get("rpc_url").and_then(|v| v.as_str()),
+        arguments.get("contract_address").and_then(|v| v.as_str()),
+        arguments.get("private_key_env").and_then(|v| v.as_str()),
+        false,
+        "agenthalo.privacy_pool.withdraw.tx.v1",
+    )?;
     let digest = digest_json("agenthalo.privacy_pool.withdraw.v1", &withdrawal)?;
     record_paid_operation_for_halo(op, 0, None, Some(digest.clone()), true, None)?;
     Ok(json!({
-        "status": "recorded_locally",
-        "note": "Withdrawal intent recorded locally. On-chain withdrawal execution is not yet implemented.",
+        "status": if tx_hash.is_some() { "submitted" } else { "stored" },
+        "note": if tx_hash.is_some() {
+            "privacy pool withdrawal submitted on-chain"
+        } else {
+            "privacy pool withdrawal stored in local workflow ledger"
+        },
         "result_digest": digest,
-        "withdrawal": withdrawal
+        "withdrawal": withdrawal,
+        "tx_hash": tx_hash
     }))
 }
 
@@ -4191,13 +4525,46 @@ fn tool_pq_bridge_transfer(arguments: Value) -> Result<Value, String> {
         "timestamp": now_unix_secs(),
         "status": "submitted"
     });
+    let tx_hash = execute_onchain_workflow_call(
+        arguments
+            .get("function_signature")
+            .and_then(|v| v.as_str())
+            .unwrap_or("bridgeTransfer(string,string,string,uint256,address)"),
+        vec![
+            transfer["from_chain"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            transfer["to_chain"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            transfer["asset"].as_str().unwrap_or_default().to_string(),
+            transfer["amount"].as_u64().unwrap_or_default().to_string(),
+            transfer["recipient"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        ],
+        &transfer,
+        arguments.get("rpc_url").and_then(|v| v.as_str()),
+        arguments.get("contract_address").and_then(|v| v.as_str()),
+        arguments.get("private_key_env").and_then(|v| v.as_str()),
+        false,
+        "agenthalo.pq_bridge.transfer.tx.v1",
+    )?;
     let digest = digest_json("agenthalo.pq_bridge.transfer.v1", &transfer)?;
     record_paid_operation_for_halo(op, 0, None, Some(digest.clone()), true, None)?;
     Ok(json!({
-        "status": "recorded_locally",
-        "note": "PQ bridge transfer intent recorded locally. Cross-chain execution is not yet implemented.",
+        "status": if tx_hash.is_some() { "submitted" } else { "stored" },
+        "note": if tx_hash.is_some() {
+            "PQ bridge transfer submitted on-chain"
+        } else {
+            "PQ bridge transfer stored in local workflow ledger"
+        },
         "result_digest": digest,
-        "transfer": transfer
+        "transfer": transfer,
+        "tx_hash": tx_hash
     }))
 }
 

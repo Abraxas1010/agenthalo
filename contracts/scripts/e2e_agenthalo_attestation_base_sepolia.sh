@@ -15,7 +15,7 @@ set -euo pipefail
 #   AGENTHALO_BIN                    (default: target/debug/agenthalo, then target/release/agenthalo)
 #   AGENTHALO_HOME                   (default: .tmp/agenthalo_phase5_e2e)
 #   AGENTHALO_ONCHAIN_SIMULATION     (default: 1)
-#   AGENTHALO_ONCHAIN_PRIVATE_KEY    (used when signer-mode private_key_env and non-stub)
+#   AGENTHALO_ONCHAIN_PRIVATE_KEY    (used when signer-mode private_key_env and non-simulation mode)
 #   ETH_KEYSTORE + ETH_PASSWORD_FILE (used when signer-mode keystore)
 #   AGENT_ADDRESS                    (optional; auto-derived from signer if unset)
 #   DEPLOYMENT_OUT                   (optional deployment artifact path for hash chaining)
@@ -156,7 +156,7 @@ RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="${CONTRACTS_DIR}/artifacts/ops/agenthalo_phase5/run_${RUN_TS}"
 mkdir -p "${RUN_DIR}"
 
-"${BIN}" config set-agentpmt-key phase5-stub-key >/dev/null
+"${BIN}" config set-agentpmt-key phase5-test-key >/dev/null
 
 ONCHAIN_CONFIG_ARGS=(
   onchain config

@@ -52,7 +52,7 @@ use crate::VcBackend;
 use axum::extract::{Path, Query, State as AxumState};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::Html;
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bip39::{Language, Mnemonic};
@@ -4850,14 +4850,8 @@ async fn api_proxy_models(AxumState(state): AxumState<DashboardState>) -> ApiRes
 async fn api_proxy_chat(
     AxumState(state): AxumState<DashboardState>,
     Json(req): Json<proxy::ChatCompletionRequest>,
-) -> ApiResult {
+) -> Result<Response, (StatusCode, Json<Value>)> {
     require_sensitive_access(&state)?;
-    if req.stream.unwrap_or(false) {
-        return Err(api_err(
-            StatusCode::NOT_IMPLEMENTED,
-            "streaming not yet supported",
-        ));
-    }
     let Some(vault) = state.vault.clone() else {
         return Err(api_err(
             StatusCode::BAD_REQUEST,
@@ -4865,7 +4859,8 @@ async fn api_proxy_chat(
         ));
     };
 
-    let req_for_proxy = req.clone();
+    let mut req_for_proxy = req.clone();
+    req_for_proxy.stream = Some(false);
     let response =
         tokio::task::spawn_blocking(move || proxy::proxy_chat_sync(&vault, &req_for_proxy))
             .await
@@ -4876,7 +4871,11 @@ async fn api_proxy_chat(
         eprintln!("warning: proxy trace write failed: {e}");
     }
 
-    Ok(Json(response))
+    if req.stream.unwrap_or(false) {
+        Ok(openai_stream_response(&response).into_response())
+    } else {
+        Ok(Json(response).into_response())
+    }
 }
 
 async fn api_metered_proxy_models(
@@ -4911,7 +4910,7 @@ async fn api_metered_proxy_chat(
     AxumState(state): AxumState<DashboardState>,
     headers: HeaderMap,
     Json(req): Json<proxy::ChatCompletionRequest>,
-) -> ApiResult {
+) -> Result<Response, (StatusCode, Json<Value>)> {
     let cfg = crate::halo::pricing::load_proxy_config();
     if !cfg.enabled {
         return Err(api_err(
@@ -4919,13 +4918,6 @@ async fn api_metered_proxy_chat(
             "metered proxy is disabled by operator",
         ));
     }
-    if req.stream.unwrap_or(false) {
-        return Err(api_err(
-            StatusCode::NOT_IMPLEMENTED,
-            "streaming not yet supported",
-        ));
-    }
-
     let customer_key = extract_bearer_token(&headers)?;
     let customer = state
         .key_store
@@ -4952,7 +4944,8 @@ async fn api_metered_proxy_chat(
     let key_store = state.key_store.clone();
     let pricing_table = state.pricing_table.clone();
     let markup_pct = cfg.markup_pct;
-    let req_for_proxy = req.clone();
+    let mut req_for_proxy = req.clone();
+    req_for_proxy.stream = Some(false);
 
     let result = tokio::task::spawn_blocking(move || {
         proxy::metered_proxy_sync(
@@ -4972,7 +4965,93 @@ async fn api_metered_proxy_chat(
         eprintln!("warning: metered proxy trace write failed: {e}");
     }
 
-    Ok(Json(result.body))
+    if req.stream.unwrap_or(false) {
+        Ok(openai_stream_response(&result.body).into_response())
+    } else {
+        Ok(Json(result.body).into_response())
+    }
+}
+
+fn response_message_content_text(body: &Value) -> String {
+    let Some(first) = body
+        .get("choices")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+    else {
+        return String::new();
+    };
+    if let Some(text) = first
+        .get("message")
+        .and_then(|v| v.get("content"))
+        .and_then(|v| v.as_str())
+    {
+        return text.to_string();
+    }
+    if let Some(parts) = first
+        .get("message")
+        .and_then(|v| v.get("content"))
+        .and_then(|v| v.as_array())
+    {
+        let joined = parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("");
+        return joined;
+    }
+    String::new()
+}
+
+fn openai_stream_response(
+    body: &Value,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let id = body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("chatcmpl-agenthalo-stream");
+    let created = body
+        .get("created")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(now_unix_secs);
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("openrouter/unknown");
+    let content = response_message_content_text(body);
+
+    let first = json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "role": "assistant",
+                "content": content
+            },
+            "finish_reason": Value::Null
+        }]
+    });
+    let done_chunk = json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    });
+
+    let stream_events = vec![
+        Event::default().data(first.to_string()),
+        Event::default().data(done_chunk.to_string()),
+        Event::default().data("[DONE]"),
+    ];
+    let stream = tokio_stream::iter(stream_events.into_iter().map(Ok));
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
 async fn api_admin_list_keys(AxumState(state): AxumState<DashboardState>) -> ApiResult {

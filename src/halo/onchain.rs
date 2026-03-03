@@ -152,7 +152,7 @@ pub fn post_attestation(
 
     if onchain_simulation_enabled() {
         let digest = digest_bytes(
-            "agenthalo.onchain.stub.tx.v1",
+            "agenthalo.onchain.simulation.tx.v1",
             format!(
                 "{}:{}:{}:{}:{}",
                 cfg.contract_address,
@@ -251,7 +251,7 @@ pub fn deploy_trust_verifier(cfg: &OnchainConfig) -> Result<String, String> {
     validate_chain(cfg)?;
     if onchain_simulation_enabled() {
         let digest = digest_bytes(
-            "agenthalo.onchain.stub.deploy.v1",
+            "agenthalo.onchain.simulation.deploy.v1",
             format!(
                 "{}:{}:{}:{}:{}",
                 cfg.rpc_url,
