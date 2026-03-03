@@ -60,6 +60,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::time::Duration;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -4859,8 +4860,30 @@ async fn api_proxy_chat(
         ));
     };
 
-    let mut req_for_proxy = req.clone();
-    req_for_proxy.stream = Some(false);
+    if req.stream.unwrap_or(false) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+        let mut req_for_proxy = req.clone();
+        req_for_proxy.stream = Some(true);
+        tokio::task::spawn_blocking(move || {
+            let stream_result =
+                proxy::proxy_chat_stream_sync(&vault, &req_for_proxy, |data_payload| {
+                    tx.send(Ok(Event::default().data(data_payload.to_string())))
+                        .map_err(|_| "stream receiver dropped".to_string())
+                });
+            if let Err(err) = stream_result {
+                let _ = tx.send(Ok(Event::default().event("error").data(
+                    json!({"error": format!("upstream stream failed: {err}")}).to_string(),
+                )));
+                let _ = tx.send(Ok(Event::default().data("[DONE]")));
+            }
+        });
+        let stream = UnboundedReceiverStream::new(rx);
+        return Ok(Sse::new(stream)
+            .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+            .into_response());
+    }
+
+    let req_for_proxy = req.clone();
     let response =
         tokio::task::spawn_blocking(move || proxy::proxy_chat_sync(&vault, &req_for_proxy))
             .await
@@ -4871,11 +4894,7 @@ async fn api_proxy_chat(
         eprintln!("warning: proxy trace write failed: {e}");
     }
 
-    if req.stream.unwrap_or(false) {
-        Ok(openai_stream_response(&response).into_response())
-    } else {
-        Ok(Json(response).into_response())
-    }
+    Ok(Json(response).into_response())
 }
 
 async fn api_metered_proxy_models(
@@ -4944,9 +4963,37 @@ async fn api_metered_proxy_chat(
     let key_store = state.key_store.clone();
     let pricing_table = state.pricing_table.clone();
     let markup_pct = cfg.markup_pct;
-    let mut req_for_proxy = req.clone();
-    req_for_proxy.stream = Some(false);
+    if req.stream.unwrap_or(false) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+        let mut req_for_proxy = req.clone();
+        req_for_proxy.stream = Some(true);
+        tokio::task::spawn_blocking(move || {
+            let stream_result = proxy::metered_proxy_stream_sync(
+                &vault,
+                &key_store,
+                &customer_key,
+                &req_for_proxy,
+                &pricing_table,
+                markup_pct,
+                |data_payload| {
+                    tx.send(Ok(Event::default().data(data_payload.to_string())))
+                        .map_err(|_| "stream receiver dropped".to_string())
+                },
+            );
+            if let Err(err) = stream_result {
+                let _ = tx.send(Ok(Event::default().event("error").data(
+                    json!({"error": format!("metered upstream stream failed: {err}")}).to_string(),
+                )));
+                let _ = tx.send(Ok(Event::default().data("[DONE]")));
+            }
+        });
+        let stream = UnboundedReceiverStream::new(rx);
+        return Ok(Sse::new(stream)
+            .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+            .into_response());
+    }
 
+    let req_for_proxy = req.clone();
     let result = tokio::task::spawn_blocking(move || {
         proxy::metered_proxy_sync(
             &vault,
@@ -4965,93 +5012,7 @@ async fn api_metered_proxy_chat(
         eprintln!("warning: metered proxy trace write failed: {e}");
     }
 
-    if req.stream.unwrap_or(false) {
-        Ok(openai_stream_response(&result.body).into_response())
-    } else {
-        Ok(Json(result.body).into_response())
-    }
-}
-
-fn response_message_content_text(body: &Value) -> String {
-    let Some(first) = body
-        .get("choices")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-    else {
-        return String::new();
-    };
-    if let Some(text) = first
-        .get("message")
-        .and_then(|v| v.get("content"))
-        .and_then(|v| v.as_str())
-    {
-        return text.to_string();
-    }
-    if let Some(parts) = first
-        .get("message")
-        .and_then(|v| v.get("content"))
-        .and_then(|v| v.as_array())
-    {
-        let joined = parts
-            .iter()
-            .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
-            .collect::<Vec<_>>()
-            .join("");
-        return joined;
-    }
-    String::new()
-}
-
-fn openai_stream_response(
-    body: &Value,
-) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let id = body
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("chatcmpl-agenthalo-stream");
-    let created = body
-        .get("created")
-        .and_then(|v| v.as_u64())
-        .unwrap_or_else(now_unix_secs);
-    let model = body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("openrouter/unknown");
-    let content = response_message_content_text(body);
-
-    let first = json!({
-        "id": id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "delta": {
-                "role": "assistant",
-                "content": content
-            },
-            "finish_reason": Value::Null
-        }]
-    });
-    let done_chunk = json!({
-        "id": id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "delta": {},
-            "finish_reason": "stop"
-        }]
-    });
-
-    let stream_events = vec![
-        Event::default().data(first.to_string()),
-        Event::default().data(done_chunk.to_string()),
-        Event::default().data("[DONE]"),
-    ];
-    let stream = tokio_stream::iter(stream_events.into_iter().map(Ok));
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+    Ok(Json(result.body).into_response())
 }
 
 async fn api_admin_list_keys(AxumState(state): AxumState<DashboardState>) -> ApiResult {

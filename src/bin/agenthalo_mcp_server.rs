@@ -251,7 +251,12 @@ async fn mcp(
                         "properties": {
                             "proposal_id": {"type": "string", "description": "Proposal identifier to vote on."},
                             "choice": {"type": "string", "enum": ["yes", "no", "abstain"], "description": "Vote choice."},
-                            "reason": {"type": "string", "description": "Optional justification for the vote."}
+                            "reason": {"type": "string", "description": "Optional justification for the vote."},
+                            "submit_onchain": {"type": "boolean", "description": "When true, submit the vote as an on-chain transaction. Defaults to false (local ledger only).", "default": false},
+                            "rpc_url": {"type": "string", "description": "Override RPC endpoint for on-chain submission."},
+                            "contract_address": {"type": "string", "description": "Override contract address for on-chain submission."},
+                            "private_key_env": {"type": "string", "description": "Environment variable name holding the private key for on-chain signing."},
+                            "function_signature": {"type": "string", "description": "Override Solidity function signature for the on-chain call."}
                         },
                         "required": ["proposal_id", "choice"]
                     }
@@ -274,7 +279,12 @@ async fn mcp(
                         "properties": {
                             "chain": {"type": "string", "description": "Target chain.", "default": "base-sepolia"},
                             "asset": {"type": "string", "description": "Token asset.", "default": "USDC"},
-                            "denomination": {"type": "integer", "description": "Pool denomination in token base units."}
+                            "denomination": {"type": "integer", "description": "Pool denomination in token base units."},
+                            "submit_onchain": {"type": "boolean", "description": "When true, submit the transaction on-chain. Defaults to false (local workflow ledger only).", "default": false},
+                            "rpc_url": {"type": "string", "description": "Override RPC endpoint for on-chain submission."},
+                            "contract_address": {"type": "string", "description": "Override contract address for on-chain submission."},
+                            "private_key_env": {"type": "string", "description": "Environment variable name holding the private key for on-chain signing."},
+                            "function_signature": {"type": "string", "description": "Override Solidity function signature for the on-chain call."}
                         },
                         "required": ["denomination"]
                     }
@@ -287,7 +297,12 @@ async fn mcp(
                         "properties": {
                             "pool_id": {"type": "string", "description": "Pool identifier to withdraw from."},
                             "recipient": {"type": "string", "description": "Recipient address."},
-                            "amount": {"type": "integer", "description": "Amount to withdraw in token base units.", "default": 1}
+                            "amount": {"type": "integer", "description": "Amount to withdraw in token base units.", "default": 1},
+                            "submit_onchain": {"type": "boolean", "description": "When true, submit the transaction on-chain. Defaults to false (local workflow ledger only).", "default": false},
+                            "rpc_url": {"type": "string", "description": "Override RPC endpoint for on-chain submission."},
+                            "contract_address": {"type": "string", "description": "Override contract address for on-chain submission."},
+                            "private_key_env": {"type": "string", "description": "Environment variable name holding the private key for on-chain signing."},
+                            "function_signature": {"type": "string", "description": "Override Solidity function signature for the on-chain call."}
                         },
                         "required": ["pool_id", "recipient"]
                     }
@@ -299,10 +314,17 @@ async fn mcp(
                         "type": "object",
                         "properties": {
                             "from_chain": {"type": "string", "description": "Source chain identifier."},
+                            "from": {"type": "string", "description": "Legacy alias for from_chain."},
                             "to_chain": {"type": "string", "description": "Destination chain identifier."},
+                            "to": {"type": "string", "description": "Legacy alias for to_chain."},
                             "asset": {"type": "string", "description": "Token asset to transfer."},
                             "amount": {"type": "integer", "description": "Amount in token base units."},
-                            "recipient": {"type": "string", "description": "Recipient address on destination chain."}
+                            "recipient": {"type": "string", "description": "Recipient address on destination chain."},
+                            "submit_onchain": {"type": "boolean", "description": "When true, submit the transaction on-chain. Defaults to false (local workflow ledger only).", "default": false},
+                            "rpc_url": {"type": "string", "description": "Override RPC endpoint for on-chain submission."},
+                            "contract_address": {"type": "string", "description": "Override contract address for on-chain submission."},
+                            "private_key_env": {"type": "string", "description": "Environment variable name holding the private key for on-chain signing."},
+                            "function_signature": {"type": "string", "description": "Override Solidity function signature for the on-chain call."}
                         },
                         "required": ["from_chain", "to_chain", "asset", "amount", "recipient"]
                     }
@@ -4363,6 +4385,10 @@ fn tool_privacy_pool_create(arguments: Value) -> Result<Value, String> {
         .get("denomination")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| "privacy_pool_create requires denomination".to_string())?;
+    let submit_onchain = arguments
+        .get("submit_onchain")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let op = "privacy_pool_create";
     let pool = json!({
@@ -4373,31 +4399,35 @@ fn tool_privacy_pool_create(arguments: Value) -> Result<Value, String> {
         "timestamp": now_unix_secs(),
         "status": "created"
     });
-    let tx_hash = execute_onchain_workflow_call(
-        arguments
-            .get("function_signature")
-            .and_then(|v| v.as_str())
-            .unwrap_or("createPool(string,string,uint256)"),
-        vec![
-            pool["chain"].as_str().unwrap_or_default().to_string(),
-            pool["asset"].as_str().unwrap_or_default().to_string(),
-            pool["denomination"]
-                .as_u64()
-                .unwrap_or_default()
-                .to_string(),
-        ],
-        &pool,
-        arguments.get("rpc_url").and_then(|v| v.as_str()),
-        arguments.get("contract_address").and_then(|v| v.as_str()),
-        arguments.get("private_key_env").and_then(|v| v.as_str()),
-        false,
-        "agenthalo.privacy_pool.create.tx.v1",
-    )?;
+    let tx_hash = if submit_onchain {
+        execute_onchain_workflow_call(
+            arguments
+                .get("function_signature")
+                .and_then(|v| v.as_str())
+                .unwrap_or("createPool(string,string,uint256)"),
+            vec![
+                pool["chain"].as_str().unwrap_or_default().to_string(),
+                pool["asset"].as_str().unwrap_or_default().to_string(),
+                pool["denomination"]
+                    .as_u64()
+                    .unwrap_or_default()
+                    .to_string(),
+            ],
+            &pool,
+            arguments.get("rpc_url").and_then(|v| v.as_str()),
+            arguments.get("contract_address").and_then(|v| v.as_str()),
+            arguments.get("private_key_env").and_then(|v| v.as_str()),
+            false,
+            "agenthalo.privacy_pool.create.tx.v1",
+        )?
+    } else {
+        None
+    };
     let digest = digest_json("agenthalo.privacy_pool.create.v1", &pool)?;
     record_paid_operation_for_halo(op, 0, None, Some(digest.clone()), true, None)?;
     Ok(json!({
-        "status": if tx_hash.is_some() { "submitted" } else { "stored" },
-        "note": if tx_hash.is_some() {
+        "status": if submit_onchain { "submitted" } else { "stored" },
+        "note": if submit_onchain {
             "privacy pool created and submitted on-chain"
         } else {
             "privacy pool created in local workflow ledger"
@@ -4429,6 +4459,10 @@ fn tool_privacy_pool_withdraw(arguments: Value) -> Result<Value, String> {
         .get("amount")
         .and_then(|v| v.as_u64())
         .unwrap_or(1);
+    let submit_onchain = arguments
+        .get("submit_onchain")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let op = "privacy_pool_withdraw";
     let withdrawal = json!({
@@ -4439,37 +4473,41 @@ fn tool_privacy_pool_withdraw(arguments: Value) -> Result<Value, String> {
         "timestamp": now_unix_secs(),
         "status": "submitted"
     });
-    let tx_hash = execute_onchain_workflow_call(
-        arguments
-            .get("function_signature")
-            .and_then(|v| v.as_str())
-            .unwrap_or("withdrawFromPool(string,address,uint256)"),
-        vec![
-            withdrawal["pool_id"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            withdrawal["recipient"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            withdrawal["amount"]
-                .as_u64()
-                .unwrap_or_default()
-                .to_string(),
-        ],
-        &withdrawal,
-        arguments.get("rpc_url").and_then(|v| v.as_str()),
-        arguments.get("contract_address").and_then(|v| v.as_str()),
-        arguments.get("private_key_env").and_then(|v| v.as_str()),
-        false,
-        "agenthalo.privacy_pool.withdraw.tx.v1",
-    )?;
+    let tx_hash = if submit_onchain {
+        execute_onchain_workflow_call(
+            arguments
+                .get("function_signature")
+                .and_then(|v| v.as_str())
+                .unwrap_or("withdrawFromPool(string,address,uint256)"),
+            vec![
+                withdrawal["pool_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                withdrawal["recipient"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                withdrawal["amount"]
+                    .as_u64()
+                    .unwrap_or_default()
+                    .to_string(),
+            ],
+            &withdrawal,
+            arguments.get("rpc_url").and_then(|v| v.as_str()),
+            arguments.get("contract_address").and_then(|v| v.as_str()),
+            arguments.get("private_key_env").and_then(|v| v.as_str()),
+            false,
+            "agenthalo.privacy_pool.withdraw.tx.v1",
+        )?
+    } else {
+        None
+    };
     let digest = digest_json("agenthalo.privacy_pool.withdraw.v1", &withdrawal)?;
     record_paid_operation_for_halo(op, 0, None, Some(digest.clone()), true, None)?;
     Ok(json!({
-        "status": if tx_hash.is_some() { "submitted" } else { "stored" },
-        "note": if tx_hash.is_some() {
+        "status": if submit_onchain { "submitted" } else { "stored" },
+        "note": if submit_onchain {
             "privacy pool withdrawal submitted on-chain"
         } else {
             "privacy pool withdrawal stored in local workflow ledger"
@@ -4513,6 +4551,10 @@ fn tool_pq_bridge_transfer(arguments: Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| "pq_bridge_transfer requires recipient".to_string())?
         .to_string();
+    let submit_onchain = arguments
+        .get("submit_onchain")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let op = "pq_bridge_transfer";
     let transfer = json!({
@@ -4525,39 +4567,43 @@ fn tool_pq_bridge_transfer(arguments: Value) -> Result<Value, String> {
         "timestamp": now_unix_secs(),
         "status": "submitted"
     });
-    let tx_hash = execute_onchain_workflow_call(
-        arguments
-            .get("function_signature")
-            .and_then(|v| v.as_str())
-            .unwrap_or("bridgeTransfer(string,string,string,uint256,address)"),
-        vec![
-            transfer["from_chain"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            transfer["to_chain"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            transfer["asset"].as_str().unwrap_or_default().to_string(),
-            transfer["amount"].as_u64().unwrap_or_default().to_string(),
-            transfer["recipient"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-        ],
-        &transfer,
-        arguments.get("rpc_url").and_then(|v| v.as_str()),
-        arguments.get("contract_address").and_then(|v| v.as_str()),
-        arguments.get("private_key_env").and_then(|v| v.as_str()),
-        false,
-        "agenthalo.pq_bridge.transfer.tx.v1",
-    )?;
+    let tx_hash = if submit_onchain {
+        execute_onchain_workflow_call(
+            arguments
+                .get("function_signature")
+                .and_then(|v| v.as_str())
+                .unwrap_or("bridgeTransfer(string,string,string,uint256,address)"),
+            vec![
+                transfer["from_chain"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                transfer["to_chain"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                transfer["asset"].as_str().unwrap_or_default().to_string(),
+                transfer["amount"].as_u64().unwrap_or_default().to_string(),
+                transfer["recipient"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            ],
+            &transfer,
+            arguments.get("rpc_url").and_then(|v| v.as_str()),
+            arguments.get("contract_address").and_then(|v| v.as_str()),
+            arguments.get("private_key_env").and_then(|v| v.as_str()),
+            false,
+            "agenthalo.pq_bridge.transfer.tx.v1",
+        )?
+    } else {
+        None
+    };
     let digest = digest_json("agenthalo.pq_bridge.transfer.v1", &transfer)?;
     record_paid_operation_for_halo(op, 0, None, Some(digest.clone()), true, None)?;
     Ok(json!({
-        "status": if tx_hash.is_some() { "submitted" } else { "stored" },
-        "note": if tx_hash.is_some() {
+        "status": if submit_onchain { "submitted" } else { "stored" },
+        "note": if submit_onchain {
             "PQ bridge transfer submitted on-chain"
         } else {
             "PQ bridge transfer stored in local workflow ledger"
@@ -5027,11 +5073,23 @@ mod tests {
     use super::*;
     use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
     use nucleusdb::halo::trace::{now_unix_secs, TraceWriter};
+    use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn make_temp_home(prefix: &str) -> PathBuf {
+        let home = std::env::temp_dir().join(format!(
+            "{prefix}_{}_{}",
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        home
     }
 
     #[test]
@@ -5501,5 +5559,210 @@ mod tests {
         let explicit = resolve_mcp_secret().expect("explicit secret should work");
         assert_eq!(explicit, "real-secret");
         std::env::remove_var("AGENTHALO_MCP_SECRET");
+    }
+
+    #[test]
+    fn sanitize_target_for_path_handles_empty_replacements_and_allowed_chars() {
+        assert_eq!(sanitize_target_for_path(""), "default");
+        assert_eq!(sanitize_target_for_path("  "), "default");
+        assert_eq!(
+            sanitize_target_for_path("cloudflare/main prod"),
+            "cloudflare_main_prod"
+        );
+        assert_eq!(sanitize_target_for_path("Alpha-9_.beta"), "Alpha-9_.beta");
+    }
+
+    #[test]
+    fn parse_tx_hash_extracts_valid_hash_and_rejects_garbage() {
+        let raw =
+            "submitted tx: 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef (ok)";
+        let hash = parse_tx_hash(raw).expect("hash");
+        assert_eq!(hash.len(), 66);
+        assert!(hash.starts_with("0x"));
+        assert!(parse_tx_hash("no transaction hash here").is_none());
+    }
+
+    #[test]
+    fn append_jsonl_and_tally_votes_counts_expected_choices() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_vote_tally");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let path = governance_votes_path();
+        append_jsonl(
+            &path,
+            &json!({"proposal_id":"prop-1","choice":"yes","timestamp":now_unix_secs()}),
+        )
+        .expect("append yes");
+        append_jsonl(
+            &path,
+            &json!({"proposal_id":"prop-1","choice":"no","timestamp":now_unix_secs()}),
+        )
+        .expect("append no");
+
+        let tally = tally_votes("prop-1").expect("tally");
+        assert_eq!(tally["yes"], 1);
+        assert_eq!(tally["no"], 1);
+        assert_eq!(tally["abstain"], 0);
+        assert_eq!(tally["total"], 2);
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn tool_vote_local_path_returns_stored_and_null_tx_hash() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_vote_local");
+        std::env::set_var("AGENTHALO_HOME", &home);
+        std::env::remove_var("AGENTHALO_ONCHAIN_SIMULATION");
+
+        let out = tool_vote(json!({
+            "proposal_id": "proposal-local",
+            "choice": "yes",
+            "reason": "local path",
+            "submit_onchain": false
+        }))
+        .expect("vote local");
+        assert_eq!(out["status"], "stored");
+        assert!(out["tally"].is_object());
+        assert!(out["tx_hash"].is_null());
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn tool_vote_onchain_simulation_returns_submitted_tx_hash() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_vote_simulation");
+        std::env::set_var("AGENTHALO_HOME", &home);
+        std::env::set_var("AGENTHALO_ONCHAIN_SIMULATION", "1");
+
+        let out = tool_vote(json!({
+            "proposal_id": "proposal-sim",
+            "choice": "no",
+            "submit_onchain": true,
+            "contract_address": "0xabc"
+        }))
+        .expect("vote simulation");
+        let tx_hash = out["tx_hash"].as_str().expect("tx hash string");
+        assert_eq!(out["status"], "submitted");
+        assert!(tx_hash.starts_with("0x"));
+        assert_eq!(tx_hash.len(), 66);
+
+        std::env::remove_var("AGENTHALO_ONCHAIN_SIMULATION");
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn tool_sync_local_path_creates_artifact() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_sync_local");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let out = tool_sync(json!({"target":"local-test"})).expect("sync");
+        assert_eq!(out["status"], "completed");
+        let artifact_path = out["artifact_path"].as_str().expect("artifact path");
+        assert!(std::path::Path::new(artifact_path).exists());
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn tool_privacy_pool_create_local_only_returns_null_tx_hash() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_pool_local");
+        std::env::set_var("AGENTHALO_HOME", &home);
+        addons::set_enabled("agentpmt-workflows", true).expect("enable workflow add-on");
+
+        let out = tool_privacy_pool_create(json!({
+            "chain": "base-sepolia",
+            "asset": "USDC",
+            "denomination": 1000
+        }))
+        .expect("pool local");
+        assert_eq!(out["status"], "stored");
+        assert!(out["tx_hash"].is_null());
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn tool_privacy_pool_create_simulation_returns_tx_hash() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_pool_simulation");
+        std::env::set_var("AGENTHALO_HOME", &home);
+        std::env::set_var("AGENTHALO_ONCHAIN_SIMULATION", "1");
+        addons::set_enabled("agentpmt-workflows", true).expect("enable workflow add-on");
+
+        let out = tool_privacy_pool_create(json!({
+            "chain": "base-sepolia",
+            "asset": "USDC",
+            "denomination": 1000,
+            "submit_onchain": true,
+            "contract_address": "0xabc"
+        }))
+        .expect("pool simulation");
+        let tx_hash = out["tx_hash"].as_str().expect("tx hash string");
+        assert_eq!(out["status"], "submitted");
+        assert!(tx_hash.starts_with("0x"));
+        assert_eq!(tx_hash.len(), 66);
+
+        std::env::remove_var("AGENTHALO_ONCHAIN_SIMULATION");
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn execute_onchain_workflow_call_simulation_is_deterministic() {
+        let _guard = env_lock().lock().expect("lock env");
+        std::env::set_var("AGENTHALO_ONCHAIN_SIMULATION", "1");
+        let payload = json!({
+            "id": "deterministic-test",
+            "amount": 42
+        });
+        let tx_a = execute_onchain_workflow_call(
+            "bridgeTransfer(string,string,string,uint256,address)",
+            vec![
+                "base-sepolia".to_string(),
+                "base-mainnet".to_string(),
+                "USDC".to_string(),
+                "42".to_string(),
+                "0x1111111111111111111111111111111111111111".to_string(),
+            ],
+            &payload,
+            Some("https://rpc.example"),
+            Some("0xabc"),
+            None,
+            false,
+            "agenthalo.det.test.v1",
+        )
+        .expect("tx_a");
+        let tx_b = execute_onchain_workflow_call(
+            "bridgeTransfer(string,string,string,uint256,address)",
+            vec![
+                "base-sepolia".to_string(),
+                "base-mainnet".to_string(),
+                "USDC".to_string(),
+                "42".to_string(),
+                "0x1111111111111111111111111111111111111111".to_string(),
+            ],
+            &payload,
+            Some("https://rpc.example"),
+            Some("0xabc"),
+            None,
+            false,
+            "agenthalo.det.test.v1",
+        )
+        .expect("tx_b");
+        assert_eq!(tx_a, tx_b);
+        let tx_hash = tx_a.expect("expected hash");
+        assert!(tx_hash.starts_with("0x"));
+        assert_eq!(tx_hash.len(), 66);
+        std::env::remove_var("AGENTHALO_ONCHAIN_SIMULATION");
     }
 }

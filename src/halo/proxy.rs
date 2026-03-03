@@ -19,6 +19,7 @@ use crate::halo::vault::Vault;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -58,6 +59,16 @@ pub struct MeteredResult {
     /// Customer's remaining balance after deduction.
     pub remaining_balance_usd: f64,
     /// OpenRouter generation ID for reconciliation.
+    pub generation_id: Option<String>,
+}
+
+pub struct MeteredStreamResult {
+    pub or_model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub upstream_cost_usd: f64,
+    pub customer_cost_usd: f64,
+    pub remaining_balance_usd: f64,
     pub generation_id: Option<String>,
 }
 
@@ -178,6 +189,81 @@ pub fn metered_proxy_sync(
     })
 }
 
+pub fn metered_proxy_stream_sync<F>(
+    vault: &Vault,
+    key_store: &Arc<CustomerKeyStore>,
+    customer_key: &str,
+    request: &ChatCompletionRequest,
+    pricing_table: &HashMap<String, pricing::ModelPricing>,
+    markup_pct: f64,
+    mut on_data: F,
+) -> Result<MeteredStreamResult, String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    let customer = key_store
+        .validate_key(customer_key)
+        .ok_or_else(|| "invalid API key".to_string())?;
+    if !customer.active {
+        return Err("API key is suspended".to_string());
+    }
+
+    let or_model = openrouter_model_name(&request.model);
+    let estimated_tokens = request.max_tokens.unwrap_or(1024) as u64;
+    let (_est_base, est_marked_up) = pricing::calculate_marked_up_cost(
+        &strip_provider_prefix(&or_model),
+        100,
+        estimated_tokens,
+        0,
+        pricing_table,
+        markup_pct,
+    );
+
+    let balance = key_store.get_balance(&customer.key_id);
+    if est_marked_up > 0.0 && balance < est_marked_up {
+        return Err(format!(
+            "insufficient balance: ${:.6} available, estimated cost ${:.6}",
+            balance, est_marked_up
+        ));
+    }
+
+    let or_api_key = vault
+        .get_key("openrouter")
+        .map_err(|_| "proxy service unavailable: upstream not configured".to_string())?;
+
+    let stream_usage =
+        call_openrouter_stream(&or_api_key, &or_model, request, |chunk| on_data(chunk))?;
+
+    let input_tokens = stream_usage.prompt_tokens.unwrap_or(100);
+    let output_tokens = stream_usage.completion_tokens.unwrap_or(estimated_tokens);
+    let (upstream_cost, customer_cost) = pricing::calculate_marked_up_cost(
+        &strip_provider_prefix(&or_model),
+        input_tokens,
+        output_tokens,
+        0,
+        pricing_table,
+        markup_pct,
+    );
+    let remaining = key_store.deduct_balance(&customer.key_id, customer_cost);
+    key_store.record_usage(
+        &customer.key_id,
+        &or_model,
+        input_tokens,
+        output_tokens,
+        customer_cost,
+    );
+
+    Ok(MeteredStreamResult {
+        or_model,
+        input_tokens,
+        output_tokens,
+        upstream_cost_usd: upstream_cost,
+        customer_cost_usd: customer_cost,
+        remaining_balance_usd: remaining,
+        generation_id: stream_usage.generation_id,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Owner proxy — uses metering infrastructure but no customer billing
 // ---------------------------------------------------------------------------
@@ -192,6 +278,22 @@ pub fn proxy_chat_sync(vault: &Vault, request: &ChatCompletionRequest) -> Result
     let or_model = openrouter_model_name(&request.model);
     let resp = call_openrouter(&or_api_key, &or_model, request)?;
     Ok(resp)
+}
+
+pub fn proxy_chat_stream_sync<F>(
+    vault: &Vault,
+    request: &ChatCompletionRequest,
+    mut on_data: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    let or_api_key = vault.get_key("openrouter").map_err(|_| {
+        "no OpenRouter API key configured — run: agenthalo vault set openrouter".to_string()
+    })?;
+    let or_model = openrouter_model_name(&request.model);
+    let _ = call_openrouter_stream(&or_api_key, &or_model, request, |chunk| on_data(chunk))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +464,73 @@ fn call_openrouter(
     Ok(body)
 }
 
+#[derive(Default)]
+struct StreamUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    generation_id: Option<String>,
+}
+
+fn call_openrouter_stream<F>(
+    api_key: &str,
+    or_model: &str,
+    request: &ChatCompletionRequest,
+    mut on_data: F,
+) -> Result<StreamUsage, String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    let mut payload =
+        serde_json::to_value(request).map_err(|e| format!("serialize request: {e}"))?;
+    payload["model"] = Value::String(or_model.to_string());
+    payload["stream"] = Value::Bool(true);
+
+    let resp = http_client::post("https://openrouter.ai/api/v1/chat/completions")?
+        .header("Authorization", &format!("Bearer {api_key}"))
+        .header("X-Title", "AgentHALO")
+        .content_type("application/json")
+        .send_json(payload)
+        .map_err(|e| sanitize_upstream_error(&e))?;
+
+    let mut usage = StreamUsage::default();
+    let reader = resp.into_body().into_reader();
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next() {
+        let line = line.map_err(|e| format!("read upstream stream line: {e}"))?;
+        if !line.starts_with("data:") {
+            continue;
+        }
+        let data_payload = line.trim_start_matches("data:").trim().to_string();
+        if data_payload.is_empty() {
+            continue;
+        }
+        on_data(&data_payload)?;
+        if data_payload == "[DONE]" {
+            break;
+        }
+        update_stream_usage_from_payload(&data_payload, &mut usage);
+    }
+
+    Ok(usage)
+}
+
+fn update_stream_usage_from_payload(payload: &str, usage: &mut StreamUsage) {
+    let Ok(obj) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    if usage.generation_id.is_none() {
+        usage.generation_id = obj.get("id").and_then(|v| v.as_str()).map(str::to_string);
+    }
+    if let Some(u) = obj.get("usage") {
+        if usage.prompt_tokens.is_none() {
+            usage.prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64());
+        }
+        if usage.completion_tokens.is_none() {
+            usage.completion_tokens = u.get("completion_tokens").and_then(|v| v.as_u64());
+        }
+    }
+}
+
 /// Extract token usage from an OpenAI-compatible response.
 fn extract_usage(resp: &Value) -> (u64, u64) {
     let usage = resp.get("usage");
@@ -493,5 +662,26 @@ mod tests {
                 display_id
             );
         }
+    }
+
+    #[test]
+    fn update_stream_usage_from_payload_extracts_usage_and_id() {
+        let mut usage = StreamUsage::default();
+        update_stream_usage_from_payload(
+            r#"{"id":"chatcmpl-123","usage":{"prompt_tokens":7,"completion_tokens":9}}"#,
+            &mut usage,
+        );
+        assert_eq!(usage.generation_id.as_deref(), Some("chatcmpl-123"));
+        assert_eq!(usage.prompt_tokens, Some(7));
+        assert_eq!(usage.completion_tokens, Some(9));
+    }
+
+    #[test]
+    fn update_stream_usage_from_payload_ignores_invalid_json() {
+        let mut usage = StreamUsage::default();
+        update_stream_usage_from_payload("not-json", &mut usage);
+        assert!(usage.generation_id.is_none());
+        assert!(usage.prompt_tokens.is_none());
+        assert!(usage.completion_tokens.is_none());
     }
 }

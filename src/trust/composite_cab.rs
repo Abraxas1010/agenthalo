@@ -156,7 +156,7 @@ impl<'a> CompositeCabGenerator<'a> {
         }
         if onchain_simulation_enabled() {
             let mut hasher = Sha256::new();
-            hasher.update(b"nucleusdb.composite_cab.sim_submit.v1|");
+            hasher.update(b"nucleusdb.composite_cab.simulation_submit.v1|");
             hasher.update(contract_address.as_bytes());
             hasher.update(proof.proof_hex.as_bytes());
             hasher.update(proof.public_signals.join(",").as_bytes());
@@ -213,6 +213,12 @@ mod tests {
     use crate::cli::default_witness_cfg;
     use crate::protocol::VcBackend;
     use crate::state::State;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn new_test_db() -> NucleusDb {
         NucleusDb::new(
@@ -235,6 +241,7 @@ mod tests {
 
     #[test]
     fn submit_attestation_simulation_returns_tx_hash() {
+        let _guard = env_lock().lock().expect("lock env");
         let db = new_test_db();
         let gen = CompositeCabGenerator::new(&db, vec![1]).expect("generator");
         std::env::set_var("AGENTHALO_ONCHAIN_SIMULATION", "1");
