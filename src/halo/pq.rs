@@ -333,6 +333,14 @@ fn load_or_create_wallet_wrap_key(wallet_path: &Path) -> Result<[u8; 32], String
         out.copy_from_slice(&raw);
         return Ok(out);
     }
+    // Fail-closed after v2 migration: if a crypto header exists, the wrap key
+    // was intentionally erased during migration. Creating a new random key
+    // would silently produce wrong-key decryption failures (E1 bug).
+    if crate::halo::encrypted_file::header_exists() {
+        return Err(
+            "v2 migration completed; wrap key was erased; use v2 decryption path".to_string(),
+        );
+    }
     if let Some(parent) = key_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create wrap-key dir {}: {e}", parent.display()))?;

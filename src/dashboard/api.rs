@@ -990,6 +990,29 @@ fn require_scope(
     Ok(())
 }
 
+/// Returns the scope key bytes if v2 crypto is active, or `None` for pre-migration installs.
+/// Validates unlock status as a side-effect (returns LOCKED error if session not unlocked).
+fn get_scope_key_bytes(
+    state: &DashboardState,
+    scope: CryptoScope,
+) -> Result<Option<[u8; 32]>, (StatusCode, Json<Value>)> {
+    if !encrypted_file::header_exists() {
+        return Ok(None);
+    }
+    let mut crypto = lock_crypto_state(state)?;
+    let sk = crypto.session.get_scope_key(scope).map_err(|_| {
+        (
+            StatusCode::LOCKED,
+            Json(json!({
+                "error": format!("unlock required (scope: {})", scope.as_str()),
+                "required_scope": scope.as_str(),
+                "code": "crypto_locked",
+            })),
+        )
+    })?;
+    Ok(Some(*sk.key_bytes()))
+}
+
 fn header_salt_bytes(header: &encrypted_file::CryptoHeader) -> Result<[u8; 32], String> {
     let raw = hex::decode(&header.kdf.salt_hex).map_err(|e| format!("kdf salt decode: {e}"))?;
     if raw.len() != 32 {
@@ -2831,9 +2854,14 @@ async fn api_identity_tier_update(
     })))
 }
 
-async fn api_genesis_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+async fn api_genesis_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let seed_stored = crate::halo::genesis_seed::seed_exists();
-    let seed_hash = crate::halo::genesis_seed::load_seed_sha256().ok().flatten();
+    let genesis_key = get_scope_key_bytes(&state, CryptoScope::Genesis).ok().flatten();
+    let seed_hash = crate::halo::genesis_seed::load_seed_sha256_prefer_v2(
+        genesis_key.as_ref(),
+    )
+    .ok()
+    .flatten();
     let latest = crate::halo::identity_ledger::latest_genesis_event().map_err(internal_err)?;
     if let Some(entry) = latest {
         let completed = genesis_is_completed_status(&entry.status);
@@ -3933,20 +3961,24 @@ async fn api_agentaddress_generate(
             )
         }
         AgentAddressSource::Genesis => {
-            require_scope(&state, CryptoScope::Wallet)?;
-            let mnemonic = crate::halo::genesis_seed::derive_wallet_mnemonic()
-                .map_err(internal_err)?
-                .ok_or_else(|| {
-                    api_err(
-                        StatusCode::PRECONDITION_FAILED,
-                        "genesis seed not available; complete Genesis ceremony first",
-                    )
-                })?;
+            let genesis_key = get_scope_key_bytes(&state, CryptoScope::Genesis)?;
+            let mnemonic = crate::halo::genesis_seed::derive_wallet_mnemonic_prefer_v2(
+                genesis_key.as_ref(),
+            )
+            .map_err(internal_err)?
+            .ok_or_else(|| {
+                api_err(
+                    StatusCode::PRECONDITION_FAILED,
+                    "genesis seed not available; complete Genesis ceremony first",
+                )
+            })?;
             let derived = crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic, None)
                 .map_err(internal_err)?;
-            let seed_hash = crate::halo::genesis_seed::load_seed_sha256()
-                .map_err(internal_err)?
-                .unwrap_or_default();
+            let seed_hash = crate::halo::genesis_seed::load_seed_sha256_prefer_v2(
+                genesis_key.as_ref(),
+            )
+            .map_err(internal_err)?
+            .unwrap_or_default();
             let data = json!({
                 "evmAddress": derived.evm_address,
                 "evmPrivateKey": derived.private_key_hex,
@@ -4188,17 +4220,22 @@ async fn api_wdk_create(
             "wallet already exists; unlock or delete it first",
         ));
     }
-    let seed = crate::halo::genesis_seed::derive_wallet_mnemonic()
-        .map_err(internal_err)?
-        .ok_or_else(|| {
-            api_err(
-                StatusCode::PRECONDITION_FAILED,
-                "genesis seed not available; complete Genesis ceremony before wallet creation",
-            )
-        })?;
-    let genesis_seed_sha256 = crate::halo::genesis_seed::load_seed_sha256()
-        .map_err(internal_err)?
-        .unwrap_or_default();
+    let genesis_key = get_scope_key_bytes(&state, CryptoScope::Genesis)?;
+    let seed = crate::halo::genesis_seed::derive_wallet_mnemonic_prefer_v2(
+        genesis_key.as_ref(),
+    )
+    .map_err(internal_err)?
+    .ok_or_else(|| {
+        api_err(
+            StatusCode::PRECONDITION_FAILED,
+            "genesis seed not available; complete Genesis ceremony before wallet creation",
+        )
+    })?;
+    let genesis_seed_sha256 = crate::halo::genesis_seed::load_seed_sha256_prefer_v2(
+        genesis_key.as_ref(),
+    )
+    .map_err(internal_err)?
+    .unwrap_or_default();
     if !crate::halo::wdk_proxy::WdkManager::is_available() {
         return Err(api_err(
             StatusCode::SERVICE_UNAVAILABLE,

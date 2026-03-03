@@ -1969,13 +1969,19 @@ fn tool_agentaddress_generate(arguments: Value) -> Result<Value, String> {
             )
         }
         McpAgentAddressSource::Genesis => {
-            mcp_require_scope(CryptoScope::Wallet)?;
+            mcp_require_scope(CryptoScope::Genesis)?;
+            let genesis_key = with_mcp_crypto_state(|crypto| {
+                let sk = crypto.session.get_scope_key(CryptoScope::Genesis)?;
+                Ok(*sk.key_bytes())
+            })?;
             let mnemonic =
-                nucleusdb::halo::genesis_seed::derive_wallet_mnemonic()?.ok_or_else(|| {
-                    "genesis seed not available; complete Genesis ceremony first".to_string()
-                })?;
+                nucleusdb::halo::genesis_seed::derive_wallet_mnemonic_prefer_v2(Some(&genesis_key))?
+                    .ok_or_else(|| {
+                        "genesis seed not available; complete Genesis ceremony first".to_string()
+                    })?;
             let derived = nucleusdb::halo::evm_wallet::derive_from_mnemonic(&mnemonic, None)?;
-            let seed_hash = nucleusdb::halo::genesis_seed::load_seed_sha256()?.unwrap_or_default();
+            let seed_hash = nucleusdb::halo::genesis_seed::load_seed_sha256_prefer_v2(Some(&genesis_key))?
+                .unwrap_or_default();
             let data = json!({
                 "evmAddress": derived.evm_address,
                 "evmPrivateKey": derived.private_key_hex,
@@ -2854,9 +2860,16 @@ fn tool_identity_pod_share(arguments: Value) -> Result<Value, String> {
 fn tool_genesis_status(_arguments: Value) -> Result<Value, String> {
     mcp_require_scope(CryptoScope::Identity)?;
     let seed_stored = nucleusdb::halo::genesis_seed::seed_exists();
-    let seed_hash = nucleusdb::halo::genesis_seed::load_seed_sha256()
-        .ok()
-        .flatten();
+    let genesis_key = with_mcp_crypto_state(|crypto| {
+        let sk = crypto.session.get_scope_key(CryptoScope::Genesis)?;
+        Ok(*sk.key_bytes())
+    })
+    .ok();
+    let seed_hash = nucleusdb::halo::genesis_seed::load_seed_sha256_prefer_v2(
+        genesis_key.as_ref(),
+    )
+    .ok()
+    .flatten();
     let latest = nucleusdb::halo::identity_ledger::latest_genesis_event()?;
     if let Some(entry) = latest {
         let completed = mcp_genesis_is_completed_status(&entry.status);
@@ -3169,13 +3182,20 @@ fn tool_wallet_create(arguments: Value) -> Result<Value, String> {
     if nucleusdb::halo::wdk_proxy::wallet_exists() {
         return Err("wallet already exists; unlock or delete it first".to_string());
     }
+    let genesis_key = with_mcp_crypto_state(|crypto| {
+        let sk = crypto.session.get_scope_key(CryptoScope::Genesis)?;
+        Ok(*sk.key_bytes())
+    })
+    .ok();
     let seed_phrase =
-        nucleusdb::halo::genesis_seed::derive_wallet_mnemonic()?.ok_or_else(|| {
-            "genesis seed not available; complete Genesis ceremony before wallet creation"
-                .to_string()
-        })?;
+        nucleusdb::halo::genesis_seed::derive_wallet_mnemonic_prefer_v2(genesis_key.as_ref())?
+            .ok_or_else(|| {
+                "genesis seed not available; complete Genesis ceremony before wallet creation"
+                    .to_string()
+            })?;
     let genesis_seed_sha256 =
-        nucleusdb::halo::genesis_seed::load_seed_sha256()?.unwrap_or_default();
+        nucleusdb::halo::genesis_seed::load_seed_sha256_prefer_v2(genesis_key.as_ref())?
+            .unwrap_or_default();
     if !nucleusdb::halo::wdk_proxy::WdkManager::is_available() {
         return Err(
             "WDK sidecar unavailable; install with `cd wdk-sidecar && npm install`".to_string(),

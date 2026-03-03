@@ -22,6 +22,8 @@ pub struct MigrationReport {
     pub files_migrated: Vec<String>,
     pub files_failed: Vec<(String, String)>,
     pub seed_key_deleted: bool,
+    #[serde(default)]
+    pub legacy_wallet_removed: bool,
 }
 
 pub fn detect_migration_status() -> MigrationStatus {
@@ -45,6 +47,7 @@ pub fn migrate_v1_to_v2(password: &str) -> Result<MigrationReport, String> {
         files_migrated: Vec::new(),
         files_failed: Vec::new(),
         seed_key_deleted: false,
+        legacy_wallet_removed: false,
     };
 
     let mappings = vec![
@@ -103,6 +106,22 @@ pub fn migrate_v1_to_v2(password: &str) -> Result<MigrationReport, String> {
             Err(e) => report
                 .files_failed
                 .push((seed_key.display().to_string(), e.to_string())),
+        }
+    }
+
+    // Remove legacy v1 wallet file to prevent stale-key decryption path.
+    // After migration, pq_wallet.json contains an encrypted_seed referencing the
+    // now-erased wrap key. Any code that reads it would silently create a new
+    // random wrap key that cannot decrypt the old ciphertext (E1 bug).
+    // The authoritative copy is now pq_wallet.v2.enc.
+    let legacy_wallet = config::pq_wallet_path();
+    if legacy_wallet.exists() && config::pq_wallet_v2_path().exists() {
+        match std::fs::remove_file(&legacy_wallet) {
+            Ok(()) => report.legacy_wallet_removed = true,
+            Err(e) => report.files_failed.push((
+                legacy_wallet.display().to_string(),
+                format!("remove legacy wallet: {e}"),
+            )),
         }
     }
 

@@ -190,6 +190,96 @@ pub fn load_seed_bytes() -> Result<Option<[u8; 64]>, String> {
     load_seed_bytes_with_paths(&wallet_path, &seed_path)
 }
 
+/// Load genesis seed bytes via v2 encrypted file, using the provided Genesis scope key.
+/// This is the post-migration path: genesis_seed.v2.enc contains the seed payload
+/// encrypted with a password-derived scope key, bypassing the erased wrap key entirely.
+pub fn load_seed_bytes_v2(genesis_scope_key: &[u8; 32]) -> Result<Option<[u8; 64]>, String> {
+    let v2_path = crate::halo::config::genesis_seed_v2_path();
+    if !v2_path.exists() {
+        return Ok(None);
+    }
+    let file = crate::halo::encrypted_file::EncryptedFileV2::load(&v2_path)?;
+    let plaintext = file.decrypt(genesis_scope_key)?;
+    let payload: StoredGenesisSeed = serde_json::from_slice(&plaintext)
+        .map_err(|e| format!("parse v2 genesis seed: {e}"))?;
+    if payload.schema != "agenthalo.genesis.seed.v1" {
+        return Err(format!(
+            "unsupported genesis seed schema {}",
+            payload.schema
+        ));
+    }
+    let bytes = crate::halo::util::hex_decode(&payload.combined_entropy_hex)?;
+    if bytes.len() != 64 {
+        return Err(format!(
+            "v2 genesis seed has invalid byte length: expected 64, got {}",
+            bytes.len()
+        ));
+    }
+    let mut out = [0u8; 64];
+    out.copy_from_slice(&bytes);
+    Ok(Some(out))
+}
+
+/// Load genesis seed SHA-256 hash via v2 encrypted file.
+pub fn load_seed_sha256_v2(genesis_scope_key: &[u8; 32]) -> Result<Option<String>, String> {
+    let v2_path = crate::halo::config::genesis_seed_v2_path();
+    if !v2_path.exists() {
+        return Ok(None);
+    }
+    let file = crate::halo::encrypted_file::EncryptedFileV2::load(&v2_path)?;
+    let plaintext = file.decrypt(genesis_scope_key)?;
+    let payload: StoredGenesisSeed = serde_json::from_slice(&plaintext)
+        .map_err(|e| format!("parse v2 genesis seed: {e}"))?;
+    Ok(Some(payload.combined_entropy_sha256))
+}
+
+/// Derive wallet entropy via v2 path.
+pub fn derive_wallet_entropy32_v2(
+    genesis_scope_key: &[u8; 32],
+) -> Result<Option<[u8; 32]>, String> {
+    let Some(seed) = load_seed_bytes_v2(genesis_scope_key)? else {
+        return Ok(None);
+    };
+    Ok(Some(derive_wallet_entropy32_from_seed(&seed)?))
+}
+
+/// Derive wallet mnemonic via v2 path.
+pub fn derive_wallet_mnemonic_v2(
+    genesis_scope_key: &[u8; 32],
+) -> Result<Option<String>, String> {
+    let Some(entropy) = derive_wallet_entropy32_v2(genesis_scope_key)? else {
+        return Ok(None);
+    };
+    let mnemonic = Mnemonic::from_entropy_in(Language::English, &entropy)
+        .map_err(|e| format!("derive wallet mnemonic from v2 genesis: {e}"))?;
+    Ok(Some(mnemonic.to_string()))
+}
+
+/// Try v2 path first (with scope key), fall back to v1 path.
+/// This is the preferred entry point post-E1-fix.
+pub fn derive_wallet_mnemonic_prefer_v2(
+    genesis_scope_key: Option<&[u8; 32]>,
+) -> Result<Option<String>, String> {
+    if let Some(key) = genesis_scope_key {
+        if let Some(mnemonic) = derive_wallet_mnemonic_v2(key)? {
+            return Ok(Some(mnemonic));
+        }
+    }
+    derive_wallet_mnemonic()
+}
+
+/// Try v2 path first for seed SHA-256 hash.
+pub fn load_seed_sha256_prefer_v2(
+    genesis_scope_key: Option<&[u8; 32]>,
+) -> Result<Option<String>, String> {
+    if let Some(key) = genesis_scope_key {
+        if let Some(hash) = load_seed_sha256_v2(key)? {
+            return Ok(Some(hash));
+        }
+    }
+    load_seed_sha256()
+}
+
 fn derive_wallet_entropy32_from_seed(seed: &[u8; 64]) -> Result<[u8; 32], String> {
     let hk = Hkdf::<Sha256>::new(
         Some(b"agenthalo-genesis-wallet-entropy-v1"),
