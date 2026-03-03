@@ -27,6 +27,10 @@ pub struct A2aAgentCard {
     pub skills: Vec<A2aSkill>,
     pub security_schemes: HashMap<String, A2aSecurityScheme>,
     pub security: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evm_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_proof_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -203,6 +207,8 @@ pub fn generate_agent_card(
             },
         )]),
         security: vec!["didAuth".to_string()],
+        evm_address: None,
+        binding_proof_sha256: None,
     }
 }
 

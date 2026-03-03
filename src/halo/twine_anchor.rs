@@ -1,0 +1,245 @@
+//! Identity attestation anchored to CURBy-Q Twine provenance.
+//!
+//! Creates a signed identity attestation that references the CURBy-Q Twine CID
+//! from the genesis ceremony. The attestation is dual-signed (Ed25519 + ML-DSA-65)
+//! and content-addressed via SHA-256 for verifiable provenance.
+
+use crate::halo::did::DIDIdentity;
+use crate::halo::util;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+const ATTESTATION_DOMAIN: &str = "agenthalo.identity.attestation.v1";
+
+/// Public identity attestation — no secrets, only verifiable claims.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IdentityAttestation {
+    pub version: u8,
+    pub evm_address: String,
+    pub did_subject: String,
+    pub combined_entropy_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curby_pulse_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curby_twine_cid: Option<String>,
+    pub genesis_timestamp: u64,
+    pub attestation_timestamp: u64,
+}
+
+/// Dual-signed attestation with content-addressed hash.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignedAttestation {
+    pub attestation: IdentityAttestation,
+    pub attestation_sha256: String,
+    pub ed25519_signature_hex: String,
+    pub mldsa65_signature_hex: String,
+}
+
+/// Receipt stored in the identity ledger after attestation creation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AttestationReceipt {
+    pub attestation_sha256: String,
+    pub did_subject: String,
+    pub evm_address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curby_twine_cid: Option<String>,
+    pub created_at: u64,
+}
+
+fn canonical_attestation_bytes(attestation: &IdentityAttestation) -> Vec<u8> {
+    let canonical = format!(
+        "{}|v={}|evm={}|did={}|entropy={}|pulse={}|twine_cid={}|genesis_ts={}|attest_ts={}",
+        ATTESTATION_DOMAIN,
+        attestation.version,
+        attestation.evm_address,
+        attestation.did_subject,
+        attestation.combined_entropy_sha256,
+        attestation
+            .curby_pulse_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+        attestation.curby_twine_cid.as_deref().unwrap_or(""),
+        attestation.genesis_timestamp,
+        attestation.attestation_timestamp,
+    );
+    canonical.into_bytes()
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let hash = Sha256::digest(data);
+    format!("sha256:{}", util::hex_encode(&hash))
+}
+
+/// Create and dual-sign an identity attestation.
+pub fn create_signed_attestation(
+    identity: &DIDIdentity,
+    evm_address: &str,
+    combined_entropy_sha256: &str,
+    curby_pulse_id: Option<u64>,
+    curby_twine_cid: Option<&str>,
+    genesis_timestamp: u64,
+) -> Result<SignedAttestation, String> {
+    let attestation = IdentityAttestation {
+        version: 1,
+        evm_address: evm_address.to_string(),
+        did_subject: identity.did.clone(),
+        combined_entropy_sha256: combined_entropy_sha256.to_string(),
+        curby_pulse_id,
+        curby_twine_cid: curby_twine_cid.map(|s| s.to_string()),
+        genesis_timestamp,
+        attestation_timestamp: util::now_unix_secs(),
+    };
+
+    let canonical = canonical_attestation_bytes(&attestation);
+    let attestation_sha256 = sha256_hex(&canonical);
+    let (ed_sig, pq_sig) = crate::halo::did::dual_sign(identity, &canonical)?;
+
+    Ok(SignedAttestation {
+        attestation,
+        attestation_sha256,
+        ed25519_signature_hex: util::hex_encode(&ed_sig),
+        mldsa65_signature_hex: util::hex_encode(&pq_sig),
+    })
+}
+
+/// Verify a signed attestation against a DID document's public keys.
+pub fn verify_signed_attestation(
+    signed: &SignedAttestation,
+    did_document: &crate::halo::did::DIDDocument,
+) -> Result<bool, String> {
+    let canonical = canonical_attestation_bytes(&signed.attestation);
+    let expected_hash = sha256_hex(&canonical);
+    if signed.attestation_sha256 != expected_hash {
+        return Ok(false);
+    }
+    let ed_sig = hex::decode(&signed.ed25519_signature_hex)
+        .map_err(|e| format!("ed25519 sig hex decode: {e}"))?;
+    let pq_sig = hex::decode(&signed.mldsa65_signature_hex)
+        .map_err(|e| format!("mldsa65 sig hex decode: {e}"))?;
+    crate::halo::did::dual_verify(did_document, &canonical, &ed_sig, &pq_sig)
+}
+
+// --- Binding proof: triple-signed DID↔EVM binding ---
+
+const BINDING_DOMAIN: &str = "agenthalo.identity.binding.v1";
+
+/// Triple-signed binding proof linking a DID to an EVM address.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BindingProof {
+    pub version: u8,
+    pub did_subject: String,
+    pub evm_address: String,
+    pub combined_entropy_sha256: String,
+    pub timestamp: u64,
+    pub binding_sha256: String,
+    pub ed25519_signature_hex: String,
+    pub mldsa65_signature_hex: String,
+    pub secp256k1_signature_hex: String,
+}
+
+fn canonical_binding_bytes(
+    did_subject: &str,
+    evm_address: &str,
+    combined_entropy_sha256: &str,
+    timestamp: u64,
+) -> Vec<u8> {
+    format!(
+        "{}|did={}|evm={}|entropy={}|ts={}",
+        BINDING_DOMAIN, did_subject, evm_address, combined_entropy_sha256, timestamp,
+    )
+    .into_bytes()
+}
+
+/// Create a triple-signed binding proof (Ed25519 + ML-DSA-65 + secp256k1).
+pub fn create_binding_proof(
+    identity: &DIDIdentity,
+    evm_address: &str,
+    evm_private_key_hex: &str,
+    combined_entropy_sha256: &str,
+) -> Result<BindingProof, String> {
+    let timestamp = util::now_unix_secs();
+    let canonical = canonical_binding_bytes(
+        &identity.did,
+        evm_address,
+        combined_entropy_sha256,
+        timestamp,
+    );
+    let binding_sha256 = sha256_hex(&canonical);
+    let (ed_sig, pq_sig) = crate::halo::did::dual_sign(identity, &canonical)?;
+    let secp_sig = crate::halo::evm_wallet::sign_with_evm_key(evm_private_key_hex, &canonical)?;
+
+    Ok(BindingProof {
+        version: 1,
+        did_subject: identity.did.clone(),
+        evm_address: evm_address.to_string(),
+        combined_entropy_sha256: combined_entropy_sha256.to_string(),
+        timestamp,
+        binding_sha256,
+        ed25519_signature_hex: util::hex_encode(&ed_sig),
+        mldsa65_signature_hex: util::hex_encode(&pq_sig),
+        secp256k1_signature_hex: util::hex_encode(&secp_sig),
+    })
+}
+
+/// Build an attestation receipt for ledger storage.
+pub fn attestation_receipt(signed: &SignedAttestation) -> AttestationReceipt {
+    AttestationReceipt {
+        attestation_sha256: signed.attestation_sha256.clone(),
+        did_subject: signed.attestation.did_subject.clone(),
+        evm_address: signed.attestation.evm_address.clone(),
+        curby_twine_cid: signed.attestation.curby_twine_cid.clone(),
+        created_at: signed.attestation.attestation_timestamp,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_bytes_are_deterministic() {
+        let att = IdentityAttestation {
+            version: 1,
+            evm_address: "0xDeaD".to_string(),
+            did_subject: "did:key:z6Mk...".to_string(),
+            combined_entropy_sha256: "sha256:abc".to_string(),
+            curby_pulse_id: Some(42),
+            curby_twine_cid: Some("bafyXYZ".to_string()),
+            genesis_timestamp: 1000,
+            attestation_timestamp: 2000,
+        };
+        let a = canonical_attestation_bytes(&att);
+        let b = canonical_attestation_bytes(&att);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn sha256_hex_is_prefixed() {
+        let hash = sha256_hex(b"test");
+        assert!(hash.starts_with("sha256:"));
+        assert!(hash.len() > "sha256:".len());
+    }
+
+    #[test]
+    fn receipt_copies_public_fields() {
+        let signed = SignedAttestation {
+            attestation: IdentityAttestation {
+                version: 1,
+                evm_address: "0xBeef".to_string(),
+                did_subject: "did:key:z6Mk...".to_string(),
+                combined_entropy_sha256: "sha256:abc".to_string(),
+                curby_pulse_id: Some(7523),
+                curby_twine_cid: Some("bafyABC".to_string()),
+                genesis_timestamp: 1000,
+                attestation_timestamp: 2000,
+            },
+            attestation_sha256: "sha256:hash".to_string(),
+            ed25519_signature_hex: "ed25519sig".to_string(),
+            mldsa65_signature_hex: "mldsasig".to_string(),
+        };
+        let receipt = attestation_receipt(&signed);
+        assert_eq!(receipt.evm_address, "0xBeef");
+        assert_eq!(receipt.did_subject, "did:key:z6Mk...");
+        assert_eq!(receipt.curby_twine_cid, Some("bafyABC".to_string()));
+    }
+}

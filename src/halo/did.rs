@@ -45,6 +45,12 @@ pub struct DIDIdentity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DIDDocument {
     pub id: String,
+    #[serde(
+        default,
+        rename = "alsoKnownAs",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub also_known_as: Vec<String>,
     #[serde(rename = "verificationMethod")]
     pub verification_method: Vec<VerificationMethod>,
     #[serde(rename = "keyAgreement")]
@@ -157,6 +163,7 @@ fn build_did_document_from_parts(
 
     DIDDocument {
         id: did.to_string(),
+        also_known_as: Vec::new(),
         verification_method: vec![
             VerificationMethod {
                 id: ed_key_id.clone(),
@@ -258,6 +265,17 @@ pub fn build_did_document(identity: &DIDIdentity) -> DIDDocument {
 
 pub fn did_document_to_json(doc: &DIDDocument) -> serde_json::Value {
     serde_json::to_value(doc).expect("DID document should always serialize")
+}
+
+/// Bind an EVM address to a DID document via `alsoKnownAs` using the did:pkh specification.
+/// Returns true if the binding was added (false if already present).
+pub fn bind_evm_address(doc: &mut DIDDocument, evm_address: &str) -> bool {
+    let did_pkh = format!("did:pkh:eip155:1:{}", evm_address.to_lowercase());
+    if doc.also_known_as.contains(&did_pkh) {
+        return false;
+    }
+    doc.also_known_as.push(did_pkh);
+    true
 }
 
 pub fn dual_sign(identity: &DIDIdentity, message: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {

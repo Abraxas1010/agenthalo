@@ -43,6 +43,7 @@ pub mod session_manager;
 pub mod startup;
 pub mod trace;
 pub mod trust;
+pub mod twine_anchor;
 pub mod util;
 pub mod vault;
 pub mod viewer;

@@ -66,6 +66,10 @@ struct AuthcryptProtected {
     enc: String,
     sender_did: String,
     sender_x25519_public_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sender_evm_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sender_binding_proof_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,10 +201,26 @@ pub fn extract_x25519_public_key_from_doc(doc: &DIDDocument) -> Result<[u8; 32],
         .map_err(|_| "DID document X25519 key must be 32 bytes".to_string())
 }
 
+/// Sender enrichment for sovereign identity binding.
+#[derive(Clone, Debug, Default)]
+pub struct SenderEnrichment {
+    pub evm_address: Option<String>,
+    pub binding_proof_sha256: Option<String>,
+}
+
 pub fn pack_authcrypt(
     message: &DIDCommMessage,
     sender: &DIDIdentity,
     recipient_x25519_public_key: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    pack_authcrypt_enriched(message, sender, recipient_x25519_public_key, None)
+}
+
+pub fn pack_authcrypt_enriched(
+    message: &DIDCommMessage,
+    sender: &DIDIdentity,
+    recipient_x25519_public_key: &[u8; 32],
+    enrichment: Option<&SenderEnrichment>,
 ) -> Result<Vec<u8>, String> {
     let plaintext =
         serde_json::to_vec(message).map_err(|e| format!("serialize DIDComm message: {e}"))?;
@@ -221,6 +241,9 @@ pub fn pack_authcrypt(
             enc: "A256GCM".to_string(),
             sender_did: sender.did.clone(),
             sender_x25519_public_key: B64.encode(sender_x25519_public_key.as_bytes()),
+            sender_evm_address: enrichment.and_then(|e| e.evm_address.clone()),
+            sender_binding_proof_sha256: enrichment
+                .and_then(|e| e.binding_proof_sha256.clone()),
         },
         nonce: B64.encode(nonce),
         ciphertext: B64.encode(&ciphertext),
