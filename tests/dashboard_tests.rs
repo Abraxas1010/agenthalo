@@ -261,6 +261,21 @@ async fn api_alias_and_summary_routes_return_json() {
         );
         assert!(val.is_object(), "route {route} must return JSON object");
     }
+    // /trust is an alias for /attestations — verify backward-compat keys.
+    {
+        let (status, val) = api_get(state.clone(), "/trust").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(val["status"], "ok", "/trust must include status");
+        assert!(
+            val["attestation_count"].is_number(),
+            "/trust must include attestation_count"
+        );
+        assert!(val["count"].is_number(), "/trust must include count");
+        assert!(
+            val["attestations"].is_array(),
+            "/trust must include attestations"
+        );
+    }
     // Stub routes that should return 501 Not Implemented with JSON.
     for route in ["/nucleusdb/vectors", "/nucleusdb/proofs"] {
         let (status, val) = api_get(state.clone(), route).await;

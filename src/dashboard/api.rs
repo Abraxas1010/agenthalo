@@ -5465,9 +5465,14 @@ async fn api_attestations(AxumState(_state): AxumState<DashboardState>) -> ApiRe
             }
         }
     }
-    Ok(Json(
-        json!({"attestations": attestations, "count": attestations.len()}),
-    ))
+    let count = attestations.len();
+    Ok(Json(json!({
+        "status": "ok",
+        "attestations": attestations,
+        "count": count,
+        // Backward-compat key — /api/trust consumers used this name.
+        "attestation_count": count,
+    })))
 }
 
 async fn api_attestation_verify(
