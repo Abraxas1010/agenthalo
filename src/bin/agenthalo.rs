@@ -1,3 +1,4 @@
+use nucleusdb::container::{deregister_self_from_mesh, mesh_enabled, register_self_in_mesh};
 use nucleusdb::dashboard;
 use nucleusdb::halo::addons;
 use nucleusdb::halo::agentpmt;
@@ -23,7 +24,7 @@ use nucleusdb::halo::onchain::{
     deploy_trust_verifier, load_onchain_config_or_default, onchain_config_path, post_attestation,
     query_attestation, save_onchain_config, signer_mode_label, warn_if_simulation_mode, SignerMode,
 };
-use nucleusdb::halo::pq::{has_wallet, keygen_pq, sign_pq_payload};
+use nucleusdb::halo::pq::{has_wallet, keygen_pq, sign_pq_payload, wallet_key_identity};
 use nucleusdb::halo::privacy_controller;
 use nucleusdb::halo::runner::AgentRunner;
 use nucleusdb::halo::schema::{SessionMetadata, SessionStatus};
@@ -680,7 +681,54 @@ fn cmd_keygen(args: &[String]) -> Result<(), String> {
     if !args.iter().any(|a| a == "--pq") {
         return Err("usage: agenthalo keygen --pq [--force]".to_string());
     }
-    let force = args.iter().any(|a| a == "--force");
+    let force = args.iter().any(|a| a == "--force" || a == "--force-rotate");
+    let wallet_present = has_wallet();
+    let sealed_genesis_present = genesis_seed::seed_exists();
+
+    if wallet_present && sealed_genesis_present {
+        if force {
+            return Err("refusing PQ wallet rotation: a sealed genesis seed exists and rotation would orphan it. Backup the current wallet or run an explicit signer-rotation ceremony before forcing key changes.".to_string());
+        }
+        let (key_id, public_key_hex) = wallet_key_identity()?.ok_or_else(|| {
+            "wallet present but unreadable; cannot resolve key identity".to_string()
+        })?;
+        let out = serde_json::json!({
+            "status": "ok",
+            "already_exists": true,
+            "protected_by_sealed_genesis": true,
+            "algorithm": "ml_dsa65",
+            "key_id": key_id,
+            "public_key_hex": public_key_hex,
+            "wallet_path": config::pq_wallet_path().display().to_string(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| format!("serialize keygen output: {e}"))?
+        );
+        return Ok(());
+    }
+
+    if wallet_present && !force {
+        let (key_id, public_key_hex) = wallet_key_identity()?.ok_or_else(|| {
+            "wallet present but unreadable; cannot resolve key identity".to_string()
+        })?;
+        let out = serde_json::json!({
+            "status": "ok",
+            "already_exists": true,
+            "algorithm": "ml_dsa65",
+            "key_id": key_id,
+            "public_key_hex": public_key_hex,
+            "wallet_path": config::pq_wallet_path().display().to_string(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| format!("serialize keygen output: {e}"))?
+        );
+        return Ok(());
+    }
+
     let result = keygen_pq(force)?;
     println!(
         "{}",
@@ -2913,6 +2961,9 @@ fn cmd_genesis(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_genesis_harvest_direct() -> Result<serde_json::Value, String> {
+    if !has_wallet() && genesis_seed::seed_exists() {
+        return Err("refusing wallet bootstrap: sealed genesis seed exists but PQ wallet is missing. Restore the original wallet before harvesting again.".to_string());
+    }
     if !has_wallet() {
         let _ = keygen_pq(false)?;
     }
@@ -3030,6 +3081,26 @@ fn cmd_privacy(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_comms(args: &[String]) -> Result<(), String> {
+    struct MeshRegistrationGuard {
+        registered: bool,
+    }
+
+    impl Drop for MeshRegistrationGuard {
+        fn drop(&mut self) {
+            if self.registered {
+                deregister_self_from_mesh();
+            }
+        }
+    }
+
+    fn register_mesh_if_enabled() -> Result<MeshRegistrationGuard, String> {
+        if !mesh_enabled() {
+            return Ok(MeshRegistrationGuard { registered: false });
+        }
+        register_self_in_mesh().map_err(|e| format!("mesh registration failed: {e}"))?;
+        Ok(MeshRegistrationGuard { registered: true })
+    }
+
     let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
     match sub {
         "status" => {
@@ -3055,6 +3126,7 @@ fn cmd_comms(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "bootstrap" => {
+            let _mesh_guard = register_mesh_if_enabled()?;
             let seed = genesis_seed::load_seed_bytes()?.ok_or_else(|| {
                 "genesis seed missing; run `agenthalo genesis harvest` first".to_string()
             })?;
@@ -3085,6 +3157,7 @@ fn cmd_comms(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "run" => {
+            let _mesh_guard = register_mesh_if_enabled()?;
             let seed = genesis_seed::load_seed_bytes()?.ok_or_else(|| {
                 "genesis seed missing; run `agenthalo genesis harvest` first".to_string()
             })?;
@@ -3101,13 +3174,14 @@ fn cmd_comms(args: &[String]) -> Result<(), String> {
                     "p2p is disabled; set P2P_ENABLED=true to run comms event loop".to_string(),
                 );
             };
-            rt.block_on(async move {
+            let run_result = rt.block_on(async move {
                 if let Some(discovery) = discovery.as_mut() {
                     node.run_with_discovery(&identity, discovery, 300).await
                 } else {
                     node.run().await
                 }
-            })
+            });
+            run_result
         }
         _ => Err("usage: agenthalo comms [status|bootstrap|run]".to_string()),
     }

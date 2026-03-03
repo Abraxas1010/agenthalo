@@ -483,8 +483,7 @@ fn sim_full_scenario_grant_query_exchange() {
         .track_request(&bob.did, "call-1", MessageType::McpToolCall, 30)
         .unwrap();
 
-    let (call_id, tool_name, args) =
-        unwrap_mcp_call(&alice, &bob.did_document, &call_env).unwrap();
+    let (call_id, tool_name, args) = unwrap_mcp_call(&alice, &bob.did_document, &call_env).unwrap();
     assert_eq!(tool_name, "nucleusdb_query");
     assert!(!call_id.is_empty());
     assert_eq!(args["sql"], "SELECT count(*) FROM proofs");

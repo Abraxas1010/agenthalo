@@ -173,7 +173,22 @@ pub async fn serve(port: u16, open_browser: bool) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("bind {addr}: {e}"))?;
-    axum::serve(listener, app)
+    let mesh_registered = if crate::container::mesh_enabled() {
+        match crate::container::register_self_in_mesh() {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("[mesh] dashboard registration failed: {e}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+    let serve_result = axum::serve(listener, app)
         .await
-        .map_err(|e| format!("serve dashboard: {e}"))
+        .map_err(|e| format!("serve dashboard: {e}"));
+    if mesh_registered {
+        crate::container::deregister_self_from_mesh();
+    }
+    serve_result
 }

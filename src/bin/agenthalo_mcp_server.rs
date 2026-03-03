@@ -1033,6 +1033,71 @@ async fn mcp(
                         "required": ["url"]
                     }
                 }),
+                json!({
+                    "name": "mesh_peers",
+                    "description": "List known peers on the container mesh network.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }),
+                json!({
+                    "name": "mesh_ping",
+                    "description": "Ping a peer in the mesh registry.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "agent_id": {"type": "string", "description": "Target peer agent id."}
+                        },
+                        "required": ["agent_id"]
+                    }
+                }),
+                json!({
+                    "name": "mesh_call",
+                    "description": "Call a remote peer MCP tool via mesh.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "agent_id": {"type": "string", "description": "Target peer agent id (alias: peer_agent_id)."},
+                            "peer_agent_id": {"type": "string", "description": "Target peer agent id."},
+                            "tool_name": {"type": "string", "description": "Remote MCP tool name."},
+                            "arguments": {"description": "Tool arguments object or JSON string.", "default": {}},
+                            "use_didcomm": {"type": "boolean", "description": "Request DIDComm wrapping when supported.", "default": false}
+                        },
+                        "required": ["tool_name"]
+                    }
+                }),
+                json!({
+                    "name": "mesh_exchange_envelope",
+                    "description": "Send a ProofEnvelope payload to a remote peer for verification.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "agent_id": {"type": "string", "description": "Target peer agent id (alias: peer_agent_id)."},
+                            "peer_agent_id": {"type": "string", "description": "Target peer agent id."},
+                            "envelope_json": {"description": "Proof envelope JSON (alias: envelope)."},
+                            "envelope": {"description": "Proof envelope JSON payload."}
+                        },
+                        "required": ["envelope_json"]
+                    }
+                }),
+                json!({
+                    "name": "mesh_grant",
+                    "description": "Grant a mesh peer access using capability token rules.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "agent_id": {"type": "string", "description": "Target peer agent id (alias: peer_agent_id)."},
+                            "peer_agent_id": {"type": "string", "description": "Target peer agent id."},
+                            "peer_did": {"type": "string", "description": "Peer DID URI override if registry does not provide one."},
+                            "resource_patterns": {"type": "string", "description": "Comma-separated patterns or array form."},
+                            "access_modes": {"type": "string", "description": "Comma-separated read/write/append/control (alias: modes)."},
+                            "modes": {"type": "array", "items": {"type": "string"}, "description": "Explicit access modes list."},
+                            "duration_secs": {"type": "integer", "description": "TTL seconds (alias: duration).", "default": 3600},
+                            "duration": {"type": "integer", "description": "TTL seconds alias."}
+                        }
+                    }
+                }),
             ];
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
@@ -1193,6 +1258,11 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "zk_compute_verify" => tool_zk_compute_verify(arguments),
         "nym_status" => tool_nym_status(arguments),
         "privacy_classify" => tool_privacy_classify(arguments),
+        "mesh_peers" => tool_mesh_peers(arguments),
+        "mesh_ping" => tool_mesh_ping(arguments),
+        "mesh_call" => tool_mesh_call(arguments),
+        "mesh_exchange_envelope" => tool_mesh_exchange_envelope(arguments),
+        "mesh_grant" => tool_mesh_grant(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -2831,6 +2901,9 @@ fn tool_genesis_status(_arguments: Value) -> Result<Value, String> {
 
 fn tool_genesis_harvest(_arguments: Value) -> Result<Value, String> {
     mcp_require_scope(CryptoScope::Genesis)?;
+    if !nucleusdb::halo::pq::has_wallet() && nucleusdb::halo::genesis_seed::seed_exists() {
+        return Err("refusing wallet bootstrap: sealed genesis seed exists but PQ wallet is missing. Restore the original wallet before harvesting again.".to_string());
+    }
     if !nucleusdb::halo::pq::has_wallet() {
         let _ = nucleusdb::halo::pq::keygen_pq(false)?;
     }
@@ -4918,6 +4991,339 @@ fn tool_privacy_classify(arguments: Value) -> Result<Value, String> {
     }
 }
 
+fn mesh_peer_agent_id(arguments: &Value) -> Result<String, String> {
+    arguments
+        .get("peer_agent_id")
+        .or_else(|| arguments.get("agent_id"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .ok_or_else(|| "peer agent id is required (agent_id or peer_agent_id)".to_string())
+}
+
+fn parse_json_value_or_string(value: Option<&Value>, field_name: &str) -> Result<Value, String> {
+    match value {
+        Some(Value::String(s)) => serde_json::from_str(s)
+            .map_err(|e| format!("invalid JSON string for {field_name}: {e}")),
+        Some(v) => Ok(v.clone()),
+        None => Ok(json!({})),
+    }
+}
+
+fn parse_string_list(value: Option<&Value>, field_name: &str) -> Result<Vec<String>, String> {
+    match value {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| format!("{field_name} entries must be non-empty strings"))
+            })
+            .collect::<Result<Vec<_>, _>>(),
+        Some(Value::String(s)) => Ok(s
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()),
+        Some(_) => Err(format!(
+            "{field_name} must be an array of strings or CSV string"
+        )),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn parse_mesh_access_modes_local(modes: &[String]) -> Result<Vec<capability::AccessMode>, String> {
+    if modes.is_empty() {
+        return Err("modes must include at least one of read|write|append|control".to_string());
+    }
+    modes
+        .iter()
+        .map(|m| match m.trim().to_ascii_lowercase().as_str() {
+            "read" => Ok(capability::AccessMode::Read),
+            "write" => Ok(capability::AccessMode::Write),
+            "append" => Ok(capability::AccessMode::Append),
+            "control" => Ok(capability::AccessMode::Control),
+            other => Err(format!(
+                "unknown access mode: {other} (expected read|write|append|control)"
+            )),
+        })
+        .collect()
+}
+
+fn mesh_call_didcomm(
+    peer: &nucleusdb::container::mesh::PeerInfo,
+    tool_name: &str,
+    arguments: Value,
+) -> Result<(Value, String), String> {
+    let key_hex = std::env::var("NUCLEUSDB_AGENT_PRIVATE_KEY")
+        .map_err(|_| "DIDComm requires NUCLEUSDB_AGENT_PRIVATE_KEY".to_string())?;
+    let key_bytes =
+        hex::decode(key_hex.trim()).map_err(|e| format!("decode agent private key: {e}"))?;
+    if key_bytes.len() < 64 {
+        return Err(format!(
+            "agent private key too short: {} bytes (need 64)",
+            key_bytes.len()
+        ));
+    }
+    let mut seed = [0u8; 64];
+    seed.copy_from_slice(&key_bytes[..64]);
+    let local_identity = nucleusdb::halo::did::did_from_genesis_seed(&seed)?;
+
+    let peer_did = peer
+        .did_uri
+        .as_deref()
+        .ok_or_else(|| format!("peer {} has no DID URI — cannot use DIDComm", peer.agent_id))?;
+    let discovery_url =
+        peer.mcp_endpoint.trim_end_matches("/mcp").to_string() + "/.well-known/nucleus-pod";
+    let resp = nucleusdb::halo::http_client::get_with_timeout(
+        &discovery_url,
+        std::time::Duration::from_secs(5),
+    )?
+    .call()
+    .map_err(|e| format!("fetch peer DID document: {e}"))?;
+    let body: Value = resp
+        .into_body()
+        .read_json()
+        .map_err(|e| format!("parse peer discovery response: {e}"))?;
+    let peer_doc: nucleusdb::halo::did::DIDDocument = serde_json::from_value(
+        body.get("did_document")
+            .ok_or_else(|| format!("peer {peer_did} discovery response missing did_document"))?
+            .clone(),
+    )
+    .map_err(|e| format!("deserialize peer DID document: {e}"))?;
+
+    let didcomm_envelope = nucleusdb::comms::envelope::wrap_mcp_call(
+        &local_identity,
+        &peer_doc,
+        tool_name,
+        arguments,
+    )?;
+    let didcomm_url = peer.mcp_endpoint.trim_end_matches("/mcp").to_string() + "/didcomm";
+    let resp = nucleusdb::halo::http_client::post_with_timeout(
+        &didcomm_url,
+        std::time::Duration::from_secs(30),
+    )?
+    .send_json(&didcomm_envelope)
+    .map_err(|e| format!("send DIDComm envelope to {}: {e}", peer.agent_id))?;
+    let result: Value = resp
+        .into_body()
+        .read_json()
+        .map_err(|e| format!("parse DIDComm response: {e}"))?;
+
+    Ok((result, "didcomm-v2".to_string()))
+}
+
+fn tool_mesh_peers(_arguments: Value) -> Result<Value, String> {
+    let my_agent_id = std::env::var("NUCLEUSDB_MESH_AGENT_ID").unwrap_or_default();
+    let registry_path = nucleusdb::container::mesh::mesh_registry_path();
+    let registry =
+        nucleusdb::container::mesh::PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+    let peers: Vec<Value> = registry
+        .peers_except(&my_agent_id)
+        .iter()
+        .map(|p| {
+            let (reachable, latency_ms) = nucleusdb::container::mesh::ping_peer_with_latency(p);
+            json!({
+                "agent_id": p.agent_id,
+                "did_uri": p.did_uri,
+                "mcp_endpoint": p.mcp_endpoint,
+                "status": if reachable { "online" } else { "offline" },
+                "latency_ms": latency_ms,
+                "last_seen": p.last_seen,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "status": "ok",
+        "mesh_enabled": !my_agent_id.is_empty(),
+        "network": nucleusdb::container::mesh::MESH_NETWORK_NAME,
+        "self_agent_id": my_agent_id,
+        "peer_count": peers.len(),
+        "peers": peers,
+    }))
+}
+
+fn tool_mesh_ping(arguments: Value) -> Result<Value, String> {
+    let agent_id = mesh_peer_agent_id(&arguments)?;
+    let registry_path = nucleusdb::container::mesh::mesh_registry_path();
+    let registry =
+        nucleusdb::container::mesh::PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+    let peer = registry
+        .find(&agent_id)
+        .ok_or_else(|| format!("peer '{}' not found in mesh registry", agent_id))?;
+    let (reachable, latency_ms) = nucleusdb::container::mesh::ping_peer_with_latency(peer);
+    Ok(json!({
+        "status": "ok",
+        "agent_id": agent_id,
+        "reachable": reachable,
+        "latency_ms": latency_ms,
+    }))
+}
+
+fn tool_mesh_call(arguments: Value) -> Result<Value, String> {
+    let peer_agent_id = mesh_peer_agent_id(&arguments)?;
+    let tool_name = arguments
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "tool_name is required".to_string())?
+        .to_string();
+    let call_args = parse_json_value_or_string(arguments.get("arguments"), "arguments")?;
+    let use_didcomm = arguments
+        .get("use_didcomm")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let registry_path = nucleusdb::container::mesh::mesh_registry_path();
+    let registry =
+        nucleusdb::container::mesh::PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+    let peer = registry
+        .find(&peer_agent_id)
+        .ok_or_else(|| format!("peer '{}' not found in mesh registry", peer_agent_id))?
+        .clone();
+    let started = std::time::Instant::now();
+
+    let (result, auth_method) = if use_didcomm {
+        mesh_call_didcomm(&peer, &tool_name, call_args)?
+    } else {
+        let auth_token = std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN").ok();
+        let result = nucleusdb::container::mesh::call_remote_tool(
+            &peer,
+            &tool_name,
+            call_args,
+            auth_token.as_deref(),
+        )?;
+        (
+            result,
+            if auth_token.is_some() {
+                "bearer".to_string()
+            } else {
+                "none".to_string()
+            },
+        )
+    };
+
+    Ok(json!({
+        "status": "ok",
+        "peer_agent_id": peer_agent_id,
+        "tool_name": tool_name,
+        "result": result,
+        "auth_method": auth_method,
+        "latency_ms": started.elapsed().as_millis() as u64,
+    }))
+}
+
+fn tool_mesh_exchange_envelope(arguments: Value) -> Result<Value, String> {
+    let peer_agent_id = mesh_peer_agent_id(&arguments)?;
+    let envelope = parse_json_value_or_string(
+        arguments
+            .get("envelope")
+            .or_else(|| arguments.get("envelope_json")),
+        "envelope_json",
+    )?;
+
+    let registry_path = nucleusdb::container::mesh::mesh_registry_path();
+    let registry =
+        nucleusdb::container::mesh::PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+    let peer = registry
+        .find(&peer_agent_id)
+        .ok_or_else(|| format!("peer '{}' not found in mesh registry", peer_agent_id))?;
+    let auth_token = std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN").ok();
+    let verification =
+        nucleusdb::container::mesh::exchange_envelope(peer, &envelope, auth_token.as_deref())?;
+    let accepted = verification
+        .get("accepted")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    Ok(json!({
+        "status": "ok",
+        "peer_agent_id": peer_agent_id,
+        "accepted": accepted,
+        "verification": verification,
+    }))
+}
+
+fn tool_mesh_grant(arguments: Value) -> Result<Value, String> {
+    let peer_agent_id = mesh_peer_agent_id(&arguments)?;
+    let mut patterns = parse_string_list(arguments.get("resource_patterns"), "resource_patterns")?;
+    if patterns.is_empty() {
+        patterns.push("nucleusdb_*".to_string());
+    }
+    let mut mode_values = parse_string_list(arguments.get("modes"), "modes")?;
+    if mode_values.is_empty() {
+        mode_values = parse_string_list(arguments.get("access_modes"), "access_modes")?;
+    }
+    if mode_values.is_empty() {
+        mode_values.push("read".to_string());
+    }
+    let duration_secs = arguments
+        .get("duration_secs")
+        .or_else(|| arguments.get("duration"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3600);
+
+    let seed = nucleusdb::halo::genesis_seed::load_seed_bytes()?
+        .ok_or_else(|| "genesis seed missing; run `agenthalo genesis harvest` first".to_string())?;
+    let grantor = nucleusdb::halo::did::did_from_genesis_seed(&seed)?;
+
+    let registry_path = nucleusdb::container::mesh::mesh_registry_path();
+    let registry =
+        nucleusdb::container::mesh::PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+    let peer = registry
+        .find(&peer_agent_id)
+        .ok_or_else(|| format!("peer '{}' not found in mesh registry", peer_agent_id))?;
+
+    let peer_did = peer
+        .did_uri
+        .as_deref()
+        .filter(|did| !did.trim().is_empty())
+        .map(|did| did.to_string())
+        .or_else(|| {
+            arguments
+                .get("peer_did")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.to_string())
+        })
+        .ok_or_else(|| {
+            format!(
+                "peer '{}' has no DID URI in registry and peer_did was not provided",
+                peer_agent_id
+            )
+        })?;
+
+    let now = nucleusdb::pod::now_unix();
+    let parsed_modes = parse_mesh_access_modes_local(&mode_values)?;
+    let token = capability::create_capability(
+        &grantor,
+        &peer_did,
+        capability::AgentClass::Authenticated,
+        &patterns,
+        &parsed_modes,
+        now,
+        now.saturating_add(duration_secs),
+        false,
+    )?;
+
+    Ok(json!({
+        "status": "ok",
+        "capability_token_id": nucleusdb::halo::util::hex_encode(&token.token_id),
+        "granted_to": peer_did,
+        "resource_patterns": patterns,
+        "modes": mode_values,
+        "expires_at": now.saturating_add(duration_secs),
+        "peer_agent_id": peer_agent_id,
+    }))
+}
+
 fn tool_halo_export(arguments: Value) -> Result<Value, String> {
     let session_id = arguments
         .get("session_id")
@@ -5781,5 +6187,48 @@ mod tests {
         assert!(tx_hash.starts_with("0x"));
         assert_eq!(tx_hash.len(), 66);
         std::env::remove_var("AGENTHALO_ONCHAIN_SIMULATION");
+    }
+
+    #[test]
+    fn mesh_peers_tool_dispatches_and_returns_status() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_mesh_peers_dispatch");
+        std::env::set_var("AGENTHALO_HOME", &home);
+        let registry_path = home.join("mesh-peers.json");
+        std::env::set_var(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.display().to_string(),
+        );
+        std::env::set_var("NUCLEUSDB_MESH_AGENT_ID", "instance-a");
+
+        let out = tool_call("mesh_peers", json!({})).expect("mesh_peers dispatch");
+        assert_eq!(out["status"], "ok");
+        assert!(out["peer_count"].is_number());
+        assert!(out["peers"].is_array());
+
+        std::env::remove_var("NUCLEUSDB_MESH_AGENT_ID");
+        std::env::remove_var("NUCLEUSDB_MESH_REGISTRY");
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn mesh_ping_tool_dispatches_and_reports_missing_peer() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_mesh_ping_dispatch");
+        std::env::set_var("AGENTHALO_HOME", &home);
+        let registry_path = home.join("mesh-peers.json");
+        std::env::set_var(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.display().to_string(),
+        );
+
+        let err = tool_call("mesh_ping", json!({"agent_id":"missing-peer"}))
+            .expect_err("missing peer should error");
+        assert!(err.contains("not found in mesh registry"));
+
+        std::env::remove_var("NUCLEUSDB_MESH_REGISTRY");
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
