@@ -116,6 +116,11 @@ pub struct MeshCallRequest {
     /// Arguments to pass to the remote tool.
     #[serde(default)]
     pub arguments: serde_json::Value,
+    /// When true, wrap the MCP call in a DIDComm v2 encrypted envelope.
+    /// Requires NUCLEUSDB_AGENT_PRIVATE_KEY and peer must have a DID URI.
+    /// Falls back to raw HTTP if DIDComm is not available.
+    #[serde(default)]
+    pub use_didcomm: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -213,6 +218,82 @@ fn parse_mesh_access_modes(
             )),
         })
         .collect()
+}
+
+/// DIDComm-wrapped MCP call: encrypt tool request, send to peer's /didcomm endpoint,
+/// parse the response. Returns (result, auth_method).
+fn mesh_call_didcomm(
+    peer: &crate::container::mesh::PeerInfo,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Result<(serde_json::Value, String), String> {
+    // Load local agent identity.
+    let key_hex = std::env::var("NUCLEUSDB_AGENT_PRIVATE_KEY")
+        .map_err(|_| "DIDComm requires NUCLEUSDB_AGENT_PRIVATE_KEY".to_string())?;
+    let key_bytes =
+        hex::decode(key_hex.trim()).map_err(|e| format!("decode agent private key: {e}"))?;
+    if key_bytes.len() < 64 {
+        return Err(format!(
+            "agent private key too short: {} bytes (need 64)",
+            key_bytes.len()
+        ));
+    }
+    let mut seed = [0u8; 64];
+    seed.copy_from_slice(&key_bytes[..64]);
+    let local_identity = crate::halo::did::did_from_genesis_seed(&seed)?;
+
+    // Resolve peer's DID document from their discovery endpoint.
+    let peer_did = peer
+        .did_uri
+        .as_deref()
+        .ok_or_else(|| format!("peer {} has no DID URI — cannot use DIDComm", peer.agent_id))?;
+    let discovery_url =
+        peer.mcp_endpoint.trim_end_matches("/mcp").to_string() + "/.well-known/nucleus-pod";
+    let resp = crate::halo::http_client::get_with_timeout(
+        &discovery_url,
+        std::time::Duration::from_secs(5),
+    )?
+    .call()
+    .map_err(|e| format!("fetch peer DID document: {e}"))?;
+    let body: serde_json::Value = resp
+        .into_body()
+        .read_json()
+        .map_err(|e| format!("parse peer discovery response: {e}"))?;
+    let peer_doc: crate::halo::did::DIDDocument = body
+        .get("did_document")
+        .ok_or_else(|| format!("peer {peer_did} discovery response missing did_document"))?
+        .clone()
+        .pipe_deser()?;
+
+    // Encrypt the MCP call as a DIDComm envelope.
+    let didcomm_envelope =
+        crate::comms::envelope::wrap_mcp_call(&local_identity, &peer_doc, tool_name, arguments)?;
+
+    // Send the DIDComm envelope to the peer's /didcomm endpoint.
+    let didcomm_url = peer.mcp_endpoint.trim_end_matches("/mcp").to_string() + "/didcomm";
+    let resp = crate::halo::http_client::post_with_timeout(
+        &didcomm_url,
+        std::time::Duration::from_secs(30),
+    )?
+    .send_json(&didcomm_envelope)
+    .map_err(|e| format!("send DIDComm envelope to {}: {e}", peer.agent_id))?;
+    let result: serde_json::Value = resp
+        .into_body()
+        .read_json()
+        .map_err(|e| format!("parse DIDComm response: {e}"))?;
+
+    Ok((result, "didcomm-v2".to_string()))
+}
+
+/// Helper to deserialize a serde_json::Value into a concrete type.
+trait PipeDeser: Sized {
+    fn pipe_deser<T: serde::de::DeserializeOwned>(self) -> Result<T, String>;
+}
+
+impl PipeDeser for serde_json::Value {
+    fn pipe_deser<T: serde::de::DeserializeOwned>(self) -> Result<T, String> {
+        serde_json::from_value(self).map_err(|e| format!("deserialize: {e}"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2955,8 +3036,33 @@ impl NucleusDbMcpService {
                 None,
             )
         })?;
-        let auth_token = std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN").ok();
         let start = std::time::Instant::now();
+
+        if req.use_didcomm {
+            // DIDComm-wrapped MCP call path.
+            let tool_name = req.tool_name.clone();
+            let args = req.arguments.clone();
+            let peer_owned = peer.clone();
+            let (result, auth_method) = tokio::task::spawn_blocking(move || {
+                mesh_call_didcomm(&peer_owned, &tool_name, args)
+            })
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("mesh DIDComm worker task failed: {e}"), None)
+            })?
+            .map_err(|e| McpError::internal_error(e, None))?;
+            let latency_ms = start.elapsed().as_millis() as u64;
+            return Ok(Json(MeshCallResponse {
+                peer_agent_id: req.peer_agent_id,
+                tool_name: req.tool_name,
+                result,
+                auth_method,
+                latency_ms,
+            }));
+        }
+
+        // Raw HTTP MCP call path (Part 1 behavior).
+        let auth_token = std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN").ok();
         let result = crate::container::mesh::call_remote_tool(
             peer,
             &req.tool_name,
@@ -3099,10 +3205,19 @@ impl NucleusDbMcpService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
     use crate::typed_value::{TypeTag, TypedValue};
     use serde_json::json;
     use std::path::PathBuf;
+    use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn random_local_addr() -> std::net::SocketAddr {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("local addr")
+    }
 
     fn temp_db_path(tag: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
@@ -3131,6 +3246,89 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
         let wal_path = NucleusDbMcpService::default_wal_path(db_path);
         let _ = std::fs::remove_file(wal_path);
+    }
+
+    #[test]
+    fn mesh_call_didcomm_executes_remote_tool() {
+        let join = std::thread::Builder::new()
+            .name("mesh_call_didcomm_executes_remote_tool".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime");
+                rt.block_on(async {
+                    let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+                    let sender_seed = [0x61u8; 64];
+                    let sender = crate::halo::did::did_from_genesis_seed(&sender_seed)
+                        .expect("sender identity");
+                    std::env::set_var("NUCLEUSDB_AGENT_PRIVATE_KEY", hex::encode(sender_seed));
+
+                    let remote_db_path = temp_db_path("mesh_didcomm_remote");
+                    let remote_addr = random_local_addr();
+
+                    let registry_path = std::env::temp_dir().join(format!(
+                        "mesh_registry_{}_{}.json",
+                        std::process::id(),
+                        crate::pod::now_unix_nanos()
+                    ));
+                    let mut registry = crate::container::mesh::PeerRegistry::new();
+                    let now = crate::pod::now_unix();
+                    registry.register(crate::container::mesh::PeerInfo {
+                        agent_id: "agent-remote".to_string(),
+                        container_name: "remote".to_string(),
+                        did_uri: Some(sender.did.clone()),
+                        mcp_endpoint: format!("http://{remote_addr}/mcp"),
+                        discovery_endpoint: format!("http://{remote_addr}/.well-known/nucleus-pod"),
+                        registered_at: now,
+                        last_seen: now,
+                    });
+                    registry.save(&registry_path).expect("save mesh registry");
+                    std::env::set_var(
+                        "NUCLEUSDB_MESH_REGISTRY",
+                        registry_path.display().to_string(),
+                    );
+
+                    let remote_server =
+                        tokio::spawn(crate::mcp::server::remote::run_remote_mcp_server(
+                            crate::mcp::server::remote::RemoteServerConfig {
+                                db_path: remote_db_path.display().to_string(),
+                                listen_addr: remote_addr,
+                                auth: crate::mcp::server::auth::AuthConfig::default(),
+                                endpoint_path: "/mcp".to_string(),
+                            },
+                        ));
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    let local_db_path = temp_db_path("mesh_didcomm_local");
+                    let service = NucleusDbMcpService::new(&local_db_path).expect("local service");
+                    let Json(resp) = service
+                        .mesh_call(Parameters(MeshCallRequest {
+                            peer_agent_id: "agent-remote".to_string(),
+                            tool_name: "nucleusdb_status".to_string(),
+                            arguments: json!({}),
+                            use_didcomm: true,
+                        }))
+                        .await
+                        .expect("mesh_call didcomm path");
+                    assert_eq!(resp.auth_method, "didcomm-v2");
+                    assert_eq!(resp.peer_agent_id, "agent-remote");
+                    assert_eq!(resp.tool_name, "nucleusdb_status");
+                    assert!(
+                        resp.result.get("status").is_some()
+                            || resp.result.get("structuredContent").is_some()
+                    );
+
+                    remote_server.abort();
+                    let _ = std::fs::remove_file(registry_path);
+                    cleanup_db_files(&local_db_path);
+                    cleanup_db_files(&remote_db_path);
+                });
+            })
+            .expect("spawn large-stack test thread");
+        join.join().expect("mesh DIDComm test thread panicked");
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod blob_store;
 pub mod cli;
 pub mod cockpit;
 pub mod commitment;
+pub mod comms;
 pub mod container;
 pub mod dashboard;
 pub mod halo;
@@ -44,3 +45,16 @@ pub use security::{
     SecurityPolicyError, VcProfile,
 };
 pub use state::{Delta, State};
+
+#[cfg(test)]
+pub mod test_support {
+    use std::sync::{Mutex, OnceLock};
+
+    /// Global lock for process-wide environment variable mutation in tests.
+    /// Rust environment access is process-global and not thread-safe across
+    /// concurrent writes, so tests that set/remove env vars must serialize.
+    pub fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+}

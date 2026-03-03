@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
 
+const INTERNAL_AUTH_HEADER: &str = "x-nucleusdb-internal-auth";
+
 /// Scopes that gate access to tool categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolScope {
@@ -514,6 +516,21 @@ pub async fn auth_middleware(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    // DIDComm envelopes are authenticated at the message layer (dual signatures + DID binding).
+    // Keep transport auth disabled for this route so mesh peers can deliver envelopes without
+    // requiring an MCP bearer token.
+    if matches!(
+        request.uri().path(),
+        "/didcomm" | "/.well-known/nucleus-pod"
+    ) {
+        return next.run(request).await;
+    }
+
+    // Internal loopback dispatch from /didcomm -> /mcp uses a process-local shared secret.
+    if has_internal_auth_bypass(request.headers()) {
+        return next.run(request).await;
+    }
+
     match authenticate(request.headers(), &config) {
         Ok(identity) => {
             if let Some(id) = identity {
@@ -552,9 +569,24 @@ pub async fn auth_middleware(
     }
 }
 
+fn has_internal_auth_bypass(headers: &HeaderMap) -> bool {
+    let expected = match std::env::var("NUCLEUSDB_INTERNAL_AUTH_KEY") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return false,
+    };
+    let Some(provided) = headers.get(INTERNAL_AUTH_HEADER) else {
+        return false;
+    };
+    provided
+        .to_str()
+        .map(|value| value == expected)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
 
     #[test]
     fn tool_scope_mapping_covers_all_tools() {
@@ -719,6 +751,19 @@ mod tests {
         assert!(result.has_scope(ToolScope::TrustVerify));
         assert!(result.has_scope(ToolScope::Write));
         assert!(!result.has_scope(ToolScope::TrustAttest));
+    }
+
+    #[test]
+    fn internal_auth_bypass_requires_exact_match() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut headers = HeaderMap::new();
+        std::env::set_var("NUCLEUSDB_INTERNAL_AUTH_KEY", "test-internal-key");
+        headers.insert(INTERNAL_AUTH_HEADER, "test-internal-key".parse().unwrap());
+        assert!(has_internal_auth_bypass(&headers));
+        headers.insert(INTERNAL_AUTH_HEADER, "wrong-key".parse().unwrap());
+        assert!(!has_internal_auth_bypass(&headers));
+        std::env::remove_var("NUCLEUSDB_INTERNAL_AUTH_KEY");
+        assert!(!has_internal_auth_bypass(&headers));
     }
 
     fn mk_identity_with_scopes(scopes: &[&str]) -> AuthIdentity {

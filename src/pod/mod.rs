@@ -15,7 +15,7 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-pub(crate) fn now_unix_nanos() -> u128 {
+pub fn now_unix_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
