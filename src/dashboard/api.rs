@@ -185,6 +185,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         )
         .route("/vault/test/{provider}", post(api_vault_test_key))
         // Trust & Attestations
+        .route("/trust", get(api_trust_summary))
         .route("/trust/{session_id}", get(api_trust))
         .route("/attestations", get(api_attestations))
         .route("/attestations/verify", post(api_attestation_verify))
@@ -219,6 +220,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/nucleusdb/stats", get(api_nucleusdb_stats))
         .route("/nucleusdb/sql", post(api_nucleusdb_sql))
         .route("/nucleusdb/history", get(api_nucleusdb_history))
+        .route("/nucleusdb/commits", get(api_nucleusdb_history))
         .route("/nucleusdb/edit", post(api_nucleusdb_edit))
         .route("/nucleusdb/verify/{key}", get(api_nucleusdb_verify))
         .route(
@@ -226,6 +228,9 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
             get(api_nucleusdb_key_history),
         )
         .route("/nucleusdb/export", get(api_nucleusdb_export))
+        .route("/nucleusdb/vectors", get(api_nucleusdb_vectors))
+        .route("/nucleusdb/proofs", get(api_nucleusdb_proofs))
+        .route("/nucleusdb/sharing", get(api_nucleusdb_grants))
         .route(
             "/nucleusdb/vector-search",
             post(api_nucleusdb_vector_search),
@@ -270,6 +275,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         // Metered IPFS storage (customer-facing, same auth as /v1/chat/completions)
         .route("/v1/storage/pin", post(api_metered_pin_json))
         .route("/v1/storage/pins", get(api_metered_list_pins))
+        // JSON 404 fallback for unmatched /api/* routes.
+        .fallback(api_fallback_not_found)
         .with_state(state)
 }
 
@@ -1752,6 +1759,16 @@ async fn api_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         },
         "pq_wallet": has_wallet(),
     })))
+}
+
+async fn api_fallback_not_found(uri: axum::http::Uri) -> impl axum::response::IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": "endpoint not found",
+            "path": uri.path(),
+        })),
+    )
 }
 
 async fn api_crypto_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
@@ -5427,6 +5444,34 @@ async fn api_trust(
     Ok(Json(json!({"trust": score})))
 }
 
+async fn api_trust_summary(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let attest_dir = config::attestations_dir();
+    let mut attestations = Vec::new();
+    if attest_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&attest_dir) {
+            for entry in entries.flatten() {
+                if entry
+                    .path()
+                    .extension()
+                    .map(|e| e == "json")
+                    .unwrap_or(false)
+                {
+                    if let Ok(raw) = std::fs::read_to_string(entry.path()) {
+                        if let Ok(val) = serde_json::from_str::<Value>(&raw) {
+                            attestations.push(val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(Json(json!({
+        "status": "ok",
+        "attestation_count": attestations.len(),
+        "attestations": attestations,
+    })))
+}
+
 async fn api_attestations(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let attest_dir = config::attestations_dir();
     let mut attestations = Vec::new();
@@ -6370,6 +6415,22 @@ async fn api_nucleusdb_history(AxumState(state): AxumState<DashboardState>) -> A
     Ok(Json(json!({
         "commits": commit_history,
         "sessions": session_items,
+    })))
+}
+
+async fn api_nucleusdb_vectors(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    Ok(Json(json!({
+        "status": "ok",
+        "vectors": [],
+        "count": 0,
+    })))
+}
+
+async fn api_nucleusdb_proofs(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    Ok(Json(json!({
+        "status": "ok",
+        "proofs": [],
+        "count": 0,
     })))
 }
 

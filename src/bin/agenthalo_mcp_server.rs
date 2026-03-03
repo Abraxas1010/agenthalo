@@ -1064,7 +1064,7 @@ async fn mcp(
                             "arguments": {"description": "Tool arguments object or JSON string.", "default": {}},
                             "use_didcomm": {"type": "boolean", "description": "Request DIDComm wrapping when supported.", "default": false}
                         },
-                        "required": ["tool_name"]
+                        "required": ["agent_id", "tool_name"]
                     }
                 }),
                 json!({
@@ -1078,7 +1078,7 @@ async fn mcp(
                             "envelope_json": {"description": "Proof envelope JSON (alias: envelope)."},
                             "envelope": {"description": "Proof envelope JSON payload."}
                         },
-                        "required": ["envelope_json"]
+                        "required": ["agent_id", "envelope_json"]
                     }
                 }),
                 json!({
@@ -1095,7 +1095,8 @@ async fn mcp(
                             "modes": {"type": "array", "items": {"type": "string"}, "description": "Explicit access modes list."},
                             "duration_secs": {"type": "integer", "description": "TTL seconds (alias: duration).", "default": 3600},
                             "duration": {"type": "integer", "description": "TTL seconds alias."}
-                        }
+                        },
+                        "required": ["agent_id"]
                     }
                 }),
             ];

@@ -37,6 +37,7 @@ use nucleusdb::halo::util::digest_json;
 use nucleusdb::halo::x402;
 use nucleusdb::halo::zk_compute;
 use nucleusdb::halo::zk_credential;
+use nucleusdb::halo::zk_guests;
 use nucleusdb::halo::{generic_agents_allowed, viewer, wrap};
 use nucleusdb::license;
 use nucleusdb::pod::access_policy::{AccessContext, AccessPolicy, PolicyStore};
@@ -681,51 +682,24 @@ fn cmd_keygen(args: &[String]) -> Result<(), String> {
     if !args.iter().any(|a| a == "--pq") {
         return Err("usage: agenthalo keygen --pq [--force]".to_string());
     }
-    let force = args.iter().any(|a| a == "--force" || a == "--force-rotate");
+    let force = args.iter().any(|a| a == "--force");
     let wallet_present = has_wallet();
     let sealed_genesis_present = genesis_seed::seed_exists();
+
+    if !wallet_present && sealed_genesis_present {
+        return Err("refusing keygen: sealed genesis seed exists but PQ wallet is missing. Restore the original wallet or run `agenthalo genesis reset` first.".to_string());
+    }
 
     if wallet_present && sealed_genesis_present {
         if force {
             return Err("refusing PQ wallet rotation: a sealed genesis seed exists and rotation would orphan it. Backup the current wallet or run an explicit signer-rotation ceremony before forcing key changes.".to_string());
         }
-        let (key_id, public_key_hex) = wallet_key_identity()?.ok_or_else(|| {
-            "wallet present but unreadable; cannot resolve key identity".to_string()
-        })?;
-        let out = serde_json::json!({
-            "status": "ok",
-            "already_exists": true,
-            "protected_by_sealed_genesis": true,
-            "algorithm": "ml_dsa65",
-            "key_id": key_id,
-            "public_key_hex": public_key_hex,
-            "wallet_path": config::pq_wallet_path().display().to_string(),
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| format!("serialize keygen output: {e}"))?
-        );
+        print_existing_wallet_info(true)?;
         return Ok(());
     }
 
     if wallet_present && !force {
-        let (key_id, public_key_hex) = wallet_key_identity()?.ok_or_else(|| {
-            "wallet present but unreadable; cannot resolve key identity".to_string()
-        })?;
-        let out = serde_json::json!({
-            "status": "ok",
-            "already_exists": true,
-            "algorithm": "ml_dsa65",
-            "key_id": key_id,
-            "public_key_hex": public_key_hex,
-            "wallet_path": config::pq_wallet_path().display().to_string(),
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&out)
-                .map_err(|e| format!("serialize keygen output: {e}"))?
-        );
+        print_existing_wallet_info(false)?;
         return Ok(());
     }
 
@@ -734,6 +708,25 @@ fn cmd_keygen(args: &[String]) -> Result<(), String> {
         "{}",
         serde_json::to_string_pretty(&result)
             .map_err(|e| format!("serialize keygen output: {e}"))?
+    );
+    Ok(())
+}
+
+fn print_existing_wallet_info(protected_by_genesis: bool) -> Result<(), String> {
+    let (key_id, public_key_hex) = wallet_key_identity()?
+        .ok_or_else(|| "wallet present but unreadable; cannot resolve key identity".to_string())?;
+    let out = serde_json::json!({
+        "status": "ok",
+        "already_exists": true,
+        "protected_by_sealed_genesis": protected_by_genesis,
+        "algorithm": "ml_dsa65",
+        "key_id": key_id,
+        "public_key_hex": public_key_hex,
+        "wallet_path": config::pq_wallet_path().display().to_string(),
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&out).map_err(|e| format!("serialize keygen output: {e}"))?
     );
     Ok(())
 }
@@ -4217,8 +4210,20 @@ fn cmd_zk_compute(args: &[String]) -> Result<(), String> {
             let guest_path = guest.ok_or_else(|| "--guest is required".to_string())?;
             let input_path = public_input.ok_or_else(|| "--input is required".to_string())?;
             let private_path = private_input.ok_or_else(|| "--private is required".to_string())?;
-            let guest_elf = std::fs::read(&guest_path)
-                .map_err(|e| format!("read guest ELF {guest_path}: {e}"))?;
+            let guest_elf = match guest_path.as_str() {
+                "range_proof" => zk_guests::image_ids::RANGE_PROOF.as_bytes().to_vec(),
+                "set_membership" => zk_guests::image_ids::SET_MEMBERSHIP.as_bytes().to_vec(),
+                "secure_aggregation" => {
+                    zk_guests::image_ids::SECURE_AGGREGATION.as_bytes().to_vec()
+                }
+                "algorithm_compliance" | "algorithm_compliance_sha256" => {
+                    zk_guests::image_ids::ALGORITHM_COMPLIANCE
+                        .as_bytes()
+                        .to_vec()
+                }
+                _ => std::fs::read(&guest_path)
+                    .map_err(|e| format!("read guest ELF {guest_path}: {e}"))?,
+            };
             let public_inputs = std::fs::read(&input_path)
                 .map_err(|e| format!("read input file {input_path}: {e}"))?;
             let private_inputs = std::fs::read(&private_path)
@@ -4292,7 +4297,7 @@ fn cmd_zk_compute(args: &[String]) -> Result<(), String> {
                 "verified": verified,
             }))
         }
-        _ => Err("usage: agenthalo zk compute [prove --guest <elf-path> --input <json-file> --private <json-file> [--compute-id <id>] [--requester-did <did>] [--out <path>] | verify --receipt <json-file> [--image-id <hex>]]".to_string()),
+        _ => Err("usage: agenthalo zk compute [prove --guest <name-or-elf-path> --input <json-file> --private <json-file> [--compute-id <id>] [--requester-did <did>] [--out <path>] | verify --receipt <json-file> [--image-id <hex>]]\n\nBuiltin guests: range_proof, set_membership, secure_aggregation, algorithm_compliance_sha256".to_string()),
     }
 }
 
@@ -4635,4 +4640,56 @@ fn print_usage() {
         "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
   NYM_FAIL_CLOSED=0           Legacy equivalent of NYM_FAIL_OPEN=1"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn make_temp_home(tag: &str) -> std::path::PathBuf {
+        let home = std::env::temp_dir().join(format!(
+            "agenthalo_keygen_guard_{}_{}_{}",
+            tag,
+            std::process::id(),
+            now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("create temp home");
+        home
+    }
+
+    #[test]
+    fn keygen_rejects_when_wallet_missing_but_genesis_seed_exists() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("missing_wallet_with_seed");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let _ = keygen_pq(false).expect("create wallet");
+        let seed = [7u8; 64];
+        genesis_seed::store_seed_once(&seed, "sha256:test-keygen-guard").expect("seal seed");
+
+        let wallet_path = config::pq_wallet_path();
+        std::fs::remove_file(&wallet_path).expect("remove wallet file");
+        assert!(!has_wallet(), "wallet should be missing");
+        assert!(
+            genesis_seed::seed_exists(),
+            "sealed genesis seed must still exist"
+        );
+
+        let err =
+            cmd_keygen(&["--pq".to_string()]).expect_err("keygen should reject orphaning path");
+        assert!(
+            err.contains("sealed genesis seed exists but PQ wallet is missing"),
+            "unexpected error: {err}"
+        );
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }

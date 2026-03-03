@@ -238,6 +238,38 @@ fn test_vault(tag: &str) -> (Arc<Vault>, PathBuf, PathBuf) {
     (vault, wallet_path, vault_path)
 }
 
+#[tokio::test]
+async fn api_unknown_route_returns_json_404_payload() {
+    let (state, db_path) = test_state("api_not_found_json");
+    let (status, val) = api_get(state, "/this-route-does-not-exist").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(val["error"], "endpoint not found");
+    assert_eq!(val["path"], "/this-route-does-not-exist");
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_alias_and_summary_routes_return_json() {
+    let (state, db_path) = test_state("api_alias_routes");
+    let routes = [
+        "/trust",
+        "/nucleusdb/commits",
+        "/nucleusdb/vectors",
+        "/nucleusdb/proofs",
+        "/nucleusdb/sharing",
+    ];
+    for route in routes {
+        let (status, val) = api_get(state.clone(), route).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected status for {route}: {val}"
+        );
+        assert!(val.is_object(), "route {route} must return JSON object");
+    }
+    let _ = std::fs::remove_file(&db_path);
+}
+
 // ---------------------------------------------------------------------------
 // P1: Agent whitelist — shell injection prevention
 // ---------------------------------------------------------------------------

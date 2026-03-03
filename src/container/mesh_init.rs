@@ -84,16 +84,11 @@ fn resolve_hostname() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use crate::test_support;
 
     #[test]
     fn mesh_enabled_detects_env() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = test_support::env_lock().lock().expect("lock env");
         let had = std::env::var("NUCLEUSDB_MESH_AGENT_ID").ok();
         std::env::remove_var("NUCLEUSDB_MESH_AGENT_ID");
         assert!(!mesh_enabled());
@@ -116,7 +111,7 @@ mod tests {
 
     #[test]
     fn register_and_deregister_use_registry_override() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = test_support::env_lock().lock().expect("lock env");
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("mesh-peers.json");
 

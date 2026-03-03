@@ -267,13 +267,8 @@ pub fn exchange_envelope(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     #[test]
     fn peer_registry_register_and_find() {
@@ -389,7 +384,7 @@ mod tests {
 
     #[test]
     fn mesh_registry_path_respects_env_override() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = test_support::env_lock().lock().expect("lock env");
         let prev = std::env::var("NUCLEUSDB_MESH_REGISTRY").ok();
         std::env::set_var(
             "NUCLEUSDB_MESH_REGISTRY",
