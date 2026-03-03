@@ -214,7 +214,7 @@ Also empty.
 ```
 Tested code commit: 3f83589 (origin/master at test time)
 Report commit: d655763
-Corrigendum commit: (see git log)
+Corrigendum commit: 0eaaf7d (tightened: 12803a7)
 ```
 
 ---
