@@ -4647,7 +4647,10 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
 
-    fn env_lock() -> &'static Mutex<()> {
+    /// Bin-crate tests run in a separate test binary, so they cannot share
+    /// `nucleusdb::test_support::env_lock()`. This is a per-binary lock that
+    /// serializes env-mutating tests within the agenthalo binary only.
+    fn bin_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -4666,7 +4669,7 @@ mod tests {
 
     #[test]
     fn keygen_rejects_when_wallet_missing_but_genesis_seed_exists() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = bin_env_lock().lock().expect("lock env");
         let home = make_temp_home("missing_wallet_with_seed");
         std::env::set_var("AGENTHALO_HOME", &home);
 

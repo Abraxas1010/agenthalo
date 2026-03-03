@@ -251,14 +251,8 @@ async fn api_unknown_route_returns_json_404_payload() {
 #[tokio::test]
 async fn api_alias_and_summary_routes_return_json() {
     let (state, db_path) = test_state("api_alias_routes");
-    let routes = [
-        "/trust",
-        "/nucleusdb/commits",
-        "/nucleusdb/vectors",
-        "/nucleusdb/proofs",
-        "/nucleusdb/sharing",
-    ];
-    for route in routes {
+    // Routes that should return 200 OK with JSON.
+    for route in ["/trust", "/nucleusdb/commits", "/nucleusdb/sharing"] {
         let (status, val) = api_get(state.clone(), route).await;
         assert_eq!(
             status,
@@ -266,6 +260,16 @@ async fn api_alias_and_summary_routes_return_json() {
             "unexpected status for {route}: {val}"
         );
         assert!(val.is_object(), "route {route} must return JSON object");
+    }
+    // Stub routes that should return 501 Not Implemented with JSON.
+    for route in ["/nucleusdb/vectors", "/nucleusdb/proofs"] {
+        let (status, val) = api_get(state.clone(), route).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_IMPLEMENTED,
+            "stub {route} should be 501: {val}"
+        );
+        assert_eq!(val["error"], "not yet implemented");
     }
     let _ = std::fs::remove_file(&db_path);
 }

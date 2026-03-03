@@ -185,7 +185,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         )
         .route("/vault/test/{provider}", post(api_vault_test_key))
         // Trust & Attestations
-        .route("/trust", get(api_trust_summary))
+        .route("/trust", get(api_attestations))
         .route("/trust/{session_id}", get(api_trust))
         .route("/attestations", get(api_attestations))
         .route("/attestations/verify", post(api_attestation_verify))
@@ -5444,34 +5444,6 @@ async fn api_trust(
     Ok(Json(json!({"trust": score})))
 }
 
-async fn api_trust_summary(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
-    let attest_dir = config::attestations_dir();
-    let mut attestations = Vec::new();
-    if attest_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&attest_dir) {
-            for entry in entries.flatten() {
-                if entry
-                    .path()
-                    .extension()
-                    .map(|e| e == "json")
-                    .unwrap_or(false)
-                {
-                    if let Ok(raw) = std::fs::read_to_string(entry.path()) {
-                        if let Ok(val) = serde_json::from_str::<Value>(&raw) {
-                            attestations.push(val);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(Json(json!({
-        "status": "ok",
-        "attestation_count": attestations.len(),
-        "attestations": attestations,
-    })))
-}
-
 async fn api_attestations(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let attest_dir = config::attestations_dir();
     let mut attestations = Vec::new();
@@ -6418,20 +6390,28 @@ async fn api_nucleusdb_history(AxumState(state): AxumState<DashboardState>) -> A
     })))
 }
 
-async fn api_nucleusdb_vectors(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
-    Ok(Json(json!({
-        "status": "ok",
-        "vectors": [],
-        "count": 0,
-    })))
+async fn api_nucleusdb_vectors(
+    AxumState(_state): AxumState<DashboardState>,
+) -> impl axum::response::IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "error": "not yet implemented",
+            "endpoint": "/api/nucleusdb/vectors",
+        })),
+    )
 }
 
-async fn api_nucleusdb_proofs(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
-    Ok(Json(json!({
-        "status": "ok",
-        "proofs": [],
-        "count": 0,
-    })))
+async fn api_nucleusdb_proofs(
+    AxumState(_state): AxumState<DashboardState>,
+) -> impl axum::response::IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "error": "not yet implemented",
+            "endpoint": "/api/nucleusdb/proofs",
+        })),
+    )
 }
 
 // ---------------------------------------------------------------------------
