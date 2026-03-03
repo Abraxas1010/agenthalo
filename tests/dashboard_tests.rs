@@ -276,6 +276,21 @@ async fn api_alias_and_summary_routes_return_json() {
             "/trust must include attestations"
         );
     }
+    // /attestations shares the same handler — verify its contract directly.
+    {
+        let (status, val) = api_get(state.clone(), "/attestations").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(val["status"], "ok", "/attestations must include status");
+        assert!(
+            val["attestation_count"].is_number(),
+            "/attestations must include attestation_count"
+        );
+        assert!(val["count"].is_number(), "/attestations must include count");
+        assert!(
+            val["attestations"].is_array(),
+            "/attestations must include attestations"
+        );
+    }
     // Stub routes that should return 501 Not Implemented with JSON.
     for route in ["/nucleusdb/vectors", "/nucleusdb/proofs"] {
         let (status, val) = api_get(state.clone(), route).await;
