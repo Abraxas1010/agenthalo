@@ -4,7 +4,7 @@
 **Applies to:** `WIP/agenthalo_definitive_acceptance_test_report_20260303.md` (commit d655763)
 **Tested code commit:** 3f83589
 **Report commit:** d655763
-**Corrigendum commit:** (this document)
+**Corrigendum commit:** 0eaaf7d (amended below)
 **Review source:** Hostile review, 5 findings (2 HIGH, 2 MEDIUM, 1 LOW)
 
 ---
@@ -35,13 +35,14 @@ AgentHALO v0.3.0 demonstrates a **production-ready core** with strong cryptograp
 | Status after create (CLI view) | CLI | **STALE** — shows needs_password_creation (CLI reads v1 state) | `crypto_status_after_create_A.json` |
 | Lock | API | **PASS** | `crypto_lock_A.txt` |
 | Wrong password | CLI/API | **PASS** — HTTP 401 | `crypto_lifecycle.txt:9` |
-| Correct password (first attempt) | CLI/API | **FAIL** — HTTP 429 (throttled after wrong-password cooldown) | `crypto_lifecycle.txt:11` |
+| Correct password (first attempt, lifecycle script) | CLI/API | **FAIL** — HTTP 429 (Too Many Requests — throttled after wrong-password cooldown) | `crypto_lifecycle.txt:11` |
+| Correct password (first attempt, standalone) | CLI | **FAIL** — HTTP 428 (Precondition Required) | `crypto_unlock_correct_A.txt` |
 | Status after "unlock" | CLI | **STILL LOCKED** — locked=true, needs_password_creation | `crypto_status_unlocked_A.txt` |
 | Correct password (retry after 5s) | API | **PASS** — HTTP 200 | `crypto_unlock_retry.txt` |
 
 **Corrected verdict: PARTIAL**
 
-The crypto lifecycle works end-to-end only via the dashboard API (not CLI), and the first correct-password unlock after a wrong-password attempt returns 429 (5-second throttle). The evidence file `crypto_status_unlocked_A.txt` was captured between the 429 and the retry, so its name is misleading—it actually records the still-locked state.
+The crypto lifecycle works end-to-end only via the dashboard API (not CLI), and the first correct-password unlock fails with two distinct HTTP codes depending on the test path: **429** (Too Many Requests — throttle after wrong-password cooldown, seen in `crypto_lifecycle.txt`) and **428** (Precondition Required, seen in `crypto_unlock_correct_A.txt` standalone test). Both indicate the server rejected a valid password on the first attempt. The evidence file `crypto_status_unlocked_A.txt` was captured between these failures and the retry, so its name is misleading—it actually records the still-locked state.
 
 The original report's claim "Create/lock/wrong-reject/throttle/unlock all work" was true for the API path with retry, but false for the CLI path and false for the first unlock attempt after a wrong-password rejection.
 
