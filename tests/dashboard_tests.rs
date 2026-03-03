@@ -2793,7 +2793,7 @@ async fn cockpit_create_requires_auth_and_returns_setup_payload() {
 async fn funding_webhook_missing_signature_rejected() {
     let _guard = env_lock().lock().expect("lock env");
     let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("funding-webhook-secret"));
-    let _stub = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
+    let _simulation_guard = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
 
     let (state, db_path) = test_state("funding_webhook_missing_sig");
     let (created_status, created) = api_post(
@@ -2841,7 +2841,7 @@ async fn funding_webhook_missing_signature_rejected() {
 async fn funding_webhook_invalid_signature_rejected() {
     let _guard = env_lock().lock().expect("lock env");
     let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("funding-webhook-secret"));
-    let _stub = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
+    let _simulation_guard = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
 
     let (state, db_path) = test_state("funding_webhook_invalid_sig");
     let (created_status, created) = api_post(

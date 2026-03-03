@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -62,6 +63,7 @@ pub struct MeteredResult {
     pub generation_id: Option<String>,
 }
 
+#[derive(Clone, Debug)]
 pub struct MeteredStreamResult {
     pub or_model: String,
     pub input_tokens: u64,
@@ -70,7 +72,45 @@ pub struct MeteredStreamResult {
     pub customer_cost_usd: f64,
     pub remaining_balance_usd: f64,
     pub generation_id: Option<String>,
+    pub telemetry: StreamTelemetry,
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct StreamTelemetry {
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub generation_id: Option<String>,
+    pub completion_preview: String,
+    pub completed: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamForwardError {
+    pub message: String,
+    pub telemetry: StreamTelemetry,
+}
+
+#[derive(Clone, Debug)]
+pub struct MeteredStreamError {
+    pub message: String,
+    pub settled: MeteredStreamResult,
+}
+
+impl std::fmt::Display for StreamForwardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for StreamForwardError {}
+
+impl std::fmt::Display for MeteredStreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for MeteredStreamError {}
 
 // ---------------------------------------------------------------------------
 // Metered proxy — the ONLY public entry point for external customer requests
@@ -197,23 +237,48 @@ pub fn metered_proxy_stream_sync<F>(
     pricing_table: &HashMap<String, pricing::ModelPricing>,
     markup_pct: f64,
     mut on_data: F,
-) -> Result<MeteredStreamResult, String>
+) -> Result<MeteredStreamResult, MeteredStreamError>
 where
     F: FnMut(&str) -> Result<(), String>,
 {
     let customer = key_store
         .validate_key(customer_key)
-        .ok_or_else(|| "invalid API key".to_string())?;
+        .ok_or_else(|| MeteredStreamError {
+            message: "invalid API key".to_string(),
+            settled: MeteredStreamResult {
+                or_model: String::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+                upstream_cost_usd: 0.0,
+                customer_cost_usd: 0.0,
+                remaining_balance_usd: 0.0,
+                generation_id: None,
+                telemetry: StreamTelemetry::default(),
+            },
+        })?;
     if !customer.active {
-        return Err("API key is suspended".to_string());
+        return Err(MeteredStreamError {
+            message: "API key is suspended".to_string(),
+            settled: MeteredStreamResult {
+                or_model: String::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+                upstream_cost_usd: 0.0,
+                customer_cost_usd: 0.0,
+                remaining_balance_usd: 0.0,
+                generation_id: None,
+                telemetry: StreamTelemetry::default(),
+            },
+        });
     }
 
     let or_model = openrouter_model_name(&request.model);
-    let estimated_tokens = request.max_tokens.unwrap_or(1024) as u64;
+    let estimated_input_tokens = estimate_request_input_tokens(request);
+    let estimated_output_tokens = request.max_tokens.unwrap_or(1024) as u64;
     let (_est_base, est_marked_up) = pricing::calculate_marked_up_cost(
         &strip_provider_prefix(&or_model),
-        100,
-        estimated_tokens,
+        estimated_input_tokens,
+        estimated_output_tokens,
         0,
         pricing_table,
         markup_pct,
@@ -221,21 +286,50 @@ where
 
     let balance = key_store.get_balance(&customer.key_id);
     if est_marked_up > 0.0 && balance < est_marked_up {
-        return Err(format!(
-            "insufficient balance: ${:.6} available, estimated cost ${:.6}",
-            balance, est_marked_up
-        ));
+        return Err(MeteredStreamError {
+            message: format!(
+                "insufficient balance: ${:.6} available, estimated cost ${:.6}",
+                balance, est_marked_up
+            ),
+            settled: MeteredStreamResult {
+                or_model: or_model.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                upstream_cost_usd: 0.0,
+                customer_cost_usd: 0.0,
+                remaining_balance_usd: balance,
+                generation_id: None,
+                telemetry: StreamTelemetry::default(),
+            },
+        });
     }
 
     let or_api_key = vault
         .get_key("openrouter")
-        .map_err(|_| "proxy service unavailable: upstream not configured".to_string())?;
+        .map_err(|_| MeteredStreamError {
+            message: "proxy service unavailable: upstream not configured".to_string(),
+            settled: MeteredStreamResult {
+                or_model: or_model.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                upstream_cost_usd: 0.0,
+                customer_cost_usd: 0.0,
+                remaining_balance_usd: balance,
+                generation_id: None,
+                telemetry: StreamTelemetry::default(),
+            },
+        })?;
 
-    let stream_usage =
-        call_openrouter_stream(&or_api_key, &or_model, request, |chunk| on_data(chunk))?;
+    let (telemetry, stream_error) =
+        match call_openrouter_stream(&or_api_key, &or_model, request, |chunk| on_data(chunk)) {
+            Ok(t) => (t, None),
+            Err(err) => (err.telemetry, Some(err.message)),
+        };
 
-    let input_tokens = stream_usage.prompt_tokens.unwrap_or(100);
-    let output_tokens = stream_usage.completion_tokens.unwrap_or(estimated_tokens);
+    let input_tokens = telemetry.prompt_tokens.unwrap_or(estimated_input_tokens);
+    let output_tokens = telemetry
+        .completion_tokens
+        .unwrap_or_else(|| estimate_text_tokens(&telemetry.completion_preview));
     let (upstream_cost, customer_cost) = pricing::calculate_marked_up_cost(
         &strip_provider_prefix(&or_model),
         input_tokens,
@@ -253,15 +347,22 @@ where
         customer_cost,
     );
 
-    Ok(MeteredStreamResult {
+    let settled = MeteredStreamResult {
         or_model,
         input_tokens,
         output_tokens,
         upstream_cost_usd: upstream_cost,
         customer_cost_usd: customer_cost,
         remaining_balance_usd: remaining,
-        generation_id: stream_usage.generation_id,
-    })
+        generation_id: telemetry.generation_id.clone(),
+        telemetry,
+    };
+
+    if let Some(message) = stream_error {
+        return Err(MeteredStreamError { message, settled });
+    }
+
+    Ok(settled)
 }
 
 // ---------------------------------------------------------------------------
@@ -284,16 +385,19 @@ pub fn proxy_chat_stream_sync<F>(
     vault: &Vault,
     request: &ChatCompletionRequest,
     mut on_data: F,
-) -> Result<(), String>
+) -> Result<StreamTelemetry, StreamForwardError>
 where
     F: FnMut(&str) -> Result<(), String>,
 {
-    let or_api_key = vault.get_key("openrouter").map_err(|_| {
-        "no OpenRouter API key configured — run: agenthalo vault set openrouter".to_string()
-    })?;
+    let or_api_key = vault
+        .get_key("openrouter")
+        .map_err(|_| StreamForwardError {
+            message: "no OpenRouter API key configured — run: agenthalo vault set openrouter"
+                .to_string(),
+            telemetry: StreamTelemetry::default(),
+        })?;
     let or_model = openrouter_model_name(&request.model);
-    let _ = call_openrouter_stream(&or_api_key, &or_model, request, |chunk| on_data(chunk))?;
-    Ok(())
+    call_openrouter_stream(&or_api_key, &or_model, request, |chunk| on_data(chunk))
 }
 
 // ---------------------------------------------------------------------------
@@ -464,39 +568,48 @@ fn call_openrouter(
     Ok(body)
 }
 
-#[derive(Default)]
-struct StreamUsage {
-    prompt_tokens: Option<u64>,
-    completion_tokens: Option<u64>,
-    generation_id: Option<String>,
-}
-
 fn call_openrouter_stream<F>(
     api_key: &str,
     or_model: &str,
     request: &ChatCompletionRequest,
     mut on_data: F,
-) -> Result<StreamUsage, String>
+) -> Result<StreamTelemetry, StreamForwardError>
 where
     F: FnMut(&str) -> Result<(), String>,
 {
-    let mut payload =
-        serde_json::to_value(request).map_err(|e| format!("serialize request: {e}"))?;
+    let mut payload = serde_json::to_value(request).map_err(|e| StreamForwardError {
+        message: format!("serialize request: {e}"),
+        telemetry: StreamTelemetry::default(),
+    })?;
     payload["model"] = Value::String(or_model.to_string());
     payload["stream"] = Value::Bool(true);
+    payload["stream_options"] = json!({"include_usage": true});
 
-    let resp = http_client::post("https://openrouter.ai/api/v1/chat/completions")?
-        .header("Authorization", &format!("Bearer {api_key}"))
-        .header("X-Title", "AgentHALO")
-        .content_type("application/json")
-        .send_json(payload)
-        .map_err(|e| sanitize_upstream_error(&e))?;
+    let mut telemetry = StreamTelemetry::default();
+    let resp = http_client::post_with_timeout(
+        "https://openrouter.ai/api/v1/chat/completions",
+        Duration::from_secs(300),
+    )
+    .map_err(|e| StreamForwardError {
+        message: e,
+        telemetry: telemetry.clone(),
+    })?
+    .header("Authorization", &format!("Bearer {api_key}"))
+    .header("X-Title", "AgentHALO")
+    .content_type("application/json")
+    .send_json(payload)
+    .map_err(|e| StreamForwardError {
+        message: sanitize_upstream_error(&e),
+        telemetry: telemetry.clone(),
+    })?;
 
-    let mut usage = StreamUsage::default();
     let reader = resp.into_body().into_reader();
     let mut lines = BufReader::new(reader).lines();
     while let Some(line) = lines.next() {
-        let line = line.map_err(|e| format!("read upstream stream line: {e}"))?;
+        let line = line.map_err(|e| StreamForwardError {
+            message: format!("read upstream stream line: {e}"),
+            telemetry: telemetry.clone(),
+        })?;
         if !line.starts_with("data:") {
             continue;
         }
@@ -504,17 +617,21 @@ where
         if data_payload.is_empty() {
             continue;
         }
-        on_data(&data_payload)?;
+        update_stream_usage_from_payload(&data_payload, &mut telemetry);
+        on_data(&data_payload).map_err(|e| StreamForwardError {
+            message: e,
+            telemetry: telemetry.clone(),
+        })?;
         if data_payload == "[DONE]" {
+            telemetry.completed = true;
             break;
         }
-        update_stream_usage_from_payload(&data_payload, &mut usage);
     }
 
-    Ok(usage)
+    Ok(telemetry)
 }
 
-fn update_stream_usage_from_payload(payload: &str, usage: &mut StreamUsage) {
+fn update_stream_usage_from_payload(payload: &str, usage: &mut StreamTelemetry) {
     let Ok(obj) = serde_json::from_str::<Value>(payload) else {
         return;
     };
@@ -529,6 +646,44 @@ fn update_stream_usage_from_payload(payload: &str, usage: &mut StreamUsage) {
             usage.completion_tokens = u.get("completion_tokens").and_then(|v| v.as_u64());
         }
     }
+    if usage.completion_preview.len() >= 512 {
+        return;
+    }
+    let snippet = obj
+        .get("choices")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|choice| choice.get("delta"))
+        .and_then(|delta| delta.get("content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if snippet.is_empty() {
+        return;
+    }
+    let remaining = 512usize.saturating_sub(usage.completion_preview.len());
+    usage
+        .completion_preview
+        .push_str(&snippet.chars().take(remaining).collect::<String>());
+}
+
+fn estimate_text_tokens(text: &str) -> u64 {
+    (text.len() as u64).div_ceil(4)
+}
+
+fn estimate_request_input_tokens(request: &ChatCompletionRequest) -> u64 {
+    request
+        .messages
+        .iter()
+        .map(|m| match &m.content {
+            Value::String(s) => estimate_text_tokens(s),
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|it| it.get("text").and_then(|v| v.as_str()))
+                .map(estimate_text_tokens)
+                .sum(),
+            other => estimate_text_tokens(&other.to_string()),
+        })
+        .sum()
 }
 
 /// Extract token usage from an OpenAI-compatible response.
@@ -666,7 +821,7 @@ mod tests {
 
     #[test]
     fn update_stream_usage_from_payload_extracts_usage_and_id() {
-        let mut usage = StreamUsage::default();
+        let mut usage = StreamTelemetry::default();
         update_stream_usage_from_payload(
             r#"{"id":"chatcmpl-123","usage":{"prompt_tokens":7,"completion_tokens":9}}"#,
             &mut usage,
@@ -678,7 +833,7 @@ mod tests {
 
     #[test]
     fn update_stream_usage_from_payload_ignores_invalid_json() {
-        let mut usage = StreamUsage::default();
+        let mut usage = StreamTelemetry::default();
         update_stream_usage_from_payload("not-json", &mut usage);
         assert!(usage.generation_id.is_none());
         assert!(usage.prompt_tokens.is_none());

@@ -1520,6 +1520,8 @@ async fn record_proxy_trace(
             "model": request.model,
             "message_count": request.messages.len(),
             "preview": completion_text.chars().take(400).collect::<String>(),
+            "billing": response.get("x_agenthalo").cloned().unwrap_or(Value::Null),
+            "stream": response.get("x_agenthalo_stream").cloned().unwrap_or(Value::Null),
         }),
         input_tokens: Some(prompt_tokens),
         output_tokens: Some(completion_tokens),
@@ -1533,6 +1535,44 @@ async fn record_proxy_trace(
 
     writer.end_session(HaloSessionStatus::Completed)?;
     Ok(())
+}
+
+fn stream_trace_response(
+    request: &proxy::ChatCompletionRequest,
+    telemetry: &proxy::StreamTelemetry,
+    billing: Option<Value>,
+) -> Value {
+    let prompt_tokens = telemetry
+        .prompt_tokens
+        .unwrap_or_else(|| estimate_message_tokens(&request.messages));
+    let completion_tokens = telemetry
+        .completion_tokens
+        .unwrap_or_else(|| estimate_text_tokens(&telemetry.completion_preview));
+    let mut response = json!({
+        "id": telemetry
+            .generation_id
+            .clone()
+            .unwrap_or_else(|| format!("chatcmpl-stream-{}", now_unix_secs())),
+        "object": "chat.completion",
+        "created": now_unix_secs(),
+        "model": request.model,
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens
+        },
+        "choices": [{
+            "message": {
+                "content": telemetry.completion_preview.clone()
+            }
+        }],
+        "x_agenthalo_stream": {
+            "completed": telemetry.completed
+        }
+    });
+    if let Some(billing) = billing {
+        response["x_agenthalo"] = billing;
+    }
+    response
 }
 
 async fn flush_cockpit_trace_if_done(
@@ -1700,7 +1740,7 @@ async fn api_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         "authenticated": has_auth,
         "tool_proxy_enabled": pmt_cfg.enabled,
         "x402_enabled": x402_cfg.enabled,
-        "onchain_stub_mode": crate::halo::onchain::onchain_simulation_enabled(),
+        "onchain_simulation_mode": crate::halo::onchain::onchain_simulation_enabled(),
         "session_count": session_count,
         "total_cost_usd": total_cost,
         "total_tokens": total_tokens,
@@ -4862,19 +4902,38 @@ async fn api_proxy_chat(
 
     if req.stream.unwrap_or(false) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+        let (trace_tx, trace_rx) = tokio::sync::oneshot::channel::<Value>();
         let mut req_for_proxy = req.clone();
         req_for_proxy.stream = Some(true);
+        let req_for_trace = req.clone();
+        let state_for_trace = state.clone();
         tokio::task::spawn_blocking(move || {
             let stream_result =
                 proxy::proxy_chat_stream_sync(&vault, &req_for_proxy, |data_payload| {
                     tx.send(Ok(Event::default().data(data_payload.to_string())))
                         .map_err(|_| "stream receiver dropped".to_string())
                 });
-            if let Err(err) = stream_result {
-                let _ = tx.send(Ok(Event::default().event("error").data(
-                    json!({"error": format!("upstream stream failed: {err}")}).to_string(),
-                )));
-                let _ = tx.send(Ok(Event::default().data("[DONE]")));
+            match stream_result {
+                Ok(telemetry) => {
+                    let _ = trace_tx.send(stream_trace_response(&req_for_proxy, &telemetry, None));
+                }
+                Err(err) => {
+                    let _ =
+                        trace_tx.send(stream_trace_response(&req_for_proxy, &err.telemetry, None));
+                    let _ = tx.send(Ok(Event::default().event("error").data(
+                        json!({"error": format!("upstream stream failed: {}", err.message)})
+                            .to_string(),
+                    )));
+                    let _ = tx.send(Ok(Event::default().data("[DONE]")));
+                }
+            }
+        });
+        tokio::spawn(async move {
+            if let Ok(summary) = trace_rx.await {
+                if let Err(e) = record_proxy_trace(&state_for_trace, &req_for_trace, &summary).await
+                {
+                    eprintln!("warning: stream proxy trace write failed: {e}");
+                }
             }
         });
         let stream = UnboundedReceiverStream::new(rx);
@@ -4965,8 +5024,11 @@ async fn api_metered_proxy_chat(
     let markup_pct = cfg.markup_pct;
     if req.stream.unwrap_or(false) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+        let (trace_tx, trace_rx) = tokio::sync::oneshot::channel::<Value>();
         let mut req_for_proxy = req.clone();
         req_for_proxy.stream = Some(true);
+        let req_for_trace = req.clone();
+        let state_for_trace = state.clone();
         tokio::task::spawn_blocking(move || {
             let stream_result = proxy::metered_proxy_stream_sync(
                 &vault,
@@ -4980,11 +5042,53 @@ async fn api_metered_proxy_chat(
                         .map_err(|_| "stream receiver dropped".to_string())
                 },
             );
-            if let Err(err) = stream_result {
-                let _ = tx.send(Ok(Event::default().event("error").data(
-                    json!({"error": format!("metered upstream stream failed: {err}")}).to_string(),
-                )));
-                let _ = tx.send(Ok(Event::default().data("[DONE]")));
+            match stream_result {
+                Ok(settled) => {
+                    let billing = json!({
+                        "model": settled.or_model,
+                        "input_tokens": settled.input_tokens,
+                        "output_tokens": settled.output_tokens,
+                        "upstream_cost_usd": settled.upstream_cost_usd,
+                        "cost_usd": settled.customer_cost_usd,
+                        "remaining_balance_usd": settled.remaining_balance_usd,
+                        "generation_id": settled.generation_id,
+                    });
+                    let _ = trace_tx.send(stream_trace_response(
+                        &req_for_proxy,
+                        &settled.telemetry,
+                        Some(billing),
+                    ));
+                }
+                Err(err) => {
+                    let settled = err.settled;
+                    let billing = json!({
+                        "model": settled.or_model,
+                        "input_tokens": settled.input_tokens,
+                        "output_tokens": settled.output_tokens,
+                        "upstream_cost_usd": settled.upstream_cost_usd,
+                        "cost_usd": settled.customer_cost_usd,
+                        "remaining_balance_usd": settled.remaining_balance_usd,
+                        "generation_id": settled.generation_id,
+                        "stream_error": err.message,
+                    });
+                    let _ = trace_tx.send(stream_trace_response(
+                        &req_for_proxy,
+                        &settled.telemetry,
+                        Some(billing),
+                    ));
+                    let _ = tx.send(Ok(Event::default().event("error").data(
+                        json!({"error": format!("metered upstream stream failed: {}", err.message)}).to_string(),
+                    )));
+                    let _ = tx.send(Ok(Event::default().data("[DONE]")));
+                }
+            }
+        });
+        tokio::spawn(async move {
+            if let Ok(summary) = trace_rx.await {
+                if let Err(e) = record_proxy_trace(&state_for_trace, &req_for_trace, &summary).await
+                {
+                    eprintln!("warning: metered stream proxy trace write failed: {e}");
+                }
             }
         });
         let stream = UnboundedReceiverStream::new(rx);
@@ -6405,4 +6509,71 @@ pub async fn sse_handler(
     });
 
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_trace_response_includes_billing_and_stream_metadata() {
+        let request = proxy::ChatCompletionRequest {
+            model: "openai/gpt-4o-mini".to_string(),
+            messages: vec![proxy::Message {
+                role: "user".to_string(),
+                content: Value::String("hello".to_string()),
+            }],
+            temperature: None,
+            max_tokens: Some(32),
+            stream: Some(true),
+            top_p: None,
+        };
+        let telemetry = proxy::StreamTelemetry {
+            prompt_tokens: Some(12),
+            completion_tokens: Some(7),
+            generation_id: Some("chatcmpl-test".to_string()),
+            completion_preview: "hi there".to_string(),
+            completed: true,
+        };
+        let body = stream_trace_response(
+            &request,
+            &telemetry,
+            Some(json!({
+                "model": "openai/gpt-4o-mini",
+                "cost_usd": 0.001
+            })),
+        );
+        assert_eq!(body["id"], "chatcmpl-test");
+        assert_eq!(body["usage"]["prompt_tokens"], 12);
+        assert_eq!(body["usage"]["completion_tokens"], 7);
+        assert_eq!(body["choices"][0]["message"]["content"], "hi there");
+        assert_eq!(body["x_agenthalo"]["cost_usd"], 0.001);
+        assert_eq!(body["x_agenthalo_stream"]["completed"], true);
+    }
+
+    #[test]
+    fn stream_trace_response_falls_back_when_usage_missing() {
+        let request = proxy::ChatCompletionRequest {
+            model: "openai/gpt-4o-mini".to_string(),
+            messages: vec![proxy::Message {
+                role: "user".to_string(),
+                content: Value::String("12345678".to_string()),
+            }],
+            temperature: None,
+            max_tokens: Some(32),
+            stream: Some(true),
+            top_p: None,
+        };
+        let telemetry = proxy::StreamTelemetry {
+            prompt_tokens: None,
+            completion_tokens: None,
+            generation_id: None,
+            completion_preview: "abcd".to_string(),
+            completed: false,
+        };
+        let body = stream_trace_response(&request, &telemetry, None);
+        assert_eq!(body["usage"]["prompt_tokens"], 2);
+        assert_eq!(body["usage"]["completion_tokens"], 1);
+        assert_eq!(body["x_agenthalo_stream"]["completed"], false);
+    }
 }
