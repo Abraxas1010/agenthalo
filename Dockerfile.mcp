@@ -60,6 +60,8 @@ WORKDIR /data
 
 EXPOSE 3000 8443
 
+ENV NUCLEUSDB_MESH_PORT=3000
+
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -sf http://localhost:3000/health || exit 1
 

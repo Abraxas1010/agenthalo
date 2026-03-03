@@ -99,6 +99,122 @@ pub struct VerifyRequest {
     pub expected_value: Option<u64>,
 }
 
+// ── Mesh tool request/response types ────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshPingRequest {
+    /// Agent ID of the peer to ping.
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshCallRequest {
+    /// Agent ID of the target peer.
+    pub peer_agent_id: String,
+    /// Name of the MCP tool to invoke on the remote peer.
+    pub tool_name: String,
+    /// Arguments to pass to the remote tool.
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshExchangeEnvelopeRequest {
+    /// Agent ID of the target peer.
+    pub peer_agent_id: String,
+    /// ProofEnvelope JSON to send.
+    pub envelope: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshGrantRequest {
+    /// Agent ID of the target peer.
+    pub peer_agent_id: String,
+    /// DID URI of the peer to grant access to.
+    pub peer_did: String,
+    /// Resource key patterns to grant access to.
+    pub resource_patterns: Vec<String>,
+    /// Access modes (read, write, append, control).
+    pub modes: Vec<String>,
+    /// Duration of the grant in seconds.
+    pub duration_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshPeersResponse {
+    pub mesh_enabled: bool,
+    pub network: String,
+    pub self_agent_id: String,
+    pub peer_count: usize,
+    pub peers: Vec<MeshPeerView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshPeerView {
+    pub agent_id: String,
+    pub did_uri: Option<String>,
+    pub mcp_endpoint: String,
+    pub status: String,
+    pub latency_ms: u64,
+    pub last_seen: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshPingResponse {
+    pub agent_id: String,
+    pub reachable: bool,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshCallResponse {
+    pub peer_agent_id: String,
+    pub tool_name: String,
+    pub result: serde_json::Value,
+    pub auth_method: String,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshExchangeEnvelopeResponse {
+    pub peer_agent_id: String,
+    pub accepted: bool,
+    pub verification: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshGrantResponse {
+    pub capability_token_id: String,
+    pub granted_to: String,
+    pub resource_patterns: Vec<String>,
+    pub modes: Vec<String>,
+    pub expires_at: u64,
+    pub peer_agent_id: String,
+}
+
+// ── End mesh types ──────────────────────────────────────────────────
+
+fn parse_mesh_access_modes(
+    modes: &[String],
+) -> Result<Vec<crate::pod::capability::AccessMode>, String> {
+    use crate::pod::capability::AccessMode;
+    if modes.is_empty() {
+        return Err("modes must include at least one of read|write|append|control".to_string());
+    }
+    modes
+        .iter()
+        .map(|m| match m.trim().to_ascii_lowercase().as_str() {
+            "read" => Ok(AccessMode::Read),
+            "write" => Ok(AccessMode::Write),
+            "append" => Ok(AccessMode::Append),
+            "control" => Ok(AccessMode::Control),
+            other => Err(format!(
+                "unknown access mode: {other} (expected read|write|append|control)"
+            )),
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AbraxasSubmitRecordRequest {
     /// WorkRecord JSON payload matching WorkRecordInput schema.
@@ -1535,6 +1651,7 @@ impl NucleusDbMcpService {
             use_gvisor: req.runtime_runsc.unwrap_or(false),
             host_sock: None,
             env_vars: vec![],
+            mesh: None,
         })
         .map_err(|e| McpError::internal_error(e, None))?;
         Ok(Json(ContainerLaunchResponse {
@@ -2751,7 +2868,230 @@ impl NucleusDbMcpService {
                     .to_string(),
                 "On-chain submit paths accept keystore_path (+ optional keystore_password_file) or private_key_env."
                     .to_string(),
+                "Mesh tools: mesh_peers, mesh_ping, mesh_call, mesh_exchange_envelope, mesh_grant."
+                    .to_string(),
             ],
+        }))
+    }
+
+    // ── Mesh tools ──────────────────────────────────────────────────────
+
+    #[tool(
+        name = "mesh_peers",
+        description = "List known peers on the container mesh network. Returns peer agent IDs, DID URIs, endpoints, and online status."
+    )]
+    pub async fn mesh_peers(&self) -> Result<Json<MeshPeersResponse>, McpError> {
+        use crate::container::mesh::{mesh_registry_path, PeerRegistry, MESH_NETWORK_NAME};
+        let my_agent_id = std::env::var("NUCLEUSDB_MESH_AGENT_ID").unwrap_or_default();
+        let registry_path = mesh_registry_path();
+        let registry = PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+        let peers: Vec<MeshPeerView> = registry
+            .peers_except(&my_agent_id)
+            .iter()
+            .map(|p| {
+                let (reachable, latency_ms) = crate::container::mesh::ping_peer_with_latency(p);
+                MeshPeerView {
+                    agent_id: p.agent_id.clone(),
+                    did_uri: p.did_uri.clone(),
+                    mcp_endpoint: p.mcp_endpoint.clone(),
+                    status: if reachable {
+                        "online".to_string()
+                    } else {
+                        "offline".to_string()
+                    },
+                    latency_ms,
+                    last_seen: p.last_seen,
+                }
+            })
+            .collect();
+        Ok(Json(MeshPeersResponse {
+            mesh_enabled: !my_agent_id.is_empty(),
+            network: MESH_NETWORK_NAME.to_string(),
+            self_agent_id: my_agent_id,
+            peer_count: peers.len(),
+            peers,
+        }))
+    }
+
+    #[tool(
+        name = "mesh_ping",
+        description = "Ping a specific peer on the mesh network. Returns reachability and latency. Example: {\"agent_id\":\"agent-bob\"}"
+    )]
+    pub async fn mesh_ping(
+        &self,
+        Parameters(req): Parameters<MeshPingRequest>,
+    ) -> Result<Json<MeshPingResponse>, McpError> {
+        use crate::container::mesh::{mesh_registry_path, PeerRegistry};
+        let registry_path = mesh_registry_path();
+        let registry = PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+        let peer = registry.find(&req.agent_id).ok_or_else(|| {
+            McpError::invalid_params(
+                format!("peer '{}' not found in mesh registry", req.agent_id),
+                None,
+            )
+        })?;
+        let (reachable, latency_ms) = crate::container::mesh::ping_peer_with_latency(peer);
+        Ok(Json(MeshPingResponse {
+            agent_id: req.agent_id,
+            reachable,
+            latency_ms,
+        }))
+    }
+
+    #[tool(
+        name = "mesh_call",
+        description = "Call a remote peer's MCP tool via the mesh network. Example: {\"peer_agent_id\":\"agent-bob\",\"tool_name\":\"nucleusdb_query\",\"arguments\":{\"key\":\"test\"}}"
+    )]
+    pub async fn mesh_call(
+        &self,
+        Parameters(req): Parameters<MeshCallRequest>,
+    ) -> Result<Json<MeshCallResponse>, McpError> {
+        use crate::container::mesh::{mesh_registry_path, PeerRegistry};
+        let registry_path = mesh_registry_path();
+        let registry = PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+        let peer = registry.find(&req.peer_agent_id).ok_or_else(|| {
+            McpError::invalid_params(
+                format!("peer '{}' not found in mesh registry", req.peer_agent_id),
+                None,
+            )
+        })?;
+        let auth_token = std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN").ok();
+        let start = std::time::Instant::now();
+        let result = crate::container::mesh::call_remote_tool(
+            peer,
+            &req.tool_name,
+            req.arguments.clone(),
+            auth_token.as_deref(),
+        )
+        .map_err(|e| McpError::internal_error(e, None))?;
+        let latency_ms = start.elapsed().as_millis() as u64;
+        Ok(Json(MeshCallResponse {
+            peer_agent_id: req.peer_agent_id,
+            tool_name: req.tool_name,
+            result,
+            auth_method: if auth_token.is_some() {
+                "bearer".to_string()
+            } else {
+                "none".to_string()
+            },
+            latency_ms,
+        }))
+    }
+
+    #[tool(
+        name = "mesh_exchange_envelope",
+        description = "Send a ProofEnvelope to a remote peer for verification. Example: {\"peer_agent_id\":\"agent-bob\",\"envelope\":{...}}"
+    )]
+    pub async fn mesh_exchange_envelope(
+        &self,
+        Parameters(req): Parameters<MeshExchangeEnvelopeRequest>,
+    ) -> Result<Json<MeshExchangeEnvelopeResponse>, McpError> {
+        use crate::container::mesh::{mesh_registry_path, PeerRegistry};
+        let registry_path = mesh_registry_path();
+        let registry = PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+        let peer = registry.find(&req.peer_agent_id).ok_or_else(|| {
+            McpError::invalid_params(
+                format!("peer '{}' not found in mesh registry", req.peer_agent_id),
+                None,
+            )
+        })?;
+        let auth_token = std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN").ok();
+        let result =
+            crate::container::mesh::exchange_envelope(peer, &req.envelope, auth_token.as_deref())
+                .map_err(|e| McpError::internal_error(e, None))?;
+        let accepted = result
+            .get("accepted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        Ok(Json(MeshExchangeEnvelopeResponse {
+            peer_agent_id: req.peer_agent_id,
+            accepted,
+            verification: result,
+        }))
+    }
+
+    #[tool(
+        name = "mesh_grant",
+        description = "Grant a remote peer access to local resources via capability token. Example: {\"peer_agent_id\":\"agent-bob\",\"peer_did\":\"did:key:z6Mk...\",\"resource_patterns\":[\"results/*\"],\"modes\":[\"read\"],\"duration_secs\":3600}"
+    )]
+    pub async fn mesh_grant(
+        &self,
+        Parameters(req): Parameters<MeshGrantRequest>,
+    ) -> Result<Json<MeshGrantResponse>, McpError> {
+        use crate::container::mesh::{mesh_registry_path, PeerRegistry};
+        use crate::halo::did::did_from_genesis_seed;
+        use crate::halo::genesis_seed;
+        use crate::halo::util::hex_encode;
+        use crate::pod::capability::{create_capability, AgentClass};
+
+        let seed = genesis_seed::load_seed_bytes()
+            .map_err(|e| McpError::internal_error(e, None))?
+            .ok_or_else(|| {
+                McpError::internal_error(
+                    "genesis seed missing; run `agenthalo genesis harvest` first",
+                    None,
+                )
+            })?;
+        let grantor =
+            did_from_genesis_seed(&seed).map_err(|e| McpError::internal_error(e, None))?;
+
+        let registry_path = mesh_registry_path();
+        let registry = PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+        let peer = registry.find(&req.peer_agent_id).ok_or_else(|| {
+            McpError::invalid_params(
+                format!("peer '{}' not found in mesh registry", req.peer_agent_id),
+                None,
+            )
+        })?;
+        let peer_did_from_registry = peer.did_uri.as_deref().unwrap_or("").trim();
+        let peer_did_from_request = req.peer_did.trim();
+        let effective_peer_did = if !peer_did_from_registry.is_empty() {
+            if !peer_did_from_request.is_empty() && peer_did_from_request != peer_did_from_registry
+            {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "peer_did mismatch for peer '{}': registry has '{}', request has '{}'",
+                        req.peer_agent_id, peer_did_from_registry, peer_did_from_request
+                    ),
+                    None,
+                ));
+            }
+            peer_did_from_registry.to_string()
+        } else if !peer_did_from_request.is_empty() {
+            peer_did_from_request.to_string()
+        } else {
+            return Err(McpError::invalid_params(
+                format!(
+                    "peer '{}' has no DID in registry and request peer_did is empty",
+                    req.peer_agent_id
+                ),
+                None,
+            ));
+        };
+
+        let now = crate::pod::now_unix();
+        let modes =
+            parse_mesh_access_modes(&req.modes).map_err(|e| McpError::invalid_params(e, None))?;
+
+        let token = create_capability(
+            &grantor,
+            &effective_peer_did,
+            AgentClass::Authenticated,
+            &req.resource_patterns,
+            &modes,
+            now,
+            now.saturating_add(req.duration_secs),
+            false,
+        )
+        .map_err(|e| McpError::invalid_params(e, None))?;
+
+        Ok(Json(MeshGrantResponse {
+            capability_token_id: hex_encode(&token.token_id),
+            granted_to: effective_peer_did,
+            resource_patterns: req.resource_patterns,
+            modes: req.modes,
+            expires_at: now.saturating_add(req.duration_secs),
+            peer_agent_id: req.peer_agent_id,
         }))
     }
 }
@@ -2997,5 +3337,20 @@ mod tests {
         assert!(err_dbg.contains("typed decode failed for key 'bad:export'"));
 
         cleanup_db_files(&db_path);
+    }
+
+    #[test]
+    fn mesh_mode_parser_rejects_unknown_values() {
+        let ok = parse_mesh_access_modes(&["read".to_string(), "WRITE".to_string()])
+            .expect("valid mode parse");
+        assert_eq!(ok.len(), 2);
+        let err = parse_mesh_access_modes(&["bogus".to_string()]).expect_err("must reject");
+        assert!(err.contains("unknown access mode"));
+    }
+
+    #[test]
+    fn mesh_mode_parser_rejects_empty_list() {
+        let err = parse_mesh_access_modes(&[]).expect_err("must reject empty");
+        assert!(err.contains("at least one"));
     }
 }

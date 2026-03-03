@@ -1,3 +1,4 @@
+use crate::container::mesh;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,6 +36,30 @@ impl MonitorConfig {
     }
 }
 
+/// Mesh network configuration for inter-container communication.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MeshConfig {
+    /// Enable mesh networking for this container.
+    pub enabled: bool,
+    /// MCP port to expose on the mesh network.
+    pub mcp_port: u16,
+    /// Path to shared peer registry volume on host.
+    pub registry_volume: PathBuf,
+    /// Agent DID URI (populated at launch from genesis seed).
+    pub agent_did: Option<String>,
+}
+
+impl Default for MeshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mcp_port: mesh::DEFAULT_MCP_PORT,
+            registry_volume: PathBuf::from("/tmp/nucleusdb-mesh"),
+            agent_did: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RunConfig {
     pub image: String,
@@ -44,6 +69,10 @@ pub struct RunConfig {
     pub host_sock: Option<PathBuf>,
     #[serde(default)]
     pub env_vars: Vec<(String, String)>,
+    /// Mesh network configuration. When set and enabled, the container
+    /// joins the `halo-mesh` Docker network with MCP port exposed.
+    #[serde(default)]
+    pub mesh: Option<MeshConfig>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,6 +83,9 @@ pub struct SessionInfo {
     pub agent_id: String,
     pub host_sock: PathBuf,
     pub started_at_unix: u64,
+    /// MCP port on the mesh network (if mesh-enabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_port: Option<u16>,
 }
 
 fn now_unix_secs() -> u64 {
@@ -95,6 +127,44 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
     if cfg.use_gvisor {
         cmd.arg("--runtime").arg("runsc");
     }
+
+    // Mesh networking: shared Docker network + MCP port exposure
+    let mut mesh_port_out: Option<u16> = None;
+    if let Some(mesh_cfg) = &cfg.mesh {
+        if mesh_cfg.enabled {
+            mesh::ensure_mesh_network()?;
+
+            cmd.arg("--network").arg(mesh::MESH_NETWORK_NAME);
+            cmd.arg("--hostname").arg(&cfg.agent_id);
+            cmd.arg("--expose").arg(mesh_cfg.mcp_port.to_string());
+
+            cmd.arg("-e")
+                .arg(format!("NUCLEUSDB_MESH_PORT={}", mesh_cfg.mcp_port));
+            cmd.arg("-e")
+                .arg(format!("NUCLEUSDB_MESH_AGENT_ID={}", cfg.agent_id));
+            cmd.arg("-e")
+                .arg(format!("AGENTHALO_MCP_PORT={}", mesh_cfg.mcp_port));
+            cmd.arg("-e")
+                .arg(format!("NUCLEUSDB_MCP_PORT={}", mesh_cfg.mcp_port));
+            cmd.arg("-e")
+                .arg("NUCLEUSDB_MESH_REGISTRY=/data/mesh/peers.json");
+            if let Some(did) = &mesh_cfg.agent_did {
+                cmd.arg("-e").arg(format!("NUCLEUSDB_MESH_DID={did}"));
+            }
+
+            std::fs::create_dir_all(&mesh_cfg.registry_volume).map_err(|e| {
+                format!(
+                    "create mesh registry dir {}: {e}",
+                    mesh_cfg.registry_volume.display()
+                )
+            })?;
+            cmd.arg("-v")
+                .arg(format!("{}:/data/mesh", mesh_cfg.registry_volume.display()));
+
+            mesh_port_out = Some(mesh_cfg.mcp_port);
+        }
+    }
+
     for (key, value) in &cfg.env_vars {
         cmd.arg("-e").arg(format!("{key}={value}"));
     }
@@ -122,6 +192,7 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
         agent_id: cfg.agent_id,
         host_sock,
         started_at_unix: now_unix_secs(),
+        mesh_port: mesh_port_out,
     };
     let meta = run_dir.join(format!("{session_id}.json"));
     std::fs::write(

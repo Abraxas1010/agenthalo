@@ -8,7 +8,7 @@ pub mod identity_share;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) fn now_unix() -> u64 {
+pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

@@ -1,3 +1,4 @@
+use nucleusdb::container::{deregister_self_from_mesh, mesh_enabled, register_self_in_mesh};
 use nucleusdb::mcp::server::auth::AuthConfig;
 use nucleusdb::mcp::server::remote::{run_remote_mcp_server, RemoteServerConfig};
 use nucleusdb::mcp::server::run_mcp_server;
@@ -95,7 +96,22 @@ async fn async_main(args: Vec<String>) {
                 endpoint_path: "/mcp".to_string(),
             };
 
-            if let Err(e) = run_remote_mcp_server(config).await {
+            let mesh_registered = if mesh_enabled() {
+                match register_self_in_mesh() {
+                    Ok(()) => true,
+                    Err(e) => {
+                        eprintln!("[mesh] registration failed: {e}");
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            let run_result = run_remote_mcp_server(config).await;
+            if mesh_registered {
+                deregister_self_from_mesh();
+            }
+            if let Err(e) = run_result {
                 eprintln!("Remote MCP server error: {e}");
                 std::process::exit(1);
             }

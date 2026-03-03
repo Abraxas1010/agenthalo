@@ -3,6 +3,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bip39::{Language, Mnemonic};
+use nucleusdb::container::{deregister_self_from_mesh, mesh_enabled, register_self_in_mesh};
 use nucleusdb::halo::addons;
 use nucleusdb::halo::agent_auth;
 use nucleusdb::halo::agentpmt;
@@ -102,6 +103,18 @@ async fn main() -> Result<(), String> {
 
     let state = Arc::new(AppState { secret });
 
+    let mesh_registered = if mesh_enabled() {
+        match register_self_in_mesh() {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("[mesh] registration failed: {e}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/mcp", post(mcp))
@@ -111,9 +124,13 @@ async fn main() -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("bind listener {addr}: {e}"))?;
-    axum::serve(listener, app)
+    let serve_res = axum::serve(listener, app)
         .await
-        .map_err(|e| format!("serve axum: {e}"))?;
+        .map_err(|e| format!("serve axum: {e}"));
+    if mesh_registered {
+        deregister_self_from_mesh();
+    }
+    serve_res?;
     Ok(())
 }
 

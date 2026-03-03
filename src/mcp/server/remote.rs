@@ -180,7 +180,7 @@ async fn auth_info_handler(config: Arc<AuthConfig>) -> axum::Json<serde_json::Va
                 "nucleusdb_help", "nucleusdb_status", "nucleusdb_query",
                 "nucleusdb_query_range", "nucleusdb_verify", "nucleusdb_export",
                 "nucleusdb_history", "abraxas_query_records", "abraxas_record_status",
-                "abraxas_merge_status", "abraxas_workspace_diff"
+                "abraxas_merge_status", "abraxas_workspace_diff", "mesh_peers", "mesh_ping"
             ],
             "trust:verify": [
                 "nucleusdb_verify_agent", "verify_agent_multichain", "register_chain"
@@ -189,10 +189,11 @@ async fn auth_info_handler(config: Arc<AuthConfig>) -> axum::Json<serde_json::Va
                 "nucleusdb_execute_sql", "nucleusdb_create_database",
                 "nucleusdb_open_database", "nucleusdb_checkpoint",
                 "abraxas_submit_record", "abraxas_resolve_conflict",
-                "abraxas_export_git", "abraxas_workspace_init", "abraxas_workspace_submit"
+                "abraxas_export_git", "abraxas_workspace_init", "abraxas_workspace_submit",
+                "mesh_call", "mesh_exchange_envelope"
             ],
             "trust:attest": [
-                "nucleusdb_agent_register", "submit_composite_attestation"
+                "nucleusdb_agent_register", "submit_composite_attestation", "mesh_grant"
             ],
             "container": ["nucleusdb_container_launch"]
         }

@@ -110,6 +110,12 @@ impl ToolScope {
             | "zk_compute_prove" => Self::TrustAttest,
             // Container
             "nucleusdb_container_launch" => Self::Container,
+            // Mesh network (read-only discovery)
+            "mesh_peers" | "mesh_ping" => Self::Read,
+            // Mesh network (write: remote calls and envelope exchange)
+            "mesh_call" | "mesh_exchange_envelope" => Self::Write,
+            // Mesh network (grant: capability delegation)
+            "mesh_grant" => Self::TrustAttest,
             // Unknown tools default to most restrictive
             _ => Self::TrustAttest,
         }

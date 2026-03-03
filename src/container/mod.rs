@@ -1,11 +1,18 @@
 pub mod builder;
 pub mod launcher;
+pub mod mesh;
+pub mod mesh_init;
 pub mod shim;
 pub mod sidecar;
 
 pub use builder::{build_container_image, BuildConfig};
 pub use launcher::{
-    container_logs, container_status, launch_container, stop_container, Channel, MonitorConfig,
-    RunConfig, SessionInfo,
+    container_logs, container_status, launch_container, stop_container, Channel, MeshConfig,
+    MonitorConfig, RunConfig, SessionInfo,
 };
+pub use mesh::{
+    call_remote_tool, discover_peer, ensure_mesh_network, exchange_envelope, ping_peer,
+    ping_peer_with_latency, PeerInfo, PeerRegistry, MESH_NETWORK_NAME,
+};
+pub use mesh_init::{deregister_self_from_mesh, mesh_enabled, register_self_in_mesh};
 pub use sidecar::SidecarEvent;
