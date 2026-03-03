@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn x402_funding_valid() {
         let _guard = env_lock().lock().expect("env lock");
-        let _sim = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
+        let _simulation_guard = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
         let source = FundingSource::X402Direct {
             transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
                 .to_string(),
