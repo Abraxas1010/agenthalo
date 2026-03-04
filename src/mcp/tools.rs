@@ -311,6 +311,21 @@ fn mesh_call_didcomm(
     }
 
     // Backward compatibility with peers still returning plaintext JSON.
+    // Set AGENTHALO_DIDCOMM_STRICT=true to reject non-envelope responses.
+    if std::env::var("AGENTHALO_DIDCOMM_STRICT")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+    {
+        return Err(
+            "peer returned non-DIDComm response and AGENTHALO_DIDCOMM_STRICT is enabled"
+                .to_string(),
+        );
+    }
+    eprintln!(
+        "[AgentHalo/DIDComm] WARNING: peer returned plaintext (non-envelope) response; \
+         set AGENTHALO_DIDCOMM_STRICT=true to reject"
+    );
     Ok((result, "didcomm-v2-legacy-plaintext".to_string()))
 }
 
