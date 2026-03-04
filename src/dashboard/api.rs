@@ -27,6 +27,7 @@ use crate::halo::crypto_scope::CryptoScope;
 use crate::halo::encrypted_file;
 use crate::halo::http_client;
 use crate::halo::onchain::load_onchain_config_or_default;
+use crate::halo::p2pclaw;
 use crate::halo::pq::has_wallet;
 use crate::halo::schema::{
     EventType, SessionMetadata, SessionStatus as HaloSessionStatus, TraceEvent,
@@ -95,6 +96,11 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/costs/by-agent", get(api_costs_by_agent))
         .route("/costs/by-model", get(api_costs_by_model))
         .route("/costs/paid", get(api_costs_paid))
+        .route("/networking/available", get(api_networking_available))
+        .route("/addons", get(api_addons_get).post(api_addons_post))
+        .route("/p2pclaw/configure", post(api_p2pclaw_configure))
+        .route("/p2pclaw/status", get(api_p2pclaw_status))
+        .route("/p2pclaw/briefing", get(api_p2pclaw_briefing))
         // Config
         .route("/config", get(api_config))
         .route("/config/wrap", post(api_config_wrap))
@@ -308,6 +314,21 @@ pub struct X402ConfigUpdate {
     enabled: Option<bool>,
     network: Option<String>,
     max_auto_approve: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct AddonsUpdateRequest {
+    name: String,
+    enabled: bool,
+}
+
+#[derive(Deserialize, Default)]
+struct P2PClawConfigureRequest {
+    endpoint_url: Option<String>,
+    agent_id: Option<String>,
+    agent_name: Option<String>,
+    auth_secret: Option<String>,
+    tier: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -3751,6 +3772,132 @@ async fn api_identity_pod_share(
             "unsigned_entries": ledger.unsigned_entries,
             "fully_signed": ledger.fully_signed,
         },
+    })))
+}
+
+fn p2pclaw_load_config_for_api() -> Result<p2pclaw::P2PClawConfig, (StatusCode, Json<Value>)> {
+    p2pclaw::load_config().map_err(|e| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("P2PCLAW not configured: {e}"),
+        )
+    })
+}
+
+async fn api_networking_available(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let addons_cfg = addons::load_or_default();
+    Ok(Json(json!({
+        "networks": [
+            {
+                "id": "p2pclaw",
+                "name": "P2PCLAW Research Hive",
+                "description": "Decentralized research collaboration with peer validation",
+                "enabled": addons_cfg.p2pclaw_enabled,
+                "configurable": true,
+                "coming_soon": false
+            },
+            {
+                "id": "nym-mesh",
+                "name": "Nym Mixnet Mesh",
+                "description": "Privacy-preserving agent communication",
+                "enabled": false,
+                "configurable": false,
+                "coming_soon": true
+            },
+            {
+                "id": "didcomm-federation",
+                "name": "DIDComm Federation",
+                "description": "Cross-organization agent identity mesh",
+                "enabled": false,
+                "configurable": false,
+                "coming_soon": true
+            }
+        ]
+    })))
+}
+
+async fn api_addons_get(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let addons_cfg = addons::load_or_default();
+    Ok(Json(json!({
+        "ok": true,
+        "addons": addons_cfg
+    })))
+}
+
+async fn api_addons_post(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<AddonsUpdateRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let updated = addons::set_enabled(req.name.trim(), req.enabled)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "addons": updated
+    })))
+}
+
+async fn api_p2pclaw_configure(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawConfigureRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mut cfg = p2pclaw::load_or_default();
+    if let Some(endpoint_url) = req.endpoint_url {
+        cfg.endpoint_url = endpoint_url.trim().to_string();
+    }
+    if let Some(agent_id) = req.agent_id {
+        let trimmed = agent_id.trim();
+        if trimmed.is_empty() {
+            return Err(api_err(StatusCode::BAD_REQUEST, "agent_id must not be empty"));
+        }
+        cfg.agent_id = trimmed.to_string();
+    }
+    if let Some(agent_name) = req.agent_name {
+        let trimmed = agent_name.trim();
+        if trimmed.is_empty() {
+            return Err(api_err(StatusCode::BAD_REQUEST, "agent_name must not be empty"));
+        }
+        cfg.agent_name = trimmed.to_string();
+    }
+    if let Some(tier) = req.tier {
+        let tier = tier.trim().to_ascii_lowercase();
+        if !matches!(tier.as_str(), "tier1" | "tier2") {
+            return Err(api_err(
+                StatusCode::BAD_REQUEST,
+                "tier must be one of: tier1, tier2",
+            ));
+        }
+        cfg.tier = tier;
+    }
+    let configured = p2pclaw::configure(&mut cfg, req.auth_secret)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "auth_in_vault": configured.auth_in_vault,
+        "auth_configured": configured.auth_configured,
+        "config": cfg
+    })))
+}
+
+async fn api_p2pclaw_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let mut cfg = p2pclaw_load_config_for_api()?;
+    let swarm = p2pclaw::ping(&cfg).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    cfg.last_connected_at = now_unix_secs();
+    let _ = p2pclaw::save_config(&cfg);
+    Ok(Json(json!({
+        "ok": true,
+        "swarm": swarm
+    })))
+}
+
+async fn api_p2pclaw_briefing(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+    let cfg = p2pclaw_load_config_for_api()?;
+    let briefing =
+        p2pclaw::get_briefing(&cfg).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "briefing_markdown": briefing
     })))
 }
 
