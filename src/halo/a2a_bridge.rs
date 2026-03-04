@@ -1,6 +1,6 @@
 use crate::halo::did::DIDIdentity;
 use crate::halo::didcomm::{
-    extract_x25519_public_key_from_doc, message_types, pack_authcrypt, unpack_with_resolver,
+    message_types, pack_authcrypt_hybrid, unpack_with_resolver,
     DIDCommMessage,
 };
 use crate::halo::didcomm_handler::DIDCommHandler;
@@ -317,7 +317,6 @@ async fn run_task_via_didcomm(
     task_type: &str,
     payload: &Value,
 ) -> Result<Option<DIDCommMessage>, String> {
-    let recipient_key = extract_x25519_public_key_from_doc(&identity.did_document)?;
     let outbound = DIDCommMessage::new(
         message_types::TASK_SEND,
         Some(&identity.did),
@@ -329,7 +328,7 @@ async fn run_task_via_didcomm(
         }),
     );
 
-    let packed = pack_authcrypt(&outbound, &identity, &recipient_key)?;
+    let packed = pack_authcrypt_hybrid(&outbound, &identity, &identity.did_document, None)?;
     let packed_response = didcomm
         .handle_incoming(&packed, |did| {
             if did == identity.did {
@@ -494,14 +493,13 @@ async fn tasks_cancel(state: BridgeState, params: TaskCancelParams) -> Result<Va
     record.updated_at = now_unix_secs();
 
     let recipient_did = state.identity.did.clone();
-    let recipient_key = extract_x25519_public_key_from_doc(&state.identity.did_document)?;
     let cancel_message = DIDCommMessage::new(
         message_types::TASK_CANCEL,
         Some(&state.identity.did),
         vec![recipient_did],
         serde_json::json!({ "task_id": record.task_id }),
     );
-    let packed = pack_authcrypt(&cancel_message, &state.identity, &recipient_key)?;
+    let packed = pack_authcrypt_hybrid(&cancel_message, &state.identity, &state.identity.did_document, None)?;
     let _ = state
         .didcomm
         .handle_incoming(&packed, |did| {

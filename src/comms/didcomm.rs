@@ -7,7 +7,8 @@
 //! All crates used here are already in Cargo.toml — no new dependencies.
 
 use crate::halo::did::{dual_sign, dual_verify, DIDDocument, DIDIdentity};
-use crate::halo::didcomm::extract_x25519_public_key_from_doc;
+use crate::halo::didcomm::{extract_mlkem_encapsulation_key_from_doc, extract_x25519_public_key_from_doc};
+use crate::halo::hybrid_kem;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
@@ -87,6 +88,12 @@ pub struct DIDCommEnvelope {
     pub signature_ed25519: String,
     /// ML-DSA-65 signature over (ciphertext || tag || nonce), base64url.
     pub signature_mldsa65: String,
+    /// Post-quantum KEM algorithm identifier (e.g. "ML-KEM-768").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pq_kem: Option<String>,
+    /// ML-KEM-768 ciphertext, base64url-encoded. Present when hybrid KEM is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pq_ct: Option<String>,
 }
 
 fn random_nonce() -> Result<[u8; 12], String> {
@@ -115,9 +122,13 @@ fn signature_input(ciphertext: &[u8], tag: &[u8], nonce: &[u8]) -> Vec<u8> {
 
 /// Encrypt a DIDComm message for a recipient.
 ///
-/// 1. Generate ephemeral X25519 keypair.
+/// Uses hybrid KEM (X25519 + ML-KEM-768) when the recipient's DID document
+/// contains an ML-KEM-768 key. Falls back to classical ephemeral X25519 ECDH
+/// when the recipient lacks PQ keys (backward compatible with pre-PQ peers).
+///
+/// 1. Generate ephemeral X25519 keypair (+ ML-KEM-768 encapsulation if available).
 /// 2. ECDH with recipient's X25519 public key from their DID Document.
-/// 3. HKDF-SHA256 to derive AES-256-GCM key.
+/// 3. HKDF-SHA256 to derive AES-256-GCM key (hybrid or classical).
 /// 4. Encrypt plaintext message body.
 /// 5. Dual-sign (ciphertext || tag || nonce) with sender's Ed25519 + ML-DSA-65.
 pub fn encrypt_message(
@@ -126,19 +137,41 @@ pub fn encrypt_message(
     message: &DIDCommMessage,
 ) -> Result<DIDCommEnvelope, String> {
     let recipient_x25519 = extract_x25519_public_key_from_doc(recipient_doc)?;
+    let recipient_mlkem = extract_mlkem_encapsulation_key_from_doc(recipient_doc);
     let plaintext =
         serde_json::to_vec(message).map_err(|e| format!("serialize DIDComm message: {e}"))?;
 
-    // Ephemeral X25519 keypair for forward secrecy.
-    let ephemeral_secret = X25519StaticSecret::random_from_rng(rand_core::OsRng);
-    let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
-    let shared_secret = ephemeral_secret.diffie_hellman(&X25519PublicKey::from(recipient_x25519));
+    // Derive encryption key: hybrid (ephemeral X25519 + ML-KEM-768) or classical.
+    let (mut key, epk_bytes, pq_kem, pq_ct) = if let Some(ref ek) = recipient_mlkem {
+        let recipient_pk = X25519PublicKey::from(recipient_x25519);
+        let encap =
+            hybrid_kem::hybrid_encap(&recipient_pk, Some(ek), HKDF_MESH_DIDCOMM_INFO)
+                .map_err(|e| format!("hybrid KEM encap failed: {e}"))?;
+        let ct = encap
+            .mlkem_ciphertext
+            .as_ref()
+            .expect("ML-KEM ciphertext must be present when ek is Some");
+        (
+            encap.shared_secret,
+            encap.x25519_ephemeral_pk,
+            Some("ML-KEM-768".to_string()),
+            Some(B64URL.encode(ct)),
+        )
+    } else {
+        // Classical path: ephemeral X25519 with old HKDF (backward compatible).
+        let ephemeral_secret = X25519StaticSecret::random_from_rng(rand_core::OsRng);
+        let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
+        let shared_secret =
+            ephemeral_secret.diffie_hellman(&X25519PublicKey::from(recipient_x25519));
+        let key = derive_key(shared_secret.as_bytes())?;
+        (key, ephemeral_public.to_bytes(), None, None)
+    };
 
-    let mut key = derive_key(shared_secret.as_bytes())?;
     let nonce = random_nonce()?;
 
     // AES-256-GCM encrypt. The tag is appended to ciphertext by aes-gcm.
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("cipher init failed: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("cipher init failed: {e}"))?;
     let ciphertext_with_tag = cipher
         .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
         .map_err(|e| format!("DIDComm encrypt failed: {e}"))?;
@@ -155,13 +188,15 @@ pub fn encrypt_message(
 
     Ok(DIDCommEnvelope {
         typ: CONTENT_TYPE.to_string(),
-        epk_x25519: B64URL.encode(ephemeral_public.as_bytes()),
+        epk_x25519: B64URL.encode(epk_bytes),
         nonce: B64URL.encode(nonce),
         ciphertext: B64URL.encode(ciphertext_bytes),
         tag: B64URL.encode(tag_bytes),
         sender_did: sender.did.clone(),
         signature_ed25519: B64URL.encode(ed_sig),
         signature_mldsa65: B64URL.encode(pq_sig),
+        pq_kem,
+        pq_ct,
     })
 }
 
@@ -204,7 +239,7 @@ pub fn decrypt_message(
         return Err("DIDComm envelope signature verification failed".to_string());
     }
 
-    // ECDH with ephemeral public key.
+    // Derive decryption key: hybrid or classical.
     let epk_bytes = B64URL
         .decode(&envelope.epk_x25519)
         .map_err(|e| format!("decode ephemeral key: {e}"))?;
@@ -212,11 +247,31 @@ pub fn decrypt_message(
         .as_slice()
         .try_into()
         .map_err(|_| "ephemeral X25519 key must be 32 bytes".to_string())?;
-    let shared_secret = recipient
-        .x25519_agreement_key
-        .diffie_hellman(&X25519PublicKey::from(epk));
 
-    let mut key = derive_key(shared_secret.as_bytes())?;
+    let mut key = if envelope.pq_kem.is_some() {
+        let pq_ct_b64 = envelope
+            .pq_ct
+            .as_deref()
+            .ok_or("pq_kem present but pq_ct missing")?;
+        let pq_ct = B64URL
+            .decode(pq_ct_b64)
+            .map_err(|e| format!("decode ML-KEM ciphertext: {e}"))?;
+        let decap = hybrid_kem::hybrid_decap(
+            &epk,
+            Some(&pq_ct),
+            &recipient.x25519_agreement_key,
+            Some(&recipient.mlkem768_decapsulation_key),
+            HKDF_MESH_DIDCOMM_INFO,
+        )
+        .map_err(|e| format!("hybrid KEM decap failed: {e}"))?;
+        decap.shared_secret
+    } else {
+        // Classical path: ephemeral ECDH with old HKDF (backward compatible).
+        let shared_secret = recipient
+            .x25519_agreement_key
+            .diffie_hellman(&X25519PublicKey::from(epk));
+        derive_key(shared_secret.as_bytes())?
+    };
 
     // Reconstruct ciphertext+tag for aes-gcm (it expects them concatenated).
     let mut ct_with_tag = Vec::with_capacity(ciphertext_bytes.len() + tag_bytes.len());
@@ -384,5 +439,107 @@ mod tests {
         assert_eq!(json, "\"mcp_tool_call\"");
         let parsed: MessageType = serde_json::from_str("\"envelope_exchange\"").unwrap();
         assert_eq!(parsed, MessageType::EnvelopeExchange);
+    }
+
+    // ── Hybrid KEM integration tests ──────────────────────────────────
+
+    #[test]
+    fn mesh_hybrid_kem_roundtrip() {
+        // Both alice and bob have ML-KEM-768 keys (from did_from_genesis_seed).
+        // encrypt_message should pick the hybrid path automatically.
+        let alice = test_identity(0xB1);
+        let bob = test_identity(0xB2);
+        let msg = DIDCommMessage {
+            id: "mesh-hybrid-1".into(),
+            type_: MessageType::McpToolCall,
+            from: alice.did.clone(),
+            to: vec![bob.did.clone()],
+            created_time: 3000,
+            expires_time: None,
+            body: serde_json::json!({"tool": "heyting_prove_assist", "args": {"goal": "P -> P"}}),
+            thid: None,
+            pthid: None,
+        };
+        let envelope = encrypt_message(&alice, &bob.did_document, &msg).unwrap();
+        // Hybrid path sets pq fields.
+        assert_eq!(envelope.pq_kem.as_deref(), Some("ML-KEM-768"));
+        assert!(envelope.pq_ct.is_some());
+
+        let decrypted = decrypt_message(&bob, &alice.did_document, &envelope).unwrap();
+        assert_eq!(decrypted.id, "mesh-hybrid-1");
+        assert_eq!(decrypted.body["tool"], "heyting_prove_assist");
+    }
+
+    #[test]
+    fn mesh_hybrid_wrong_recipient_rejected() {
+        let alice = test_identity(0xB3);
+        let bob = test_identity(0xB4);
+        let charlie = test_identity(0xB5);
+        let msg = DIDCommMessage {
+            id: "mesh-hybrid-wrong".into(),
+            type_: MessageType::EnvelopeExchange,
+            from: alice.did.clone(),
+            to: vec![bob.did.clone()],
+            created_time: 3000,
+            expires_time: None,
+            body: serde_json::json!({"proof": "secret"}),
+            thid: None,
+            pthid: None,
+        };
+        let envelope = encrypt_message(&alice, &bob.did_document, &msg).unwrap();
+        assert!(envelope.pq_kem.is_some());
+        // Charlie's ML-KEM dk + X25519 sk are wrong → decap fails.
+        assert!(decrypt_message(&charlie, &alice.did_document, &envelope).is_err());
+    }
+
+    #[test]
+    fn mesh_hybrid_tampered_pq_ct_rejected() {
+        let alice = test_identity(0xB6);
+        let bob = test_identity(0xB7);
+        let msg = DIDCommMessage {
+            id: "mesh-hybrid-tamper".into(),
+            type_: MessageType::Heartbeat,
+            from: alice.did.clone(),
+            to: vec![bob.did.clone()],
+            created_time: 3000,
+            expires_time: None,
+            body: serde_json::json!({"ping": true}),
+            thid: None,
+            pthid: None,
+        };
+        let mut envelope = encrypt_message(&alice, &bob.did_document, &msg).unwrap();
+        // Tamper with ML-KEM ciphertext (flip bytes).
+        if let Some(ref ct) = envelope.pq_ct {
+            let mut raw = B64URL.decode(ct).unwrap();
+            for b in raw.iter_mut().take(16) {
+                *b ^= 0xFF;
+            }
+            envelope.pq_ct = Some(B64URL.encode(&raw));
+        }
+        // Tampered ML-KEM ct → wrong shared secret → AEAD decrypt fails.
+        // (Signature still valid because sig covers ciphertext+tag+nonce, not pq_ct.)
+        assert!(decrypt_message(&bob, &alice.did_document, &envelope).is_err());
+    }
+
+    #[test]
+    fn mesh_hybrid_verify_signature_independent_of_kem() {
+        let alice = test_identity(0xB8);
+        let bob = test_identity(0xB9);
+        let msg = DIDCommMessage {
+            id: "mesh-hybrid-sigcheck".into(),
+            type_: MessageType::PeerAnnounce,
+            from: alice.did.clone(),
+            to: vec![bob.did.clone()],
+            created_time: 3000,
+            expires_time: None,
+            body: serde_json::json!({"announce": true}),
+            thid: None,
+            pthid: None,
+        };
+        let envelope = encrypt_message(&alice, &bob.did_document, &msg).unwrap();
+        assert!(envelope.pq_kem.is_some());
+        // Signature verification works regardless of KEM type.
+        assert!(verify_envelope_signature(&alice.did_document, &envelope).unwrap());
+        assert!(!verify_envelope_signature(&bob.did_document, &envelope).unwrap());
     }
 }

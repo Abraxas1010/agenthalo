@@ -1,6 +1,6 @@
 use crate::halo::did::{DIDCommCredentialAttachment, DIDIdentity};
 use crate::halo::didcomm::{
-    extract_x25519_public_key_from_doc, message_types, pack_authcrypt, unpack_with_resolver,
+    message_types, pack_authcrypt_hybrid, unpack_with_resolver,
     AttachmentData, DIDCommAttachment, DIDCommMessage,
 };
 use crate::halo::zk_credential;
@@ -158,11 +158,10 @@ impl DIDCommHandler {
 
         let sender_doc = resolve_document(&sender_did)
             .ok_or_else(|| format!("cannot resolve DID document for sender `{sender_did}`"))?;
-        let sender_x25519 = extract_x25519_public_key_from_doc(&sender_doc)?;
         response.from = Some(self.identity.did.clone());
         response.to = vec![sender_did];
 
-        let packed_response = pack_authcrypt(&response, &self.identity, &sender_x25519)?;
+        let packed_response = pack_authcrypt_hybrid(&response, &self.identity, &sender_doc, None)?;
         Ok(Some(packed_response))
     }
 }
