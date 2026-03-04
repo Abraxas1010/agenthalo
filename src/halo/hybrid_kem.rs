@@ -1,8 +1,8 @@
 //! Hybrid KEM combining X25519 + ML-KEM-768.
 //!
 //! Follows IETF Composite ML-KEM construction:
-//!   combined_ss = HKDF-SHA256(
-//!     salt = "AgentHALO-HybridKEM-v1",
+//!   combined_ss = HKDF-SHA512(
+//!     salt = "AgentHALO-HybridKEM-v2",
 //!     ikm  = x25519_ss || mlkem_ss || mlkem_ct,
 //!     info = <caller-provided context>
 //!   )
@@ -15,11 +15,11 @@ use hkdf::Hkdf;
 use ml_kem::kem::{Decapsulate, Encapsulate};
 use ml_kem::{Encoded, EncodedSizeUser, KemCore, MlKem768};
 use rand_core::OsRng;
-use sha2::Sha256;
+use sha2::Sha512;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
 use zeroize::Zeroize;
 
-const HYBRID_KEM_SALT: &[u8] = b"AgentHALO-HybridKEM-v1";
+const HYBRID_KEM_SALT: &[u8] = b"AgentHALO-HybridKEM-v2";
 
 pub type MlKem768EncapsulationKey = <MlKem768 as KemCore>::EncapsulationKey;
 pub type MlKem768DecapsulationKey = <MlKem768 as KemCore>::DecapsulationKey;
@@ -85,7 +85,7 @@ fn combine_shared_secrets(
         ikm.extend_from_slice(ct);
     }
 
-    let hk = Hkdf::<Sha256>::new(Some(HYBRID_KEM_SALT), &ikm);
+    let hk = Hkdf::<Sha512>::new(Some(HYBRID_KEM_SALT), &ikm);
     let mut combined = [0u8; 32];
     hk.expand(info, &mut combined)
         .map_err(|_| HybridKemError::HkdfExpandFailed)?;
@@ -193,7 +193,11 @@ pub fn mlkem768_ek_from_bytes(raw: &[u8]) -> Result<MlKem768EncapsulationKey, Hy
 mod tests {
     use super::*;
 
-    fn test_keypair() -> (X25519StaticSecret, X25519PublicKey, MlKem768DecapsulationKey) {
+    fn test_keypair() -> (
+        X25519StaticSecret,
+        X25519PublicKey,
+        MlKem768DecapsulationKey,
+    ) {
         let x25519_sk = X25519StaticSecret::random_from_rng(OsRng);
         let x25519_pk = X25519PublicKey::from(&x25519_sk);
         let (dk, _) = MlKem768::generate(&mut OsRng);
@@ -298,5 +302,17 @@ mod tests {
     fn bad_ek_bytes_rejected() {
         let result = mlkem768_ek_from_bytes(&[0u8; 10]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn hkdf_sha512_produces_same_length_key() {
+        let combined = combine_shared_secrets(
+            &[0x11; 32],
+            Some(&[0x22; 32]),
+            Some(&[0x33; 1088]),
+            TEST_INFO,
+        )
+        .expect("combine secrets");
+        assert_eq!(combined.len(), 32);
     }
 }
