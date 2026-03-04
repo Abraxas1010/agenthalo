@@ -317,7 +317,8 @@ function renderCryptoOverlay(status) {
           createBtn.disabled = true;
           await apiPost('/crypto/create-password', { password, confirm });
           _cryptoStatus = null;
-          await ensureCryptoUnlocked(true);
+          const ok = await ensureCryptoUnlocked(true);
+          if (ok) route();
         } catch (e) {
           if (errorEl) errorEl.textContent = String(e && e.message || e);
         } finally {
@@ -335,7 +336,8 @@ function renderCryptoOverlay(status) {
           unlockBtn.disabled = true;
           await apiPost('/crypto/unlock', { password });
           _cryptoStatus = null;
-          await ensureCryptoUnlocked(true);
+          const ok = await ensureCryptoUnlocked(true);
+          if (ok) route();
         } catch (e) {
           if (errorEl) errorEl.textContent = String(e && e.message || e);
         } finally {
@@ -592,20 +594,23 @@ async function route() {
   if (window._destroyHeroParticles) window._destroyHeroParticles();
   const overlay = $('#genesis-overlay');
 
-  const genesisOk = await fetchGenesisStatus();
-  if (!genesisOk) {
-    if (overlay) overlay.style.display = '';
-    showGenesisCeremony();
-    return;
-  }
-  if (overlay) overlay.style.display = 'none';
-
   const cryptoReady = await ensureCryptoUnlocked();
   if (!cryptoReady) return;
 
   const hash = location.hash.replace('#/', '') || 'setup';
   const page = hash.split('/')[0];
   const arg = hash.split('/').slice(1).join('/');
+
+  // Genesis ceremony gate: if genesis hasn't completed and user isn't on setup or
+  // documentation pages, show the genesis overlay. Setup page handles its own genesis flow.
+  const GENESIS_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication'];
+  const genesisOk = await fetchGenesisStatus();
+  if (!genesisOk && !GENESIS_EXEMPT_PAGES.includes(page)) {
+    if (overlay) overlay.style.display = '';
+    showGenesisCeremony();
+    return;
+  }
+  if (overlay) overlay.style.display = 'none';
 
   // Fetch setup state and gate navigation.
   // Documentation/overview pages are always accessible — setup gate only blocks operational pages.
@@ -1834,7 +1839,9 @@ async function renderSetup() {
     ? String(tierCfg.default_tier).trim()
     : 'max-safe';
   const serverTier = String(tierCfg.tier || '').trim();
-  const preferredTier = securityTierImageByKey[serverTier] ? serverTier : savedSecurityTier;
+  // If the server has a tier set, use it. Otherwise ignore localStorage (may be stale from
+  // a previous install) and default to max-safe.
+  const preferredTier = securityTierImageByKey[serverTier] ? serverTier : backendDefaultTier;
   const appliedSecurityTier = securityTierImageByKey[serverTier] ? serverTier : '';
   const initialSecurityTier = (
     securityTierImageByKey[preferredTier]
