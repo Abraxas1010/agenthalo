@@ -2928,6 +2928,47 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
 
     if let Some(latest) = latest_genesis {
         if genesis_is_completed_status(&latest.status) {
+            let sovereign = match crate::halo::genesis_seed::load_seed_bytes() {
+                Ok(Some(seed)) => {
+                    match crate::halo::twine_anchor::perform_sovereign_binding_ceremony(
+                        &seed,
+                        latest
+                            .payload
+                            .get("combined_entropy_sha256")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(""),
+                        latest
+                            .payload
+                            .get("curby_pulse_id")
+                            .and_then(|v| v.as_u64()),
+                        latest.timestamp,
+                    ) {
+                        Ok(r) => json!({
+                            "attestation_sha256": r.attestation_sha256,
+                            "binding_sha256": r.binding_sha256,
+                            "did_subject": r.did_subject,
+                            "evm_address": r.evm_address,
+                        }),
+                        Err(e) => {
+                            eprintln!(
+                                "warning: sovereign binding recovery failed (non-fatal): {e}"
+                            );
+                            Value::Null
+                        }
+                    }
+                }
+                _ => {
+                    match crate::halo::twine_anchor::recover_sovereign_binding_from_ledger() {
+                        Ok(Some(r)) => json!({
+                            "attestation_sha256": r.attestation_sha256,
+                            "binding_sha256": r.binding_sha256,
+                            "did_subject": r.did_subject,
+                            "evm_address": r.evm_address,
+                        }),
+                        _ => Value::Null,
+                    }
+                }
+            };
             return Ok(Json(json!({
                 "success": true,
                 "already_completed": true,
@@ -2941,6 +2982,7 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                 "curby_pulse_id": latest.payload.get("curby_pulse_id").and_then(|v| v.as_u64()),
                 "combined_entropy_sha256": latest.payload.get("combined_entropy_sha256").cloned().unwrap_or(Value::Null),
                 "genesis_entropy_sha256": latest.genesis_entropy_sha256,
+                "sovereign_binding": sovereign,
             })));
         }
     }

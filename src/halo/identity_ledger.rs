@@ -1004,6 +1004,25 @@ pub fn latest_genesis_event() -> Result<Option<IdentityLedgerEntry>, String> {
         .find(|entry| matches!(entry.kind, IdentityLedgerKind::GenesisEntropyHarvested)))
 }
 
+/// Query the most recent attestation and binding events from the ledger.
+/// Returns `(attestation_entry, binding_entry)` — either or both may be `None`.
+pub fn latest_sovereign_binding_events(
+) -> Result<(Option<IdentityLedgerEntry>, Option<IdentityLedgerEntry>), String> {
+    let entries = load_entries()?;
+    verify_chain(&entries)?;
+    let attestation = entries
+        .iter()
+        .rev()
+        .find(|e| matches!(e.kind, IdentityLedgerKind::IdentityAttested))
+        .cloned();
+    let binding = entries
+        .iter()
+        .rev()
+        .find(|e| matches!(e.kind, IdentityLedgerKind::AgentAddressBound))
+        .cloned();
+    Ok((attestation, binding))
+}
+
 /// Build the current immutable-ledger projection:
 /// per-provider social activity plus global chain/signing status.
 pub fn project_ledger_status(now: u64) -> Result<LedgerProjection, String> {
