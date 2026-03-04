@@ -64,7 +64,7 @@ pub fn derive_from_mnemonic(
 
 /// Sign a message with the EVM wallet's secp256k1 key.
 /// `private_key_hex` is the "0x"-prefixed hex private key from `DerivedEvmWallet`.
-pub fn sign_with_evm_key(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn sign_with_evm_key(private_key_hex: &str, message: &[u8]) -> Result<Vec<u8>, String> {
     let signing_key = parse_signing_key(private_key_hex)?;
     use k256::ecdsa::signature::Signer;
     let sig: k256::ecdsa::Signature = signing_key.sign(message);
