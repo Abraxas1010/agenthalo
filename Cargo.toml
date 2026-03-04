@@ -87,6 +87,7 @@ tss-esapi = { version = "7", optional = true, default-features = false }
 dirs = "6"
 webbrowser = "1"
 ureq = { version = "3", features = ["json", "socks-proxy"] }
+url = "2"
 rust-embed = "8"
 mime_guess = "2"
 tokio-stream = "0.1"

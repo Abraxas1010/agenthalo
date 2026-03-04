@@ -34,6 +34,7 @@ pub mod p2p_discovery;
 pub mod p2p_node;
 pub mod password;
 pub mod pinata;
+pub mod p2pclaw;
 pub mod pq;
 pub mod pricing;
 pub mod privacy_controller;

@@ -124,6 +124,10 @@ pub fn proof_gate_config_path() -> PathBuf {
     halo_dir().join("proof_gate.json")
 }
 
+pub fn p2pclaw_config_path() -> PathBuf {
+    halo_dir().join("p2pclaw.json")
+}
+
 pub fn proof_certificates_dir() -> PathBuf {
     halo_dir().join("proof_certificates")
 }
