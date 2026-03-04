@@ -2862,6 +2862,14 @@ async fn api_genesis_status(AxumState(state): AxumState<DashboardState>) -> ApiR
     )
     .ok()
     .flatten();
+
+    // Derive DID URI from genesis seed if available (lightweight: HKDF + Ed25519 only).
+    let did_uri: Option<String> = genesis_key
+        .as_ref()
+        .and_then(|key| crate::halo::genesis_seed::load_seed_bytes_v2(key).ok().flatten())
+        .or_else(|| crate::halo::genesis_seed::load_seed_bytes().ok().flatten())
+        .map(|seed| crate::halo::did::did_uri_from_genesis_seed(&seed));
+
     let latest = crate::halo::identity_ledger::latest_genesis_event().map_err(internal_err)?;
     if let Some(entry) = latest {
         let completed = genesis_is_completed_status(&entry.status);
@@ -2887,6 +2895,7 @@ async fn api_genesis_status(AxumState(state): AxumState<DashboardState>) -> ApiR
             "combined_entropy_sha256": combined_entropy_sha256,
             "seed_stored": seed_stored,
             "seed_hash_sha256": seed_hash,
+            "did_uri": did_uri,
             "seq": entry.seq,
             "timestamp": entry.timestamp,
             "entry_hash": entry.entry_hash,
@@ -2899,6 +2908,7 @@ async fn api_genesis_status(AxumState(state): AxumState<DashboardState>) -> ApiR
         "status": "missing",
         "seed_stored": seed_stored,
         "seed_hash_sha256": seed_hash,
+        "did_uri": did_uri,
         "signature_required_for_genesis": true,
     })))
 }

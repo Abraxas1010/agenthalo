@@ -144,6 +144,15 @@ fn did_from_ed25519_public_key(public_key: &[u8; 32]) -> String {
     format!("did:key:{encoded}")
 }
 
+/// Derive the DID URI from a genesis seed without constructing the full identity.
+/// This is a lightweight operation (one HKDF + one Ed25519 pubkey derivation).
+pub fn did_uri_from_genesis_seed(seed: &[u8; 64]) -> String {
+    let ed25519_seed = crate::halo::genesis_seed::derive_p2p_identity(seed);
+    let signing_key = Ed25519SigningKey::from_bytes(&ed25519_seed);
+    let public_key = signing_key.verifying_key().to_bytes();
+    did_from_ed25519_public_key(&public_key)
+}
+
 fn did_fragment(did: &str, suffix: &str) -> String {
     format!("{did}#{suffix}")
 }
