@@ -542,15 +542,32 @@ pub fn verify_chain(entries: &[IdentityLedgerEntry]) -> Result<(), String> {
 }
 
 fn try_sign_entry_hash(entry_hash: &str) -> Option<LedgerSignatureRef> {
+    try_sign_entry_hash_with_key(entry_hash, None)
+}
+
+fn try_sign_entry_hash_with_key(
+    entry_hash: &str,
+    sign_scope_key: Option<&[u8; 32]>,
+) -> Option<LedgerSignatureRef> {
     if !crate::halo::pq::has_wallet() {
         return None;
     }
     let payload = format!("agenthalo.identity.ledger.entry_hash.v1:{entry_hash}");
+    // Try legacy signing first, then v2 if a scope key is available.
     let signed = crate::halo::pq::sign_pq_payload(
         payload.as_bytes(),
         "identity_social_ledger_entry",
         Some(entry_hash.to_string()),
     )
+    .or_else(|_| match sign_scope_key {
+        Some(key) => crate::halo::pq::sign_pq_payload_v2(
+            key,
+            payload.as_bytes(),
+            "identity_social_ledger_entry",
+            Some(entry_hash.to_string()),
+        ),
+        None => Err("no sign scope key for v2 signing".to_string()),
+    })
     .ok()?;
     let env = signed.0;
     Some(LedgerSignatureRef {
@@ -564,12 +581,33 @@ fn try_sign_entry_hash(entry_hash: &str) -> Option<LedgerSignatureRef> {
     })
 }
 
-fn append_entry(mut entry: IdentityLedgerEntry) -> Result<IdentityLedgerEntry, String> {
+fn append_entry(entry: IdentityLedgerEntry) -> Result<IdentityLedgerEntry, String> {
+    append_entry_with_key(entry, None)
+}
+
+/// Append a ledger entry, using the given Sign scope key for v2 wallet signing.
+pub fn append_entry_with_sign_key(
+    entry: IdentityLedgerEntry,
+    sign_scope_key: &[u8; 32],
+) -> Result<IdentityLedgerEntry, String> {
+    append_entry_with_key(entry, Some(sign_scope_key))
+}
+
+fn append_entry_with_key(
+    mut entry: IdentityLedgerEntry,
+    sign_scope_key: Option<&[u8; 32]>,
+) -> Result<IdentityLedgerEntry, String> {
     crate::halo::config::ensure_halo_dir()?;
     let path = ledger_path();
     let mut entries = load_entries()?;
     verify_chain(&entries)?;
-    let wallet_identity = crate::halo::pq::wallet_key_identity().ok().flatten();
+    let wallet_identity = crate::halo::pq::wallet_key_identity()
+        .ok()
+        .flatten()
+        .or_else(|| {
+            sign_scope_key
+                .and_then(|k| crate::halo::pq::wallet_key_identity_v2(k).ok().flatten())
+        });
     let pinned_signer_public_key = entries
         .iter()
         .find(|e| {
@@ -586,7 +624,7 @@ fn append_entry(mut entry: IdentityLedgerEntry) -> Result<IdentityLedgerEntry, S
     entry.seq = next_seq;
     entry.prev_hash = prev_hash;
     entry.entry_hash = compute_entry_hash(&entry);
-    entry.signature = try_sign_entry_hash(&entry.entry_hash);
+    entry.signature = try_sign_entry_hash_with_key(&entry.entry_hash, sign_scope_key);
     if matches!(entry.kind, IdentityLedgerKind::GenesisEntropyHarvested)
         && entry.signature.is_none()
     {
@@ -888,6 +926,14 @@ pub fn append_wallet_event(
 }
 
 pub fn append_genesis_event(status: &str, payload: Value) -> Result<IdentityLedgerEntry, String> {
+    append_genesis_event_with_sign_key(status, payload, None)
+}
+
+pub fn append_genesis_event_with_sign_key(
+    status: &str,
+    payload: Value,
+    sign_scope_key: Option<&[u8; 32]>,
+) -> Result<IdentityLedgerEntry, String> {
     let normalized_status = status.trim().to_ascii_lowercase();
     let structured_hash = if normalized_status == "completed" {
         let hash = payload
@@ -920,7 +966,10 @@ pub fn append_genesis_event(status: &str, payload: Value) -> Result<IdentityLedg
         entry_hash: String::new(),
         signature: None,
     };
-    append_entry(entry)
+    match sign_scope_key {
+        Some(key) => append_entry_with_sign_key(entry, key),
+        None => append_entry(entry),
+    }
 }
 
 pub fn append_attestation_event(

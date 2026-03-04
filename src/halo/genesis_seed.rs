@@ -37,6 +37,7 @@ fn derive_seed_key(wallet_path: &std::path::Path) -> Result<[u8; 32], String> {
 
 pub fn seed_exists() -> bool {
     crate::halo::config::genesis_seed_path().exists()
+        || crate::halo::config::genesis_seed_v2_path().exists()
 }
 
 fn store_seed_once_with_paths(
@@ -102,6 +103,38 @@ pub fn store_seed_once(seed: &[u8; 64], combined_entropy_sha256: &str) -> Result
     let wallet_path = crate::halo::config::pq_wallet_path();
     let seed_path = crate::halo::config::genesis_seed_path();
     store_seed_once_with_paths(&wallet_path, &seed_path, seed, combined_entropy_sha256)
+}
+
+/// Store genesis seed using v2 encrypted file system (post-password-creation path).
+/// Uses the Genesis scope key instead of the legacy wallet-derived key.
+pub fn store_seed_once_v2(
+    seed: &[u8; 64],
+    combined_entropy_sha256: &str,
+    genesis_scope_key: &[u8; 32],
+) -> Result<(), String> {
+    use crate::halo::encrypted_file::EncryptedFileV2;
+    use crate::halo::crypto_scope::CryptoScope;
+    crate::halo::config::ensure_halo_dir()?;
+    let v2_path = crate::halo::config::genesis_seed_v2_path();
+    if v2_path.exists() {
+        return Err(format!(
+            "genesis seed already initialized at {}",
+            v2_path.display()
+        ));
+    }
+    let header = crate::halo::encrypted_file::load_header()?
+        .ok_or_else(|| "v2 crypto header not found".to_string())?;
+    let payload = StoredGenesisSeed {
+        schema: "agenthalo.genesis.seed.v1".to_string(),
+        created_at: now_unix(),
+        combined_entropy_sha256: combined_entropy_sha256.to_string(),
+        combined_entropy_hex: crate::halo::util::hex_encode(seed),
+    };
+    let plaintext =
+        serde_json::to_vec(&payload).map_err(|e| format!("serialize genesis seed: {e}"))?;
+    let file = EncryptedFileV2::encrypt(&plaintext, genesis_scope_key, CryptoScope::Genesis, &header.kdf)?;
+    file.save(&v2_path)?;
+    Ok(())
 }
 
 fn load_seed_payload_with_paths(

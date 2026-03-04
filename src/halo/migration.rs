@@ -170,6 +170,23 @@ fn legacy_plaintext_for_migration(legacy_path: &std::path::Path) -> Result<Vec<u
             legacy_path,
         );
     }
+    // PQ wallet: unwrap the encrypted_seed using the wrap key (still present at migration
+    // time) and store the seed as secret_seed_hex so the v2-encrypted container has a
+    // directly accessible plaintext seed.  Without this, the wrap key is erased after
+    // migration and the inner encrypted_seed becomes unrecoverable.
+    if legacy_path == config::pq_wallet_path() {
+        let raw = std::fs::read_to_string(legacy_path)
+            .map_err(|e| format!("read {}: {e}", legacy_path.display()))?;
+        let wallet: crate::halo::pq::PqWallet = serde_json::from_str(&raw)
+            .map_err(|e| format!("parse {}: {e}", legacy_path.display()))?;
+        let seed_bytes = crate::halo::pq::wallet_seed_bytes_from_path(legacy_path)?;
+        let seed_hex = hex::encode(&seed_bytes);
+        let mut migrated = wallet;
+        migrated.secret_seed_hex = Some(seed_hex);
+        migrated.encrypted_seed = None;
+        return serde_json::to_vec_pretty(&migrated)
+            .map_err(|e| format!("re-serialize wallet for v2 migration: {e}"));
+    }
     std::fs::read(legacy_path).map_err(|e| format!("read {}: {e}", legacy_path.display()))
 }
 

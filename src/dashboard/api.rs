@@ -3016,7 +3016,23 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                 eprintln!("warning: failed to write genesis success trace event: {e}");
             }
 
-            match crate::halo::genesis_seed::load_seed_sha256() {
+            // Check for existing seed via both v2 and legacy paths.
+            let genesis_key = get_scope_key_bytes(&state, CryptoScope::Genesis)
+                .ok()
+                .flatten();
+
+            // Try v2 first, then legacy. Propagate read errors for corrupted seeds.
+            let existing_sha_result = if let Some(ref gk) = genesis_key {
+                crate::halo::genesis_seed::load_seed_sha256_v2(gk)
+                    .and_then(|v| match v {
+                        Some(s) => Ok(Some(s)),
+                        None => crate::halo::genesis_seed::load_seed_sha256(),
+                    })
+            } else {
+                crate::halo::genesis_seed::load_seed_sha256()
+            };
+
+            match existing_sha_result {
                 Ok(Some(existing)) if existing == result.combined_entropy_sha256 => {}
                 Ok(Some(existing)) => {
                     return Err(genesis_api_err(
@@ -3029,11 +3045,30 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                         )),
                     ));
                 }
-                Ok(None) => {
-                    if let Err(e) = crate::halo::genesis_seed::store_seed_once(
-                        &result.combined_entropy,
-                        &result.combined_entropy_sha256,
-                    ) {
+                Err(e) if crate::halo::genesis_seed::seed_exists() => {
+                    // Seed file exists but cannot be read/decrypted — corruption.
+                    return Err(genesis_api_err(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "SEED_READ_FAILURE",
+                        "could not read existing sealed genesis seed",
+                        Some(e),
+                    ));
+                }
+                Ok(None) | Err(_) => {
+                    // No seed exists yet — store it.
+                    let store_result = if let Some(ref gk) = genesis_key {
+                        crate::halo::genesis_seed::store_seed_once_v2(
+                            &result.combined_entropy,
+                            &result.combined_entropy_sha256,
+                            gk,
+                        )
+                    } else {
+                        crate::halo::genesis_seed::store_seed_once(
+                            &result.combined_entropy,
+                            &result.combined_entropy_sha256,
+                        )
+                    };
+                    if let Err(e) = store_result {
                         return Err(genesis_api_err(
                             StatusCode::SERVICE_UNAVAILABLE,
                             "SEED_STORAGE_FAILURE",
@@ -3041,14 +3076,6 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                             Some(e),
                         ));
                     }
-                }
-                Err(e) => {
-                    return Err(genesis_api_err(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "SEED_READ_FAILURE",
-                        "could not read existing sealed genesis seed",
-                        Some(e),
-                    ));
                 }
             }
 
@@ -3064,15 +3091,22 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                 "drand_normalization": "sha512",
                 "duration_ms": result.duration_ms,
             });
-            let entry = crate::halo::identity_ledger::append_genesis_event("completed", payload)
-                .map_err(|e| {
-                    genesis_api_err(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "LEDGER_APPEND_FAILURE",
-                        "could not append genesis completion entry to identity ledger",
-                        Some(e),
-                    )
-                })?;
+            let sign_key = get_scope_key_bytes(&state, CryptoScope::Sign)
+                .ok()
+                .flatten();
+            let entry = crate::halo::identity_ledger::append_genesis_event_with_sign_key(
+                "completed",
+                payload,
+                sign_key.as_ref(),
+            )
+            .map_err(|e| {
+                genesis_api_err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "LEDGER_APPEND_FAILURE",
+                    "could not append genesis completion entry to identity ledger",
+                    Some(e),
+                )
+            })?;
 
             // Perform sovereign binding ceremony: attestation + DID↔EVM binding
             let binding_result =

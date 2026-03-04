@@ -71,7 +71,7 @@ pub fn has_wallet() -> bool {
 }
 
 pub fn has_wallet_with_paths(paths: &PqStoragePaths) -> bool {
-    paths.wallet_path.exists()
+    paths.wallet_path.exists() || config::pq_wallet_v2_path().exists()
 }
 
 pub fn keygen_pq(force: bool) -> Result<PqKeygenResult, String> {
@@ -137,6 +137,84 @@ pub fn sign_pq_payload(
         payload_kind,
         payload_hint,
     )
+}
+
+/// Load wallet from v2 encrypted file using the Sign scope key.
+pub fn load_wallet_v2(sign_scope_key: &[u8; 32]) -> Result<PqWallet, String> {
+    let v2_path = config::pq_wallet_v2_path();
+    let file = crate::halo::encrypted_file::EncryptedFileV2::load(&v2_path)?;
+    let plaintext = file.decrypt(sign_scope_key)?;
+    serde_json::from_slice(&plaintext)
+        .map_err(|e| format!("parse v2 wallet: {e}"))
+}
+
+/// Sign a payload using the v2 wallet (decrypted with Sign scope key).
+pub fn sign_pq_payload_v2(
+    sign_scope_key: &[u8; 32],
+    payload: &[u8],
+    payload_kind: &str,
+    payload_hint: Option<String>,
+) -> Result<(PqSignatureEnvelope, PathBuf), String> {
+    let wallet = load_wallet_v2(sign_scope_key)?;
+    let paths = default_storage_paths();
+    let kp = keypair_from_wallet_v2(&wallet)?;
+    let sig = kp
+        .signing_key()
+        .sign_deterministic(payload, PQ_CONTEXT)
+        .map_err(|_| "ML-DSA signing failed".to_string())?;
+    if !kp
+        .verifying_key()
+        .verify_with_context(payload, PQ_CONTEXT, &sig)
+    {
+        return Err("ML-DSA self-verification failed".to_string());
+    }
+    let signature_hex = hex_encode(sig.encode().as_slice());
+    let payload_sha256 = hex_encode(Sha256::digest(payload).as_slice());
+    let signature_digest = hex_encode(
+        Sha256::digest(
+            format!(
+                "agenthalo.sign.pq.v1:{}:{}:{}",
+                wallet.key_id, payload_sha256, signature_hex
+            )
+            .as_bytes(),
+        )
+        .as_slice(),
+    );
+    let envelope = PqSignatureEnvelope {
+        algorithm: "ml_dsa65".to_string(),
+        key_id: wallet.key_id.clone(),
+        public_key_hex: wallet.public_key_hex,
+        payload_sha256,
+        signature_hex,
+        signature_digest,
+        created_at: now_unix_secs(),
+        payload_kind: payload_kind.to_string(),
+        payload_hint,
+    };
+    let save_path = save_signature(&paths.signatures_dir, &envelope)?;
+    Ok((envelope, save_path))
+}
+
+/// Extract keypair from a v2 wallet (uses secret_seed_hex, no wrap key needed).
+fn keypair_from_wallet_v2(wallet: &PqWallet) -> Result<ml_dsa::KeyPair<MlDsa65>, String> {
+    let seed_hex = wallet
+        .secret_seed_hex
+        .as_deref()
+        .ok_or("v2 wallet missing secret_seed_hex")?;
+    let seed_arr = hex_decode_exact::<32>(seed_hex)?;
+    let seed = ml_dsa::Seed::try_from(seed_arr.as_slice())
+        .map_err(|_| "v2 wallet: ML-DSA seed construction failed".to_string())?;
+    Ok(MlDsa65::from_seed(&seed))
+}
+
+/// Get wallet key identity from v2 path.
+pub fn wallet_key_identity_v2(sign_scope_key: &[u8; 32]) -> Result<Option<(String, String)>, String> {
+    let v2_path = config::pq_wallet_v2_path();
+    if !v2_path.exists() {
+        return Ok(None);
+    }
+    let wallet = load_wallet_v2(sign_scope_key)?;
+    Ok(Some((wallet.key_id, wallet.public_key_hex)))
 }
 
 pub fn sign_pq_payload_with_paths(

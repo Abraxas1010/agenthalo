@@ -318,7 +318,7 @@ function renderCryptoOverlay(status) {
           await apiPost('/crypto/create-password', { password, confirm });
           _cryptoStatus = null;
           const ok = await ensureCryptoUnlocked(true);
-          if (ok) route();
+          if (ok) { await autoGenesis(); route(); }
         } catch (e) {
           if (errorEl) errorEl.textContent = String(e && e.message || e);
         } finally {
@@ -337,7 +337,7 @@ function renderCryptoOverlay(status) {
           await apiPost('/crypto/unlock', { password });
           _cryptoStatus = null;
           const ok = await ensureCryptoUnlocked(true);
-          if (ok) route();
+          if (ok) { await autoGenesis(); route(); }
         } catch (e) {
           if (errorEl) errorEl.textContent = String(e && e.message || e);
         } finally {
@@ -356,6 +356,27 @@ async function ensureCryptoUnlocked(force) {
   }
   hideCryptoOverlay();
   return true;
+}
+
+/// Auto-generate genesis seed silently if not already done.
+/// Called after password create/unlock so the DID is ready immediately.
+async function autoGenesis() {
+  try {
+    const status = await api('/genesis/status');
+    if (status && status.completed) {
+      _genesisComplete = true;
+      _genesisStatusFetchedAt = Date.now();
+      return;
+    }
+    const result = await apiPost('/genesis/harvest', {});
+    if (result && result.success) {
+      _genesisComplete = true;
+      _genesisStatusFetchedAt = Date.now();
+    }
+  } catch (e) {
+    // Non-fatal: genesis will be retried via the ceremony gate on next navigation.
+    console.warn('autoGenesis: silent harvest failed, will retry via ceremony:', e);
+  }
 }
 
 function genesisStageById(id) {
@@ -486,7 +507,7 @@ async function showGenesisCeremony() {
         ${esc(String(result.sources_count || sources.length || 0))} entropy sources combined
         ${result.curby_pulse_id ? ` · CURBy pulse #${esc(String(result.curby_pulse_id))}` : ''}
       </div>
-      <button class="genesis-continue-btn" onclick="completeGenesis()">Continue to Setup →</button>
+      <button class="genesis-continue-btn" onclick="completeGenesis()">Continue →</button>
     `;
   } catch (err) {
     const payload = (err && err.body && typeof err.body === 'object') ? err.body : err;
@@ -601,11 +622,18 @@ async function route() {
   const page = hash.split('/')[0];
   const arg = hash.split('/').slice(1).join('/');
 
-  // Genesis ceremony gate: if genesis hasn't completed and user isn't on setup or
-  // documentation pages, show the genesis overlay. Setup page handles its own genesis flow.
-  const GENESIS_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication'];
-  const genesisOk = await fetchGenesisStatus();
-  if (!genesisOk && !GENESIS_EXEMPT_PAGES.includes(page)) {
+  // Auto-genesis: silently generate genesis seed if crypto is unlocked but genesis
+  // hasn't run yet. This covers both password-protected (called after unlock) and
+  // no-password container (called on first route) cases.
+  let genesisOk = await fetchGenesisStatus();
+  if (!genesisOk) {
+    await autoGenesis();
+    _genesisComplete = null;  // force re-fetch
+    _genesisStatusFetchedAt = 0;
+    genesisOk = await fetchGenesisStatus();
+  }
+  // If auto-genesis still didn't work, gate on setup/genesis pages only.
+  if (!genesisOk && !['setup', 'genesis'].includes(page)) {
     if (overlay) overlay.style.display = '';
     showGenesisCeremony();
     return;
