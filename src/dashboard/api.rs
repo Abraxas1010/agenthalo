@@ -3849,14 +3849,20 @@ async fn api_p2pclaw_configure(
     if let Some(agent_id) = req.agent_id {
         let trimmed = agent_id.trim();
         if trimmed.is_empty() {
-            return Err(api_err(StatusCode::BAD_REQUEST, "agent_id must not be empty"));
+            return Err(api_err(
+                StatusCode::BAD_REQUEST,
+                "agent_id must not be empty",
+            ));
         }
         cfg.agent_id = trimmed.to_string();
     }
     if let Some(agent_name) = req.agent_name {
         let trimmed = agent_name.trim();
         if trimmed.is_empty() {
-            return Err(api_err(StatusCode::BAD_REQUEST, "agent_name must not be empty"));
+            return Err(api_err(
+                StatusCode::BAD_REQUEST,
+                "agent_name must not be empty",
+            ));
         }
         cfg.agent_name = trimmed.to_string();
     }
@@ -3894,8 +3900,7 @@ async fn api_p2pclaw_status(AxumState(_state): AxumState<DashboardState>) -> Api
 
 async fn api_p2pclaw_briefing(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let cfg = p2pclaw_load_config_for_api()?;
-    let briefing =
-        p2pclaw::get_briefing(&cfg).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    let briefing = p2pclaw::get_briefing(&cfg).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
     Ok(Json(json!({
         "ok": true,
         "briefing_markdown": briefing

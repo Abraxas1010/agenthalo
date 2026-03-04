@@ -28,8 +28,8 @@ use nucleusdb::halo::onchain::{
     load_onchain_config_or_default, onchain_simulation_enabled, post_attestation,
     warn_if_simulation_mode,
 };
-use nucleusdb::halo::password;
 use nucleusdb::halo::p2pclaw;
+use nucleusdb::halo::password;
 use nucleusdb::halo::pq::{has_wallet, sign_pq_payload_with_scope_key};
 use nucleusdb::halo::privacy_controller;
 use nucleusdb::halo::session_manager::SessionManager;
@@ -5809,8 +5809,7 @@ fn p2pclaw_require_enabled() -> Result<(), String> {
 
 fn p2pclaw_load_config() -> Result<p2pclaw::P2PClawConfig, String> {
     p2pclaw::load_config().map_err(|_| {
-        "P2PCLAW is not configured. Use p2pclaw_configure or dashboard Networking page."
-            .to_string()
+        "P2PCLAW is not configured. Use p2pclaw_configure or dashboard Networking page.".to_string()
     })
 }
 

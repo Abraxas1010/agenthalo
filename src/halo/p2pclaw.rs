@@ -54,7 +54,11 @@ struct P2PClawDiskConfig {
     auth_configured: bool,
     tier: String,
     last_connected_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "auth_secret_INSECURE")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "auth_secret_INSECURE"
+    )]
     auth_secret_insecure: Option<String>,
 }
 
@@ -303,12 +307,20 @@ pub fn ping(cfg: &P2PClawConfig) -> Result<SwarmStatus, String> {
         .unwrap_or(0),
         papers: extract_u64(
             &raw,
-            &[&["papers"], &["papers_in_la_rueda"], &["swarm", "papers_in_la_rueda"]],
+            &[
+                &["papers"],
+                &["papers_in_la_rueda"],
+                &["swarm", "papers_in_la_rueda"],
+            ],
         )
         .unwrap_or(0),
         mempool: extract_u64(
             &raw,
-            &[&["mempool"], &["papers_in_mempool"], &["swarm", "papers_in_mempool"]],
+            &[
+                &["mempool"],
+                &["papers_in_mempool"],
+                &["swarm", "papers_in_mempool"],
+            ],
         )
         .unwrap_or(0),
         last_event_ts: extract_u64(&raw, &[&["timestamp"], &["swarm", "last_seen"]]),
@@ -330,7 +342,11 @@ pub fn list_mempool(cfg: &P2PClawConfig) -> Result<Vec<Paper>, String> {
     parse_list_from_value(raw, &["papers", "mempool"])
 }
 
-pub fn publish_paper(cfg: &P2PClawConfig, title: &str, content: &str) -> Result<PaperResult, String> {
+pub fn publish_paper(
+    cfg: &P2PClawConfig,
+    title: &str,
+    content: &str,
+) -> Result<PaperResult, String> {
     let payload = json!({
         "title": title,
         "content": content,
@@ -451,8 +467,8 @@ fn request_get_text(
 fn request_post_json(cfg: &P2PClawConfig, path: &str, payload: &Value) -> Result<Value, String> {
     let url = build_url(cfg, path, &[])?;
     let body = serde_json::to_string(payload).map_err(|e| format!("serialize POST body: {e}"))?;
-    let mut req = http_client::post_with_timeout(&url, REQUEST_TIMEOUT)?
-        .content_type("application/json");
+    let mut req =
+        http_client::post_with_timeout(&url, REQUEST_TIMEOUT)?.content_type("application/json");
     let headers = build_auth_headers(cfg, &body)?;
     for (name, value) in headers {
         req = req.header(&name, &value);
@@ -568,7 +584,8 @@ pub fn compute_auth_signature(
 
 fn compute_auth_signature_message(message: &str, secret: &str) -> Result<String, String> {
     // TODO(pq): upgrade to HMAC-SHA512 when P2PCLAW server supports it.
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|e| format!("hmac init: {e}"))?;
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).map_err(|e| format!("hmac init: {e}"))?;
     mac.update(message.as_bytes());
     Ok(hex::encode(mac.finalize().into_bytes()))
 }

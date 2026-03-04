@@ -88,14 +88,18 @@ fn config_roundtrip_without_secret_field() {
     assert_eq!(loaded.last_connected_at, 42);
 
     let raw = std::fs::read_to_string(config::p2pclaw_config_path()).expect("read config file");
-    assert!(!raw.contains("auth_secret"), "config must not include secret fields");
+    assert!(
+        !raw.contains("auth_secret"),
+        "config must not include secret fields"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]
 fn auth_signature_vectors_match_expected_values() {
-    let get_sig = p2pclaw::compute_auth_signature("agenthalo-alice", 1_700_000_000_123, "", "s3cr3t")
-        .expect("compute get signature");
+    let get_sig =
+        p2pclaw::compute_auth_signature("agenthalo-alice", 1_700_000_000_123, "", "s3cr3t")
+            .expect("compute get signature");
     assert_eq!(
         get_sig,
         "b989cdb49fbe8981ffcff94316c754d3348b29a19e9f997d633dc1c982b7cd35"
@@ -153,8 +157,8 @@ fn configure_stores_secret_in_vault_when_wallet_available() {
         tier: "tier2".to_string(),
         last_connected_at: 0,
     };
-    let configured = p2pclaw::configure(&mut cfg, Some("top-secret".to_string()))
-        .expect("configure p2pclaw");
+    let configured =
+        p2pclaw::configure(&mut cfg, Some("top-secret".to_string())).expect("configure p2pclaw");
     assert!(configured.auth_in_vault);
     assert!(configured.auth_configured);
 
