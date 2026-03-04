@@ -713,17 +713,31 @@ fn cmd_keygen(args: &[String]) -> Result<(), String> {
 }
 
 fn print_existing_wallet_info(protected_by_genesis: bool) -> Result<(), String> {
-    let (key_id, public_key_hex) = wallet_key_identity()?
-        .ok_or_else(|| "wallet present but unreadable; cannot resolve key identity".to_string())?;
-    let out = serde_json::json!({
-        "status": "ok",
-        "already_exists": true,
-        "protected_by_sealed_genesis": protected_by_genesis,
-        "algorithm": "ml_dsa65",
-        "key_id": key_id,
-        "public_key_hex": public_key_hex,
-        "wallet_path": config::pq_wallet_path().display().to_string(),
-    });
+    let out = match wallet_key_identity() {
+        Ok(Some((key_id, public_key_hex))) => serde_json::json!({
+            "status": "ok",
+            "already_exists": true,
+            "protected_by_sealed_genesis": protected_by_genesis,
+            "algorithm": "ml_dsa65",
+            "key_id": key_id,
+            "public_key_hex": public_key_hex,
+            "wallet_path": config::pq_wallet_path().display().to_string(),
+        }),
+        Ok(None) | Err(_) if config::pq_wallet_v2_path().exists() => serde_json::json!({
+            "status": "ok",
+            "already_exists": true,
+            "protected_by_sealed_genesis": protected_by_genesis,
+            "algorithm": "ml_dsa65",
+            "wallet_storage": "v2_encrypted",
+            "unlock_required": true,
+            "wallet_path": config::pq_wallet_v2_path().display().to_string(),
+            "note": "wallet key identity is available after crypto unlock (Sign scope).",
+        }),
+        Ok(None) => {
+            return Err("wallet present but unreadable; cannot resolve key identity".to_string());
+        }
+        Err(e) => return Err(e),
+    };
     println!(
         "{}",
         serde_json::to_string_pretty(&out).map_err(|e| format!("serialize keygen output: {e}"))?

@@ -29,7 +29,7 @@ use nucleusdb::halo::onchain::{
     warn_if_simulation_mode,
 };
 use nucleusdb::halo::password;
-use nucleusdb::halo::pq::{has_wallet, sign_pq_payload};
+use nucleusdb::halo::pq::{has_wallet, sign_pq_payload_with_scope_key};
 use nucleusdb::halo::privacy_controller;
 use nucleusdb::halo::session_manager::SessionManager;
 use nucleusdb::halo::trace::{
@@ -1920,6 +1920,20 @@ fn mcp_require_scope(scope: CryptoScope) -> Result<(), String> {
             .map(|_| ())
             .map_err(|_| format!("unlock required (scope: {})", scope.as_str()))
     })
+}
+
+fn mcp_scope_key_bytes(scope: CryptoScope) -> Result<Option<[u8; 32]>, String> {
+    if !encrypted_file::header_exists() {
+        return Ok(None);
+    }
+    with_mcp_crypto_state(|crypto| {
+        let key = crypto
+            .session
+            .get_scope_key(scope)
+            .map_err(|_| format!("unlock required (scope: {})", scope.as_str()))?;
+        Ok(*key.key_bytes())
+    })
+    .map(Some)
 }
 
 fn mcp_genesis_is_completed_status(status: &str) -> bool {
@@ -4526,6 +4540,7 @@ fn tool_audit_contract(arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_sign_pq(arguments: Value) -> Result<Value, String> {
+    mcp_require_scope(CryptoScope::Sign)?;
     if !has_wallet() {
         return Err("no PQ wallet found. Generate one via the CLI: agenthalo keygen --pq (this requires terminal access).".to_string());
     }
@@ -4549,7 +4564,13 @@ fn tool_sign_pq(arguments: Value) -> Result<Value, String> {
     };
 
     let op = "sign_pq";
-    match sign_pq_payload(&payload, &payload_kind, payload_hint) {
+    let sign_scope_key = mcp_scope_key_bytes(CryptoScope::Sign)?;
+    match sign_pq_payload_with_scope_key(
+        sign_scope_key.as_ref(),
+        &payload,
+        &payload_kind,
+        payload_hint,
+    ) {
         Ok((envelope, save_path)) => {
             record_paid_operation_for_halo(
                 op,
@@ -6589,6 +6610,34 @@ mod tests {
         let err = tool_crypto_unlock(json!({"password": "WrongPass123!"}))
             .expect_err("wrong password should fail");
         assert!(err.to_ascii_lowercase().contains("invalid password"));
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn tool_sign_pq_uses_v2_wallet_after_password_migration() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_sign_v2_wallet");
+        std::env::set_var("AGENTHALO_HOME", &home);
+        let _ = nucleusdb::halo::pq::keygen_pq(false).expect("bootstrap legacy wallet");
+
+        let created = tool_crypto_create_password(json!({
+            "password": "StrongPass123!",
+            "confirm": "StrongPass123!"
+        }))
+        .expect("create password");
+        assert_eq!(created["status"], "ok");
+        assert_eq!(created["migration_status"], "v2_unlocked");
+
+        let out = tool_sign_pq(json!({
+            "message": "hello from v2 wallet"
+        }))
+        .expect("sign with v2 wallet");
+        assert_eq!(out["status"], "ok");
+        let signature_path = out["signature_path"].as_str().expect("signature path");
+        assert!(std::path::Path::new(signature_path).exists());
+        assert_eq!(out["signature"]["algorithm"], "ml_dsa65");
 
         std::env::remove_var("AGENTHALO_HOME");
         let _ = std::fs::remove_dir_all(&home);

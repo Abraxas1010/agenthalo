@@ -71,7 +71,7 @@ pub fn has_wallet() -> bool {
 }
 
 pub fn has_wallet_with_paths(paths: &PqStoragePaths) -> bool {
-    paths.wallet_path.exists() || config::pq_wallet_v2_path().exists()
+    paths.wallet_path.exists() || paths.wallet_path.with_file_name("pq_wallet.v2.enc").exists()
 }
 
 pub fn keygen_pq(force: bool) -> Result<PqKeygenResult, String> {
@@ -91,7 +91,8 @@ pub fn keygen_pq_with_paths(paths: &PqStoragePaths, force: bool) -> Result<PqKey
     })?;
 
     let wallet_path = &paths.wallet_path;
-    if wallet_path.exists() && !force {
+    let v2_wallet_path = wallet_path.with_file_name("pq_wallet.v2.enc");
+    if (wallet_path.exists() || v2_wallet_path.exists()) && !force {
         return Err(format!(
             "PQ wallet already exists at {} (use --force to rotate)",
             wallet_path.display()
@@ -131,12 +132,36 @@ pub fn sign_pq_payload(
     payload_kind: &str,
     payload_hint: Option<String>,
 ) -> Result<(PqSignatureEnvelope, PathBuf), String> {
-    sign_pq_payload_with_paths(
-        &default_storage_paths(),
-        payload,
-        payload_kind,
-        payload_hint,
-    )
+    sign_pq_payload_with_scope_key(None, payload, payload_kind, payload_hint)
+}
+
+pub fn sign_pq_payload_with_scope_key(
+    sign_scope_key: Option<&[u8; 32]>,
+    payload: &[u8],
+    payload_kind: &str,
+    payload_hint: Option<String>,
+) -> Result<(PqSignatureEnvelope, PathBuf), String> {
+    let paths = default_storage_paths();
+    let v2_wallet_path = paths.wallet_path.with_file_name("pq_wallet.v2.enc");
+    if paths.wallet_path.exists() {
+        return sign_pq_payload_with_paths(&paths, payload, payload_kind, payload_hint);
+    }
+    if v2_wallet_path.exists() {
+        let key = sign_scope_key.ok_or_else(|| {
+            "v2 wallet requires unlocked Sign scope key; unlock crypto and retry".to_string()
+        })?;
+        return sign_pq_payload_v2(key, payload, payload_kind, payload_hint);
+    }
+    Err("no PQ wallet found. Run: agenthalo keygen --pq (or --force to rotate)".to_string())
+}
+
+pub fn sign_pq_payload_with_paths(
+    paths: &PqStoragePaths,
+    payload: &[u8],
+    payload_kind: &str,
+    payload_hint: Option<String>,
+) -> Result<(PqSignatureEnvelope, PathBuf), String> {
+    sign_pq_payload_with_paths_impl(paths, payload, payload_kind, payload_hint)
 }
 
 /// Load wallet from v2 encrypted file using the Sign scope key.
@@ -144,8 +169,7 @@ pub fn load_wallet_v2(sign_scope_key: &[u8; 32]) -> Result<PqWallet, String> {
     let v2_path = config::pq_wallet_v2_path();
     let file = crate::halo::encrypted_file::EncryptedFileV2::load(&v2_path)?;
     let plaintext = file.decrypt(sign_scope_key)?;
-    serde_json::from_slice(&plaintext)
-        .map_err(|e| format!("parse v2 wallet: {e}"))
+    serde_json::from_slice(&plaintext).map_err(|e| format!("parse v2 wallet: {e}"))
 }
 
 /// Sign a payload using the v2 wallet (decrypted with Sign scope key).
@@ -208,7 +232,9 @@ fn keypair_from_wallet_v2(wallet: &PqWallet) -> Result<ml_dsa::KeyPair<MlDsa65>,
 }
 
 /// Get wallet key identity from v2 path.
-pub fn wallet_key_identity_v2(sign_scope_key: &[u8; 32]) -> Result<Option<(String, String)>, String> {
+pub fn wallet_key_identity_v2(
+    sign_scope_key: &[u8; 32],
+) -> Result<Option<(String, String)>, String> {
     let v2_path = config::pq_wallet_v2_path();
     if !v2_path.exists() {
         return Ok(None);
@@ -217,7 +243,7 @@ pub fn wallet_key_identity_v2(sign_scope_key: &[u8; 32]) -> Result<Option<(Strin
     Ok(Some((wallet.key_id, wallet.public_key_hex)))
 }
 
-pub fn sign_pq_payload_with_paths(
+fn sign_pq_payload_with_paths_impl(
     paths: &PqStoragePaths,
     payload: &[u8],
     payload_kind: &str,
@@ -287,7 +313,14 @@ pub fn key_id_for_public_key(public_key_hex: &str) -> String {
 
 pub fn wallet_key_identity() -> Result<Option<(String, String)>, String> {
     let paths = default_storage_paths();
+    let v2_wallet_path = paths.wallet_path.with_file_name("pq_wallet.v2.enc");
     if !paths.wallet_path.exists() {
+        if v2_wallet_path.exists() {
+            return Err(
+                "v2 wallet identity requires unlocked Sign scope key; use wallet_key_identity_v2"
+                    .to_string(),
+            );
+        }
         return Ok(None);
     }
     let wallet = load_wallet(&paths.wallet_path)?;
@@ -642,4 +675,5 @@ mod tests {
         assert!(wallet.encrypted_seed.is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
+
 }
