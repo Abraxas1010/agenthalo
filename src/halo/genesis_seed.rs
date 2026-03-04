@@ -112,8 +112,8 @@ pub fn store_seed_once_v2(
     combined_entropy_sha256: &str,
     genesis_scope_key: &[u8; 32],
 ) -> Result<(), String> {
-    use crate::halo::encrypted_file::EncryptedFileV2;
     use crate::halo::crypto_scope::CryptoScope;
+    use crate::halo::encrypted_file::EncryptedFileV2;
     crate::halo::config::ensure_halo_dir()?;
     let v2_path = crate::halo::config::genesis_seed_v2_path();
     if v2_path.exists() {
@@ -132,7 +132,12 @@ pub fn store_seed_once_v2(
     };
     let plaintext =
         serde_json::to_vec(&payload).map_err(|e| format!("serialize genesis seed: {e}"))?;
-    let file = EncryptedFileV2::encrypt(&plaintext, genesis_scope_key, CryptoScope::Genesis, &header.kdf)?;
+    let file = EncryptedFileV2::encrypt(
+        &plaintext,
+        genesis_scope_key,
+        CryptoScope::Genesis,
+        &header.kdf,
+    )?;
     file.save(&v2_path)?;
     Ok(())
 }
@@ -233,8 +238,8 @@ pub fn load_seed_bytes_v2(genesis_scope_key: &[u8; 32]) -> Result<Option<[u8; 64
     }
     let file = crate::halo::encrypted_file::EncryptedFileV2::load(&v2_path)?;
     let plaintext = file.decrypt(genesis_scope_key)?;
-    let payload: StoredGenesisSeed = serde_json::from_slice(&plaintext)
-        .map_err(|e| format!("parse v2 genesis seed: {e}"))?;
+    let payload: StoredGenesisSeed =
+        serde_json::from_slice(&plaintext).map_err(|e| format!("parse v2 genesis seed: {e}"))?;
     if payload.schema != "agenthalo.genesis.seed.v1" {
         return Err(format!(
             "unsupported genesis seed schema {}",
@@ -261,8 +266,8 @@ pub fn load_seed_sha256_v2(genesis_scope_key: &[u8; 32]) -> Result<Option<String
     }
     let file = crate::halo::encrypted_file::EncryptedFileV2::load(&v2_path)?;
     let plaintext = file.decrypt(genesis_scope_key)?;
-    let payload: StoredGenesisSeed = serde_json::from_slice(&plaintext)
-        .map_err(|e| format!("parse v2 genesis seed: {e}"))?;
+    let payload: StoredGenesisSeed =
+        serde_json::from_slice(&plaintext).map_err(|e| format!("parse v2 genesis seed: {e}"))?;
     Ok(Some(payload.combined_entropy_sha256))
 }
 
@@ -277,9 +282,7 @@ pub fn derive_wallet_entropy32_v2(
 }
 
 /// Derive wallet mnemonic via v2 path.
-pub fn derive_wallet_mnemonic_v2(
-    genesis_scope_key: &[u8; 32],
-) -> Result<Option<String>, String> {
+pub fn derive_wallet_mnemonic_v2(genesis_scope_key: &[u8; 32]) -> Result<Option<String>, String> {
     let Some(entropy) = derive_wallet_entropy32_v2(genesis_scope_key)? else {
         return Ok(None);
     };

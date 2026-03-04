@@ -223,7 +223,9 @@ async fn didcomm_receive(
     State(_state): State<Arc<AppState>>,
     Json(envelope): Json<nucleusdb::comms::didcomm::DIDCommEnvelope>,
 ) -> (StatusCode, Json<Value>) {
-    use nucleusdb::comms::didcomm::{decrypt_message, MessageType};
+    use nucleusdb::comms::didcomm::{
+        decrypt_message, encrypt_message, DIDCommMessage, MessageType,
+    };
 
     let local_identity = match load_local_did_identity() {
         Ok(identity) => identity,
@@ -249,25 +251,13 @@ async fn didcomm_receive(
         }
     };
 
-    let message = match tokio::task::spawn_blocking(move || {
-        decrypt_message(&local_identity, &sender_doc, &envelope)
-    })
-    .await
-    {
-        Ok(Ok(msg)) => msg,
-        Ok(Err(e)) => {
+    let message = match decrypt_message(&local_identity, &sender_doc, &envelope) {
+        Ok(msg) => msg,
+        Err(e) => {
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({
                     "error": format!("envelope verification/decryption failed: {e}")
-                })),
-            );
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": format!("decrypt task failed: {e}")
                 })),
             );
         }
@@ -277,21 +267,96 @@ async fn didcomm_receive(
         return (StatusCode::GONE, Json(json!({"error":"message expired"})));
     }
 
-    let response = match message.type_ {
-        MessageType::Heartbeat => json!({
-            "status": "ack",
-            "reply_to": message.id,
-        }),
-        MessageType::EnvelopeExchange => json!({
-            "status": "accepted",
-            "reply_to": message.id,
-            "message_type": "envelope_exchange",
-        }),
-        MessageType::CapabilityGrant => json!({
-            "status": "accepted",
-            "reply_to": message.id,
-            "message_type": "capability_grant",
-        }),
+    let response_envelope = match message.type_ {
+        MessageType::Heartbeat => {
+            let reply = DIDCommMessage {
+                id: nucleusdb::comms::envelope::generate_message_id(),
+                type_: MessageType::Heartbeat,
+                from: local_identity.did.clone(),
+                to: vec![sender_doc.id.clone()],
+                created_time: nucleusdb::pod::now_unix(),
+                expires_time: Some(nucleusdb::pod::now_unix() + 300),
+                body: json!({
+                    "status": "ack",
+                    "reply_to": message.id,
+                }),
+                thid: Some(message.id.clone()),
+                pthid: message.thid.clone(),
+            };
+            match encrypt_message(&local_identity, &sender_doc, &reply) {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": format!("encrypt heartbeat reply failed: {e}")
+                        })),
+                    );
+                }
+            }
+        }
+        MessageType::EnvelopeExchange => {
+            let reply = DIDCommMessage {
+                id: nucleusdb::comms::envelope::generate_message_id(),
+                type_: MessageType::EnvelopeExchange,
+                from: local_identity.did.clone(),
+                to: vec![sender_doc.id.clone()],
+                created_time: nucleusdb::pod::now_unix(),
+                expires_time: Some(nucleusdb::pod::now_unix() + 300),
+                body: json!({
+                    "status": "accepted",
+                    "reply_to": message.id,
+                    "message_type": "envelope_exchange",
+                }),
+                thid: Some(message.id.clone()),
+                pthid: message.thid.clone(),
+            };
+            match encrypt_message(&local_identity, &sender_doc, &reply) {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": format!("encrypt envelope-exchange reply failed: {e}")
+                        })),
+                    );
+                }
+            }
+        }
+        MessageType::CapabilityGrant => {
+            let capability_result =
+                persist_received_capability_grant(&local_identity.did, &message.body);
+            let reply = DIDCommMessage {
+                id: nucleusdb::comms::envelope::generate_message_id(),
+                type_: MessageType::CapabilityAccept,
+                from: local_identity.did.clone(),
+                to: vec![sender_doc.id.clone()],
+                created_time: nucleusdb::pod::now_unix(),
+                expires_time: Some(nucleusdb::pod::now_unix() + 300),
+                body: match capability_result {
+                    Ok(payload) => payload,
+                    Err(error) => json!({
+                        "status": "rejected",
+                        "reply_to": message.id,
+                        "message_type": "capability_grant",
+                        "error": error,
+                    }),
+                },
+                thid: Some(message.id.clone()),
+                pthid: message.thid.clone(),
+            };
+            match encrypt_message(&local_identity, &sender_doc, &reply) {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": format!("encrypt capability reply failed: {e}")
+                        })),
+                    );
+                }
+            }
+        }
         MessageType::McpToolCall => {
             let tool_name = match message.body.get("tool_name").and_then(|v| v.as_str()) {
                 Some(name) if !name.trim().is_empty() => name.to_string(),
@@ -307,32 +372,89 @@ async fn didcomm_receive(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            match tool_call(&tool_name, arguments) {
-                Ok(result) => json!({
-                    "status": "completed",
-                    "reply_to": message.id,
-                    "message_type": "mcp_tool_call",
-                    "tool_name": tool_name,
-                    "result": result,
-                }),
+            let result_payload =
+                match authorize_didcomm_tool_call(&local_identity.did, &message.from, &tool_name) {
+                    Ok(()) => match tool_call(&tool_name, arguments) {
+                        Ok(result) => json!({
+                            "status": "completed",
+                            "reply_to": message.id,
+                            "message_type": "mcp_tool_call",
+                            "tool_name": tool_name,
+                            "result": result,
+                        }),
+                        Err(e) => json!({
+                            "status": "failed",
+                            "reply_to": message.id,
+                            "message_type": "mcp_tool_call",
+                            "tool_name": tool_name,
+                            "error": format!("local MCP dispatch failed: {e}"),
+                        }),
+                    },
+                    Err(e) => json!({
+                        "status": "forbidden",
+                        "reply_to": message.id,
+                        "message_type": "mcp_tool_call",
+                        "tool_name": tool_name,
+                        "error": e,
+                    }),
+                };
+            match nucleusdb::comms::envelope::wrap_mcp_response(
+                &local_identity,
+                &sender_doc,
+                &tool_name,
+                result_payload,
+                Some(&message.id),
+            ) {
+                Ok(envelope) => envelope,
                 Err(e) => {
                     return (
-                        StatusCode::BAD_GATEWAY,
+                        StatusCode::INTERNAL_SERVER_ERROR,
                         Json(json!({
-                            "error": format!("local MCP dispatch failed: {e}")
+                            "error": format!("encrypt McpToolResponse failed: {e}")
                         })),
                     );
                 }
             }
         }
-        other => json!({
-            "status": "received",
-            "reply_to": message.id,
-            "message_type": format!("{other:?}"),
-        }),
+        other => {
+            let reply = DIDCommMessage {
+                id: nucleusdb::comms::envelope::generate_message_id(),
+                type_: other.clone(),
+                from: local_identity.did.clone(),
+                to: vec![sender_doc.id.clone()],
+                created_time: nucleusdb::pod::now_unix(),
+                expires_time: Some(nucleusdb::pod::now_unix() + 300),
+                body: json!({
+                    "status": "received",
+                    "reply_to": message.id,
+                    "message_type": format!("{other:?}"),
+                }),
+                thid: Some(message.id.clone()),
+                pthid: message.thid.clone(),
+            };
+            match encrypt_message(&local_identity, &sender_doc, &reply) {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "error": format!("encrypt DIDComm reply failed: {e}")
+                        })),
+                    );
+                }
+            }
+        }
     };
 
-    (StatusCode::OK, Json(response))
+    match serde_json::to_value(response_envelope) {
+        Ok(value) => (StatusCode::OK, Json(value)),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": format!("serialize DIDComm response envelope failed: {e}")
+            })),
+        ),
+    }
 }
 
 fn load_local_did_identity() -> Result<nucleusdb::halo::did::DIDIdentity, String> {
@@ -434,6 +556,54 @@ fn resolve_sender_did_from_mesh(
     }
     Err(format!(
         "cannot resolve DID document for `{sender_did}` — peer not in mesh registry"
+    ))
+}
+
+fn persist_received_capability_grant(local_did: &str, body: &Value) -> Result<Value, String> {
+    let token_value = body
+        .get("capability_token")
+        .ok_or_else(|| "CapabilityGrant message missing capability_token".to_string())?
+        .clone();
+    let token: capability::CapabilityToken =
+        serde_json::from_value(token_value).map_err(|e| format!("parse capability_token: {e}"))?;
+    if token.grantee_did != local_did {
+        return Err(format!(
+            "capability grantee `{}` does not match local DID `{}`",
+            token.grantee_did, local_did
+        ));
+    }
+    capability::verify_capability(&token, now_unix_secs())?;
+    let path = config::capability_store_path();
+    let mut store = CapabilityStore::load_or_default(&path)?;
+    let exists = store.tokens.iter().any(|t| t.token_id == token.token_id);
+    if !exists {
+        store.create(token.clone());
+        store.save(&path)?;
+    }
+    Ok(json!({
+        "status": "accepted",
+        "message_type": "capability_grant",
+        "capability_token_id": hex::encode(token.token_id),
+        "already_present": exists,
+    }))
+}
+
+fn authorize_didcomm_tool_call(
+    local_did: &str,
+    sender_did: &str,
+    tool_name: &str,
+) -> Result<(), String> {
+    if sender_did == local_did {
+        return Ok(());
+    }
+    let path = config::capability_store_path();
+    let store = CapabilityStore::load_or_default(&path)?;
+    let now = now_unix_secs();
+    if capability::store_authorizes_tool_call(&store, sender_did, tool_name, now) {
+        return Ok(());
+    }
+    Err(format!(
+        "DIDComm authorization denied for sender `{sender_did}` on tool `{tool_name}`"
     ))
 }
 
@@ -5624,8 +5794,33 @@ fn mesh_call_didcomm(
         .into_body()
         .read_json()
         .map_err(|e| format!("parse DIDComm response: {e}"))?;
+    if let Ok(response_envelope) =
+        serde_json::from_value::<nucleusdb::comms::didcomm::DIDCommEnvelope>(result.clone())
+    {
+        let (response_tool, response_payload) = nucleusdb::comms::envelope::unwrap_mcp_response(
+            &local_identity,
+            &peer_doc,
+            &response_envelope,
+        )?;
+        if response_tool != tool_name {
+            return Err(format!(
+                "DIDComm response tool mismatch: expected `{tool_name}`, got `{response_tool}`"
+            ));
+        }
+        if let Some(status) = response_payload.get("status").and_then(|v| v.as_str()) {
+            if matches!(status, "failed" | "forbidden" | "rejected") {
+                let detail = response_payload
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("remote DIDComm tool call failed");
+                return Err(format!("remote DIDComm tool call rejected: {detail}"));
+            }
+        }
+        return Ok((response_payload, "didcomm-v2".to_string()));
+    }
 
-    Ok((result, "didcomm-v2".to_string()))
+    // Backward compatibility with older peers returning plaintext JSON.
+    Ok((result, "didcomm-v2-legacy-plaintext".to_string()))
 }
 
 fn tool_mesh_peers(_arguments: Value) -> Result<Value, String> {
@@ -5823,6 +6018,12 @@ fn tool_mesh_grant(arguments: Value) -> Result<Value, String> {
         now.saturating_add(duration_secs),
         false,
     )?;
+    let mut store = CapabilityStore::load_or_default(&config::capability_store_path())?;
+    let already_present = store.tokens.iter().any(|t| t.token_id == token.token_id);
+    if !already_present {
+        store.create(token.clone());
+        store.save(&config::capability_store_path())?;
+    }
 
     Ok(json!({
         "status": "ok",
@@ -5832,6 +6033,7 @@ fn tool_mesh_grant(arguments: Value) -> Result<Value, String> {
         "modes": mode_values,
         "expires_at": now.saturating_add(duration_secs),
         "peer_agent_id": peer_agent_id,
+        "persisted": !already_present,
     }))
 }
 
@@ -7081,6 +7283,27 @@ mod tests {
         let bob = nucleusdb::halo::did::did_from_genesis_seed(&bob_seed).expect("bob");
         std::env::set_var("NUCLEUSDB_AGENT_PRIVATE_KEY", hex::encode(bob_seed));
 
+        let now = nucleusdb::halo::util::now_unix_secs();
+        let token = capability::create_capability(
+            &bob,
+            &alice.did,
+            capability::AgentClass::Specific {
+                did_uri: alice.did.clone(),
+            },
+            &["sync".to_string()],
+            &[capability::AccessMode::Read],
+            now.saturating_sub(10),
+            now.saturating_add(600),
+            false,
+        )
+        .expect("create capability");
+        let mut cap_store = CapabilityStore::load_or_default(&config::capability_store_path())
+            .expect("load capability store");
+        cap_store.create(token);
+        cap_store
+            .save(&config::capability_store_path())
+            .expect("save capability store");
+
         let discovery_app = Router::new().route(
             "/.well-known/nucleus-pod",
             get({
@@ -7147,9 +7370,121 @@ mod tests {
             .join()
             .expect("didcomm test thread join");
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(payload.0["status"], "completed");
-        assert_eq!(payload.0["tool_name"], "sync");
-        assert!(payload.0.get("result").is_some());
+        let response_envelope: nucleusdb::comms::didcomm::DIDCommEnvelope =
+            serde_json::from_value(payload.0).expect("response must be DIDComm envelope");
+        let (tool_name, result) = nucleusdb::comms::envelope::unwrap_mcp_response(
+            &alice,
+            &bob.did_document,
+            &response_envelope,
+        )
+        .expect("unwrap mcp response");
+        assert_eq!(tool_name, "sync");
+        assert_eq!(result["status"], "completed");
+        assert_eq!(result["tool_name"], "sync");
+        assert!(result.get("result").is_some());
+
+        discovery_server.abort();
+        std::env::remove_var("NUCLEUSDB_MESH_REGISTRY");
+        std::env::remove_var("NUCLEUSDB_AGENT_PRIVATE_KEY");
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn didcomm_receive_rejects_tool_call_without_capability_grant() {
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::time::Duration;
+
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_didcomm_rejects_without_cap");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let alice_seed = [0x81u8; 64];
+        let bob_seed = [0x82u8; 64];
+        let alice = nucleusdb::halo::did::did_from_genesis_seed(&alice_seed).expect("alice");
+        let bob = nucleusdb::halo::did::did_from_genesis_seed(&bob_seed).expect("bob");
+        std::env::set_var("NUCLEUSDB_AGENT_PRIVATE_KEY", hex::encode(bob_seed));
+
+        let discovery_app = Router::new().route(
+            "/.well-known/nucleus-pod",
+            get({
+                let doc = alice.did_document.clone();
+                move || {
+                    let doc = doc.clone();
+                    async move { Json(json!({"did_document": doc})) }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind discovery");
+        let addr = listener.local_addr().expect("discovery addr");
+        let discovery_server = tokio::spawn(async move {
+            let _ = axum::serve(listener, discovery_app).await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let registry_path = home.join("mesh-peers.json");
+        let mut registry = nucleusdb::container::mesh::PeerRegistry::new();
+        let now = nucleusdb::pod::now_unix();
+        registry.register(nucleusdb::container::mesh::PeerInfo {
+            agent_id: "agent-alice".to_string(),
+            container_name: "alice".to_string(),
+            did_uri: Some(alice.did.clone()),
+            mcp_endpoint: format!("http://{addr}/mcp"),
+            discovery_endpoint: format!("http://{addr}/.well-known/nucleus-pod"),
+            registered_at: now,
+            last_seen: now,
+        });
+        registry.save(&registry_path).expect("save registry");
+        std::env::set_var(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.display().to_string(),
+        );
+
+        let envelope = nucleusdb::comms::envelope::wrap_mcp_call(
+            &alice,
+            &bob.did_document,
+            "sync",
+            json!({"target":"didcomm-test"}),
+        )
+        .expect("wrap didcomm mcp call");
+        let (status, payload) = std::thread::Builder::new()
+            .name("didcomm_receive_large_stack_reject".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build runtime");
+                runtime.block_on(async move {
+                    didcomm_receive(
+                        State(Arc::new(AppState {
+                            secret: "test-secret".to_string(),
+                        })),
+                        Json(envelope),
+                    )
+                    .await
+                })
+            })
+            .expect("spawn didcomm test thread")
+            .join()
+            .expect("didcomm test thread join");
+        assert_eq!(status, StatusCode::OK);
+        let response_envelope: nucleusdb::comms::didcomm::DIDCommEnvelope =
+            serde_json::from_value(payload.0).expect("response must be DIDComm envelope");
+        let (_, result) = nucleusdb::comms::envelope::unwrap_mcp_response(
+            &alice,
+            &bob.did_document,
+            &response_envelope,
+        )
+        .expect("unwrap mcp response");
+        assert_eq!(result["status"], "forbidden");
+        assert!(result["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("authorization denied"));
 
         discovery_server.abort();
         std::env::remove_var("NUCLEUSDB_MESH_REGISTRY");

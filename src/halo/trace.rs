@@ -595,7 +595,6 @@ fn event_content_hash(content: &serde_json::Value) -> Result<String, String> {
     ))
 }
 
-
 fn session_base_key(session_id: &str) -> String {
     format!("{SESSION_PREFIX}{session_id}")
 }

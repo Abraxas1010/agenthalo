@@ -192,7 +192,7 @@ async fn didcomm_receive_handler(
     axum::extract::State(state): axum::extract::State<DidcommRouteState>,
     axum::Json(envelope): axum::Json<crate::comms::didcomm::DIDCommEnvelope>,
 ) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
-    use crate::comms::didcomm::{decrypt_message, MessageType};
+    use crate::comms::didcomm::{decrypt_message, encrypt_message, DIDCommMessage, MessageType};
 
     // Prefer startup-captured identity and fallback to env only if unavailable.
     let identity = match state
@@ -241,9 +241,10 @@ async fn didcomm_receive_handler(
 
     // Decrypt and verify in a blocking worker so heavyweight crypto does not
     // consume async runtime stack budget.
-    let local_did = identity.did.clone();
+    let decrypt_identity = identity.clone();
+    let decrypt_sender_doc = sender_doc.clone();
     let message = match tokio::task::spawn_blocking(move || {
-        decrypt_message(identity.as_ref(), &sender_doc, &envelope)
+        decrypt_message(decrypt_identity.as_ref(), &decrypt_sender_doc, &envelope)
     })
     .await
     {
@@ -275,28 +276,96 @@ async fn didcomm_receive_handler(
         );
     }
 
-    // Dispatch based on message type.
-    let response_body = match message.type_ {
+    // Dispatch based on message type and return encrypted DIDComm response.
+    let response_envelope = match message.type_ {
         MessageType::Heartbeat => {
-            serde_json::json!({
-                "status": "ack",
-                "reply_to": message.id,
-                "agent_id": local_did,
-            })
+            let reply = DIDCommMessage {
+                id: crate::comms::envelope::generate_message_id(),
+                type_: MessageType::Heartbeat,
+                from: identity.did.clone(),
+                to: vec![sender_doc.id.clone()],
+                created_time: crate::pod::now_unix(),
+                expires_time: Some(crate::pod::now_unix() + 300),
+                body: serde_json::json!({
+                    "status": "ack",
+                    "reply_to": message.id,
+                    "agent_id": identity.did.clone(),
+                }),
+                thid: Some(message.id.clone()),
+                pthid: message.thid.clone(),
+            };
+            match encrypt_message(identity.as_ref(), &sender_doc, &reply) {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(serde_json::json!({
+                            "error": format!("encrypt heartbeat reply failed: {e}"),
+                        })),
+                    );
+                }
+            }
         }
         MessageType::EnvelopeExchange => {
-            serde_json::json!({
-                "status": "accepted",
-                "reply_to": message.id,
-                "message_type": "envelope_exchange",
-            })
+            let reply = DIDCommMessage {
+                id: crate::comms::envelope::generate_message_id(),
+                type_: MessageType::EnvelopeExchange,
+                from: identity.did.clone(),
+                to: vec![sender_doc.id.clone()],
+                created_time: crate::pod::now_unix(),
+                expires_time: Some(crate::pod::now_unix() + 300),
+                body: serde_json::json!({
+                    "status": "accepted",
+                    "reply_to": message.id,
+                    "message_type": "envelope_exchange",
+                }),
+                thid: Some(message.id.clone()),
+                pthid: message.thid.clone(),
+            };
+            match encrypt_message(identity.as_ref(), &sender_doc, &reply) {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(serde_json::json!({
+                            "error": format!("encrypt envelope-exchange reply failed: {e}"),
+                        })),
+                    );
+                }
+            }
         }
         MessageType::CapabilityGrant => {
-            serde_json::json!({
-                "status": "accepted",
-                "reply_to": message.id,
-                "message_type": "capability_grant",
-            })
+            let capability_result = persist_received_capability_grant(&identity.did, &message.body);
+            let reply = DIDCommMessage {
+                id: crate::comms::envelope::generate_message_id(),
+                type_: MessageType::CapabilityAccept,
+                from: identity.did.clone(),
+                to: vec![sender_doc.id.clone()],
+                created_time: crate::pod::now_unix(),
+                expires_time: Some(crate::pod::now_unix() + 300),
+                body: match capability_result {
+                    Ok(payload) => payload,
+                    Err(error) => serde_json::json!({
+                        "status": "rejected",
+                        "reply_to": message.id,
+                        "message_type": "capability_grant",
+                        "error": error,
+                    }),
+                },
+                thid: Some(message.id.clone()),
+                pthid: message.thid.clone(),
+            };
+            match encrypt_message(identity.as_ref(), &sender_doc, &reply) {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(serde_json::json!({
+                            "error": format!("encrypt capability reply failed: {e}"),
+                        })),
+                    );
+                }
+            }
         }
         MessageType::McpToolCall => {
             let tool_name = match message.body.get("tool_name").and_then(|v| v.as_str()) {
@@ -315,35 +384,89 @@ async fn didcomm_receive_handler(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            let call_result = match dispatch_mcp_tool_call(&state, tool_name, arguments).await {
-                Ok(result) => result,
+            let result_payload =
+                match authorize_didcomm_tool_call(&identity.did, &message.from, tool_name) {
+                    Ok(()) => match dispatch_mcp_tool_call(&state, tool_name, arguments).await {
+                        Ok(result) => serde_json::json!({
+                            "status": "completed",
+                            "reply_to": message.id,
+                            "message_type": "mcp_tool_call",
+                            "tool_name": tool_name,
+                            "result": result,
+                        }),
+                        Err(e) => serde_json::json!({
+                            "status": "failed",
+                            "reply_to": message.id,
+                            "message_type": "mcp_tool_call",
+                            "tool_name": tool_name,
+                            "error": format!("local MCP dispatch failed: {e}"),
+                        }),
+                    },
+                    Err(e) => serde_json::json!({
+                        "status": "forbidden",
+                        "reply_to": message.id,
+                        "message_type": "mcp_tool_call",
+                        "tool_name": tool_name,
+                        "error": e,
+                    }),
+                };
+            match crate::comms::envelope::wrap_mcp_response(
+                identity.as_ref(),
+                &sender_doc,
+                tool_name,
+                result_payload,
+                Some(&message.id),
+            ) {
+                Ok(envelope) => envelope,
                 Err(e) => {
                     return (
-                        axum::http::StatusCode::BAD_GATEWAY,
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                         axum::Json(serde_json::json!({
-                            "error": format!("local MCP dispatch failed: {e}"),
+                            "error": format!("encrypt McpToolResponse failed: {e}"),
                         })),
                     );
                 }
-            };
-            serde_json::json!({
-                "status": "completed",
-                "reply_to": message.id,
-                "message_type": "mcp_tool_call",
-                "tool_name": tool_name,
-                "result": call_result,
-            })
+            }
         }
         other => {
-            serde_json::json!({
-                "status": "received",
-                "reply_to": message.id,
-                "message_type": format!("{other:?}"),
-            })
+            let reply = DIDCommMessage {
+                id: crate::comms::envelope::generate_message_id(),
+                type_: other.clone(),
+                from: identity.did.clone(),
+                to: vec![sender_doc.id.clone()],
+                created_time: crate::pod::now_unix(),
+                expires_time: Some(crate::pod::now_unix() + 300),
+                body: serde_json::json!({
+                    "status": "received",
+                    "reply_to": message.id,
+                    "message_type": format!("{other:?}"),
+                }),
+                thid: Some(message.id.clone()),
+                pthid: message.thid.clone(),
+            };
+            match encrypt_message(identity.as_ref(), &sender_doc, &reply) {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(serde_json::json!({
+                            "error": format!("encrypt DIDComm reply failed: {e}"),
+                        })),
+                    );
+                }
+            }
         }
     };
 
-    (axum::http::StatusCode::OK, axum::Json(response_body))
+    match serde_json::to_value(response_envelope) {
+        Ok(value) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({
+                "error": format!("serialize DIDComm response envelope failed: {e}"),
+            })),
+        ),
+    }
 }
 
 async fn dispatch_mcp_tool_call(
@@ -569,6 +692,57 @@ fn resolve_sender_did(
     ))
 }
 
+fn persist_received_capability_grant(
+    local_did: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let token_value = body
+        .get("capability_token")
+        .ok_or_else(|| "CapabilityGrant message missing capability_token".to_string())?
+        .clone();
+    let token: crate::pod::capability::CapabilityToken =
+        serde_json::from_value(token_value).map_err(|e| format!("parse capability_token: {e}"))?;
+    if token.grantee_did != local_did {
+        return Err(format!(
+            "capability grantee `{}` does not match local DID `{}`",
+            token.grantee_did, local_did
+        ));
+    }
+    crate::pod::capability::verify_capability(&token, crate::halo::util::now_unix_secs())?;
+    let path = crate::halo::config::capability_store_path();
+    let mut store = crate::pod::capability::CapabilityStore::load_or_default(&path)?;
+    let exists = store.tokens.iter().any(|t| t.token_id == token.token_id);
+    if !exists {
+        store.create(token.clone());
+        store.save(&path)?;
+    }
+    Ok(serde_json::json!({
+        "status": "accepted",
+        "message_type": "capability_grant",
+        "capability_token_id": hex::encode(token.token_id),
+        "already_present": exists,
+    }))
+}
+
+fn authorize_didcomm_tool_call(
+    local_did: &str,
+    sender_did: &str,
+    tool_name: &str,
+) -> Result<(), String> {
+    if sender_did == local_did {
+        return Ok(());
+    }
+    let path = crate::halo::config::capability_store_path();
+    let store = crate::pod::capability::CapabilityStore::load_or_default(&path)?;
+    let now = crate::halo::util::now_unix_secs();
+    if crate::pod::capability::store_authorizes_tool_call(&store, sender_did, tool_name, now) {
+        return Ok(());
+    }
+    Err(format!(
+        "DIDComm authorization denied for sender `{sender_did}` on tool `{tool_name}`"
+    ))
+}
+
 async fn health_handler() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "status": "ok",
@@ -705,9 +879,120 @@ mod tests {
         let workspace = tempdir().expect("tempdir");
         let db_path = workspace.path().join("mesh_didcomm_exec.ndb");
         let registry_path = workspace.path().join("peers.json");
+        std::env::set_var("AGENTHALO_HOME", workspace.path().display().to_string());
 
         let alice_seed = [0x41u8; 64];
         let bob_seed = [0x42u8; 64];
+        let alice = crate::halo::did::did_from_genesis_seed(&alice_seed).expect("alice identity");
+        let bob = crate::halo::did::did_from_genesis_seed(&bob_seed).expect("bob identity");
+
+        let discovery_addr = random_local_addr();
+        let discovery_handle =
+            start_discovery_server(discovery_addr, alice.did_document.clone()).await;
+
+        let mut registry = PeerRegistry::new();
+        let now = crate::pod::now_unix();
+        registry.register(PeerInfo {
+            agent_id: "agent-alice".to_string(),
+            container_name: "alice".to_string(),
+            did_uri: Some(alice.did.clone()),
+            mcp_endpoint: format!("http://{}/mcp", discovery_addr),
+            discovery_endpoint: format!("http://{}/.well-known/nucleus-pod", discovery_addr),
+            registered_at: now,
+            last_seen: now,
+        });
+        registry.save(&registry_path).expect("save mesh registry");
+
+        std::env::set_var(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.display().to_string(),
+        );
+        std::env::set_var("NUCLEUSDB_AGENT_PRIVATE_KEY", hex::encode(bob_seed));
+        std::env::remove_var("NUCLEUSDB_INTERNAL_AUTH_KEY");
+
+        let now = crate::halo::util::now_unix_secs();
+        let token = crate::pod::capability::create_capability(
+            &bob,
+            &alice.did,
+            crate::pod::capability::AgentClass::Specific {
+                did_uri: alice.did.clone(),
+            },
+            &["nucleusdb_*".to_string()],
+            &[crate::pod::capability::AccessMode::Read],
+            now.saturating_sub(10),
+            now.saturating_add(600),
+            false,
+        )
+        .expect("create capability token");
+        let mut cap_store = crate::pod::capability::CapabilityStore::load_or_default(
+            &crate::halo::config::capability_store_path(),
+        )
+        .expect("load capability store");
+        cap_store.create(token);
+        cap_store
+            .save(&crate::halo::config::capability_store_path())
+            .expect("save capability store");
+
+        let listen_addr = random_local_addr();
+        let server_handle = tokio::spawn(run_remote_mcp_server(RemoteServerConfig {
+            db_path: db_path.display().to_string(),
+            listen_addr,
+            auth: AuthConfig::default(),
+            endpoint_path: "/mcp".to_string(),
+        }));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let envelope = crate::comms::envelope::wrap_mcp_call(
+            &alice,
+            &bob.did_document,
+            "nucleusdb_status",
+            serde_json::json!({}),
+        )
+        .expect("wrap didcomm call");
+
+        let didcomm_url = format!("http://{listen_addr}/didcomm");
+        let response: serde_json::Value =
+            tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+                crate::halo::http_client::post_with_timeout(&didcomm_url, Duration::from_secs(20))
+                    .map_err(|e| format!("didcomm request builder: {e}"))?
+                    .send_json(&envelope)
+                    .map_err(|e| format!("send didcomm envelope: {e}"))?
+                    .into_body()
+                    .read_json()
+                    .map_err(|e| format!("parse didcomm response: {e}"))
+            })
+            .await
+            .expect("join didcomm request task")
+            .expect("didcomm request must succeed");
+
+        let response_envelope: crate::comms::didcomm::DIDCommEnvelope =
+            serde_json::from_value(response).expect("response should be DIDComm envelope");
+        let (response_tool, response_payload) = crate::comms::envelope::unwrap_mcp_response(
+            &alice,
+            &bob.did_document,
+            &response_envelope,
+        )
+        .expect("unwrap mcp response");
+        assert_eq!(response_tool, "nucleusdb_status");
+        assert_eq!(response_payload["status"], "completed");
+        assert_eq!(response_payload["tool_name"], "nucleusdb_status");
+        assert!(response_payload.get("result").is_some());
+
+        server_handle.abort();
+        discovery_handle.abort();
+        std::env::remove_var("AGENTHALO_HOME");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn didcomm_mcp_tool_call_without_capability_returns_forbidden_payload() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let workspace = tempdir().expect("tempdir");
+        let db_path = workspace.path().join("mesh_didcomm_forbidden.ndb");
+        let registry_path = workspace.path().join("peers.json");
+        std::env::set_var("AGENTHALO_HOME", workspace.path().display().to_string());
+
+        let alice_seed = [0x44u8; 64];
+        let bob_seed = [0x45u8; 64];
         let alice = crate::halo::did::did_from_genesis_seed(&alice_seed).expect("alice identity");
         let bob = crate::halo::did::did_from_genesis_seed(&bob_seed).expect("bob identity");
 
@@ -766,14 +1051,24 @@ mod tests {
             .await
             .expect("join didcomm request task")
             .expect("didcomm request must succeed");
-
-        assert_eq!(response["status"], "completed");
-        assert_eq!(response["message_type"], "mcp_tool_call");
-        assert_eq!(response["tool_name"], "nucleusdb_status");
-        assert!(response.get("result").is_some());
+        let response_envelope: crate::comms::didcomm::DIDCommEnvelope =
+            serde_json::from_value(response).expect("response should be DIDComm envelope");
+        let (response_tool, response_payload) = crate::comms::envelope::unwrap_mcp_response(
+            &alice,
+            &bob.did_document,
+            &response_envelope,
+        )
+        .expect("unwrap mcp response");
+        assert_eq!(response_tool, "nucleusdb_status");
+        assert_eq!(response_payload["status"], "forbidden");
+        assert!(response_payload["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("authorization denied"));
 
         server_handle.abort();
         discovery_handle.abort();
+        std::env::remove_var("AGENTHALO_HOME");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

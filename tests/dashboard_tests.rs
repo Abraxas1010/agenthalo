@@ -291,15 +291,12 @@ async fn api_alias_and_summary_routes_return_json() {
             "/attestations must include attestations"
         );
     }
-    // Stub routes that should return 501 Not Implemented with JSON.
+    // Vector/proof summary routes should be available for operator introspection.
     for route in ["/nucleusdb/vectors", "/nucleusdb/proofs"] {
         let (status, val) = api_get(state.clone(), route).await;
-        assert_eq!(
-            status,
-            StatusCode::NOT_IMPLEMENTED,
-            "stub {route} should be 501: {val}"
-        );
-        assert_eq!(val["error"], "not yet implemented");
+        assert_eq!(status, StatusCode::OK, "route {route} should be 200: {val}");
+        assert_eq!(val["status"], "ok");
+        assert_eq!(val["endpoint"], format!("/api{route}"));
     }
     let _ = std::fs::remove_file(&db_path);
 }

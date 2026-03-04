@@ -77,7 +77,11 @@ pub fn has_wallet() -> bool {
 }
 
 pub fn has_wallet_with_paths(paths: &PqStoragePaths) -> bool {
-    paths.wallet_path.exists() || paths.wallet_path.with_file_name("pq_wallet.v2.enc").exists()
+    paths.wallet_path.exists()
+        || paths
+            .wallet_path
+            .with_file_name("pq_wallet.v2.enc")
+            .exists()
 }
 
 pub fn keygen_pq(force: bool) -> Result<PqKeygenResult, String> {
@@ -681,5 +685,4 @@ mod tests {
         assert!(wallet.encrypted_seed.is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
-
 }

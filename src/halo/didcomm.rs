@@ -70,7 +70,11 @@ struct AuthcryptProtected {
     sender_x25519_public_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sender_evm_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "sender_binding_proof_sha256")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "sender_binding_proof_sha256"
+    )]
     sender_binding_proof_hash: Option<String>,
     /// Post-quantum KEM algorithm identifier (e.g. "ML-KEM-768").
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -263,13 +267,7 @@ pub fn pack_authcrypt(
     sender: &DIDIdentity,
     recipient_x25519_public_key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    pack_authcrypt_inner(
-        message,
-        sender,
-        recipient_x25519_public_key,
-        None,
-        None,
-    )
+    pack_authcrypt_inner(message, sender, recipient_x25519_public_key, None, None)
 }
 
 /// Pack authcrypt with hybrid KEM when the recipient's DID document contains
@@ -431,9 +429,8 @@ fn pack_anoncrypt_inner(
     // with recipients running pre-PQ code.
     let (mut key, epk_bytes, pq_kem, pq_ct) = if let Some(ek) = recipient_mlkem_ek {
         let recipient_pk = X25519PublicKey::from(*recipient_x25519_public_key);
-        let encap =
-            hybrid_kem::hybrid_encap(&recipient_pk, Some(ek), HKDF_ANONCRYPT_INFO)
-                .map_err(|e| format!("hybrid KEM encap failed: {e}"))?;
+        let encap = hybrid_kem::hybrid_encap(&recipient_pk, Some(ek), HKDF_ANONCRYPT_INFO)
+            .map_err(|e| format!("hybrid KEM encap failed: {e}"))?;
         let ct = encap
             .mlkem_ciphertext
             .as_ref()
@@ -448,8 +445,8 @@ fn pack_anoncrypt_inner(
         // Classical path: ephemeral X25519 with old HKDF (backward compatible).
         let ephemeral_secret = X25519StaticSecret::random_from_rng(OsRng);
         let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
-        let shared_secret = ephemeral_secret
-            .diffie_hellman(&X25519PublicKey::from(*recipient_x25519_public_key));
+        let shared_secret =
+            ephemeral_secret.diffie_hellman(&X25519PublicKey::from(*recipient_x25519_public_key));
         let key = derive_key(shared_secret.as_bytes(), HKDF_ANONCRYPT_INFO)?;
         (key, ephemeral_public.to_bytes(), None, None)
     };
@@ -822,15 +819,11 @@ mod tests {
             serde_json::json!({}),
         );
 
-        let packed = pack_authcrypt_hybrid(&message, &sender, &recipient.did_document, None)
-            .expect("pack");
-        let envelope: serde_json::Value =
-            serde_json::from_slice(&packed).expect("parse envelope");
+        let packed =
+            pack_authcrypt_hybrid(&message, &sender, &recipient.did_document, None).expect("pack");
+        let envelope: serde_json::Value = serde_json::from_slice(&packed).expect("parse envelope");
 
-        assert_eq!(
-            envelope["protected"]["pq_kem"].as_str(),
-            Some("ML-KEM-768")
-        );
+        assert_eq!(envelope["protected"]["pq_kem"].as_str(), Some("ML-KEM-768"));
         assert!(envelope["protected"]["pq_ct"].as_str().is_some());
         // ML-KEM-768 ciphertext is 1088 bytes → ~1451 base64 chars
         let pq_ct = envelope["protected"]["pq_ct"].as_str().unwrap();
@@ -852,8 +845,7 @@ mod tests {
         );
 
         let packed = pack_authcrypt(&message, &sender, &recipient_key).expect("pack");
-        let envelope: serde_json::Value =
-            serde_json::from_slice(&packed).expect("parse envelope");
+        let envelope: serde_json::Value = serde_json::from_slice(&packed).expect("parse envelope");
 
         assert!(envelope["protected"]["pq_kem"].is_null());
         assert!(envelope["protected"]["pq_ct"].is_null());
@@ -871,8 +863,8 @@ mod tests {
             serde_json::json!({}),
         );
 
-        let packed = pack_authcrypt_hybrid(&message, &sender, &recipient.did_document, None)
-            .expect("pack");
+        let packed =
+            pack_authcrypt_hybrid(&message, &sender, &recipient.did_document, None).expect("pack");
         let mut envelope: serde_json::Value =
             serde_json::from_slice(&packed).expect("parse envelope");
 
@@ -928,13 +920,9 @@ mod tests {
         );
 
         let packed = pack_anoncrypt_hybrid(&message, &recipient.did_document).expect("pack");
-        let envelope: serde_json::Value =
-            serde_json::from_slice(&packed).expect("parse envelope");
+        let envelope: serde_json::Value = serde_json::from_slice(&packed).expect("parse envelope");
 
-        assert_eq!(
-            envelope["protected"]["pq_kem"].as_str(),
-            Some("ML-KEM-768")
-        );
+        assert_eq!(envelope["protected"]["pq_kem"].as_str(), Some("ML-KEM-768"));
         assert!(envelope["protected"]["pq_ct"].as_str().is_some());
     }
 

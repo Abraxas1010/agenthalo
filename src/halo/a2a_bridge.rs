@@ -1,7 +1,6 @@
 use crate::halo::did::DIDIdentity;
 use crate::halo::didcomm::{
-    message_types, pack_authcrypt_hybrid, unpack_with_resolver,
-    DIDCommMessage,
+    message_types, pack_authcrypt_hybrid, unpack_with_resolver, DIDCommMessage,
 };
 use crate::halo::didcomm_handler::DIDCommHandler;
 use crate::halo::p2p_discovery::AgentCapability;
@@ -29,7 +28,11 @@ pub struct A2aAgentCard {
     pub security: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "binding_proof_sha256")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "binding_proof_sha256"
+    )]
     pub binding_proof_hash: Option<String>,
 }
 
@@ -499,7 +502,12 @@ async fn tasks_cancel(state: BridgeState, params: TaskCancelParams) -> Result<Va
         vec![recipient_did],
         serde_json::json!({ "task_id": record.task_id }),
     );
-    let packed = pack_authcrypt_hybrid(&cancel_message, &state.identity, &state.identity.did_document, None)?;
+    let packed = pack_authcrypt_hybrid(
+        &cancel_message,
+        &state.identity,
+        &state.identity.did_document,
+        None,
+    )?;
     let _ = state
         .didcomm
         .handle_incoming(&packed, |did| {

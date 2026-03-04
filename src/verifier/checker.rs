@@ -149,63 +149,62 @@ pub fn verify_export(export_path: &Path) -> Result<VerificationResult, String> {
         }
     }
 
-    metadata.signature_valid = if metadata.signature_ed25519.is_none()
-        && metadata.signing_key_multibase.is_none()
-    {
-        None
-    } else {
-        match (
-            metadata.signature_ed25519.as_deref(),
-            metadata.signing_key_multibase.as_deref(),
-        ) {
-            (Some(sig_b64), Some(key_mb)) => {
-                let payload = signable_lines.join("\n");
-                let vk = match decode_ed25519_verifying_key(key_mb) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        errors.push(e);
-                        return Ok(VerificationResult {
-                            all_checked: false,
-                            declarations_checked: decl_count,
-                            declarations_failed: 0,
-                            axioms_used: axioms,
-                            axioms_trusted: false,
-                            theorem_names: theorems,
-                            trust_tier: TrustTier::Untrusted,
-                            metadata,
-                            errors,
-                            elapsed_ms: start.elapsed().as_millis() as u64,
-                        });
-                    }
-                };
-                let sig_bytes = match B64.decode(sig_b64) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        errors.push(format!("decode #META signature_ed25519: {e}"));
-                        Vec::new()
-                    }
-                };
-                if sig_bytes.is_empty() {
-                    Some(false)
-                } else {
-                    match Ed25519Signature::from_slice(&sig_bytes) {
-                        Ok(sig) => Some(vk.verify(payload.as_bytes(), &sig).is_ok()),
+    metadata.signature_valid =
+        if metadata.signature_ed25519.is_none() && metadata.signing_key_multibase.is_none() {
+            None
+        } else {
+            match (
+                metadata.signature_ed25519.as_deref(),
+                metadata.signing_key_multibase.as_deref(),
+            ) {
+                (Some(sig_b64), Some(key_mb)) => {
+                    let payload = signable_lines.join("\n");
+                    let vk = match decode_ed25519_verifying_key(key_mb) {
+                        Ok(v) => v,
                         Err(e) => {
-                            errors.push(format!("parse #META signature_ed25519: {e}"));
-                            Some(false)
+                            errors.push(e);
+                            return Ok(VerificationResult {
+                                all_checked: false,
+                                declarations_checked: decl_count,
+                                declarations_failed: 0,
+                                axioms_used: axioms,
+                                axioms_trusted: false,
+                                theorem_names: theorems,
+                                trust_tier: TrustTier::Untrusted,
+                                metadata,
+                                errors,
+                                elapsed_ms: start.elapsed().as_millis() as u64,
+                            });
+                        }
+                    };
+                    let sig_bytes = match B64.decode(sig_b64) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            errors.push(format!("decode #META signature_ed25519: {e}"));
+                            Vec::new()
+                        }
+                    };
+                    if sig_bytes.is_empty() {
+                        Some(false)
+                    } else {
+                        match Ed25519Signature::from_slice(&sig_bytes) {
+                            Ok(sig) => Some(vk.verify(payload.as_bytes(), &sig).is_ok()),
+                            Err(e) => {
+                                errors.push(format!("parse #META signature_ed25519: {e}"));
+                                Some(false)
+                            }
                         }
                     }
                 }
-            }
-            _ => {
-                errors.push(
+                _ => {
+                    errors.push(
                     "metadata signature requires both signing_key_multibase and signature_ed25519"
                         .to_string(),
                 );
-                Some(false)
+                    Some(false)
+                }
             }
-        }
-    };
+        };
 
     let axioms_trusted = axioms
         .iter()

@@ -1,7 +1,7 @@
 use crate::halo::did::{DIDCommCredentialAttachment, DIDIdentity};
 use crate::halo::didcomm::{
-    message_types, pack_authcrypt_hybrid, unpack_with_resolver,
-    AttachmentData, DIDCommAttachment, DIDCommMessage,
+    message_types, pack_authcrypt_hybrid, unpack_with_resolver, AttachmentData, DIDCommAttachment,
+    DIDCommMessage,
 };
 use crate::halo::zk_credential;
 use futures_util::future::BoxFuture;

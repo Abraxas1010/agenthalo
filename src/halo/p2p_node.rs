@@ -387,7 +387,55 @@ impl P2pNode {
                             eprintln!("[AgentHalo/P2P] identify event: {event:?}");
                         }
                         SwarmEvent::Behaviour(HaloBehaviourEvent::Kademlia(event)) => {
-                            eprintln!("[AgentHalo/P2P] kad event: {event:?}");
+                            match *event {
+                                kad::Event::OutboundQueryProgressed { result, .. } => match result {
+                                    kad::QueryResult::GetRecord(Ok(
+                                        kad::GetRecordOk::FoundRecord(peer_record),
+                                    )) => {
+                                        match discovery.ingest_kad_record_with_resolver(
+                                            &peer_record.record,
+                                            |did| {
+                                                if did == identity.did {
+                                                    Some(identity.did_document.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            },
+                                        ) {
+                                            Ok(announcement) => {
+                                                eprintln!(
+                                                    "[AgentHalo/P2P] accepted DHT announcement did={}",
+                                                    announcement.did
+                                                );
+                                            }
+                                            Err(error) => {
+                                                eprintln!(
+                                                    "[AgentHalo/P2P] rejected DHT announcement: {error}"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    kad::QueryResult::GetRecord(Ok(
+                                        kad::GetRecordOk::FinishedWithNoAdditionalRecord {
+                                            cache_candidates,
+                                        },
+                                    )) => {
+                                        eprintln!(
+                                            "[AgentHalo/P2P] DHT get_record finished without additional records (cache candidates: {})",
+                                            cache_candidates.len()
+                                        );
+                                    }
+                                    kad::QueryResult::GetRecord(Err(error)) => {
+                                        eprintln!("[AgentHalo/P2P] DHT get_record error: {error:?}");
+                                    }
+                                    other => {
+                                        eprintln!("[AgentHalo/P2P] kad query result: {other:?}");
+                                    }
+                                },
+                                other => {
+                                    eprintln!("[AgentHalo/P2P] kad event: {other:?}");
+                                }
+                            }
                         }
                         SwarmEvent::Behaviour(HaloBehaviourEvent::Gossipsub(event)) => match *event {
                             gossipsub::Event::Message {

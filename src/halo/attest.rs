@@ -357,7 +357,6 @@ fn hex_decode_var(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-
 fn hex_nibble(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),

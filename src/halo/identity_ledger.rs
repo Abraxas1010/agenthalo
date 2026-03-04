@@ -177,7 +177,10 @@ fn compute_entry_hash(entry: &IdentityLedgerEntry) -> String {
 
 fn compute_entry_hash_legacy(entry: &IdentityLedgerEntry) -> String {
     // Legacy entries are always SHA-256 (no hash_algorithm field).
-    hash::hash_hex(&HashAlgorithm::Sha256, entry_payload_for_hash_legacy(entry).as_bytes())
+    hash::hash_hex(
+        &HashAlgorithm::Sha256,
+        entry_payload_for_hash_legacy(entry).as_bytes(),
+    )
 }
 
 fn strict_genesis_signature_enforcement() -> bool {
@@ -217,7 +220,12 @@ fn compute_payload_hash_hex(algo: &HashAlgorithm, payload: &[u8]) -> String {
     hash::hash_hex(algo, payload)
 }
 
-fn compute_signature_digest_hex(algo: &HashAlgorithm, key_id: &str, payload_hash: &str, signature_hex: &str) -> String {
+fn compute_signature_digest_hex(
+    algo: &HashAlgorithm,
+    key_id: &str,
+    payload_hash: &str,
+    signature_hex: &str,
+) -> String {
     hash::hash_hex(
         algo,
         format!(
@@ -281,8 +289,12 @@ fn verify_signature_ref(
             entry.seq
         ));
     }
-    let expected_digest =
-        compute_signature_digest_hex(&sig_algo, &sig.key_id, &sig.payload_hash, &sig.signature_hex);
+    let expected_digest = compute_signature_digest_hex(
+        &sig_algo,
+        &sig.key_id,
+        &sig.payload_hash,
+        &sig.signature_hex,
+    );
     if !sig.signature_digest.eq_ignore_ascii_case(&expected_digest) {
         return Err(format!(
             "ledger signature_digest mismatch at seq {}",
@@ -618,8 +630,7 @@ fn append_entry_with_key(
         .ok()
         .flatten()
         .or_else(|| {
-            sign_scope_key
-                .and_then(|k| crate::halo::pq::wallet_key_identity_v2(k).ok().flatten())
+            sign_scope_key.and_then(|k| crate::halo::pq::wallet_key_identity_v2(k).ok().flatten())
         });
     let pinned_signer_public_key = entries
         .iter()
@@ -1023,10 +1034,7 @@ pub fn append_attestation_event(
     append_entry(entry)
 }
 
-pub fn append_binding_event(
-    status: &str,
-    payload: Value,
-) -> Result<IdentityLedgerEntry, String> {
+pub fn append_binding_event(status: &str, payload: Value) -> Result<IdentityLedgerEntry, String> {
     let genesis_hash = payload
         .get("combined_entropy_sha256")
         .and_then(|v| v.as_str())
@@ -1503,8 +1511,12 @@ mod tests {
         let sig = entries[0].signature.as_mut().expect("signature exists");
         sig.signature_hex = "00".to_string();
         let sig_algo = HashAlgorithm::from_field(sig.hash_algorithm.as_deref());
-        sig.signature_digest =
-            compute_signature_digest_hex(&sig_algo, &sig.key_id, &sig.payload_hash, &sig.signature_hex);
+        sig.signature_digest = compute_signature_digest_hex(
+            &sig_algo,
+            &sig.key_id,
+            &sig.payload_hash,
+            &sig.signature_hex,
+        );
         let err = verify_chain(&entries).expect_err("forged signature must fail");
         assert!(
             err.contains("signature verification error")

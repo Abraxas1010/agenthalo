@@ -46,6 +46,7 @@ use crate::pod::acl::{AccessGrant, GrantPermissions, GrantRequest};
 use crate::protocol::NucleusDb;
 use crate::sql::executor::{SqlExecutor, SqlResult};
 use crate::state::State;
+use crate::verifier::gate as proof_gate;
 use crate::witness::WitnessSignatureAlgorithm;
 use crate::VcBackend;
 
@@ -2856,17 +2857,21 @@ async fn api_identity_tier_update(
 
 async fn api_genesis_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let seed_stored = crate::halo::genesis_seed::seed_exists();
-    let genesis_key = get_scope_key_bytes(&state, CryptoScope::Genesis).ok().flatten();
-    let seed_hash = crate::halo::genesis_seed::load_seed_sha256_prefer_v2(
-        genesis_key.as_ref(),
-    )
-    .ok()
-    .flatten();
+    let genesis_key = get_scope_key_bytes(&state, CryptoScope::Genesis)
+        .ok()
+        .flatten();
+    let seed_hash = crate::halo::genesis_seed::load_seed_sha256_prefer_v2(genesis_key.as_ref())
+        .ok()
+        .flatten();
 
     // Derive DID URI from genesis seed if available (lightweight: HKDF + Ed25519 only).
     let did_uri: Option<String> = genesis_key
         .as_ref()
-        .and_then(|key| crate::halo::genesis_seed::load_seed_bytes_v2(key).ok().flatten())
+        .and_then(|key| {
+            crate::halo::genesis_seed::load_seed_bytes_v2(key)
+                .ok()
+                .flatten()
+        })
         .or_else(|| crate::halo::genesis_seed::load_seed_bytes().ok().flatten())
         .map(|seed| crate::halo::did::did_uri_from_genesis_seed(&seed));
 
@@ -2967,17 +2972,15 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                         }
                     }
                 }
-                _ => {
-                    match crate::halo::twine_anchor::recover_sovereign_binding_from_ledger() {
-                        Ok(Some(r)) => json!({
-                            "attestation_sha256": r.attestation_sha256,
-                            "binding_sha256": r.binding_sha256,
-                            "did_subject": r.did_subject,
-                            "evm_address": r.evm_address,
-                        }),
-                        _ => Value::Null,
-                    }
-                }
+                _ => match crate::halo::twine_anchor::recover_sovereign_binding_from_ledger() {
+                    Ok(Some(r)) => json!({
+                        "attestation_sha256": r.attestation_sha256,
+                        "binding_sha256": r.binding_sha256,
+                        "did_subject": r.did_subject,
+                        "evm_address": r.evm_address,
+                    }),
+                    _ => Value::Null,
+                },
             };
             return Ok(Json(json!({
                 "success": true,
@@ -3023,11 +3026,10 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
 
             // Try v2 first, then legacy. Propagate read errors for corrupted seeds.
             let existing_sha_result = if let Some(ref gk) = genesis_key {
-                crate::halo::genesis_seed::load_seed_sha256_v2(gk)
-                    .and_then(|v| match v {
-                        Some(s) => Ok(Some(s)),
-                        None => crate::halo::genesis_seed::load_seed_sha256(),
-                    })
+                crate::halo::genesis_seed::load_seed_sha256_v2(gk).and_then(|v| match v {
+                    Some(s) => Ok(Some(s)),
+                    None => crate::halo::genesis_seed::load_seed_sha256(),
+                })
             } else {
                 crate::halo::genesis_seed::load_seed_sha256()
             };
@@ -3109,13 +3111,12 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
             })?;
 
             // Perform sovereign binding ceremony: attestation + DID↔EVM binding
-            let binding_result =
-                crate::halo::twine_anchor::perform_sovereign_binding_ceremony(
-                    &result.combined_entropy,
-                    &result.combined_entropy_sha256,
-                    result.curby_pulse_id,
-                    entry.timestamp,
-                );
+            let binding_result = crate::halo::twine_anchor::perform_sovereign_binding_ceremony(
+                &result.combined_entropy,
+                &result.combined_entropy_sha256,
+                result.curby_pulse_id,
+                entry.timestamp,
+            );
             let sovereign = match &binding_result {
                 Ok(r) => json!({
                     "attestation_sha256": r.attestation_sha256,
@@ -4071,23 +4072,21 @@ async fn api_agentaddress_generate(
         }
         AgentAddressSource::Genesis => {
             let genesis_key = get_scope_key_bytes(&state, CryptoScope::Genesis)?;
-            let mnemonic = crate::halo::genesis_seed::derive_wallet_mnemonic_prefer_v2(
-                genesis_key.as_ref(),
-            )
-            .map_err(internal_err)?
-            .ok_or_else(|| {
-                api_err(
-                    StatusCode::PRECONDITION_FAILED,
-                    "genesis seed not available; complete Genesis ceremony first",
-                )
-            })?;
+            let mnemonic =
+                crate::halo::genesis_seed::derive_wallet_mnemonic_prefer_v2(genesis_key.as_ref())
+                    .map_err(internal_err)?
+                    .ok_or_else(|| {
+                        api_err(
+                            StatusCode::PRECONDITION_FAILED,
+                            "genesis seed not available; complete Genesis ceremony first",
+                        )
+                    })?;
             let derived = crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic, None)
                 .map_err(internal_err)?;
-            let seed_hash = crate::halo::genesis_seed::load_seed_sha256_prefer_v2(
-                genesis_key.as_ref(),
-            )
-            .map_err(internal_err)?
-            .unwrap_or_default();
+            let seed_hash =
+                crate::halo::genesis_seed::load_seed_sha256_prefer_v2(genesis_key.as_ref())
+                    .map_err(internal_err)?
+                    .unwrap_or_default();
             let data = json!({
                 "evmAddress": derived.evm_address,
                 "evmPrivateKey": derived.private_key_hex,
@@ -4330,21 +4329,18 @@ async fn api_wdk_create(
         ));
     }
     let genesis_key = get_scope_key_bytes(&state, CryptoScope::Genesis)?;
-    let seed = crate::halo::genesis_seed::derive_wallet_mnemonic_prefer_v2(
-        genesis_key.as_ref(),
-    )
-    .map_err(internal_err)?
-    .ok_or_else(|| {
-        api_err(
-            StatusCode::PRECONDITION_FAILED,
-            "genesis seed not available; complete Genesis ceremony before wallet creation",
-        )
-    })?;
-    let genesis_seed_sha256 = crate::halo::genesis_seed::load_seed_sha256_prefer_v2(
-        genesis_key.as_ref(),
-    )
-    .map_err(internal_err)?
-    .unwrap_or_default();
+    let seed = crate::halo::genesis_seed::derive_wallet_mnemonic_prefer_v2(genesis_key.as_ref())
+        .map_err(internal_err)?
+        .ok_or_else(|| {
+            api_err(
+                StatusCode::PRECONDITION_FAILED,
+                "genesis seed not available; complete Genesis ceremony before wallet creation",
+            )
+        })?;
+    let genesis_seed_sha256 =
+        crate::halo::genesis_seed::load_seed_sha256_prefer_v2(genesis_key.as_ref())
+            .map_err(internal_err)?
+            .unwrap_or_default();
     if !crate::halo::wdk_proxy::WdkManager::is_available() {
         return Err(api_err(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -6541,28 +6537,76 @@ async fn api_nucleusdb_history(AxumState(state): AxumState<DashboardState>) -> A
     })))
 }
 
-async fn api_nucleusdb_vectors(
-    AxumState(_state): AxumState<DashboardState>,
-) -> impl axum::response::IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "error": "not yet implemented",
-            "endpoint": "/api/nucleusdb/vectors",
-        })),
-    )
+async fn api_nucleusdb_vectors(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
+    let mut db = load_halo_db(&state.db_path)?;
+    let mut executor = SqlExecutor::new(&mut db);
+    let type_summary = match executor.execute("SHOW TYPES") {
+        SqlResult::Rows { columns, rows } => json!({ "columns": columns, "rows": rows }),
+        SqlResult::Error { message } => {
+            return Err(internal_err(format!("SHOW TYPES failed: {message}")));
+        }
+        _ => json!({ "columns": [], "rows": [] }),
+    };
+    let vector_rows = type_summary
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.as_array().cloned())
+                .filter(|cells| !cells.is_empty())
+                .filter(|cells| {
+                    cells
+                        .first()
+                        .and_then(|v| v.as_str())
+                        .map(|t| t.eq_ignore_ascii_case("vector"))
+                        .unwrap_or(false)
+                })
+                .map(Value::Array)
+                .collect::<Vec<Value>>()
+        })
+        .unwrap_or_default();
+    Ok(Json(json!({
+        "status": "ok",
+        "endpoint": "/api/nucleusdb/vectors",
+        "typed_value_summary": type_summary,
+        "vector_type_rows": vector_rows,
+        "note": "Use /api/nucleusdb/vector-search for nearest-neighbor queries.",
+    })))
 }
 
-async fn api_nucleusdb_proofs(
-    AxumState(_state): AxumState<DashboardState>,
-) -> impl axum::response::IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "error": "not yet implemented",
-            "endpoint": "/api/nucleusdb/proofs",
-        })),
-    )
+async fn api_nucleusdb_proofs(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
+    let mut db = load_halo_db(&state.db_path)?;
+    let mut executor = SqlExecutor::new(&mut db);
+    let status_summary = match executor.execute("SHOW STATUS") {
+        SqlResult::Rows { columns, rows } => json!({ "columns": columns, "rows": rows }),
+        SqlResult::Error { message } => {
+            return Err(internal_err(format!("SHOW STATUS failed: {message}")));
+        }
+        _ => json!({ "columns": [], "rows": [] }),
+    };
+    let history_summary = match executor.execute("SHOW HISTORY") {
+        SqlResult::Rows { columns, rows } => json!({ "columns": columns, "rows": rows }),
+        SqlResult::Error { message } => {
+            return Err(internal_err(format!("SHOW HISTORY failed: {message}")));
+        }
+        _ => json!({ "columns": [], "rows": [] }),
+    };
+    Ok(Json(json!({
+        "status": "ok",
+        "endpoint": "/api/nucleusdb/proofs",
+        "status_summary": status_summary,
+        "history_summary": history_summary,
+        "proof_gate": proof_gate::load_gate_config().ok().map(|cfg| {
+            json!({
+                "enabled": cfg.enabled,
+                "tool_count": cfg.requirements.len(),
+                "requirements_total": cfg.requirements.values().map(|v| v.len()).sum::<usize>(),
+                "certificate_dir": cfg.certificate_dir
+            })
+        }),
+    })))
 }
 
 // ---------------------------------------------------------------------------

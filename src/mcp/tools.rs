@@ -285,8 +285,33 @@ fn mesh_call_didcomm(
         .into_body()
         .read_json()
         .map_err(|e| format!("parse DIDComm response: {e}"))?;
+    if let Ok(response_envelope) =
+        serde_json::from_value::<crate::comms::didcomm::DIDCommEnvelope>(result.clone())
+    {
+        let (response_tool, response_payload) = crate::comms::envelope::unwrap_mcp_response(
+            &local_identity,
+            &peer_doc,
+            &response_envelope,
+        )?;
+        if response_tool != tool_name {
+            return Err(format!(
+                "DIDComm response tool mismatch: expected `{tool_name}`, got `{response_tool}`"
+            ));
+        }
+        if let Some(status) = response_payload.get("status").and_then(|v| v.as_str()) {
+            if matches!(status, "failed" | "forbidden" | "rejected") {
+                let detail = response_payload
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("remote DIDComm tool call failed");
+                return Err(format!("remote DIDComm tool call rejected: {detail}"));
+            }
+        }
+        return Ok((response_payload, "didcomm-v2".to_string()));
+    }
 
-    Ok((result, "didcomm-v2".to_string()))
+    // Backward compatibility with peers still returning plaintext JSON.
+    Ok((result, "didcomm-v2-legacy-plaintext".to_string()))
 }
 
 /// Helper to deserialize a serde_json::Value into a concrete type.
@@ -3369,6 +3394,16 @@ impl NucleusDbMcpService {
             false,
         )
         .map_err(|e| McpError::invalid_params(e, None))?;
+        let mut store = crate::pod::capability::CapabilityStore::load_or_default(
+            &crate::halo::config::capability_store_path(),
+        )
+        .map_err(|e| McpError::internal_error(e, None))?;
+        if !store.tokens.iter().any(|t| t.token_id == token.token_id) {
+            store.create(token.clone());
+            store
+                .save(&crate::halo::config::capability_store_path())
+                .map_err(|e| McpError::internal_error(e, None))?;
+        }
 
         Ok(Json(MeshGrantResponse {
             capability_token_id: hex_encode(&token.token_id),

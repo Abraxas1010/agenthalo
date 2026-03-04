@@ -213,11 +213,33 @@ mod tests {
     use crate::cli::default_witness_cfg;
     use crate::protocol::VcBackend;
     use crate::state::State;
-    use std::sync::{Mutex, OnceLock};
+    use crate::test_support::env_lock;
+    use tempfile::TempDir;
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let prev = std::env::var(key).ok();
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(prev) = &self.prev {
+                std::env::set_var(self.key, prev);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
     }
 
     fn new_test_db() -> NucleusDb {
@@ -230,6 +252,9 @@ mod tests {
 
     #[test]
     fn generate_proof_returns_real_payload() {
+        let _guard = env_lock().lock().expect("lock env");
+        let halo_home = TempDir::new().expect("temp halo home");
+        let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", halo_home.path().to_str());
         let db = new_test_db();
         let gen = CompositeCabGenerator::new(&db, vec![1]).expect("generator");
         let proof = gen.generate_proof().expect("proof");
@@ -242,15 +267,16 @@ mod tests {
     #[test]
     fn submit_attestation_simulation_returns_tx_hash() {
         let _guard = env_lock().lock().expect("lock env");
+        let halo_home = TempDir::new().expect("temp halo home");
+        let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", halo_home.path().to_str());
         let db = new_test_db();
         let gen = CompositeCabGenerator::new(&db, vec![1]).expect("generator");
-        std::env::set_var("AGENTHALO_ONCHAIN_SIMULATION", "1");
+        let _simulation_guard = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
         let proof = gen.generate_proof().expect("proof");
         let tx_hash = gen
             .submit_attestation(&proof, "0x1234")
             .expect("simulation hash");
         assert!(tx_hash.starts_with("0x"));
         assert_eq!(tx_hash.len(), 66);
-        std::env::remove_var("AGENTHALO_ONCHAIN_SIMULATION");
     }
 }

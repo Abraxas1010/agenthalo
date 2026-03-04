@@ -276,6 +276,39 @@ pub fn capability_authorizes(
             .any(|p| key_pattern_matches(p, resource_key))
 }
 
+/// Check whether a token authorizes a DID-bound tool call by name.
+///
+/// This is the runtime authorization predicate used by DIDComm mesh dispatch:
+/// the token must be valid/unexpired, granted to the sender DID, and contain at
+/// least one matching resource pattern for the requested tool.
+pub fn token_authorizes_tool_call(
+    token: &CapabilityToken,
+    sender_did: &str,
+    tool_name: &str,
+    now: u64,
+) -> bool {
+    verify_capability(token, now).is_ok()
+        && token.grantee_did == sender_did
+        && token
+            .resource_patterns
+            .iter()
+            .any(|p| key_pattern_matches(p, tool_name))
+}
+
+/// Store-level helper: true when any active token authorizes the sender DID
+/// for the requested tool.
+pub fn store_authorizes_tool_call(
+    store: &CapabilityStore,
+    sender_did: &str,
+    tool_name: &str,
+    now: u64,
+) -> bool {
+    store
+        .tokens
+        .iter()
+        .any(|t| token_authorizes_tool_call(t, sender_did, tool_name, now))
+}
+
 fn permissions_from_modes(modes: &[AccessMode]) -> GrantPermissions {
     GrantPermissions {
         read: modes.contains(&AccessMode::Read),
@@ -556,6 +589,79 @@ mod tests {
             &token,
             "private/key",
             AccessMode::Read,
+            now
+        ));
+    }
+
+    #[test]
+    fn token_authorizes_tool_call_requires_matching_grantee_and_pattern() {
+        let now = now_unix();
+        let token = create_capability(
+            &did(0x41),
+            &did(0x42).did,
+            AgentClass::Authenticated,
+            &["nucleusdb_*".to_string()],
+            &[AccessMode::Read],
+            now.saturating_sub(5),
+            now.saturating_add(120),
+            false,
+        )
+        .expect("create token");
+
+        assert!(token_authorizes_tool_call(
+            &token,
+            &did(0x42).did,
+            "nucleusdb_status",
+            now
+        ));
+        assert!(!token_authorizes_tool_call(
+            &token,
+            &did(0x43).did,
+            "nucleusdb_status",
+            now
+        ));
+        assert!(!token_authorizes_tool_call(
+            &token,
+            &did(0x42).did,
+            "wallet_send",
+            now
+        ));
+    }
+
+    #[test]
+    fn store_authorizes_tool_call_matches_any_active_token() {
+        let now = now_unix();
+        let target_did = did(0x52).did;
+        let token_ok = create_capability(
+            &did(0x51),
+            &target_did,
+            AgentClass::Authenticated,
+            &["sync".to_string()],
+            &[AccessMode::Read],
+            now.saturating_sub(5),
+            now.saturating_add(120),
+            false,
+        )
+        .expect("create token");
+        let token_other = create_capability(
+            &did(0x53),
+            &did(0x54).did,
+            AgentClass::Authenticated,
+            &["wallet_*".to_string()],
+            &[AccessMode::Read],
+            now.saturating_sub(5),
+            now.saturating_add(120),
+            false,
+        )
+        .expect("create token");
+        let store = CapabilityStore {
+            tokens: vec![token_other, token_ok],
+        };
+        assert!(store_authorizes_tool_call(&store, &target_did, "sync", now));
+        assert!(!store_authorizes_tool_call(
+            &store,
+            &target_did,
+            "wallet_send",
             now
         ));
     }

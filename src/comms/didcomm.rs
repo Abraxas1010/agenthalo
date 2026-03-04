@@ -7,7 +7,9 @@
 //! All crates used here are already in Cargo.toml — no new dependencies.
 
 use crate::halo::did::{dual_sign, dual_verify, DIDDocument, DIDIdentity};
-use crate::halo::didcomm::{extract_mlkem_encapsulation_key_from_doc, extract_x25519_public_key_from_doc};
+use crate::halo::didcomm::{
+    extract_mlkem_encapsulation_key_from_doc, extract_x25519_public_key_from_doc,
+};
 use crate::halo::hybrid_kem;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -144,9 +146,8 @@ pub fn encrypt_message(
     // Derive encryption key: hybrid (ephemeral X25519 + ML-KEM-768) or classical.
     let (mut key, epk_bytes, pq_kem, pq_ct) = if let Some(ref ek) = recipient_mlkem {
         let recipient_pk = X25519PublicKey::from(recipient_x25519);
-        let encap =
-            hybrid_kem::hybrid_encap(&recipient_pk, Some(ek), HKDF_MESH_DIDCOMM_INFO)
-                .map_err(|e| format!("hybrid KEM encap failed: {e}"))?;
+        let encap = hybrid_kem::hybrid_encap(&recipient_pk, Some(ek), HKDF_MESH_DIDCOMM_INFO)
+            .map_err(|e| format!("hybrid KEM encap failed: {e}"))?;
         let ct = encap
             .mlkem_ciphertext
             .as_ref()
@@ -170,8 +171,7 @@ pub fn encrypt_message(
     let nonce = random_nonce()?;
 
     // AES-256-GCM encrypt. The tag is appended to ciphertext by aes-gcm.
-    let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|e| format!("cipher init failed: {e}"))?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("cipher init failed: {e}"))?;
     let ciphertext_with_tag = cipher
         .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
         .map_err(|e| format!("DIDComm encrypt failed: {e}"))?;

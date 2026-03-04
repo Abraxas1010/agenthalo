@@ -45,11 +45,7 @@ pub struct DIDIdentity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DIDDocument {
     pub id: String,
-    #[serde(
-        default,
-        rename = "alsoKnownAs",
-        skip_serializing_if = "Vec::is_empty"
-    )]
+    #[serde(default, rename = "alsoKnownAs", skip_serializing_if = "Vec::is_empty")]
     pub also_known_as: Vec<String>,
     #[serde(rename = "verificationMethod")]
     pub verification_method: Vec<VerificationMethod>,
