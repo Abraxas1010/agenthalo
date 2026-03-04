@@ -35,16 +35,49 @@
 
 ## Overview
 
-AgentHALO wraps AI coding agent CLIs (Claude Code, Codex, Gemini) and records every event — thoughts, tool calls, file edits, token counts, and costs — into a local NucleusDB trace store.
+AgentHALO is a sovereign agent platform: it gives AI agents a cryptographic identity, quantum-resistant communication, and tamper-proof observability — all running locally on your machine.
 
-Every trace event is a content-addressed blob with a SHA-256 Merkle proof. If any event is modified after the fact, the proof chain breaks. This provides a tamper-evident audit log of everything your agents do.
+At the observability layer, AgentHALO wraps AI coding agent CLIs (Claude Code, Codex, Gemini) and records every event — thoughts, tool calls, file edits, token counts, and costs — into a local NucleusDB trace store. Every trace event is a content-addressed blob with a SHA-512 Merkle proof (SHA-256 for legacy entries). If any event is modified after the fact, the proof chain breaks.
+
+At the identity layer, each agent derives a DID (Decentralized Identifier) from a genesis seed ceremony. The DID document carries Ed25519, X25519, ML-KEM-768, and ML-DSA-65 public keys — classical and post-quantum cryptography side by side.
+
+At the communication layer, agents exchange DIDComm v2 encrypted messages using a hybrid KEM (X25519 + ML-KEM-768) that is resistant to both classical and quantum adversaries. Messages are routed over a libp2p P2P mesh or through the Nym mixnet for network-layer anonymity.
+
+At the economic layer, agents hold an EVM wallet (secp256k1, derived via BIP-32) for on-chain operations. EVM transaction signing is gated by a DIDComm-verified dual-signature authorization (Ed25519 + ML-DSA-65), creating a two-cryptosystem barrier: an attacker must break both secp256k1 AND the agent's post-quantum DID identity to forge a transaction.
 
 **Key properties:**
 
 - **Zero telemetry.** Nothing leaves your machine. No analytics, no tracking, no phone-home.
 - **Zero config.** `agenthalo run claude` auto-injects the right flags for structured output.
-- **Tamper-evident.** Content-addressed storage in NucleusDB with Merkle proofs.
+- **Tamper-evident.** Content-addressed storage in NucleusDB with Merkle proofs (SHA-512).
+- **Post-quantum.** Hybrid KEM (X25519 + ML-KEM-768) for DIDComm, ML-DSA-65 for signatures, HKDF-SHA-512 for key derivation. No CRITICAL or MEDIUM quantum vulnerabilities remain in AgentHALO-controlled code.
+- **Sovereign identity.** DID-based identity with dual classical/PQ key pairs, genesis seed ceremony, and append-only identity ledger.
 - **Agent-native.** Parses each agent's native structured output format.
+
+### Post-Quantum Cryptography Summary
+
+AgentHALO's PQ hardening protects all agent-controlled cryptographic surfaces:
+
+| Surface | Classical Crypto | PQ Crypto | Combined |
+|---------|-----------------|-----------|----------|
+| DIDComm authcrypt/anoncrypt | X25519 ECDH | ML-KEM-768 (FIPS 203) | Hybrid KEM |
+| DIDComm mesh transport | X25519 ECDH | ML-KEM-768 (FIPS 203) | Hybrid KEM |
+| Identity signatures | Ed25519 | ML-DSA-65 (FIPS 204) | Dual-signed |
+| KEM key derivation | — | HKDF-SHA-512 | 256-bit PQ security |
+| Identity ledger hash chain | — | SHA-512 | 256-bit PQ collision |
+| Attestation Merkle tree | — | SHA-512 | 256-bit PQ collision |
+| EVM transaction signing | secp256k1 ECDSA | PQ-gated (Ed25519 + ML-DSA-65 authorization) | Two-cryptosystem barrier |
+| Gossipsub discovery | Ed25519 + ML-DSA-65 signed | Addresses stripped (DHT-only) | Metadata minimized |
+
+Three upstream dependencies remain quantum-vulnerable and cannot be fixed unilaterally:
+
+| Dependency | Vulnerability | Impact | Mitigation |
+|------------|--------------|--------|------------|
+| libp2p Noise XX (X25519) | Transport decryption | Metadata only (no DIDComm content) | Awaiting PQ Noise variants |
+| Nym Sphinx (X25519) | Traffic deanonymization | Communication patterns (not content) | DIDComm hybrid KEM protects payload |
+| Ethereum ECDSA (secp256k1) | Key recovery | Ecosystem-wide | PQ-gated signing reduces unilateral risk |
+
+See `Docs/ops/pq_mesh_hardening.md`, `Docs/ops/pq_nym_assessment.md`, and `Docs/ops/pq_evm_assessment.md` for detailed assessments.
 
 ## Installation
 
@@ -837,33 +870,93 @@ Computed at session end:
 ```
 src/halo/
   mod.rs               — module root, generic_agents_allowed()
-  addons.rs            — add-on toggle mechanism (p2pclaw, agentpmt-workflows)
-  agentpmt.rs          — AgentPMT tool proxy config, catalog, and unified surface
-  attest.rs            — session attestation (Merkle root, event digest)
-  audit.rs             — Solidity static analysis engine
-  auth.rs              — OAuth flow, API key, credential storage (0600 perms)
-  circuit.rs           — Groth16 proving/verifying (BN254, arkworks)
-  circuit_policy.rs    — dev vs production circuit key policy
-  config.rs            — path resolution (AGENTHALO_HOME, DB_PATH)
-  detect.rs            — agent type detection, flag injection with dedup
+
+  # Identity & Cryptography
+  did.rs               — DID derivation, Ed25519 + ML-DSA-65 dual sign/verify, DIDDocument
+  genesis_seed.rs      — genesis seed ceremony, BIP-39 mnemonic derivation, entropy mixing
+  genesis_entropy.rs   — entropy source management for genesis ceremonies
+  identity.rs          — identity category state (device/network/social/super-secure)
+  identity_ledger.rs   — append-only hash-chained identity ledger (SHA-512)
+  pq.rs                — ML-DSA-65 PQ wallet management (keygen, signing, envelopes)
+  hash.rs              — HashAlgorithm dispatch (SHA-256 legacy / SHA-512 current)
+
+  # Hybrid KEM & DIDComm
+  hybrid_kem.rs        — X25519 + ML-KEM-768 hybrid KEM (IETF Composite, HKDF-SHA-512)
+  didcomm.rs           — DIDComm v2 authcrypt/anoncrypt pack/unpack (hybrid KEM paths)
+  didcomm_handler.rs   — inbound DIDComm message handling (hybrid KEM detection)
+
+  # EVM & On-Chain
+  evm_wallet.rs        — BIP-32 secp256k1 wallet derivation, signing (crate-private)
+  evm_gate.rs          — PQ-gated EVM signing (dual Ed25519 + ML-DSA-65 authorization)
+  twine_anchor.rs      — CURBy-Q Twine identity attestation, triple-signed binding proofs
   onchain.rs           — Base L2 posting, signer modes, TrustVerifier calls
-  pq.rs                — ML-DSA-65 keygen and signing
-  pricing.rs           — model pricing table, cost calculation
-  public_input_schema.rs — Groth16 public input layout versioning
-  runner.rs            — subprocess management, signal forwarding, adapter dispatch, model detection
+  funding.rs           — wallet funding utilities
+  x402.rs              — x402direct protocol types, CAIP-10 parsing, payment execution
+
+  # P2P Mesh
+  p2p_node.rs          — libp2p swarm (Noise XX, gossipsub, Kademlia, relay, AutoNAT)
+  p2p_discovery.rs     — agent discovery, GossipPrivacy metadata minimization, DHT publish
+  a2a_bridge.rs        — HTTP bridge for agent-to-agent DIDComm (hybrid KEM)
+  startup.rs           — full stack orchestration (P2P + Nym + DIDComm bootstrap)
+
+  # Nym Mixnet
+  nym.rs               — Nym SOCKS5 proxy integration
+  nym_native.rs        — native Sphinx packet construction, SURB replies, cover traffic
+
+  # Observability
   schema.rs            — SessionMetadata, TraceEvent, EventType, SessionSummary
   trace.rs             — TraceWriter (NucleusDB writes), read-side queries, blob encoding
-  trust.rs             — trust score computation
-  util.rs              — SHA-256 digest helpers, hex encode/decode
-  viewer.rs            — CLI output formatting (tables, timestamps, costs, JSON, status, export)
+  detect.rs            — agent type detection, flag injection with dedup
+  runner.rs            — subprocess management, signal forwarding, adapter dispatch
+  viewer.rs            — CLI output formatting (tables, timestamps, costs, JSON, export)
+
+  # Trust & Attestation
+  attest.rs            — session attestation (Merkle root SHA-512, anonymous membership proofs)
+  trust.rs             — trust score computation (SHA-512 digest)
+  circuit.rs           — Groth16 proving/verifying (BN254, arkworks)
+  circuit_policy.rs    — dev vs production circuit key policy
+  public_input_schema.rs — Groth16 public input layout versioning
+  audit.rs             — Solidity static analysis engine
+  zk_compute.rs        — ZK compute receipts
+  zk_credential.rs     — ZK credential proofs and anonymous membership
+
+  # Auth & Config
+  auth.rs              — OAuth flow, API key, credential storage (0600 perms)
+  config.rs            — path resolution (AGENTHALO_HOME, DB_PATH)
+  vault.rs             — AES-256-GCM encrypted API key vault
+  crypto_scope.rs      — scoped cryptographic key management
+  session_manager.rs   — session lifecycle management
+  password.rs          — password hashing and verification
+  encrypted_file.rs    — encrypted file I/O
+  api_keys.rs          — API key management
+  agent_auth.rs        — agent authentication middleware
+  privacy_controller.rs — privacy policy enforcement
+
+  # Integrations
+  addons.rs            — add-on toggle mechanism (p2pclaw, agentpmt-workflows)
+  agentpmt.rs          — AgentPMT tool proxy config, catalog, and unified surface
+  pricing.rs           — model pricing table, cost calculation
+  profile.rs           — agent profile management
+  proxy.rs             — OpenAI-compatible multi-provider API proxy
+  http_client.rs       — shared HTTP client utilities
+  pinata.rs            — IPFS pinning via Pinata
+  wdk_proxy.rs         — WDK proxy integration
+  migration.rs         — data migration utilities
   wrap.rs              — shell alias management (.bashrc/.zshrc)
-  x402.rs              — x402direct protocol types, CAIP-10 parsing, validation, payment execution, config
+  util.rs              — hex encode/decode, SHA digest helpers, timestamps
+
   adapters/
     mod.rs             — StreamAdapter trait
     claude.rs          — Claude Code stream-json parser
     codex.rs           — Codex JSON parser
     gemini.rs          — Gemini CLI parser
     generic.rs         — Raw stdout capture
+
+src/comms/
+  mod.rs               — communications module root
+  didcomm.rs           — DIDComm v2 mesh envelope (hybrid KEM encrypt/decrypt)
+  envelope.rs          — envelope serialization
+  session.rs           — communication session state
 
 src/dashboard/
   mod.rs               — axum server, browser launch, DashboardState
@@ -877,7 +970,7 @@ dashboard/
 
 src/bin/
   agenthalo.rs             — CLI binary (run, setup, dashboard, doctor, attest, ...)
-  agenthalo_mcp_server.rs  — HTTP MCP server (18 native + proxied tools)
+  agenthalo_mcp_server.rs  — HTTP MCP server (22 native + proxied tools)
   nucleusdb.rs             — NucleusDB CLI binary
   nucleusdb_mcp.rs         — NucleusDB MCP server (stdio + HTTP transport)
   nucleusdb_server.rs      — NucleusDB multi-tenant HTTP server
@@ -886,17 +979,49 @@ src/bin/
 
 ## Security
 
+### Post-Quantum Cryptographic Architecture
+
+AgentHALO implements defense-in-depth post-quantum cryptography across all agent-controlled surfaces:
+
+**Hybrid Key Encapsulation (DIDComm):**
+- All DIDComm authcrypt and anoncrypt use a hybrid KEM: X25519 ECDH + ML-KEM-768 (FIPS 203).
+- Key derivation: HKDF-SHA-512 with domain-separated salt (`AgentHALO-HybridKEM-v2`), producing 32-byte AES-256-GCM keys.
+- IKM includes ciphertext binding (`ecdh_ss || mlkem_ss || mlkem_ct`) per IETF Composite ML-KEM.
+- Classical fallback: if the recipient has no ML-KEM key, falls back to X25519-only (no PQ protection).
+
+**Dual Signatures (Identity):**
+- Every identity operation is dual-signed: Ed25519 (classical) + ML-DSA-65 (FIPS 204, post-quantum).
+- Discovery announcements, identity attestations, and binding proofs all carry both signatures.
+- Verification requires BOTH signatures to pass (`ed_ok && pq_ok`).
+
+**Hash Upgrade (Integrity Surfaces):**
+- New entries use SHA-512 (256-bit PQ collision resistance under Grover's algorithm).
+- Legacy entries remain SHA-256 with automatic detection via `hash_algorithm` field or hash length.
+- Upgraded surfaces: identity ledger, attestation Merkle tree, PQ signature payloads, trust score digests, DIDComm/P2P binding proofs.
+- Groth16 circuit: SHA-512 digests compressed to 32 bytes via domain-separated SHA-256 for BN254 compatibility.
+
+**PQ-Gated EVM Signing:**
+- `sign_with_evm_key()` is `pub(crate)` — external callers cannot bypass the gate.
+- Every EVM signature requires a dual-signed DIDComm authorization (Ed25519 + ML-DSA-65) over a canonical request including address, nonce, timestamp, and SHA-512 message digest.
+- Address binding: the authorization's EVM address must match the signing key's derived address.
+
+**Gossipsub Metadata Minimization:**
+- Gossipsub announcements strip listen addresses by default (`GossipPrivacy::AddressesViaDhtOnly`).
+- Full addresses are published to Kademlia DHT only, changing the attack model from passive bulk harvesting to active per-DID queries.
+
 ### Credential Storage
 
 - Credentials are stored in `~/.agenthalo/credentials.json` with Unix mode `0600` (owner read/write only).
 - API keys set via `config set-key` (without an argument) prompt interactively — the key never appears in shell history or `ps` output.
 - OAuth flows use a CSRF `state` parameter to prevent local process injection attacks.
+- The encrypted vault (`vault.enc`) uses AES-256-GCM with a master key derived via HKDF-SHA-256 from the PQ wallet's secret seed.
 
 ### Trace Integrity
 
-- Every event's `content_hash` is `SHA-256(serialized_event)`.
+- New events: `content_hash` is `SHA-512(serialized_event)`. Legacy events use SHA-256.
 - Events are written to NucleusDB as content-addressed blobs.
 - The NucleusDB commit for each session can be verified with `VERIFY` queries.
+- Attestation Merkle trees use SHA-512 for leaf and node hashing.
 - Traces are local-only — they never leave your machine.
 
 ### Signal Handling
@@ -904,6 +1029,14 @@ src/bin/
 - SIGINT and SIGTERM are forwarded to the child process via `libc::kill()`.
 - The signal handler runs in a dedicated thread using the `signal-hook` crate.
 - AgentHALO waits for the child to exit before writing the session summary.
+
+### Upstream Quantum Vulnerabilities (Not Fixable Unilaterally)
+
+These are documented for transparency. AgentHALO's application-layer protections mitigate content exposure even if these transports are compromised:
+
+- **libp2p Noise XX (X25519):** Transport-layer encryption is classical-only. If broken, attacker sees signed discovery metadata (semi-public by design). DIDComm payload content is NOT exposed.
+- **Nym Sphinx (X25519):** Mixnet anonymity layer is classical-only. If broken, attacker learns communication patterns but NOT message content (protected by DIDComm hybrid KEM).
+- **Ethereum ECDSA (secp256k1):** Ecosystem-wide vulnerability. AgentHALO's PQ-gated EVM signing creates a two-cryptosystem barrier but cannot prevent key recovery if Shor's algorithm is realized at scale.
 
 ## Troubleshooting
 

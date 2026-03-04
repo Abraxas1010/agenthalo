@@ -1,15 +1,19 @@
 # Agent H.A.L.O. / NucleusDB — Architecture Reference
 
-**Last updated:** 2026-02-26
-**Test count:** 58 passing (29 dashboard + 29 unit/integration)
+**Last updated:** 2026-03-04
+**Test count:** 731+ passing
 
 ---
 
 ## 1. Project Identity
 
-Agent H.A.L.O. (Human-Agent Lattice Orchestration) provides tamper-proof observability
-for AI coding agents. It wraps any agent (Claude, Codex, Gemini, OpenClaw) and records
-every event into a local, cryptographically sealed trace store backed by NucleusDB.
+Agent H.A.L.O. (Human-Agent Lattice Orchestration) is a sovereign agent platform
+providing post-quantum cryptographic identity, DIDComm-based communication, and
+tamper-proof observability for AI agents. It wraps any agent CLI (Claude, Codex,
+Gemini, OpenClaw) and records every event into a local, cryptographically sealed
+trace store backed by NucleusDB. All agent-controlled cryptographic surfaces are
+PQ-hardened: hybrid KEM (X25519 + ML-KEM-768) for DIDComm, dual signatures
+(Ed25519 + ML-DSA-65) for identity, SHA-512 for integrity, and PQ-gated EVM signing.
 
 NucleusDB is the verifiable database underneath — a key-value store with vector
 commitments (IPA/KZG), post-quantum signatures (ML-DSA-65), typed values, SQL interface,
@@ -68,7 +72,38 @@ vector search, and content-addressed blob storage.
 
 ## 4. HALO Modules (`src/halo/`)
 
-The HALO subsystem provides agent observability.
+The HALO subsystem provides sovereign agent identity, PQ-hardened communication, and observability.
+
+### 4.0 Identity & Post-Quantum Cryptography
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `did` | `did.rs` | DID derivation from genesis seed, Ed25519 + ML-DSA-65 dual sign/verify, `DIDDocument` |
+| `genesis_seed` | `genesis_seed.rs` | Genesis seed ceremony, BIP-39 mnemonic derivation, entropy mixing |
+| `genesis_entropy` | `genesis_entropy.rs` | Entropy source management for genesis ceremonies |
+| `identity` | `identity.rs` | Identity category state (device/network/social/super-secure) |
+| `identity_ledger` | `identity_ledger.rs` | Append-only hash-chained identity ledger (SHA-512 for new entries) |
+| `pq` | `pq.rs` | ML-DSA-65 PQ wallet management (keygen, signing, envelopes) |
+| `hash` | `hash.rs` | `HashAlgorithm` dispatch: SHA-256 (legacy) / SHA-512 (current), `hash_bytes()`/`hash_hex()` |
+| `hybrid_kem` | `hybrid_kem.rs` | X25519 + ML-KEM-768 hybrid KEM (IETF Composite, HKDF-SHA-512, salt v2) |
+| `didcomm` | `didcomm.rs` | DIDComm v2 authcrypt/anoncrypt with hybrid KEM paths |
+| `didcomm_handler` | `didcomm_handler.rs` | Inbound DIDComm message handling, hybrid KEM detection |
+| `evm_wallet` | `evm_wallet.rs` | BIP-32 secp256k1 wallet derivation; `sign_with_evm_key` is `pub(crate)` (gate-enforced) |
+| `evm_gate` | `evm_gate.rs` | PQ-gated EVM signing: dual Ed25519 + ML-DSA-65 authorization before secp256k1 |
+| `twine_anchor` | `twine_anchor.rs` | CURBy-Q Twine identity attestation, triple-signed binding proofs |
+
+### 4.0a P2P Mesh & Communication
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `p2p_node` | `p2p_node.rs` | libp2p swarm: Noise XX transport, gossipsub, Kademlia DHT, relay, AutoNAT |
+| `p2p_discovery` | `p2p_discovery.rs` | Agent discovery, `GossipPrivacy` metadata minimization, DHT address publish |
+| `a2a_bridge` | `a2a_bridge.rs` | HTTP bridge for agent-to-agent DIDComm (hybrid KEM) |
+| `startup` | `startup.rs` | Full stack orchestration: P2P + Nym + DIDComm bootstrap |
+| `nym` | `nym.rs` | Nym SOCKS5 proxy integration |
+| `nym_native` | `nym_native.rs` | Native Sphinx packet construction, SURB replies, cover traffic |
+
+### 4.0b Observability & Adapters
 
 | Module | File | Purpose |
 |--------|------|---------|
@@ -77,23 +112,44 @@ The HALO subsystem provides agent observability.
 | `wrap` | `wrap.rs` | Agent wrapper — intercepts stdin/stdout, logs events |
 | `runner` | `runner.rs` | Process runner for wrapped agents |
 | `detect` | `detect.rs` | Auto-detect agent type from command line |
-| `auth` | `auth.rs` | Credentials management (`agenthalo auth`) |
-| `attest` | `attest.rs` | Cryptographic session attestations |
-| `vault` | `vault.rs` | AES-256-GCM encrypted API key vault (461 LOC) |
-| `identity` | `identity.rs` | Identity category state (profile/device/network/social/super-secure) |
-| `identity_ledger` | `identity_ledger.rs` | Append-only hash-chained social/super-secure ledger |
-| `proxy` | `proxy.rs` | OpenAI-compatible multi-provider API proxy (359 LOC) |
-| `config` | `config.rs` | Path helpers: `db_path()`, `vault_path()`, `pq_wallet_path()` |
-| `pq` | `pq.rs` | Post-quantum wallet management (ML-DSA-65 keypairs) |
-| `trust` | `trust.rs` | Trust score computation |
-| `pricing` | `pricing.rs` | Token-based cost calculation per provider/model |
 | `viewer` | `viewer.rs` | Session export (JSON format) |
+| `adapters/` | `adapters/` | Provider-specific adapters (Claude, Codex, Gemini, Generic) |
+
+### 4.0c Trust, Attestation & ZK
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `attest` | `attest.rs` | Session attestation (Merkle root SHA-512, anonymous membership proofs) |
+| `trust` | `trust.rs` | Trust score computation (SHA-512 digest) |
+| `circuit` | `circuit.rs` | Groth16 proving/verifying (BN254, arkworks) |
+| `circuit_policy` | `circuit_policy.rs` | Dev vs production circuit key policy |
+| `public_input_schema` | `public_input_schema.rs` | Groth16 public input layout versioning |
+| `audit` | `audit.rs` | Solidity static analysis engine |
+| `zk_compute` | `zk_compute.rs` | ZK compute receipts |
+| `zk_credential` | `zk_credential.rs` | ZK credential proofs and anonymous membership |
+
+### 4.0d Auth, Config & Integrations
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `auth` | `auth.rs` | Credentials management (`agenthalo auth`) |
+| `vault` | `vault.rs` | AES-256-GCM encrypted API key vault |
+| `config` | `config.rs` | Path helpers: `db_path()`, `vault_path()`, `pq_wallet_path()` |
+| `crypto_scope` | `crypto_scope.rs` | Scoped cryptographic key management |
+| `proxy` | `proxy.rs` | OpenAI-compatible multi-provider API proxy |
+| `pricing` | `pricing.rs` | Token-based cost calculation per provider/model |
 | `x402` | `x402.rs` | HTTP 402 payment protocol integration |
 | `onchain` | `onchain.rs` | On-chain configuration (Base L2) |
-| `circuit` | `circuit.rs` | ZK circuit for trace verification |
 | `addons` | `addons.rs` | Plugin/addon system |
 | `agentpmt` | `agentpmt.rs` | Agent PMT (Product Market Testing) hooks |
-| `adapters/` | `adapters/` | Provider-specific adapters |
+
+### 4.0e Mesh DIDComm (`src/comms/`)
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `didcomm` | `comms/didcomm.rs` | DIDComm v2 mesh envelope: hybrid KEM encrypt/decrypt (X25519 + ML-KEM-768) |
+| `envelope` | `comms/envelope.rs` | Envelope serialization |
+| `session` | `comms/session.rs` | Communication session state |
 
 ### 4.1 Vault Design
 
@@ -284,14 +340,23 @@ See tables in CLAUDE.md § Cockpit API endpoints and § Vault + Proxy endpoints.
 | `redb` | Embedded database (HALO trace store) |
 | `ureq` | Sync HTTP client (proxy, key testing) |
 | `portable-pty` | Cross-platform PTY management |
-| `aes-gcm` | Vault encryption |
-| `hkdf` | Master key derivation |
+| `aes-gcm` | Vault encryption + DIDComm AEAD |
+| `hkdf` | Key derivation (HKDF-SHA-512 for hybrid KEM, HKDF-SHA-256 for vault) |
+| `sha2` | SHA-256 (legacy) + SHA-512 (current) hash dispatch |
+| `ml-kem` | ML-KEM-768 (FIPS 203) post-quantum key encapsulation |
+| `ml-dsa` | ML-DSA-65 (FIPS 204) post-quantum digital signatures |
+| `ed25519-dalek` | Ed25519 classical signatures |
+| `x25519-dalek` | X25519 ECDH key exchange |
+| `k256` | secp256k1 ECDSA (EVM wallet) |
+| `bip32` / `bip39` | Hierarchical deterministic wallet derivation |
+| `libp2p` | P2P mesh: gossipsub, Kademlia DHT, Noise XX, relay, AutoNAT |
 | `rust-embed` | Compile dashboard files into binary |
 | `serde` / `serde_json` | Serialization |
 | `tokio` | Async runtime |
 | `uuid` | Session ID generation |
 | `ratatui` | TUI framework |
 | `webbrowser` | Auto-open dashboard URL |
+| `zeroize` | Secure memory wiping for key material |
 
 ## 9. File Paths & Configuration
 
@@ -317,6 +382,17 @@ See tables in CLAUDE.md § Cockpit API endpoints and § Vault + Proxy endpoints.
 | `WIP/cockpit_preproject_plan_2026-02-25.md` | Pre-project analysis |
 | `WIP/cockpit_preproject_report_2026-02-25.md` | Pre-project findings |
 | `WIP/cockpit_phase{0-6}_partner_instructions_2026-02-25.md` | Phase-by-phase instructions (7 files) |
+
+### PQ Hardening (completed, 2026-03-04)
+
+| File | Description |
+|------|-------------|
+| `WIP/pq_hardening_preproject_plan_2026-03-03.md` | Pre-project analysis |
+| `WIP/pq_hardening_closure_report_2026-03-04.md` | Closure report (8/14 pass, 6 Lean deferred) |
+| `WIP/pq_defense_in_depth_partner_instructions_2026-03-04.md` | Defense-in-depth implementation plan |
+| `Docs/ops/pq_mesh_hardening.md` | P2P mesh audit (no DIDComm bypass) |
+| `Docs/ops/pq_nym_assessment.md` | Nym mixnet PQ assessment |
+| `Docs/ops/pq_evm_assessment.md` | EVM wallet PQ assessment |
 
 ### Historical (completed work)
 
