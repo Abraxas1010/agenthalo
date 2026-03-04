@@ -77,7 +77,11 @@ pub struct AgentAnnouncement {
     pub did_document: Option<DIDDocument>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "binding_proof_sha256")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "binding_proof_sha256"
+    )]
     pub binding_proof_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anonymous_membership_proof: Option<zk_credential::AnonymousCredentialProofBundle>,
@@ -264,6 +268,15 @@ fn verify_optional_anonymous_membership(announcement: &AgentAnnouncement) -> Res
 pub struct AgentDiscovery {
     known_agents: HashMap<String, AgentAnnouncement>,
     subscribed_topics: HashSet<String>,
+    gossip_privacy: GossipPrivacy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GossipPrivacy {
+    /// Include listen addresses in gossipsub announcements.
+    Full,
+    /// Omit listen addresses from gossipsub; resolve them via DHT records.
+    AddressesViaDhtOnly,
 }
 
 impl Default for AgentDiscovery {
@@ -274,9 +287,14 @@ impl Default for AgentDiscovery {
 
 impl AgentDiscovery {
     pub fn new() -> Self {
+        Self::with_gossip_privacy(GossipPrivacy::AddressesViaDhtOnly)
+    }
+
+    pub fn with_gossip_privacy(gossip_privacy: GossipPrivacy) -> Self {
         Self {
             known_agents: HashMap::new(),
             subscribed_topics: HashSet::new(),
+            gossip_privacy,
         }
     }
 
@@ -307,7 +325,8 @@ impl AgentDiscovery {
         announcement: &AgentAnnouncement,
         gossipsub_behaviour: &mut gossipsub::Behaviour,
     ) -> Result<MessageId, String> {
-        let payload = serde_json::to_vec(announcement)
+        let gossip_announcement = self.prepare_gossip_announcement(announcement);
+        let payload = serde_json::to_vec(&gossip_announcement)
             .map_err(|e| format!("serialize announcement for gossip: {e}"))?;
         gossipsub_behaviour
             .publish(IdentTopic::new(topic.to_string()), payload)
@@ -319,8 +338,7 @@ impl AgentDiscovery {
         announcement: &AgentAnnouncement,
         kademlia: &mut Kademlia<MemoryStore>,
     ) -> Result<(), String> {
-        let value = serde_json::to_vec(announcement)
-            .map_err(|e| format!("serialize announcement for DHT: {e}"))?;
+        let value = self.serialize_dht_announcement(announcement)?;
         let record = Record {
             key: announcement_kad_key(&announcement.did),
             value,
@@ -335,6 +353,24 @@ impl AgentDiscovery {
 
     pub fn lookup_by_did(&self, did: &str, kademlia: &mut Kademlia<MemoryStore>) {
         kademlia.get_record(announcement_kad_key(did));
+    }
+
+    fn prepare_gossip_announcement(&self, announcement: &AgentAnnouncement) -> AgentAnnouncement {
+        match self.gossip_privacy {
+            GossipPrivacy::Full => announcement.clone(),
+            GossipPrivacy::AddressesViaDhtOnly => {
+                let mut stripped = announcement.clone();
+                stripped.multiaddrs.clear();
+                stripped
+            }
+        }
+    }
+
+    fn serialize_dht_announcement(
+        &self,
+        announcement: &AgentAnnouncement,
+    ) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(announcement).map_err(|e| format!("serialize announcement for DHT: {e}"))
     }
 
     pub fn ingest_kad_record(&mut self, record: &Record) -> Result<(), String> {
@@ -756,5 +792,62 @@ mod tests {
             .handle_gossipsub_message(&payload, |_did| None)
             .expect_err("invalid anonymous membership proof must fail");
         assert!(err.contains("anonymous membership proof verification failed"));
+    }
+
+    #[test]
+    fn gossip_announce_strips_multiaddrs_in_dht_only_mode() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x73)).expect("identity");
+        let announcement = announcement_for_identity(
+            &identity,
+            PeerId::random(),
+            vec![],
+            vec!["/ip4/127.0.0.1/tcp/9090".to_string()],
+        );
+        let discovery = AgentDiscovery::with_gossip_privacy(GossipPrivacy::AddressesViaDhtOnly);
+        let gossip = discovery.prepare_gossip_announcement(&announcement);
+        assert!(gossip.multiaddrs.is_empty());
+        assert_eq!(announcement.multiaddrs.len(), 1);
+    }
+
+    #[test]
+    fn gossip_announce_preserves_multiaddrs_in_full_mode() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x74)).expect("identity");
+        let announcement = announcement_for_identity(
+            &identity,
+            PeerId::random(),
+            vec![],
+            vec!["/ip4/127.0.0.1/tcp/9091".to_string()],
+        );
+        let discovery = AgentDiscovery::with_gossip_privacy(GossipPrivacy::Full);
+        let gossip = discovery.prepare_gossip_announcement(&announcement);
+        assert_eq!(gossip.multiaddrs, announcement.multiaddrs);
+    }
+
+    #[test]
+    fn dht_publish_always_includes_multiaddrs() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x75)).expect("identity");
+        let announcement = announcement_for_identity(
+            &identity,
+            PeerId::random(),
+            vec![],
+            vec!["/ip4/127.0.0.1/tcp/9092".to_string()],
+        );
+
+        let dht_only = AgentDiscovery::with_gossip_privacy(GossipPrivacy::AddressesViaDhtOnly);
+        let full = AgentDiscovery::with_gossip_privacy(GossipPrivacy::Full);
+
+        let dht_only_payload = dht_only
+            .serialize_dht_announcement(&announcement)
+            .expect("serialize dht payload");
+        let full_payload = full
+            .serialize_dht_announcement(&announcement)
+            .expect("serialize dht payload");
+        let dht_only_ann: AgentAnnouncement =
+            serde_json::from_slice(&dht_only_payload).expect("decode dht only payload");
+        let full_ann: AgentAnnouncement =
+            serde_json::from_slice(&full_payload).expect("decode full payload");
+
+        assert_eq!(dht_only_ann.multiaddrs, announcement.multiaddrs);
+        assert_eq!(full_ann.multiaddrs, announcement.multiaddrs);
     }
 }
