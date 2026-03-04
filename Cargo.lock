@@ -5326,6 +5326,7 @@ dependencies = [
  "tower-http",
  "tss-esapi",
  "ureq",
+ "url",
  "uuid",
  "webbrowser",
  "x25519-dalek",

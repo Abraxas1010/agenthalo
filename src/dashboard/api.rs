@@ -3887,6 +3887,7 @@ async fn api_p2pclaw_status(AxumState(_state): AxumState<DashboardState>) -> Api
     let _ = p2pclaw::save_config(&cfg);
     Ok(Json(json!({
         "ok": true,
+        "config": cfg,
         "swarm": swarm
     })))
 }

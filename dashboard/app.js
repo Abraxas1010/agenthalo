@@ -58,8 +58,36 @@ const PROVIDER_INFO = {
 // -- Routing ------------------------------------------------------------------
 const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
-  identification: renderIdentificationPage, communication: renderCommunicationPage,
+  identification: renderIdentificationPage, communication: renderCommunicationPage, networking: renderNetworkingPage,
   trust: renderTrust, nucleusdb: renderNucleusDB, cockpit: renderCockpit, deploy: renderDeploy };
+
+const NETWORKS = [
+  {
+    id: 'p2pclaw',
+    name: 'P2PCLAW Research Hive',
+    icon: '&#9788;',
+    description: 'Decentralized research collaboration with peer validation',
+    configurable: true,
+    comingSoon: false,
+  },
+  {
+    id: 'nym-mesh',
+    name: 'Nym Mixnet Mesh',
+    icon: '&#128274;',
+    description: 'Privacy-preserving agent communication',
+    configurable: false,
+    comingSoon: true,
+  },
+  {
+    id: 'didcomm-federation',
+    name: 'DIDComm Federation',
+    icon: '&#127760;',
+    description: 'Cross-organization agent identity mesh',
+    configurable: false,
+    comingSoon: true,
+  },
+];
+let _networkingSelected = 'p2pclaw';
 
 // Genesis + Overview hub + Identification pages — rendering logic in genesis-docs.js (loaded after app.js)
 function renderGenesisPage() {
@@ -73,6 +101,217 @@ function renderIdentificationPage() {
 function renderCommunicationPage() {
   if (typeof renderCommunication === 'function') renderCommunication();
   else content.innerHTML = '<div class="loading">Communication docs module not loaded.</div>';
+}
+async function renderNetworkingPage() {
+  let available = [];
+  try {
+    const data = await api('/networking/available');
+    available = Array.isArray(data && data.networks) ? data.networks : [];
+  } catch (_e) {
+    available = [];
+  }
+  const availableById = Object.fromEntries(
+    available
+      .filter((n) => n && n.id)
+      .map((n) => [n.id, n]),
+  );
+  const cards = NETWORKS.map((base) => {
+    const live = availableById[base.id] || {};
+    return {
+      ...base,
+      enabled: !!live.enabled,
+      configurable: live.configurable !== undefined ? !!live.configurable : base.configurable,
+      comingSoon: live.coming_soon !== undefined ? !!live.coming_soon : base.comingSoon,
+    };
+  });
+  if (!cards.some((n) => n.id === _networkingSelected && n.configurable)) {
+    _networkingSelected = 'p2pclaw';
+  }
+
+  let p2status = null;
+  let p2error = '';
+  try {
+    p2status = await api('/p2pclaw/status');
+  } catch (err) {
+    p2error = String(err && err.message || err || '');
+  }
+  const p2cfg = (p2status && p2status.config) || {
+    endpoint_url: 'https://p2pclaw.com',
+    agent_id: 'agenthalo',
+    agent_name: 'AgentHALO',
+    tier: 'tier1',
+  };
+  const p2enabled = !!(cards.find((n) => n.id === 'p2pclaw') || {}).enabled;
+  const swarm = (p2status && p2status.swarm) || {};
+
+  const cardsHtml = cards.map((n) => {
+    const selected = _networkingSelected === n.id;
+    const status = n.comingSoon
+      ? '<span class="badge badge-warn">Coming Soon</span>'
+      : (n.enabled ? '<span class="badge badge-ok">Enabled</span>' : '<span class="badge">Disabled</span>');
+    return `<button class="network-card${selected ? ' is-selected' : ''}${n.comingSoon ? ' is-coming-soon' : ''}"
+      data-network-id="${esc(n.id)}" ${n.configurable ? '' : 'disabled'}
+      title="${n.configurable ? 'Select network' : 'Coming soon'}">
+      <div class="network-card-head">
+        <span class="network-card-icon">${n.icon}</span>
+        <span class="network-card-title">${esc(n.name)}</span>
+      </div>
+      <div class="network-card-desc">${esc(n.description)}</div>
+      <div class="network-card-status">${status}</div>
+    </button>`;
+  }).join('');
+
+  const detailsHtml = _networkingSelected !== 'p2pclaw'
+    ? '<div class="card"><div class="card-label">Coming Soon</div><div class="card-sub">This network integration is reserved for a future release.</div></div>'
+    : `
+      <div class="networking-detail-grid">
+        <section class="card networking-config-card">
+          <div class="card-label">P2PCLAW Configuration</div>
+          <div class="card-sub">Enable integration and configure endpoint + agent identity.</div>
+          <div class="network-form-row network-toggle-row">
+            <label class="network-toggle-label">Enable P2PCLAW</label>
+            <label class="switch">
+              <input type="checkbox" id="p2pclaw-enabled-toggle" ${p2enabled ? 'checked' : ''}>
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="network-form-row">
+            <label for="p2-endpoint-url">Endpoint URL</label>
+            <input class="input" id="p2-endpoint-url" value="${esc(p2cfg.endpoint_url || 'https://p2pclaw.com')}" placeholder="https://p2pclaw.com">
+          </div>
+          <div class="network-form-row">
+            <label for="p2-agent-name">Agent Name</label>
+            <input class="input" id="p2-agent-name" value="${esc(p2cfg.agent_name || 'AgentHALO')}" placeholder="AgentHALO">
+          </div>
+          <div class="network-form-row">
+            <label for="p2-agent-id">Agent ID</label>
+            <input class="input" id="p2-agent-id" value="${esc(p2cfg.agent_id || 'agenthalo')}" placeholder="agenthalo-alice">
+          </div>
+          <div class="network-form-row">
+            <label for="p2-auth-secret">Auth Secret (optional)</label>
+            <input class="input" id="p2-auth-secret" type="password" placeholder="Shared HMAC secret">
+          </div>
+          <div class="network-form-row">
+            <label>Tier</label>
+            <div class="network-tier-row">
+              <label><input type="radio" name="p2-tier" value="tier1" ${(p2cfg.tier || 'tier1') === 'tier1' ? 'checked' : ''}> Tier 1 (Free)</label>
+              <label><input type="radio" name="p2-tier" value="tier2" ${(p2cfg.tier || 'tier1') === 'tier2' ? 'checked' : ''}> Tier 2 (Prepaid)</label>
+            </div>
+          </div>
+          <div class="network-form-actions">
+            <button class="btn" id="p2-test-btn">Test Connection</button>
+            <button class="btn btn-primary" id="p2-save-btn">Save</button>
+          </div>
+          <div id="p2-config-msg" class="networking-msg">${p2error ? esc(p2error) : ''}</div>
+        </section>
+        <section class="card networking-status-card">
+          <div class="card-label">Hive Status</div>
+          <div class="card-sub">Real-time metrics from /api/p2pclaw/status</div>
+          <div class="network-stat-grid">
+            <div class="network-stat"><span>Active Agents</span><strong id="p2-stat-agents">${Number(swarm.agents || 0)}</strong></div>
+            <div class="network-stat"><span>Papers</span><strong id="p2-stat-papers">${Number(swarm.papers || 0)}</strong></div>
+            <div class="network-stat"><span>Mempool</span><strong id="p2-stat-mempool">${Number(swarm.mempool || 0)}</strong></div>
+            <div class="network-stat"><span>Last Event</span><strong id="p2-stat-last">${esc(String(swarm.last_event_ts || '-'))}</strong></div>
+          </div>
+          <div class="network-form-actions" style="margin-top:10px">
+            <button class="btn btn-sm" id="p2-briefing-btn">Load Briefing</button>
+          </div>
+          <pre id="p2-briefing" class="network-briefing">No briefing loaded.</pre>
+        </section>
+      </div>`;
+
+  content.innerHTML = `
+    <h1>Networking Integrations</h1>
+    <p class="muted">Configure sovereign communication networks for AgentHALO.</p>
+    <section class="network-selector">${cardsHtml}</section>
+    <section class="network-detail">${detailsHtml}</section>
+    <p class="networking-footer">Network integrations extend AgentHALO's sovereign communication stack. Each network is independently enabled and configured.</p>
+  `;
+
+  $$('.network-card[data-network-id]').forEach((el) => {
+    if (el.disabled) return;
+    el.addEventListener('click', () => {
+      _networkingSelected = el.dataset.networkId || 'p2pclaw';
+      renderNetworkingPage();
+    });
+  });
+  if (_networkingSelected !== 'p2pclaw') return;
+
+  const msgEl = $('#p2-config-msg');
+  const setMsg = (text, ok) => {
+    if (!msgEl) return;
+    msgEl.textContent = text || '';
+    msgEl.classList.toggle('ok', !!ok);
+    msgEl.classList.toggle('err', !!text && !ok);
+  };
+
+  const toggle = $('#p2pclaw-enabled-toggle');
+  if (toggle) {
+    toggle.addEventListener('change', async () => {
+      try {
+        await apiPost('/addons', { name: 'p2pclaw', enabled: !!toggle.checked });
+        setMsg(`P2PCLAW ${toggle.checked ? 'enabled' : 'disabled'}.`, true);
+      } catch (err) {
+        setMsg(String(err && err.message || err || 'failed to update addon toggle'), false);
+      }
+    });
+  }
+
+  const testBtn = $('#p2-test-btn');
+  if (testBtn) {
+    testBtn.addEventListener('click', async () => {
+      setMsg('Testing connection...', true);
+      try {
+        const res = await api('/p2pclaw/status');
+        const s = (res && res.swarm) || {};
+        const setStat = (id, val) => { const el = $(id); if (el) el.textContent = String(val); };
+        setStat('#p2-stat-agents', Number(s.agents || 0));
+        setStat('#p2-stat-papers', Number(s.papers || 0));
+        setStat('#p2-stat-mempool', Number(s.mempool || 0));
+        setStat('#p2-stat-last', s.last_event_ts || '-');
+        setMsg('Connection successful.', true);
+      } catch (err) {
+        setMsg(String(err && err.message || err || 'connection test failed'), false);
+      }
+    });
+  }
+
+  const saveBtn = $('#p2-save-btn');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      const endpoint_url = ($('#p2-endpoint-url')?.value || '').trim();
+      const agent_name = ($('#p2-agent-name')?.value || '').trim();
+      const agent_id = ($('#p2-agent-id')?.value || '').trim();
+      const auth_secret = ($('#p2-auth-secret')?.value || '').trim();
+      const tier = ($('input[name="p2-tier"]:checked')?.value || 'tier1').trim();
+      const payload = { endpoint_url, agent_name, agent_id, tier };
+      if (auth_secret) payload.auth_secret = auth_secret;
+      setMsg('Saving configuration...', true);
+      try {
+        const res = await apiPost('/p2pclaw/configure', payload);
+        const inVault = !!(res && res.auth_in_vault);
+        setMsg(`Saved. Auth secret ${auth_secret ? (inVault ? 'stored in vault.' : 'stored via insecure fallback.') : 'unchanged.'}`, true);
+        const authInput = $('#p2-auth-secret');
+        if (authInput) authInput.value = '';
+      } catch (err) {
+        setMsg(String(err && err.message || err || 'failed to save config'), false);
+      }
+    });
+  }
+
+  const briefingBtn = $('#p2-briefing-btn');
+  if (briefingBtn) {
+    briefingBtn.addEventListener('click', async () => {
+      const target = $('#p2-briefing');
+      if (target) target.textContent = 'Loading briefing...';
+      try {
+        const res = await api('/p2pclaw/briefing');
+        if (target) target.textContent = String(res && res.briefing_markdown || 'No briefing content.');
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'Failed to load briefing.');
+      }
+    });
+  }
 }
 function renderOverviewHub() {
   if (typeof renderDocsOverview === 'function') renderDocsOverview();
