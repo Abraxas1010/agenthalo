@@ -1,5 +1,9 @@
 use crate::cli::{default_witness_cfg, parse_backend};
-use crate::container::launcher::{launch_container, RunConfig};
+use crate::container::launcher::{
+    container_logs as launcher_container_logs, container_status as launcher_container_status,
+    launch_container, list_sessions as list_container_sessions,
+    stop_container as launcher_stop_container, MeshConfig, RunConfig,
+};
 use crate::pcn::{channel_snapshot, ChannelSnapshot, SettlementOp};
 use crate::persistence::{init_wal, load_wal, persist_snapshot_and_sync_wal, truncate_wal};
 use crate::protocol::{NucleusDb, QueryProof, VcBackend};
@@ -503,6 +507,26 @@ pub struct ContainerLaunchRequest {
     pub command: Vec<String>,
     /// If true, request gVisor (`runsc`) runtime.
     pub runtime_runsc: Option<bool>,
+    /// Optional host socket path override for sidecar communication.
+    pub host_sock: Option<String>,
+    /// Optional environment variables injected into the container.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Optional mesh settings for inter-container communication.
+    #[serde(default)]
+    pub mesh: Option<ContainerMeshRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerMeshRequest {
+    /// Enable mesh networking for this container.
+    pub enabled: Option<bool>,
+    /// MCP port exposed on the mesh network. Defaults to 3000.
+    pub mcp_port: Option<u16>,
+    /// Shared host directory mounted at `/data/mesh` for peer registry.
+    pub registry_volume: Option<String>,
+    /// Optional DID URI to advertise in the peer registry.
+    pub agent_did: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -512,6 +536,59 @@ pub struct ContainerLaunchResponse {
     pub image: String,
     pub agent_id: String,
     pub host_sock: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerListResponse {
+    pub count: usize,
+    pub sessions: Vec<ContainerSessionView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerSessionView {
+    pub session_id: String,
+    pub container_id: String,
+    pub image: String,
+    pub agent_id: String,
+    pub host_sock: String,
+    pub started_at_unix: u64,
+    pub mesh_port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerStatusRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerStatusResponse {
+    pub session_id: String,
+    pub status: String,
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerStopRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerStopResponse {
+    pub session_id: String,
+    pub stopped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerLogsRequest {
+    pub session_id: String,
+    pub follow: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerLogsResponse {
+    pub session_id: String,
+    pub follow: bool,
+    pub logs: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1710,7 +1787,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_container_launch",
-        description = "Launch a monitored container session. Example: {\"image\":\"nucleusdb-agent:latest\",\"agent_id\":\"agent-a\",\"command\":[\"/bin/sh\",\"-lc\",\"echo hello\"]}"
+        description = "Launch a monitored container session. Supports mesh networking and env injection. Example: {\"image\":\"nucleusdb-agent:latest\",\"agent_id\":\"agent-a\",\"command\":[\"/bin/sh\",\"-lc\",\"echo hello\"],\"env\":{\"AGENTHALO_MCP_SECRET\":\"...\"},\"mesh\":{\"enabled\":true,\"mcp_port\":8420,\"registry_volume\":\"/tmp/nucleusdb-mesh\"}}"
     )]
     pub async fn container_launch(
         &self,
@@ -1725,14 +1802,41 @@ impl NucleusDbMcpService {
         } else {
             req.command
         };
+        let host_sock = req
+            .host_sock
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+        let env_vars = req.env.into_iter().collect::<Vec<(String, String)>>();
+        let mesh = req.mesh.map(|cfg| {
+            let mut mesh_cfg = MeshConfig::default();
+            mesh_cfg.enabled = cfg.enabled.unwrap_or(true);
+            if let Some(port) = cfg.mcp_port {
+                mesh_cfg.mcp_port = port;
+            }
+            if let Some(path) = cfg
+                .registry_volume
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                mesh_cfg.registry_volume = PathBuf::from(path);
+            }
+            mesh_cfg.agent_did = cfg
+                .agent_did
+                .map(|did| did.trim().to_string())
+                .filter(|did| !did.is_empty());
+            mesh_cfg
+        });
         let info = launch_container(RunConfig {
             image: req.image.clone(),
             agent_id: req.agent_id.clone(),
             command,
             use_gvisor: req.runtime_runsc.unwrap_or(false),
-            host_sock: None,
-            env_vars: vec![],
-            mesh: None,
+            host_sock,
+            env_vars,
+            mesh,
         })
         .map_err(|e| McpError::internal_error(e, None))?;
         Ok(Json(ContainerLaunchResponse {
@@ -1741,6 +1845,81 @@ impl NucleusDbMcpService {
             image: info.image,
             agent_id: info.agent_id,
             host_sock: info.host_sock.display().to_string(),
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_container_list",
+        description = "List tracked container sessions launched by NucleusDB tooling."
+    )]
+    pub async fn container_list(&self) -> Result<Json<ContainerListResponse>, McpError> {
+        let sessions = list_container_sessions().map_err(|e| McpError::internal_error(e, None))?;
+        let views = sessions
+            .into_iter()
+            .map(|session| ContainerSessionView {
+                session_id: session.session_id,
+                container_id: session.container_id,
+                image: session.image,
+                agent_id: session.agent_id,
+                host_sock: session.host_sock.display().to_string(),
+                started_at_unix: session.started_at_unix,
+                mesh_port: session.mesh_port,
+            })
+            .collect::<Vec<_>>();
+        Ok(Json(ContainerListResponse {
+            count: views.len(),
+            sessions: views,
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_container_status",
+        description = "Get runtime status for a tracked container session. Example: {\"session_id\":\"sess-...\"}"
+    )]
+    pub async fn container_status(
+        &self,
+        Parameters(req): Parameters<ContainerStatusRequest>,
+    ) -> Result<Json<ContainerStatusResponse>, McpError> {
+        let status = launcher_container_status(&req.session_id)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        let running = matches!(status.as_str(), "running" | "restarting" | "created");
+        Ok(Json(ContainerStatusResponse {
+            session_id: req.session_id,
+            status,
+            running,
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_container_stop",
+        description = "Stop a running container session. Example: {\"session_id\":\"sess-...\"}"
+    )]
+    pub async fn container_stop(
+        &self,
+        Parameters(req): Parameters<ContainerStopRequest>,
+    ) -> Result<Json<ContainerStopResponse>, McpError> {
+        launcher_stop_container(&req.session_id).map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(ContainerStopResponse {
+            session_id: req.session_id,
+            stopped: true,
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_container_logs",
+        description = "Fetch container logs for a tracked session. Example: {\"session_id\":\"sess-...\",\"follow\":false}"
+    )]
+    pub async fn container_logs(
+        &self,
+        Parameters(req): Parameters<ContainerLogsRequest>,
+    ) -> Result<Json<ContainerLogsResponse>, McpError> {
+        let follow = req.follow.unwrap_or(false);
+        let logs = launcher_container_logs(&req.session_id, follow)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(ContainerLogsResponse {
+            session_id: req.session_id,
+            follow,
+            logs,
         }))
     }
 
@@ -3349,6 +3528,42 @@ mod tests {
             NucleusDbMcpService::parse_export_format(Some(" map ")).expect("map alias"),
             ExportFormat::LegacyV1
         );
+    }
+
+    #[test]
+    fn container_launch_request_parses_mesh_and_env_options() {
+        let req: ContainerLaunchRequest = serde_json::from_value(json!({
+            "image": "nucleusdb-mcp:latest",
+            "agent_id": "agent-qa",
+            "command": ["/bin/sh", "-lc", "echo ready"],
+            "runtime_runsc": true,
+            "host_sock": "/tmp/agent-qa.sock",
+            "env": {
+                "AGENTHALO_MCP_SECRET": "secret",
+                "NUCLEUSDB_AGENT_PRIVATE_KEY": "abcd"
+            },
+            "mesh": {
+                "enabled": true,
+                "mcp_port": 8420,
+                "registry_volume": "/tmp/nucleusdb-mesh",
+                "agent_did": "did:key:z6MkAgentQa"
+            }
+        }))
+        .expect("deserialize container launch request");
+
+        assert_eq!(req.image, "nucleusdb-mcp:latest");
+        assert_eq!(req.agent_id, "agent-qa");
+        assert_eq!(
+            req.env
+                .get("AGENTHALO_MCP_SECRET")
+                .map(String::as_str)
+                .unwrap_or(""),
+            "secret"
+        );
+        let mesh = req.mesh.expect("mesh config");
+        assert_eq!(mesh.enabled, Some(true));
+        assert_eq!(mesh.mcp_port, Some(8420));
+        assert_eq!(mesh.registry_volume.as_deref(), Some("/tmp/nucleusdb-mesh"));
     }
 
     #[tokio::test]

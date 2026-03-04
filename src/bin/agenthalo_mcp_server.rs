@@ -47,6 +47,7 @@ use nucleusdb::verifier::gate as proof_gate;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
+use std::future::Future;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -58,6 +59,10 @@ use zeroize::{Zeroize, Zeroizing};
 struct AppState {
     secret: String,
 }
+
+const DID_KEY_PREFIX: &str = "did:key:";
+const MULTICODEC_ED25519_PUB: &[u8; 2] = &[0xed, 0x01];
+const TYPE_ED25519: &str = "Ed25519VerificationKey2020";
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -118,6 +123,11 @@ async fn main() -> Result<(), String> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/mcp", post(mcp))
+        .route("/didcomm", post(didcomm_receive))
+        .route(
+            "/.well-known/nucleus-pod",
+            get(nucleus_pod_discovery_handler),
+        )
         .with_state(state);
 
     println!("agenthalo-mcp-server listening on http://{addr}");
@@ -176,6 +186,255 @@ async fn health() -> Json<Value> {
         "service": "agenthalo-mcp-server",
         "phase": "6-agentpmt-fixed"
     }))
+}
+
+async fn nucleus_pod_discovery_handler() -> (StatusCode, Json<Value>) {
+    let mesh_port = std::env::var("NUCLEUSDB_MESH_PORT")
+        .ok()
+        .or_else(|| std::env::var("AGENTHALO_MCP_PORT").ok())
+        .unwrap_or_else(|| "8390".to_string());
+    let hostname = std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    match load_local_did_identity() {
+        Ok(identity) => (
+            StatusCode::OK,
+            Json(json!({
+                "agent_id": std::env::var("NUCLEUSDB_MESH_AGENT_ID").unwrap_or_default(),
+                "agent_did": identity.did,
+                "did_document": identity.did_document,
+                "mcp_endpoint": format!("http://{hostname}:{mesh_port}/mcp"),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": format!("agent identity not available: {e}")
+            })),
+        ),
+    }
+}
+
+async fn didcomm_receive(
+    State(_state): State<Arc<AppState>>,
+    Json(envelope): Json<nucleusdb::comms::didcomm::DIDCommEnvelope>,
+) -> (StatusCode, Json<Value>) {
+    use nucleusdb::comms::didcomm::{decrypt_message, MessageType};
+
+    let local_identity = match load_local_did_identity() {
+        Ok(identity) => identity,
+        Err(e) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": format!("agent identity not available: {e}")
+                })),
+            );
+        }
+    };
+
+    let sender_doc = match resolve_sender_did_from_mesh(&envelope.sender_did) {
+        Ok(doc) => doc,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("cannot resolve sender DID: {e}")
+                })),
+            );
+        }
+    };
+
+    let message = match tokio::task::spawn_blocking(move || {
+        decrypt_message(&local_identity, &sender_doc, &envelope)
+    })
+    .await
+    {
+        Ok(Ok(msg)) => msg,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": format!("envelope verification/decryption failed: {e}")
+                })),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("decrypt task failed: {e}")
+                })),
+            );
+        }
+    };
+
+    if message.is_expired() {
+        return (StatusCode::GONE, Json(json!({"error":"message expired"})));
+    }
+
+    let response = match message.type_ {
+        MessageType::Heartbeat => json!({
+            "status": "ack",
+            "reply_to": message.id,
+        }),
+        MessageType::EnvelopeExchange => json!({
+            "status": "accepted",
+            "reply_to": message.id,
+            "message_type": "envelope_exchange",
+        }),
+        MessageType::CapabilityGrant => json!({
+            "status": "accepted",
+            "reply_to": message.id,
+            "message_type": "capability_grant",
+        }),
+        MessageType::McpToolCall => {
+            let tool_name = match message.body.get("tool_name").and_then(|v| v.as_str()) {
+                Some(name) if !name.trim().is_empty() => name.to_string(),
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error":"McpToolCall body missing non-empty tool_name"})),
+                    );
+                }
+            };
+            let arguments = message
+                .body
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            match tool_call(&tool_name, arguments) {
+                Ok(result) => json!({
+                    "status": "completed",
+                    "reply_to": message.id,
+                    "message_type": "mcp_tool_call",
+                    "tool_name": tool_name,
+                    "result": result,
+                }),
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({
+                            "error": format!("local MCP dispatch failed: {e}")
+                        })),
+                    );
+                }
+            }
+        }
+        other => json!({
+            "status": "received",
+            "reply_to": message.id,
+            "message_type": format!("{other:?}"),
+        }),
+    };
+
+    (StatusCode::OK, Json(response))
+}
+
+fn load_local_did_identity() -> Result<nucleusdb::halo::did::DIDIdentity, String> {
+    let key_hex = std::env::var("NUCLEUSDB_AGENT_PRIVATE_KEY")
+        .map_err(|_| "NUCLEUSDB_AGENT_PRIVATE_KEY not set".to_string())?;
+    let key_bytes =
+        hex::decode(key_hex.trim()).map_err(|e| format!("decode agent private key: {e}"))?;
+    if key_bytes.len() < 64 {
+        return Err(format!(
+            "agent private key too short: {} bytes (need 64)",
+            key_bytes.len()
+        ));
+    }
+    let mut seed = [0u8; 64];
+    seed.copy_from_slice(&key_bytes[..64]);
+    nucleusdb::halo::did::did_from_genesis_seed(&seed)
+}
+
+fn decode_did_key_ed25519_public(did: &str) -> Result<[u8; 32], String> {
+    let encoded = did
+        .strip_prefix(DID_KEY_PREFIX)
+        .ok_or_else(|| "DID is not a did:key identifier".to_string())?;
+    let (_, decoded) =
+        multibase::decode(encoded).map_err(|e| format!("multibase decode failed: {e}"))?;
+    if decoded.len() != MULTICODEC_ED25519_PUB.len() + 32 {
+        return Err("did:key payload must be Ed25519 multicodec + 32-byte key".to_string());
+    }
+    if !decoded.starts_with(MULTICODEC_ED25519_PUB) {
+        return Err("did:key payload must use Ed25519 multicodec prefix".to_string());
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&decoded[MULTICODEC_ED25519_PUB.len()..]);
+    Ok(out)
+}
+
+fn decode_document_ed25519_public(
+    did_document: &nucleusdb::halo::did::DIDDocument,
+) -> Result<[u8; 32], String> {
+    let method = did_document
+        .verification_method
+        .iter()
+        .find(|method| method.type_ == TYPE_ED25519)
+        .ok_or_else(|| "DID document missing Ed25519 verification method".to_string())?;
+    let (_, decoded) = multibase::decode(&method.public_key_multibase)
+        .map_err(|e| format!("multibase decode failed for DID Ed25519 key: {e}"))?;
+    if decoded.len() != MULTICODEC_ED25519_PUB.len() + 32 {
+        return Err("DID Ed25519 key must include multicodec + 32-byte key".to_string());
+    }
+    if !decoded.starts_with(MULTICODEC_ED25519_PUB) {
+        return Err("DID Ed25519 key has unexpected multicodec prefix".to_string());
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&decoded[MULTICODEC_ED25519_PUB.len()..]);
+    Ok(out)
+}
+
+fn verify_did_document_binding(
+    sender_did: &str,
+    did_document: &nucleusdb::halo::did::DIDDocument,
+) -> Result<(), String> {
+    if did_document.id != sender_did {
+        return Err("sender DID document id does not match sender DID".to_string());
+    }
+    let did_key_ed25519 = decode_did_key_ed25519_public(sender_did)?;
+    let document_ed25519 = decode_document_ed25519_public(did_document)?;
+    if did_key_ed25519 != document_ed25519 {
+        return Err(
+            "sender DID document Ed25519 key does not match did:key identifier".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn resolve_sender_did_from_mesh(
+    sender_did: &str,
+) -> Result<nucleusdb::halo::did::DIDDocument, String> {
+    let registry_path = nucleusdb::container::mesh::mesh_registry_path();
+    let registry =
+        nucleusdb::container::mesh::PeerRegistry::load(registry_path.as_path()).unwrap_or_default();
+    if let Some(peer) = registry.find_by_did(sender_did) {
+        let url =
+            peer.mcp_endpoint.trim_end_matches("/mcp").to_string() + "/.well-known/nucleus-pod";
+        let resp = nucleusdb::halo::http_client::get_with_timeout(
+            &url,
+            std::time::Duration::from_secs(5),
+        )?
+        .call()
+        .map_err(|e| format!("fetch DID document from {url}: {e}"))?;
+        let body: Value = resp
+            .into_body()
+            .read_json()
+            .map_err(|e| format!("parse DID document response: {e}"))?;
+        if let Some(doc_val) = body.get("did_document") {
+            let doc: nucleusdb::halo::did::DIDDocument = serde_json::from_value(doc_val.clone())
+                .map_err(|e| format!("parse DID document: {e}"))?;
+            verify_did_document_binding(sender_did, &doc)?;
+            return Ok(doc);
+        }
+    }
+    Err(format!(
+        "cannot resolve DID document for `{sender_did}` — peer not in mesh registry"
+    ))
 }
 
 async fn mcp(
@@ -1099,6 +1358,141 @@ async fn mcp(
                         "required": ["agent_id"]
                     }
                 }),
+                json!({
+                    "name": "nucleusdb_help",
+                    "description": "Describe direct local NucleusDB tool surface served by this agent.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }),
+                json!({
+                    "name": "nucleusdb_status",
+                    "description": "Get local NucleusDB status (backend, paths, counts).",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }),
+                json!({
+                    "name": "nucleusdb_query",
+                    "description": "Query a key from local NucleusDB.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"key": {"type": "string"}},
+                        "required": ["key"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_query_range",
+                    "description": "Query key range/prefix from local NucleusDB.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"pattern": {"type": "string"}},
+                        "required": ["pattern"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_verify",
+                    "description": "Verify proof for a key in local NucleusDB.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string"},
+                            "expected_value": {"type": "integer"}
+                        },
+                        "required": ["key"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_history",
+                    "description": "Fetch history/commit metadata from local NucleusDB.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string"},
+                            "limit": {"type": "integer"},
+                            "offset": {"type": "integer"}
+                        }
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_export",
+                    "description": "Export local NucleusDB data in legacy_v1 or typed_v2 format.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "format": {"type": "string", "description": "legacy_v1|typed_v2"},
+                            "include_metadata": {"type": "boolean"}
+                        }
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_execute_sql",
+                    "description": "Execute SQL against local NucleusDB.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "sql": {"type": "string"},
+                            "persist": {"type": "boolean"}
+                        },
+                        "required": ["sql"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_container_launch",
+                    "description": "Launch a monitored container session with optional mesh/env configuration.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "image": {"type": "string"},
+                            "agent_id": {"type": "string"},
+                            "command": {"type": "array", "items": {"type": "string"}, "default": []},
+                            "runtime_runsc": {"type": "boolean", "default": false},
+                            "host_sock": {"type": "string"},
+                            "env": {"type": "object", "additionalProperties": {"type": "string"}},
+                            "mesh": {
+                                "type": "object",
+                                "properties": {
+                                    "enabled": {"type": "boolean", "default": true},
+                                    "mcp_port": {"type": "integer"},
+                                    "registry_volume": {"type": "string"},
+                                    "agent_did": {"type": "string"}
+                                }
+                            }
+                        },
+                        "required": ["image", "agent_id"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_container_list",
+                    "description": "List tracked container sessions.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }),
+                json!({
+                    "name": "nucleusdb_container_status",
+                    "description": "Get status for a tracked container session.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"session_id": {"type": "string"}},
+                        "required": ["session_id"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_container_stop",
+                    "description": "Stop a tracked container session.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"session_id": {"type": "string"}},
+                        "required": ["session_id"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_container_logs",
+                    "description": "Fetch container logs for a tracked session.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "session_id": {"type": "string"},
+                            "follow": {"type": "boolean", "default": false}
+                        },
+                        "required": ["session_id"]
+                    }
+                }),
             ];
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
@@ -1264,6 +1658,19 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "mesh_call" => tool_mesh_call(arguments),
         "mesh_exchange_envelope" => tool_mesh_exchange_envelope(arguments),
         "mesh_grant" => tool_mesh_grant(arguments),
+        "nucleusdb_help" => tool_nucleusdb_help(arguments),
+        "nucleusdb_status" => tool_nucleusdb_status(arguments),
+        "nucleusdb_query" => tool_nucleusdb_query(arguments),
+        "nucleusdb_query_range" => tool_nucleusdb_query_range(arguments),
+        "nucleusdb_verify" => tool_nucleusdb_verify(arguments),
+        "nucleusdb_history" => tool_nucleusdb_history(arguments),
+        "nucleusdb_export" => tool_nucleusdb_export(arguments),
+        "nucleusdb_execute_sql" => tool_nucleusdb_execute_sql(arguments),
+        "nucleusdb_container_launch" => tool_nucleusdb_container_launch(arguments),
+        "nucleusdb_container_list" => tool_nucleusdb_container_list(arguments),
+        "nucleusdb_container_status" => tool_nucleusdb_container_status(arguments),
+        "nucleusdb_container_stop" => tool_nucleusdb_container_stop(arguments),
+        "nucleusdb_container_logs" => tool_nucleusdb_container_logs(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -1974,14 +2381,16 @@ fn tool_agentaddress_generate(arguments: Value) -> Result<Value, String> {
                 let sk = crypto.session.get_scope_key(CryptoScope::Genesis)?;
                 Ok(*sk.key_bytes())
             })?;
-            let mnemonic =
-                nucleusdb::halo::genesis_seed::derive_wallet_mnemonic_prefer_v2(Some(&genesis_key))?
-                    .ok_or_else(|| {
-                        "genesis seed not available; complete Genesis ceremony first".to_string()
-                    })?;
+            let mnemonic = nucleusdb::halo::genesis_seed::derive_wallet_mnemonic_prefer_v2(Some(
+                &genesis_key,
+            ))?
+            .ok_or_else(|| {
+                "genesis seed not available; complete Genesis ceremony first".to_string()
+            })?;
             let derived = nucleusdb::halo::evm_wallet::derive_from_mnemonic(&mnemonic, None)?;
-            let seed_hash = nucleusdb::halo::genesis_seed::load_seed_sha256_prefer_v2(Some(&genesis_key))?
-                .unwrap_or_default();
+            let seed_hash =
+                nucleusdb::halo::genesis_seed::load_seed_sha256_prefer_v2(Some(&genesis_key))?
+                    .unwrap_or_default();
             let data = json!({
                 "evmAddress": derived.evm_address,
                 "evmPrivateKey": derived.private_key_hex,
@@ -2865,11 +3274,9 @@ fn tool_genesis_status(_arguments: Value) -> Result<Value, String> {
         Ok(*sk.key_bytes())
     })
     .ok();
-    let seed_hash = nucleusdb::halo::genesis_seed::load_seed_sha256_prefer_v2(
-        genesis_key.as_ref(),
-    )
-    .ok()
-    .flatten();
+    let seed_hash = nucleusdb::halo::genesis_seed::load_seed_sha256_prefer_v2(genesis_key.as_ref())
+        .ok()
+        .flatten();
     let latest = nucleusdb::halo::identity_ledger::latest_genesis_event()?;
     if let Some(entry) = latest {
         let completed = mcp_genesis_is_completed_status(&entry.status);
@@ -2953,17 +3360,15 @@ fn tool_genesis_harvest(_arguments: Value) -> Result<Value, String> {
                         }
                     }
                 }
-                _ => {
-                    match nucleusdb::halo::twine_anchor::recover_sovereign_binding_from_ledger() {
-                        Ok(Some(r)) => json!({
-                            "attestation_sha256": r.attestation_sha256,
-                            "binding_sha256": r.binding_sha256,
-                            "did_subject": r.did_subject,
-                            "evm_address": r.evm_address,
-                        }),
-                        _ => Value::Null,
-                    }
-                }
+                _ => match nucleusdb::halo::twine_anchor::recover_sovereign_binding_from_ledger() {
+                    Ok(Some(r)) => json!({
+                        "attestation_sha256": r.attestation_sha256,
+                        "binding_sha256": r.binding_sha256,
+                        "did_subject": r.did_subject,
+                        "evm_address": r.evm_address,
+                    }),
+                    _ => Value::Null,
+                },
             };
             return Ok(json!({
                 "status": "ok",
@@ -5409,6 +5814,258 @@ fn tool_mesh_grant(arguments: Value) -> Result<Value, String> {
     }))
 }
 
+fn local_nucleusdb_path() -> std::path::PathBuf {
+    std::env::var("AGENTHALO_NUCLEUSDB_PATH")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| config::halo_dir().join("nucleusdb.ndb"))
+}
+
+fn run_local_nucleusdb_call<F, Fut>(call: F) -> Result<Value, String>
+where
+    F: FnOnce(nucleusdb::mcp::tools::NucleusDbMcpService) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<Value, String>> + Send + 'static,
+{
+    let db_path = local_nucleusdb_path();
+    let handle = std::thread::Builder::new()
+        .name("agenthalo-mcp-nucleusdb-tool".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || -> Result<Value, String> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("build nucleusdb tool runtime: {e}"))?;
+            runtime.block_on(async move {
+                let service = nucleusdb::mcp::tools::NucleusDbMcpService::new(&db_path)
+                    .map_err(|e| format!("open local nucleusdb at {}: {e}", db_path.display()))?;
+                call(service).await
+            })
+        })
+        .map_err(|e| format!("spawn nucleusdb tool worker: {e}"))?;
+    handle
+        .join()
+        .map_err(|_| "nucleusdb tool worker panicked".to_string())?
+}
+
+fn parse_tool_args<T: serde::de::DeserializeOwned>(
+    arguments: Value,
+    tool_name: &str,
+) -> Result<T, String> {
+    serde_json::from_value(arguments).map_err(|e| format!("invalid arguments for {tool_name}: {e}"))
+}
+
+fn tool_nucleusdb_help(_arguments: Value) -> Result<Value, String> {
+    run_local_nucleusdb_call(|service| async move {
+        let rmcp::Json(response) = service.help().await.map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize nucleusdb_help: {e}"))
+    })
+}
+
+fn tool_nucleusdb_status(_arguments: Value) -> Result<Value, String> {
+    run_local_nucleusdb_call(|service| async move {
+        let rmcp::Json(response) = service.status().await.map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize nucleusdb_status: {e}"))
+    })
+}
+
+fn tool_nucleusdb_query(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::QueryRequest = parse_tool_args(arguments, "nucleusdb_query")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .query(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize nucleusdb_query: {e}"))
+    })
+}
+
+fn tool_nucleusdb_query_range(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::QueryRangeRequest =
+        parse_tool_args(arguments, "nucleusdb_query_range")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .query_range(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize nucleusdb_query_range: {e}"))
+    })
+}
+
+fn tool_nucleusdb_verify(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::VerifyRequest = parse_tool_args(arguments, "nucleusdb_verify")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .verify(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize nucleusdb_verify: {e}"))
+    })
+}
+
+fn tool_nucleusdb_history(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::HistoryRequest =
+        parse_tool_args(arguments, "nucleusdb_history")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .history(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize nucleusdb_history: {e}"))
+    })
+}
+
+fn tool_nucleusdb_export(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::ExportRequest = parse_tool_args(arguments, "nucleusdb_export")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .export(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize nucleusdb_export: {e}"))
+    })
+}
+
+fn tool_nucleusdb_execute_sql(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::ExecuteSqlRequest =
+        parse_tool_args(arguments, "nucleusdb_execute_sql")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .execute_sql(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize nucleusdb_execute_sql: {e}"))
+    })
+}
+
+fn tool_nucleusdb_container_launch(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::ContainerLaunchRequest =
+        parse_tool_args(arguments, "nucleusdb_container_launch")?;
+    let command = if req.command.is_empty() {
+        vec![
+            "/bin/sh".to_string(),
+            "-lc".to_string(),
+            "echo nucleusdb-sidecar".to_string(),
+        ]
+    } else {
+        req.command
+    };
+    let host_sock = req
+        .host_sock
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from);
+    let env_vars = req.env.into_iter().collect::<Vec<(String, String)>>();
+    let mesh = req.mesh.map(|cfg| {
+        let mut mesh_cfg = nucleusdb::container::MeshConfig::default();
+        mesh_cfg.enabled = cfg.enabled.unwrap_or(true);
+        if let Some(port) = cfg.mcp_port {
+            mesh_cfg.mcp_port = port;
+        }
+        if let Some(path) = cfg
+            .registry_volume
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            mesh_cfg.registry_volume = std::path::PathBuf::from(path);
+        }
+        mesh_cfg.agent_did = cfg
+            .agent_did
+            .map(|did| did.trim().to_string())
+            .filter(|did| !did.is_empty());
+        mesh_cfg
+    });
+    let info = nucleusdb::container::launch_container(nucleusdb::container::RunConfig {
+        image: req.image,
+        agent_id: req.agent_id,
+        command,
+        use_gvisor: req.runtime_runsc.unwrap_or(false),
+        host_sock,
+        env_vars,
+        mesh,
+    })?;
+    Ok(json!({
+        "session_id": info.session_id,
+        "container_id": info.container_id,
+        "image": info.image,
+        "agent_id": info.agent_id,
+        "host_sock": info.host_sock.display().to_string(),
+        "mesh_port": info.mesh_port,
+    }))
+}
+
+fn tool_nucleusdb_container_list(_arguments: Value) -> Result<Value, String> {
+    let sessions = nucleusdb::container::launcher::list_sessions()?;
+    let rows: Vec<Value> = sessions
+        .into_iter()
+        .map(|s| {
+            json!({
+                "session_id": s.session_id,
+                "container_id": s.container_id,
+                "image": s.image,
+                "agent_id": s.agent_id,
+                "host_sock": s.host_sock.display().to_string(),
+                "started_at_unix": s.started_at_unix,
+                "mesh_port": s.mesh_port,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "count": rows.len(),
+        "sessions": rows,
+    }))
+}
+
+fn tool_nucleusdb_container_status(arguments: Value) -> Result<Value, String> {
+    let session_id = arguments
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "session_id is required".to_string())?;
+    let status = nucleusdb::container::launcher::container_status(session_id)?;
+    Ok(json!({
+        "session_id": session_id,
+        "status": status,
+        "running": matches!(status.as_str(), "running" | "restarting" | "created"),
+    }))
+}
+
+fn tool_nucleusdb_container_stop(arguments: Value) -> Result<Value, String> {
+    let session_id = arguments
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "session_id is required".to_string())?;
+    nucleusdb::container::launcher::stop_container(session_id)?;
+    Ok(json!({
+        "session_id": session_id,
+        "stopped": true,
+    }))
+}
+
+fn tool_nucleusdb_container_logs(arguments: Value) -> Result<Value, String> {
+    let session_id = arguments
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "session_id is required".to_string())?;
+    let follow = arguments
+        .get("follow")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let logs = nucleusdb::container::launcher::container_logs(session_id, follow)?;
+    Ok(json!({
+        "session_id": session_id,
+        "follow": follow,
+        "logs": logs,
+    }))
+}
+
 fn tool_halo_export(arguments: Value) -> Result<Value, String> {
     let session_id = arguments
         .get("session_id")
@@ -6313,6 +6970,141 @@ mod tests {
         assert!(err.contains("not found in mesh registry"));
 
         std::env::remove_var("NUCLEUSDB_MESH_REGISTRY");
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn nucleusdb_tools_roundtrip_via_agenthalo_dispatch() {
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_nucleusdb_dispatch");
+        std::env::set_var("AGENTHALO_HOME", &home);
+        let db_path = home.join("agenthalo_tools.ndb");
+        std::env::set_var("AGENTHALO_NUCLEUSDB_PATH", db_path.display().to_string());
+
+        let write = tool_call(
+            "nucleusdb_execute_sql",
+            json!({
+                "sql": "SHOW STATUS;",
+                "persist": false
+            }),
+        )
+        .expect("execute sql");
+        assert!(
+            write.get("ok").and_then(|v| v.as_bool()) == Some(true)
+                || write.get("message").is_some()
+                || write.get("rows").is_some(),
+            "unexpected execute_sql payload: {write}"
+        );
+
+        let query_err = tool_call("nucleusdb_query", json!({"key":"mesh:test"}))
+            .expect_err("missing key should return query error, proving tool dispatch");
+        assert!(
+            query_err.contains("unknown key") || query_err.contains("-32602"),
+            "unexpected query error: {query_err}"
+        );
+
+        let status = tool_call("nucleusdb_status", json!({})).expect("status");
+        assert!(status.get("db_path").is_some());
+
+        let list = tool_call("nucleusdb_container_list", json!({})).expect("container list");
+        assert!(list["count"].is_number());
+        assert!(list["sessions"].is_array());
+
+        std::env::remove_var("AGENTHALO_NUCLEUSDB_PATH");
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn didcomm_receive_executes_local_tool_call() {
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::time::Duration;
+
+        let _guard = env_lock().lock().expect("lock env");
+        let home = make_temp_home("agenthalo_mcp_didcomm_receive");
+        std::env::set_var("AGENTHALO_HOME", &home);
+
+        let alice_seed = [0x71u8; 64];
+        let bob_seed = [0x72u8; 64];
+        let alice = nucleusdb::halo::did::did_from_genesis_seed(&alice_seed).expect("alice");
+        let bob = nucleusdb::halo::did::did_from_genesis_seed(&bob_seed).expect("bob");
+        std::env::set_var("NUCLEUSDB_AGENT_PRIVATE_KEY", hex::encode(bob_seed));
+
+        let discovery_app = Router::new().route(
+            "/.well-known/nucleus-pod",
+            get({
+                let doc = alice.did_document.clone();
+                move || {
+                    let doc = doc.clone();
+                    async move { Json(json!({"did_document": doc})) }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind discovery");
+        let addr = listener.local_addr().expect("discovery addr");
+        let discovery_server = tokio::spawn(async move {
+            let _ = axum::serve(listener, discovery_app).await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let registry_path = home.join("mesh-peers.json");
+        let mut registry = nucleusdb::container::mesh::PeerRegistry::new();
+        let now = nucleusdb::pod::now_unix();
+        registry.register(nucleusdb::container::mesh::PeerInfo {
+            agent_id: "agent-alice".to_string(),
+            container_name: "alice".to_string(),
+            did_uri: Some(alice.did.clone()),
+            mcp_endpoint: format!("http://{addr}/mcp"),
+            discovery_endpoint: format!("http://{addr}/.well-known/nucleus-pod"),
+            registered_at: now,
+            last_seen: now,
+        });
+        registry.save(&registry_path).expect("save registry");
+        std::env::set_var(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.display().to_string(),
+        );
+
+        let envelope = nucleusdb::comms::envelope::wrap_mcp_call(
+            &alice,
+            &bob.did_document,
+            "sync",
+            json!({"target":"didcomm-test"}),
+        )
+        .expect("wrap didcomm mcp call");
+        let (status, payload) = std::thread::Builder::new()
+            .name("didcomm_receive_large_stack".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build runtime");
+                runtime.block_on(async move {
+                    didcomm_receive(
+                        State(Arc::new(AppState {
+                            secret: "test-secret".to_string(),
+                        })),
+                        Json(envelope),
+                    )
+                    .await
+                })
+            })
+            .expect("spawn didcomm test thread")
+            .join()
+            .expect("didcomm test thread join");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload.0["status"], "completed");
+        assert_eq!(payload.0["tool_name"], "sync");
+        assert!(payload.0.get("result").is_some());
+
+        discovery_server.abort();
+        std::env::remove_var("NUCLEUSDB_MESH_REGISTRY");
+        std::env::remove_var("NUCLEUSDB_AGENT_PRIVATE_KEY");
         std::env::remove_var("AGENTHALO_HOME");
         let _ = std::fs::remove_dir_all(&home);
     }

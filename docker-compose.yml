@@ -34,6 +34,9 @@ services:
     environment:
       NYM_ENABLED: "true"
       NYM_FAIL_OPEN: "false"
+      # External control bootstrap for MCP OAuth auth (rotate for non-local deployments).
+      NUCLEUSDB_JWT_SECRET: ${NUCLEUSDB_JWT_SECRET:-nucleusdb-local-dev-secret}
+      NUCLEUSDB_CORS_ORIGINS: ${NUCLEUSDB_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       SOCKS5_PROXY: socks5h://nym-socks5:1080
       ALL_PROXY: socks5h://nym-socks5:1080
       HTTP_PROXY: socks5h://nym-socks5:1080

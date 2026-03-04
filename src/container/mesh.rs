@@ -216,7 +216,30 @@ pub fn call_remote_tool(
     arguments: serde_json::Value,
     auth_token: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    use crate::halo::http_client;
+    let initialize_payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "nucleusdb-mesh", "version": env!("CARGO_PKG_VERSION")}
+        }
+    });
+    let (initialize_body, session_id) =
+        call_remote_rpc(peer, &initialize_payload, auth_token, None).map_err(|e| {
+            format!(
+                "mesh_call initialize handshake with {} failed: {e}",
+                peer.agent_id
+            )
+        })?;
+    if let Some(err) = initialize_body.get("error") {
+        return Err(format!(
+            "remote initialize error: {}",
+            serde_json::to_string(err).unwrap_or_default()
+        ));
+    }
+
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -226,18 +249,8 @@ pub fn call_remote_tool(
             "arguments": arguments
         }
     });
-    let mut req =
-        http_client::post_with_timeout(&peer.mcp_endpoint, std::time::Duration::from_secs(30))?;
-    if let Some(token) = auth_token {
-        req = req.header("Authorization", &format!("Bearer {token}"));
-    }
-    let resp = req
-        .send_json(&payload)
+    let (body, _) = call_remote_rpc(peer, &payload, auth_token, session_id.as_deref())
         .map_err(|e| format!("mesh_call to {} tool {tool_name}: {e}", peer.agent_id))?;
-    let body: serde_json::Value = resp
-        .into_body()
-        .read_json()
-        .map_err(|e| format!("parse mesh_call response: {e}"))?;
     if let Some(err) = body.get("error") {
         return Err(format!(
             "remote tool error: {}",
@@ -248,6 +261,62 @@ pub fn call_remote_tool(
         .get("result")
         .cloned()
         .unwrap_or(serde_json::Value::Null))
+}
+
+fn call_remote_rpc(
+    peer: &PeerInfo,
+    payload: &serde_json::Value,
+    auth_token: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<(serde_json::Value, Option<String>), String> {
+    use crate::halo::http_client;
+    let mut req =
+        http_client::post_with_timeout(&peer.mcp_endpoint, std::time::Duration::from_secs(30))?
+            .header("Accept", "application/json, text/event-stream");
+    if let Some(token) = auth_token {
+        req = req.header("Authorization", &format!("Bearer {token}"));
+    }
+    if let Some(session) = session_id {
+        req = req.header("mcp-session-id", session);
+    }
+    let resp = req
+        .send_json(payload)
+        .map_err(|e| format!("remote MCP request failed: {e}"))?;
+    let response_session_id = resp
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string());
+    let body_text = resp
+        .into_body()
+        .read_to_string()
+        .map_err(|e| format!("read remote MCP response body: {e}"))?;
+    let parsed = parse_mcp_response_body(&body_text)?;
+    Ok((parsed, response_session_id))
+}
+
+fn parse_mcp_response_body(body: &str) -> Result<serde_json::Value, String> {
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+        return Ok(json);
+    }
+
+    // Streamable HTTP POST responses may arrive as SSE events.
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(data) = trimmed.strip_prefix("data:") {
+            let payload = data.trim();
+            if payload.is_empty() || payload == "[DONE]" {
+                continue;
+            }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(payload) {
+                return Ok(json);
+            }
+        }
+    }
+    Err(format!(
+        "unable to parse MCP response as JSON or SSE payload: {}",
+        body.chars().take(240).collect::<String>()
+    ))
 }
 
 /// Send a ProofEnvelope to a remote peer for verification.
@@ -269,6 +338,7 @@ mod tests {
     use super::*;
     use crate::test_support;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     #[test]
     fn peer_registry_register_and_find() {
@@ -400,5 +470,109 @@ mod tests {
             std::env::remove_var("NUCLEUSDB_MESH_REGISTRY");
         }
         assert_eq!(mesh_registry_path(), PathBuf::from(MESH_REGISTRY_PATH));
+    }
+
+    #[test]
+    fn parse_mcp_response_body_accepts_plain_json_and_sse() {
+        let plain = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
+        let parsed_plain = parse_mcp_response_body(plain).expect("parse plain JSON");
+        assert_eq!(parsed_plain["result"]["ok"], true);
+
+        let sse = "id: 0\ndata:\n\nid: 1\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n";
+        let parsed_sse = parse_mcp_response_body(sse).expect("parse SSE");
+        assert_eq!(parsed_sse["result"]["ok"], true);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_remote_tool_performs_initialize_and_streamable_call() {
+        use axum::extract::State;
+        use axum::http::{HeaderMap, HeaderValue, StatusCode};
+        use axum::routing::post;
+        use axum::{Json, Router};
+        use serde_json::Value;
+        use tokio::sync::Mutex;
+
+        #[derive(Clone, Default)]
+        struct TestState {
+            calls: Arc<Mutex<Vec<String>>>,
+        }
+
+        async fn mcp_handler(
+            State(state): State<TestState>,
+            headers: HeaderMap,
+            Json(body): Json<Value>,
+        ) -> (StatusCode, HeaderMap, String) {
+            let method = body
+                .get("method")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            state.calls.lock().await.push(method.clone());
+            let mut out_headers = HeaderMap::new();
+            if method == "initialize" {
+                out_headers.insert("mcp-session-id", HeaderValue::from_static("sess-test"));
+                return (
+                    StatusCode::OK,
+                    out_headers,
+                    "id: 0\ndata:\n\nid: 1\ndata: {\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"ok\":true}}\n\n".to_string(),
+                );
+            }
+
+            let session = headers
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            let accept = headers
+                .get(axum::http::header::ACCEPT)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            if session != "sess-test"
+                || !accept.contains("application/json")
+                || !accept.contains("text/event-stream")
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    HeaderMap::new(),
+                    "{\"error\":\"missing session or accept\"}".to_string(),
+                );
+            }
+            (
+                StatusCode::OK,
+                HeaderMap::new(),
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}".to_string(),
+            )
+        }
+
+        let state = TestState::default();
+        let app = Router::new()
+            .route("/mcp", post(mcp_handler))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let peer = PeerInfo {
+            agent_id: "remote-agent".to_string(),
+            container_name: "remote".to_string(),
+            did_uri: None,
+            mcp_endpoint: format!("http://{addr}/mcp"),
+            discovery_endpoint: String::new(),
+            registered_at: crate::pod::now_unix(),
+            last_seen: crate::pod::now_unix(),
+        };
+        let result = call_remote_tool(&peer, "nucleusdb_status", serde_json::json!({}), None)
+            .expect("call remote tool");
+        assert_eq!(result["ok"], true);
+
+        let calls = state.calls.lock().await.clone();
+        assert_eq!(
+            calls,
+            vec!["initialize".to_string(), "tools/call".to_string()]
+        );
+        server.abort();
     }
 }

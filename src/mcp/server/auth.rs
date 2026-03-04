@@ -110,8 +110,12 @@ impl ToolScope {
             | "zk_prove_credential"
             | "zk_prove_anonymous_membership"
             | "zk_compute_prove" => Self::TrustAttest,
-            // Container
-            "nucleusdb_container_launch" => Self::Container,
+            // Container lifecycle
+            "nucleusdb_container_launch"
+            | "nucleusdb_container_list"
+            | "nucleusdb_container_status"
+            | "nucleusdb_container_stop"
+            | "nucleusdb_container_logs" => Self::Container,
             // Mesh network (read-only discovery)
             "mesh_peers" | "mesh_ping" => Self::Read,
             // Mesh network (write: remote calls and envelope exchange)
@@ -654,10 +658,16 @@ mod tests {
             assert_eq!(ToolScope::for_tool(t), ToolScope::TrustAttest, "tool {t}");
         }
 
-        assert_eq!(
-            ToolScope::for_tool("nucleusdb_container_launch"),
-            ToolScope::Container
-        );
+        let container_tools = [
+            "nucleusdb_container_launch",
+            "nucleusdb_container_list",
+            "nucleusdb_container_status",
+            "nucleusdb_container_stop",
+            "nucleusdb_container_logs",
+        ];
+        for t in &container_tools {
+            assert_eq!(ToolScope::for_tool(t), ToolScope::Container, "tool {t}");
+        }
         // Unknown tools → most restrictive
         assert_eq!(ToolScope::for_tool("unknown_tool"), ToolScope::TrustAttest);
     }

@@ -645,7 +645,13 @@ async fn auth_info_handler(config: Arc<AuthConfig>) -> axum::Json<serde_json::Va
             "trust:attest": [
                 "nucleusdb_agent_register", "submit_composite_attestation", "mesh_grant"
             ],
-            "container": ["nucleusdb_container_launch"]
+            "container": [
+                "nucleusdb_container_launch",
+                "nucleusdb_container_list",
+                "nucleusdb_container_status",
+                "nucleusdb_container_stop",
+                "nucleusdb_container_logs"
+            ]
         }
     }))
 }
