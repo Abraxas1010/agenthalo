@@ -16,6 +16,7 @@ pub mod did;
 pub mod didcomm;
 pub mod didcomm_handler;
 pub mod encrypted_file;
+pub mod evm_gate;
 pub mod evm_wallet;
 pub mod funding;
 pub mod genesis_entropy;

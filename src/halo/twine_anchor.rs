@@ -166,7 +166,13 @@ pub fn create_binding_proof(
     );
     let binding_sha256 = sha256_hex(&canonical);
     let (ed_sig, pq_sig) = crate::halo::did::dual_sign(identity, &canonical)?;
-    let secp_sig = crate::halo::evm_wallet::sign_with_evm_key(evm_private_key_hex, &canonical)?;
+    let (_authorization, secp_sig) = crate::halo::evm_gate::authorize_and_sign(
+        identity,
+        evm_private_key_hex,
+        evm_address,
+        &canonical,
+        timestamp,
+    )?;
 
     Ok(BindingProof {
         version: 1,
@@ -197,8 +203,7 @@ pub struct SovereignBindingResult {
 /// Returns `Some(result)` if both attestation and binding events exist in the ledger,
 /// `None` if either is missing.
 pub fn recover_sovereign_binding_from_ledger() -> Result<Option<SovereignBindingResult>, String> {
-    let (att_event, bind_event) =
-        crate::halo::identity_ledger::latest_sovereign_binding_events()?;
+    let (att_event, bind_event) = crate::halo::identity_ledger::latest_sovereign_binding_events()?;
     match (att_event, bind_event) {
         (Some(att), Some(bind)) => {
             let att_sha = att
@@ -275,8 +280,7 @@ pub fn perform_sovereign_binding_ceremony(
         crate::halo::genesis_seed::derive_wallet_entropy32_from_seed_public(genesis_seed)?;
     let mnemonic = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &wallet_entropy)
         .map_err(|e| format!("derive wallet mnemonic for ceremony: {e}"))?;
-    let evm_wallet =
-        crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic.to_string(), None)?;
+    let evm_wallet = crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic.to_string(), None)?;
 
     // 3. Create dual-signed identity attestation
     let signed_attestation = create_signed_attestation(
@@ -399,8 +403,8 @@ mod tests {
         let identity = crate::halo::did::did_from_genesis_seed(&seed).expect("did");
         let entropy = crate::halo::genesis_seed::derive_wallet_entropy32_from_seed_public(&seed)
             .expect("wallet entropy");
-        let mnemonic = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
-            .expect("mnemonic");
+        let mnemonic =
+            bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy).expect("mnemonic");
         let wallet = crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic.to_string(), None)
             .expect("evm wallet");
 
@@ -433,8 +437,8 @@ mod tests {
         let identity = crate::halo::did::did_from_genesis_seed(&seed).expect("did");
         let entropy = crate::halo::genesis_seed::derive_wallet_entropy32_from_seed_public(&seed)
             .expect("wallet entropy");
-        let mnemonic = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
-            .expect("mnemonic");
+        let mnemonic =
+            bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy).expect("mnemonic");
         let wallet = crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic.to_string(), None)
             .expect("evm wallet");
 
@@ -443,10 +447,7 @@ mod tests {
         assert!(added, "first bind should return true");
 
         // Verify the alsoKnownAs field
-        let expected_pkh = format!(
-            "did:pkh:eip155:1:{}",
-            wallet.evm_address.to_lowercase()
-        );
+        let expected_pkh = format!("did:pkh:eip155:1:{}", wallet.evm_address.to_lowercase());
         assert!(
             did_doc.also_known_as.contains(&expected_pkh),
             "DID doc should contain did:pkh binding"
@@ -499,11 +500,10 @@ mod tests {
         let identity = crate::halo::did::did_from_genesis_seed(&seed).expect("did from seed");
         let entropy = crate::halo::genesis_seed::derive_wallet_entropy32_from_seed_public(&seed)
             .expect("wallet entropy");
-        let mnemonic = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
-            .expect("mnemonic");
-        let wallet =
-            crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic.to_string(), None)
-                .expect("evm wallet");
+        let mnemonic =
+            bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy).expect("mnemonic");
+        let wallet = crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic.to_string(), None)
+            .expect("evm wallet");
 
         let att1 = create_signed_attestation(
             &identity,
