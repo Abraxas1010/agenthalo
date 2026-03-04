@@ -29,8 +29,8 @@ pub struct A2aAgentCard {
     pub security: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binding_proof_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "binding_proof_sha256")]
+    pub binding_proof_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -179,7 +179,7 @@ pub fn generate_agent_card(
     base_url: &str,
     skills: &[AgentCapability],
 ) -> A2aAgentCard {
-    let (evm_address, binding_proof_sha256) = sovereign_binding_card_fields();
+    let (evm_address, binding_proof_hash) = sovereign_binding_card_fields();
     A2aAgentCard {
         name: std::env::var("AGENT_NAME").unwrap_or_else(|_| "AgentHalo".to_string()),
         description: std::env::var("AGENT_DESCRIPTION")
@@ -216,7 +216,7 @@ pub fn generate_agent_card(
         )]),
         security: vec!["didAuth".to_string()],
         evm_address,
-        binding_proof_sha256,
+        binding_proof_hash,
     }
 }
 
@@ -242,7 +242,7 @@ pub async fn start_a2a_bridge(
         executor: Arc::new(DIDCommTaskExecutor::new(identity, didcomm)),
     };
 
-    if state.card.evm_address.is_none() || state.card.binding_proof_sha256.is_none() {
+    if state.card.evm_address.is_none() || state.card.binding_proof_hash.is_none() {
         eprintln!(
             "[AgentHalo/A2A] warning: sovereign binding not yet available; agent card binding fields are empty"
         );
@@ -697,7 +697,7 @@ mod tests {
         let identity = crate::halo::did::did_from_genesis_seed(&[0x58; 64]).expect("identity");
         let card = generate_agent_card(&identity, "http://127.0.0.1:9300", &[]);
         assert_eq!(card.evm_address.as_deref(), Some("0xabc123"));
-        assert_eq!(card.binding_proof_sha256.as_deref(), Some("sha256:bind"));
+        assert_eq!(card.binding_proof_hash.as_deref(), Some("sha256:bind"));
 
         std::env::remove_var("AGENTHALO_HOME");
         let _ = std::fs::remove_dir_all(&temp_home);

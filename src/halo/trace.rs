@@ -9,7 +9,6 @@ use crate::persistence::{
 use crate::protocol::{NucleusDb, VcBackend};
 use crate::state::{Delta, State};
 use crate::witness::{WitnessConfig, WitnessSignatureAlgorithm};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -590,13 +589,12 @@ fn u64_chunks_to_bytes(chunks: &[u64]) -> Vec<u8> {
 fn event_content_hash(content: &serde_json::Value) -> Result<String, String> {
     let bytes =
         serde_json::to_vec(content).map_err(|e| format!("serialize content hash input: {e}"))?;
-    let digest = Sha256::digest(&bytes);
-    Ok(hex_encode(digest.as_slice()))
+    Ok(crate::halo::hash::hash_hex(
+        &crate::halo::hash::HashAlgorithm::CURRENT,
+        &bytes,
+    ))
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
 
 fn session_base_key(session_id: &str) -> String {
     format!("{SESSION_PREFIX}{session_id}")

@@ -77,8 +77,8 @@ pub struct AgentAnnouncement {
     pub did_document: Option<DIDDocument>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evm_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binding_proof_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "binding_proof_sha256")]
+    pub binding_proof_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anonymous_membership_proof: Option<zk_credential::AnonymousCredentialProofBundle>,
     pub ed25519_signature: Option<Vec<u8>>,
@@ -99,7 +99,8 @@ struct AgentAnnouncementPayload {
     ttl: u64,
     did_document: Option<DIDDocument>,
     evm_address: Option<String>,
-    binding_proof_sha256: Option<String>,
+    #[serde(alias = "binding_proof_sha256")]
+    binding_proof_hash: Option<String>,
     anonymous_membership_proof: Option<zk_credential::AnonymousCredentialProofBundle>,
 }
 
@@ -118,7 +119,7 @@ impl From<&AgentAnnouncement> for AgentAnnouncementPayload {
             ttl: value.ttl,
             did_document: value.did_document.clone(),
             evm_address: value.evm_address.clone(),
-            binding_proof_sha256: value.binding_proof_sha256.clone(),
+            binding_proof_hash: value.binding_proof_hash.clone(),
             anonymous_membership_proof: value.anonymous_membership_proof.clone(),
         }
     }
@@ -450,7 +451,7 @@ pub fn announcement_for_identity(
         ttl: 300,
         did_document: Some(identity.did_document.clone()),
         evm_address: None,
-        binding_proof_sha256: None,
+        binding_proof_hash: None,
         anonymous_membership_proof: None,
         ed25519_signature: None,
         mldsa65_signature: None,
@@ -545,7 +546,7 @@ mod tests {
             ttl: 60,
             did_document: None,
             evm_address: None,
-            binding_proof_sha256: None,
+            binding_proof_hash: None,
             anonymous_membership_proof: None,
             ed25519_signature: None,
             mldsa65_signature: None,
@@ -569,7 +570,7 @@ mod tests {
             ttl: 60,
             did_document: None,
             evm_address: None,
-            binding_proof_sha256: None,
+            binding_proof_hash: None,
             anonymous_membership_proof: None,
             ed25519_signature: None,
             mldsa65_signature: None,

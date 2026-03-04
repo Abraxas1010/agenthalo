@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 
+use crate::halo::hash::{self, HashAlgorithm};
+
 const LEDGER_VERSION: u8 = 1;
 const HASH_DOMAIN: &str = "agenthalo.identity.ledger.v1";
 
@@ -35,10 +37,16 @@ pub struct LedgerSignatureRef {
     pub key_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_key_hex: Option<String>,
-    pub payload_sha256: String,
+    /// Content hash of the signed payload (SHA-256 for legacy, SHA-512 for new).
+    #[serde(alias = "payload_sha256")]
+    pub payload_hash: String,
     pub signature_hex: String,
     pub signature_digest: String,
     pub created_at: u64,
+    /// Hash algorithm used for payload_hash and signature_digest.
+    /// Absent or "sha256" for legacy entries; "sha512" for PQ-hardened entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_algorithm: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,6 +66,10 @@ pub struct IdentityLedgerEntry {
     pub prev_hash: Option<String>,
     pub entry_hash: String,
     pub signature: Option<LedgerSignatureRef>,
+    /// Hash algorithm used for entry_hash.
+    /// Absent for legacy entries (SHA-256); "sha512" for PQ-hardened entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_algorithm: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -159,15 +171,13 @@ fn entry_payload_for_hash_legacy(entry: &IdentityLedgerEntry) -> String {
 }
 
 fn compute_entry_hash(entry: &IdentityLedgerEntry) -> String {
-    let mut h = Sha256::new();
-    h.update(entry_payload_for_hash(entry).as_bytes());
-    crate::halo::util::hex_encode(&h.finalize())
+    let algo = HashAlgorithm::from_field(entry.hash_algorithm.as_deref());
+    hash::hash_hex(&algo, entry_payload_for_hash(entry).as_bytes())
 }
 
 fn compute_entry_hash_legacy(entry: &IdentityLedgerEntry) -> String {
-    let mut h = Sha256::new();
-    h.update(entry_payload_for_hash_legacy(entry).as_bytes());
-    crate::halo::util::hex_encode(&h.finalize())
+    // Legacy entries are always SHA-256 (no hash_algorithm field).
+    hash::hash_hex(&HashAlgorithm::Sha256, entry_payload_for_hash_legacy(entry).as_bytes())
 }
 
 fn strict_genesis_signature_enforcement() -> bool {
@@ -203,18 +213,19 @@ fn entry_signature_payload(entry_hash: &str) -> String {
     format!("agenthalo.identity.ledger.entry_hash.v1:{entry_hash}")
 }
 
-fn compute_payload_sha256_hex(payload: &[u8]) -> String {
-    crate::halo::util::hex_encode(&Sha256::digest(payload))
+fn compute_payload_hash_hex(algo: &HashAlgorithm, payload: &[u8]) -> String {
+    hash::hash_hex(algo, payload)
 }
 
-fn compute_signature_digest_hex(key_id: &str, payload_sha256: &str, signature_hex: &str) -> String {
-    crate::halo::util::hex_encode(&Sha256::digest(
+fn compute_signature_digest_hex(algo: &HashAlgorithm, key_id: &str, payload_hash: &str, signature_hex: &str) -> String {
+    hash::hash_hex(
+        algo,
         format!(
             "agenthalo.sign.pq.v1:{}:{}:{}",
-            key_id, payload_sha256, signature_hex
+            key_id, payload_hash, signature_hex
         )
         .as_bytes(),
-    ))
+    )
 }
 
 fn resolve_signature_public_key(
@@ -262,15 +273,16 @@ fn verify_signature_ref(
         ));
     }
     let payload = entry_signature_payload(&entry.entry_hash);
-    let payload_sha = compute_payload_sha256_hex(payload.as_bytes());
-    if !sig.payload_sha256.eq_ignore_ascii_case(&payload_sha) {
+    let sig_algo = HashAlgorithm::from_field(sig.hash_algorithm.as_deref());
+    let payload_hash = compute_payload_hash_hex(&sig_algo, payload.as_bytes());
+    if !sig.payload_hash.eq_ignore_ascii_case(&payload_hash) {
         return Err(format!(
-            "ledger signature payload_sha256 mismatch at seq {}",
+            "ledger signature payload_hash mismatch at seq {}",
             entry.seq
         ));
     }
     let expected_digest =
-        compute_signature_digest_hex(&sig.key_id, &sig.payload_sha256, &sig.signature_hex);
+        compute_signature_digest_hex(&sig_algo, &sig.key_id, &sig.payload_hash, &sig.signature_hex);
     if !sig.signature_digest.eq_ignore_ascii_case(&expected_digest) {
         return Err(format!(
             "ledger signature_digest mismatch at seq {}",
@@ -574,10 +586,11 @@ fn try_sign_entry_hash_with_key(
         algorithm: env.algorithm,
         key_id: env.key_id,
         public_key_hex: Some(env.public_key_hex),
-        payload_sha256: env.payload_sha256,
+        payload_hash: env.payload_hash,
         signature_hex: env.signature_hex,
         signature_digest: env.signature_digest,
         created_at: env.created_at,
+        hash_algorithm: env.hash_algorithm,
     })
 }
 
@@ -623,6 +636,7 @@ fn append_entry_with_key(
 
     entry.seq = next_seq;
     entry.prev_hash = prev_hash;
+    entry.hash_algorithm = Some(HashAlgorithm::CURRENT.as_str().to_string());
     entry.entry_hash = compute_entry_hash(&entry);
     entry.signature = try_sign_entry_hash_with_key(&entry.entry_hash, sign_scope_key);
     if matches!(entry.kind, IdentityLedgerKind::GenesisEntropyHarvested)
@@ -676,6 +690,7 @@ pub fn append_social_connect(input: SocialConnectInput<'_>) -> Result<IdentityLe
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -700,6 +715,7 @@ pub fn append_social_revoke(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -727,6 +743,7 @@ pub fn append_super_secure_update(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -757,6 +774,7 @@ pub fn append_profile_update(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -790,6 +808,7 @@ pub fn append_device_update(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -833,6 +852,7 @@ pub fn append_network_update(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -860,6 +880,7 @@ pub fn append_anonymous_mode_update(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -888,6 +909,7 @@ pub fn append_safety_tier_applied(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -921,6 +943,7 @@ pub fn append_wallet_event(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -965,6 +988,7 @@ pub fn append_genesis_event_with_sign_key(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     match sign_scope_key {
         Some(key) => append_entry_with_sign_key(entry, key),
@@ -994,6 +1018,7 @@ pub fn append_attestation_event(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -1020,6 +1045,7 @@ pub fn append_binding_event(
         prev_hash: None,
         entry_hash: String::new(),
         signature: None,
+        hash_algorithm: None,
     };
     append_entry(entry)
 }
@@ -1385,6 +1411,7 @@ mod tests {
             prev_hash: None,
             entry_hash: String::new(),
             signature: None,
+            hash_algorithm: None,
         };
         entry.entry_hash = compute_entry_hash_legacy(&entry);
         verify_chain(&[entry]).expect("legacy hash schema should remain valid");
@@ -1409,6 +1436,7 @@ mod tests {
             prev_hash: None,
             entry_hash: String::new(),
             signature: None,
+            hash_algorithm: None,
         };
         entry.entry_hash = compute_entry_hash_legacy(&entry);
         verify_chain(&[entry]).expect("legacy genesis entry should remain valid");
@@ -1433,6 +1461,7 @@ mod tests {
             prev_hash: None,
             entry_hash: String::new(),
             signature: None,
+            hash_algorithm: None,
         };
         entry.entry_hash = compute_entry_hash_legacy(&entry);
         let err = verify_chain(&[entry]).expect_err("strict mode should reject legacy unsigned");
@@ -1458,6 +1487,7 @@ mod tests {
             prev_hash: None,
             entry_hash: String::new(),
             signature: None,
+            hash_algorithm: None,
         };
         entry.entry_hash = compute_entry_hash_legacy(&entry);
         let err = verify_chain(&[entry]).expect_err("missing payload hash should fail");
@@ -1472,8 +1502,9 @@ mod tests {
         let mut entries = load_entries().expect("load");
         let sig = entries[0].signature.as_mut().expect("signature exists");
         sig.signature_hex = "00".to_string();
+        let sig_algo = HashAlgorithm::from_field(sig.hash_algorithm.as_deref());
         sig.signature_digest =
-            compute_signature_digest_hex(&sig.key_id, &sig.payload_sha256, &sig.signature_hex);
+            compute_signature_digest_hex(&sig_algo, &sig.key_id, &sig.payload_hash, &sig.signature_hex);
         let err = verify_chain(&entries).expect_err("forged signature must fail");
         assert!(
             err.contains("signature verification error")
@@ -1520,6 +1551,7 @@ mod tests {
             prev_hash: None,
             entry_hash: String::new(),
             signature: None,
+            hash_algorithm: None,
         };
         legacy.entry_hash = compute_entry_hash_legacy(&legacy);
         write_entries(&[legacy]).expect("write legacy entry");

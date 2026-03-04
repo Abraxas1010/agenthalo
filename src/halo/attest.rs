@@ -1,9 +1,9 @@
 use crate::halo::config;
+use crate::halo::hash::{self, HashAlgorithm};
 use crate::halo::schema::TraceEvent;
 use crate::halo::trace::{list_sessions, now_unix_secs, session_events};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -123,9 +123,9 @@ pub fn attest_session(
         timestamp,
         anonymous: request.anonymous,
         proof_type: if request.anonymous {
-            "merkle-sha256+anon-membership".to_string()
+            "merkle-sha512+anon-membership".to_string()
         } else {
-            "merkle-sha256".to_string()
+            "merkle-sha512".to_string()
         },
         anonymous_membership_proof,
         groth16_proof: None,
@@ -159,7 +159,13 @@ fn verify_event_hash(event: &TraceEvent) -> Result<(), String> {
     }
     let encoded = serde_json::to_vec(&event.content)
         .map_err(|e| format!("serialize event {} content: {e}", event.seq))?;
-    let expected = hex_encode(Sha256::digest(&encoded).as_slice());
+    // Detect hash algorithm from length: 128 hex chars = SHA-512, 64 = SHA-256.
+    let algo = if event.content_hash.len() > 64 {
+        HashAlgorithm::Sha512
+    } else {
+        HashAlgorithm::Sha256
+    };
+    let expected = hash::hash_hex(&algo, &encoded);
     if expected != event.content_hash.to_ascii_lowercase() {
         return Err(format!(
             "content hash mismatch at seq {}: expected {}, got {}",
@@ -171,23 +177,24 @@ fn verify_event_hash(event: &TraceEvent) -> Result<(), String> {
 
 fn blinded_session_reference(session_id: &str) -> String {
     let payload = format!("agenthalo.attestation.blind.v1:{session_id}");
-    hex_encode(Sha256::digest(payload.as_bytes()).as_slice())
+    hash::hash_hex(&HashAlgorithm::CURRENT, payload.as_bytes())
 }
 
 fn digest_attestation(public_session_ref: &str, merkle_root: &str, event_count: u64) -> String {
     let payload =
         format!("agenthalo.attestation.digest.v1:{public_session_ref}:{merkle_root}:{event_count}");
-    hex_encode(Sha256::digest(payload.as_bytes()).as_slice())
+    hash::hash_hex(&HashAlgorithm::CURRENT, payload.as_bytes())
 }
 
 fn merkle_root_from_hashes(content_hashes: &[String]) -> Result<String, String> {
     if content_hashes.is_empty() {
         return Err("cannot build Merkle root from empty hash list".to_string());
     }
+    let algo = &HashAlgorithm::CURRENT;
     let mut level = Vec::with_capacity(content_hashes.len());
     for h in content_hashes {
-        let bytes = hex_decode_32(h)?;
-        level.push(leaf_hash(&bytes));
+        let bytes = hex_decode_var(h)?;
+        level.push(leaf_hash(algo, &bytes));
     }
 
     while level.len() > 1 {
@@ -195,9 +202,9 @@ fn merkle_root_from_hashes(content_hashes: &[String]) -> Result<String, String> 
         let mut idx = 0usize;
         while idx < level.len() {
             if idx + 1 < level.len() {
-                next.push(node_hash(&level[idx], &level[idx + 1]));
+                next.push(node_hash(algo, &level[idx], &level[idx + 1]));
             } else {
-                next.push(level[idx]);
+                next.push(level[idx].clone());
             }
             idx += 2;
         }
@@ -206,60 +213,51 @@ fn merkle_root_from_hashes(content_hashes: &[String]) -> Result<String, String> 
     Ok(hex_encode(&level[0]))
 }
 
-fn leaf_hash(content_hash: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update([0x00]);
-    hasher.update(content_hash);
-    let digest = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    out
+fn leaf_hash(algo: &HashAlgorithm, content_hash: &[u8]) -> Vec<u8> {
+    let mut input = Vec::with_capacity(1 + content_hash.len());
+    input.push(0x00);
+    input.extend_from_slice(content_hash);
+    hash::hash_bytes(algo, &input)
 }
 
-fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update([0x01]);
-    hasher.update(left);
-    hasher.update(right);
-    let digest = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    out
+fn node_hash(algo: &HashAlgorithm, left: &[u8], right: &[u8]) -> Vec<u8> {
+    let mut input = Vec::with_capacity(1 + left.len() + right.len());
+    input.push(0x01);
+    input.extend_from_slice(left);
+    input.extend_from_slice(right);
+    hash::hash_bytes(algo, &input)
 }
 
-fn anon_leaf_hash(blinded_ref: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"agenthalo.anon.membership.leaf.v1");
-    hasher.update([0u8]);
-    hasher.update(blinded_ref);
-    let digest = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    out
+fn anon_leaf_hash(algo: &HashAlgorithm, blinded_ref: &[u8]) -> Vec<u8> {
+    let domain = b"agenthalo.anon.membership.leaf.v1";
+    let mut input = Vec::with_capacity(domain.len() + 1 + blinded_ref.len());
+    input.extend_from_slice(domain);
+    input.push(0u8);
+    input.extend_from_slice(blinded_ref);
+    hash::hash_bytes(algo, &input)
 }
 
-fn anon_node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"agenthalo.anon.membership.node.v1");
-    hasher.update([0u8]);
-    hasher.update(left);
-    hasher.update(right);
-    let digest = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    out
+fn anon_node_hash(algo: &HashAlgorithm, left: &[u8], right: &[u8]) -> Vec<u8> {
+    let domain = b"agenthalo.anon.membership.node.v1";
+    let mut input = Vec::with_capacity(domain.len() + 1 + left.len() + right.len());
+    input.extend_from_slice(domain);
+    input.push(0u8);
+    input.extend_from_slice(left);
+    input.extend_from_slice(right);
+    hash::hash_bytes(algo, &input)
 }
 
 fn build_anonymous_membership_proof(
     sessions: &[crate::halo::schema::SessionMetadata],
     target_blinded_ref_hex: &str,
 ) -> Result<AnonymousMembershipProof, String> {
-    let mut leaves: Vec<(String, [u8; 32])> = sessions
+    let algo = &HashAlgorithm::CURRENT;
+    let mut leaves: Vec<(String, Vec<u8>)> = sessions
         .iter()
         .map(|s| {
             let blinded = blinded_session_reference(&s.session_id);
-            let bytes = hex_decode_32(&blinded)?;
-            Ok((blinded, anon_leaf_hash(&bytes)))
+            let bytes = hex_decode_var(&blinded)?;
+            Ok((blinded, anon_leaf_hash(algo, &bytes)))
         })
         .collect::<Result<Vec<_>, String>>()?;
     if leaves.is_empty() {
@@ -268,15 +266,15 @@ fn build_anonymous_membership_proof(
     leaves.sort_by(|a, b| a.0.cmp(&b.0));
 
     let target_leaf = {
-        let target_bytes = hex_decode_32(target_blinded_ref_hex)?;
-        anon_leaf_hash(&target_bytes)
+        let target_bytes = hex_decode_var(target_blinded_ref_hex)?;
+        anon_leaf_hash(algo, &target_bytes)
     };
     let mut target_index = leaves
         .iter()
-        .position(|(_, leaf)| leaf == &target_leaf)
+        .position(|(_, leaf)| *leaf == target_leaf)
         .ok_or_else(|| "target session not found in anonymous membership tree".to_string())?;
 
-    let mut level: Vec<[u8; 32]> = leaves.iter().map(|(_, leaf)| *leaf).collect();
+    let mut level: Vec<Vec<u8>> = leaves.iter().map(|(_, leaf)| leaf.clone()).collect();
     let mut steps = Vec::new();
     while level.len() > 1 {
         if target_index % 2 == 0 {
@@ -297,9 +295,9 @@ fn build_anonymous_membership_proof(
         let mut i = 0usize;
         while i < level.len() {
             if i + 1 < level.len() {
-                next.push(anon_node_hash(&level[i], &level[i + 1]));
+                next.push(anon_node_hash(algo, &level[i], &level[i + 1]));
             } else {
-                next.push(level[i]);
+                next.push(level[i].clone());
             }
             i += 2;
         }
@@ -327,30 +325,38 @@ fn build_anonymous_membership_proof(
 }
 
 pub fn verify_anonymous_membership_proof(proof: &AnonymousMembershipProof) -> Result<bool, String> {
-    let mut acc = hex_decode_32(&proof.leaf_hash)?;
+    // Detect algorithm from hash length: 128 hex = SHA-512, 64 hex = SHA-256.
+    let algo = if proof.leaf_hash.len() > 64 {
+        HashAlgorithm::Sha512
+    } else {
+        HashAlgorithm::Sha256
+    };
+    let mut acc = hex_decode_var(&proof.leaf_hash)?;
     for step in &proof.steps {
-        let sibling = hex_decode_32(&step.sibling_hash)?;
+        let sibling = hex_decode_var(&step.sibling_hash)?;
         acc = if step.sibling_is_left {
-            anon_node_hash(&sibling, &acc)
+            anon_node_hash(&algo, &sibling, &acc)
         } else {
-            anon_node_hash(&acc, &sibling)
+            anon_node_hash(&algo, &acc, &sibling)
         };
     }
     Ok(hex_encode(&acc).eq_ignore_ascii_case(&proof.membership_root))
 }
 
-fn hex_decode_32(s: &str) -> Result<[u8; 32], String> {
-    if s.len() != 64 {
-        return Err(format!("expected 64-char hex hash, got length {}", s.len()));
+/// Decode variable-length hex string to bytes (supports both SHA-256 and SHA-512 lengths).
+fn hex_decode_var(s: &str) -> Result<Vec<u8>, String> {
+    if s.len() % 2 != 0 || s.is_empty() {
+        return Err(format!("invalid hex hash length {}", s.len()));
     }
-    let mut out = [0u8; 32];
-    for (i, chunk) in s.as_bytes().chunks_exact(2).enumerate() {
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for chunk in s.as_bytes().chunks_exact(2) {
         let hi = hex_nibble(chunk[0]).ok_or_else(|| format!("invalid hex character in {s}"))?;
         let lo = hex_nibble(chunk[1]).ok_or_else(|| format!("invalid hex character in {s}"))?;
-        out[i] = (hi << 4) | lo;
+        out.push((hi << 4) | lo);
     }
     Ok(out)
 }
+
 
 fn hex_nibble(b: u8) -> Option<u8> {
     match b {
@@ -493,7 +499,7 @@ mod tests {
 
         assert!(result.session_id.is_none());
         assert!(result.blinded_session_ref.is_some());
-        assert_eq!(result.proof_type, "merkle-sha256+anon-membership");
+        assert_eq!(result.proof_type, "merkle-sha512+anon-membership");
         let membership = result
             .anonymous_membership_proof
             .as_ref()

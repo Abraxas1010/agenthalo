@@ -70,8 +70,8 @@ struct AuthcryptProtected {
     sender_x25519_public_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sender_evm_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    sender_binding_proof_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "sender_binding_proof_sha256")]
+    sender_binding_proof_hash: Option<String>,
     /// Post-quantum KEM algorithm identifier (e.g. "ML-KEM-768").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pq_kem: Option<String>,
@@ -255,7 +255,7 @@ pub fn extract_mlkem_encapsulation_key_from_doc(
 #[derive(Clone, Debug, Default)]
 pub struct SenderEnrichment {
     pub evm_address: Option<String>,
-    pub binding_proof_sha256: Option<String>,
+    pub binding_proof_hash: Option<String>,
 }
 
 pub fn pack_authcrypt(
@@ -358,7 +358,7 @@ fn pack_authcrypt_inner(
             sender_did: sender.did.clone(),
             sender_x25519_public_key: B64.encode(sender_x25519_pk_bytes),
             sender_evm_address: enrichment.and_then(|e| e.evm_address.clone()),
-            sender_binding_proof_sha256: enrichment.and_then(|e| e.binding_proof_sha256.clone()),
+            sender_binding_proof_hash: enrichment.and_then(|e| e.binding_proof_hash.clone()),
             pq_kem,
             pq_ct,
         },

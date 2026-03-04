@@ -20,6 +20,7 @@ pub mod evm_wallet;
 pub mod funding;
 pub mod genesis_entropy;
 pub mod genesis_seed;
+pub mod hash;
 pub mod http_client;
 pub mod hybrid_kem;
 pub mod identity;

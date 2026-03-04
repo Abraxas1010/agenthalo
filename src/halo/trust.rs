@@ -1,8 +1,8 @@
+use crate::halo::hash::{self, HashAlgorithm};
 use crate::halo::schema::SessionStatus;
 use crate::halo::trace::{list_sessions, now_unix_secs, paid_operations};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -164,11 +164,7 @@ fn score_digest(input: ScoreDigestInput<'_>) -> String {
         anonymous_attestation_count = input.anonymous_attestation_count,
         recent_sessions_30d = input.recent_sessions_30d,
     );
-    hex_encode(Sha256::digest(payload.as_bytes()).as_slice())
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    hash::hash_hex(&HashAlgorithm::CURRENT, payload.as_bytes())
 }
 
 #[cfg(test)]

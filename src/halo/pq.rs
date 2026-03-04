@@ -1,4 +1,5 @@
 use crate::halo::config;
+use crate::halo::hash::{self, HashAlgorithm};
 use crate::halo::trace::now_unix_secs;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -58,12 +59,17 @@ pub struct PqSignatureEnvelope {
     pub algorithm: String,
     pub key_id: String,
     pub public_key_hex: String,
-    pub payload_sha256: String,
+    /// Content hash of the signed payload (SHA-256 for legacy, SHA-512 for new).
+    #[serde(alias = "payload_sha256")]
+    pub payload_hash: String,
     pub signature_hex: String,
     pub signature_digest: String,
     pub created_at: u64,
     pub payload_kind: String,
     pub payload_hint: Option<String>,
+    /// Hash algorithm used for payload_hash and signature_digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_algorithm: Option<String>,
 }
 
 pub fn has_wallet() -> bool {
@@ -193,27 +199,27 @@ pub fn sign_pq_payload_v2(
         return Err("ML-DSA self-verification failed".to_string());
     }
     let signature_hex = hex_encode(sig.encode().as_slice());
-    let payload_sha256 = hex_encode(Sha256::digest(payload).as_slice());
-    let signature_digest = hex_encode(
-        Sha256::digest(
-            format!(
-                "agenthalo.sign.pq.v1:{}:{}:{}",
-                wallet.key_id, payload_sha256, signature_hex
-            )
-            .as_bytes(),
+    let algo = HashAlgorithm::CURRENT;
+    let payload_hash = hash::hash_hex(&algo, payload);
+    let signature_digest = hash::hash_hex(
+        &algo,
+        format!(
+            "agenthalo.sign.pq.v1:{}:{}:{}",
+            wallet.key_id, payload_hash, signature_hex
         )
-        .as_slice(),
+        .as_bytes(),
     );
     let envelope = PqSignatureEnvelope {
         algorithm: "ml_dsa65".to_string(),
         key_id: wallet.key_id.clone(),
         public_key_hex: wallet.public_key_hex,
-        payload_sha256,
+        payload_hash,
         signature_hex,
         signature_digest,
         created_at: now_unix_secs(),
         payload_kind: payload_kind.to_string(),
         payload_hint,
+        hash_algorithm: Some(algo.as_str().to_string()),
     };
     let save_path = save_signature(&paths.signatures_dir, &envelope)?;
     Ok((envelope, save_path))
@@ -263,27 +269,27 @@ fn sign_pq_payload_with_paths_impl(
     }
 
     let signature_hex = hex_encode(sig.encode().as_slice());
-    let payload_sha256 = hex_encode(Sha256::digest(payload).as_slice());
-    let signature_digest = hex_encode(
-        Sha256::digest(
-            format!(
-                "agenthalo.sign.pq.v1:{}:{}:{}",
-                wallet.key_id, payload_sha256, signature_hex
-            )
-            .as_bytes(),
+    let algo = HashAlgorithm::CURRENT;
+    let payload_hash = hash::hash_hex(&algo, payload);
+    let signature_digest = hash::hash_hex(
+        &algo,
+        format!(
+            "agenthalo.sign.pq.v1:{}:{}:{}",
+            wallet.key_id, payload_hash, signature_hex
         )
-        .as_slice(),
+        .as_bytes(),
     );
     let envelope = PqSignatureEnvelope {
         algorithm: "ml_dsa65".to_string(),
         key_id: wallet.key_id.clone(),
         public_key_hex: wallet.public_key_hex,
-        payload_sha256,
+        payload_hash,
         signature_hex,
         signature_digest,
         created_at: now_unix_secs(),
         payload_kind: payload_kind.to_string(),
         payload_hint,
+        hash_algorithm: Some(algo.as_str().to_string()),
     };
 
     let save_path = save_signature(&paths.signatures_dir, &envelope)?;

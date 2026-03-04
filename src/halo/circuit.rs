@@ -7,7 +7,7 @@ use crate::halo::config;
 use crate::halo::public_input_schema::{
     build_public_inputs, PUBLIC_INPUT_SCHEMA_VERSION, REQUIRED_PUBLIC_INPUTS,
 };
-use crate::halo::util::{digest_bytes, hex_decode, hex_decode_32, hex_encode};
+use crate::halo::util::{digest_bytes, hex_decode, hex_encode};
 use ark_bn254::{Bn254, Fq, Fr};
 use ark_ff::{BigInteger, PrimeField};
 use ark_groth16::{prepare_verifying_key, Groth16, Proof, ProvingKey, VerifyingKey};
@@ -362,7 +362,7 @@ pub fn prove_attestation(
     };
 
     let prove_seed = {
-        let digest = hex_decode_32(&attestation.attestation_digest)?;
+        let digest = hex_decode(&attestation.attestation_digest)?;
         digest_bytes(CIRCUIT_PROVE_DOMAIN, &digest)
     };
     let mut rng = ChaCha20Rng::from_seed(prove_seed);
@@ -434,8 +434,22 @@ pub fn public_inputs_json_array(bundle: &AttestationProofBundle) -> String {
     format!("[{}]", bundle.public_inputs.join(","))
 }
 
+/// Split a hex hash into two u128 field elements for the Groth16 circuit.
+/// For SHA-256 (64 hex chars → 32 bytes): used directly.
+/// For SHA-512 (128 hex chars → 64 bytes): compressed to 32 bytes via SHA-256.
 fn split_hash_u128(hex: &str) -> Result<(u128, u128), String> {
-    let bytes = hex_decode_32(hex)?;
+    let raw = hex_decode(hex)?;
+    let bytes: [u8; 32] = if raw.len() == 32 {
+        raw.try_into().unwrap()
+    } else if raw.len() == 64 {
+        // SHA-512 hash → compress to 32 bytes for circuit field element compatibility.
+        digest_bytes("agenthalo.circuit.hash_compress.v1", &raw)
+    } else {
+        return Err(format!(
+            "split_hash_u128: expected 32 or 64 bytes, got {}",
+            raw.len()
+        ));
+    };
     let mut lo_bytes = [0u8; 16];
     let mut hi_bytes = [0u8; 16];
     lo_bytes.copy_from_slice(&bytes[..16]);
