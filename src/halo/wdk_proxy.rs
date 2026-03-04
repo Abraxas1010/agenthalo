@@ -15,6 +15,8 @@ use zeroize::Zeroize;
 
 const WDK_PORT: u16 = 7321;
 const WDK_SIDECAR_DIR: &str = "wdk-sidecar";
+const WDK_SIDECAR_DIR_ENV: &str = "WDK_SIDECAR_DIR";
+const WDK_AUTH_TOKEN_ENV: &str = "WDK_AUTH_TOKEN";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedSeed {
@@ -41,12 +43,19 @@ pub struct WdkManager {
 
 impl WdkManager {
     pub fn new() -> Self {
-        let mut token = [0u8; 32];
-        OsRng.fill_bytes(&mut token);
+        let auth_token = std::env::var(WDK_AUTH_TOKEN_ENV)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| {
+                let mut token = [0u8; 32];
+                OsRng.fill_bytes(&mut token);
+                hex::encode(token)
+            });
         Self {
             child: None,
             port: WDK_PORT,
-            auth_token: hex::encode(token),
+            auth_token,
         }
     }
 
@@ -67,6 +76,12 @@ impl WdkManager {
     }
 
     fn sidecar_dir() -> PathBuf {
+        if let Ok(raw) = std::env::var(WDK_SIDECAR_DIR_ENV) {
+            let candidate = PathBuf::from(raw.trim());
+            if candidate.join("index.mjs").exists() {
+                return candidate;
+            }
+        }
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()));
@@ -94,6 +109,11 @@ impl WdkManager {
     pub fn start(&mut self) -> Result<(), String> {
         if self.is_running() {
             return Ok(());
+        }
+        if self.child.is_none() && std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
+            return Err(
+                "WDK sidecar is already bound but authentication token mismatched; set WDK_AUTH_TOKEN to the sidecar token".to_string(),
+            );
         }
         if self.child.is_some() {
             self.stop();
@@ -357,6 +377,13 @@ pub fn wallet_exists() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn seed_encrypt_decrypt_roundtrip() {
@@ -408,5 +435,32 @@ mod tests {
         };
         let dec = decrypt_seed(&legacy, "passphrase123").expect("legacy decrypt");
         assert!(dec.starts_with("abandon abandon"));
+    }
+
+    #[test]
+    fn new_uses_wdk_auth_token_env_when_set() {
+        let _guard = env_lock().lock().expect("lock env");
+        std::env::set_var(WDK_AUTH_TOKEN_ENV, "container-shared-token");
+        let mgr = WdkManager::new();
+        assert_eq!(mgr.auth_token, "container-shared-token");
+        std::env::remove_var(WDK_AUTH_TOKEN_ENV);
+    }
+
+    #[test]
+    fn sidecar_dir_prefers_env_override() {
+        let _guard = env_lock().lock().expect("lock env");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("unix time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("wdk-sidecar-test-{stamp}"));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(path.join("node_modules")).expect("create sidecar dir");
+        std::fs::write(path.join("index.mjs"), "console.log('ok');").expect("write index");
+        std::env::set_var(WDK_SIDECAR_DIR_ENV, path.display().to_string());
+        let resolved: PathBuf = WdkManager::sidecar_dir();
+        assert_eq!(resolved, path);
+        std::env::remove_var(WDK_SIDECAR_DIR_ENV);
+        let _ = std::fs::remove_dir_all(path);
     }
 }

@@ -8,7 +8,7 @@ pub mod assets;
 
 use axum::routing::get;
 use axum::Router;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
@@ -158,8 +158,16 @@ pub async fn serve(port: u16, open_browser: bool) -> Result<(), String> {
     });
 
     let app = build_router(state);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let url = format!("http://localhost:{port}");
+    let host = std::env::var("AGENTHALO_DASHBOARD_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let ip: IpAddr = host
+        .parse()
+        .map_err(|e| format!("invalid AGENTHALO_DASHBOARD_HOST `{host}`: {e}"))?;
+    let addr = SocketAddr::new(ip, port);
+    let url = if ip.is_unspecified() {
+        format!("http://localhost:{port}")
+    } else {
+        format!("http://{host}:{port}")
+    };
 
     println!("Agent H.A.L.O. Dashboard");
     println!("  URL: {url}");
