@@ -13,6 +13,9 @@ import NucleusDB.Identity.Certificate
 import NucleusDB.Identity.Delta
 import NucleusDB.Identity.GrantPresheaf
 import NucleusDB.Identity.Materialization
+import NucleusDB.Identity.LedgerSpec
+import NucleusDB.Identity.LedgerChain
+import NucleusDB.Identity.LedgerRefinement
 import NucleusDB.Identity.Policy
 import NucleusDB.Identity.State
 import NucleusDB.Identity.Wallet
@@ -51,6 +54,9 @@ import NucleusDB.Security.Parameters
 import NucleusDB.Security.Reductions
 import NucleusDB.Security.Refinement
 import NucleusDB.Security.DIDCommRefinement
+import NucleusDB.Security.ProofGateSpec
+import NucleusDB.Security.ProofGateRefinement
+import NucleusDB.Security.CertificateIntegrity
 import NucleusDB.Sheaf.ChainGluing
 import NucleusDB.Sheaf.ChainTransport
 import NucleusDB.Sheaf.Coherence

@@ -242,8 +242,7 @@ pub fn pack_authcrypt_enriched(
             sender_did: sender.did.clone(),
             sender_x25519_public_key: B64.encode(sender_x25519_public_key.as_bytes()),
             sender_evm_address: enrichment.and_then(|e| e.evm_address.clone()),
-            sender_binding_proof_sha256: enrichment
-                .and_then(|e| e.binding_proof_sha256.clone()),
+            sender_binding_proof_sha256: enrichment.and_then(|e| e.binding_proof_sha256.clone()),
         },
         nonce: B64.encode(nonce),
         ciphertext: B64.encode(&ciphertext),
@@ -299,6 +298,11 @@ where
         .get("kind")
         .and_then(|k| k.as_str())
         .ok_or_else(|| "DIDComm envelope missing `kind`".to_string())?;
+    // Composition policy: anoncrypt(authcrypt(...)) and authcrypt(anoncrypt(...))
+    // are not supported in this runtime profile.
+    if kind.contains('(') || kind.contains(')') {
+        return Err("DIDComm nested authcrypt/anoncrypt composition is not supported".to_string());
+    }
 
     match kind {
         "authcrypt" => {
@@ -482,5 +486,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn nested_composition_kind_rejected() {
+        let recipient = crate::halo::did::did_from_genesis_seed(&seed(0x04)).expect("recipient");
+        let packed = serde_json::json!({
+            "kind": "anoncrypt(authcrypt)",
+            "ciphertext": "",
+        });
+        let err = unpack_with_resolver(
+            &serde_json::to_vec(&packed).expect("serialize"),
+            &recipient,
+            |_| None,
+        )
+        .expect_err("nested composition must reject");
+        assert!(err.contains("nested authcrypt/anoncrypt composition is not supported"));
     }
 }

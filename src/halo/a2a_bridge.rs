@@ -109,6 +109,13 @@ pub struct DIDCommTaskExecutor {
     didcomm: Arc<DIDCommHandler>,
 }
 
+fn sovereign_binding_card_fields() -> (Option<String>, Option<String>) {
+    match crate::halo::twine_anchor::recover_sovereign_binding_from_ledger() {
+        Ok(Some(binding)) => (Some(binding.evm_address), Some(binding.binding_sha256)),
+        _ => (None, None),
+    }
+}
+
 impl DIDCommTaskExecutor {
     pub fn new(identity: Arc<DIDIdentity>, didcomm: Arc<DIDCommHandler>) -> Self {
         Self { identity, didcomm }
@@ -172,6 +179,7 @@ pub fn generate_agent_card(
     base_url: &str,
     skills: &[AgentCapability],
 ) -> A2aAgentCard {
+    let (evm_address, binding_proof_sha256) = sovereign_binding_card_fields();
     A2aAgentCard {
         name: std::env::var("AGENT_NAME").unwrap_or_else(|_| "AgentHalo".to_string()),
         description: std::env::var("AGENT_DESCRIPTION")
@@ -207,8 +215,8 @@ pub fn generate_agent_card(
             },
         )]),
         security: vec!["didAuth".to_string()],
-        evm_address: None,
-        binding_proof_sha256: None,
+        evm_address,
+        binding_proof_sha256,
     }
 }
 
@@ -233,6 +241,12 @@ pub async fn start_a2a_bridge(
         tasks: Arc::new(RwLock::new(HashMap::new())),
         executor: Arc::new(DIDCommTaskExecutor::new(identity, didcomm)),
     };
+
+    if state.card.evm_address.is_none() || state.card.binding_proof_sha256.is_none() {
+        eprintln!(
+            "[AgentHalo/A2A] warning: sovereign binding not yet available; agent card binding fields are empty"
+        );
+    }
 
     let app = Router::new()
         .route(
@@ -606,6 +620,12 @@ async fn handle_jsonrpc(state: BridgeState, body: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn test_state() -> BridgeState {
         let identity =
@@ -641,6 +661,48 @@ mod tests {
         assert_eq!(card.skills.len(), 1);
         assert_eq!(card.provider.url, identity.did);
         assert!(!card.capabilities.streaming);
+    }
+
+    #[test]
+    fn agent_card_populates_binding_fields_from_ledger() {
+        let _guard = env_lock().lock().expect("lock env");
+        let temp_home = std::env::temp_dir().join(format!(
+            "a2a_binding_card_{}_{}",
+            std::process::id(),
+            crate::halo::util::now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_home);
+        std::fs::create_dir_all(&temp_home).expect("create temp home");
+        std::env::set_var("AGENTHALO_HOME", &temp_home);
+
+        crate::halo::identity_ledger::append_attestation_event(
+            "created",
+            serde_json::json!({
+                "attestation_sha256": "sha256:att",
+                "did_subject": "did:key:z6Mktest",
+                "evm_address": "0xabc123",
+                "combined_entropy_sha256": "sha256:entropy",
+            }),
+        )
+        .expect("append attestation");
+        crate::halo::identity_ledger::append_binding_event(
+            "created",
+            serde_json::json!({
+                "binding_sha256": "sha256:bind",
+                "did_subject": "did:key:z6Mktest",
+                "evm_address": "0xabc123",
+                "combined_entropy_sha256": "sha256:entropy",
+            }),
+        )
+        .expect("append binding");
+
+        let identity = crate::halo::did::did_from_genesis_seed(&[0x58; 64]).expect("identity");
+        let card = generate_agent_card(&identity, "http://127.0.0.1:9300", &[]);
+        assert_eq!(card.evm_address.as_deref(), Some("0xabc123"));
+        assert_eq!(card.binding_proof_sha256.as_deref(), Some("sha256:bind"));
+
+        std::env::remove_var("AGENTHALO_HOME");
+        let _ = std::fs::remove_dir_all(&temp_home);
     }
 
     #[tokio::test]
