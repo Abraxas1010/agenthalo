@@ -291,6 +291,12 @@ fn derive_wallet_entropy32_from_seed(seed: &[u8; 64]) -> Result<[u8; 32], String
     Ok(out)
 }
 
+/// Public entry point for wallet entropy derivation from a raw 64-byte genesis seed.
+/// Used by the sovereign binding ceremony which already holds the seed in memory.
+pub fn derive_wallet_entropy32_from_seed_public(seed: &[u8; 64]) -> Result<[u8; 32], String> {
+    derive_wallet_entropy32_from_seed(seed)
+}
+
 /// Derive deterministic identity key material from the genesis seed.
 /// The output is suitable as Ed25519 secret-key bytes.
 /// T5: genesis_derivation_deterministic

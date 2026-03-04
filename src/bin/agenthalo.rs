@@ -3017,6 +3017,27 @@ fn cmd_genesis_harvest_direct() -> Result<serde_json::Value, String> {
         "duration_ms": result.duration_ms,
     });
     let entry = nucleusdb::halo::identity_ledger::append_genesis_event("completed", payload)?;
+
+    // Perform sovereign binding ceremony: attestation + DID↔EVM binding
+    let binding_result = nucleusdb::halo::twine_anchor::perform_sovereign_binding_ceremony(
+        &result.combined_entropy,
+        &result.combined_entropy_sha256,
+        result.curby_pulse_id,
+        entry.timestamp,
+    );
+    let sovereign = match &binding_result {
+        Ok(r) => serde_json::json!({
+            "attestation_sha256": r.attestation_sha256,
+            "binding_sha256": r.binding_sha256,
+            "did_subject": r.did_subject,
+            "evm_address": r.evm_address,
+        }),
+        Err(e) => {
+            eprintln!("warning: sovereign binding ceremony failed (non-fatal): {e}");
+            serde_json::Value::Null
+        }
+    };
+
     Ok(serde_json::json!({
         "success": true,
         "completed": true,
@@ -3030,6 +3051,7 @@ fn cmd_genesis_harvest_direct() -> Result<serde_json::Value, String> {
         "ledger_entry_hash": entry.entry_hash,
         "ledger_signed": entry.signature.is_some(),
         "genesis_entropy_sha256": entry.genesis_entropy_sha256,
+        "sovereign_binding": sovereign,
     }))
 }
 

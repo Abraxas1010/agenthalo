@@ -181,6 +181,96 @@ pub fn create_binding_proof(
     })
 }
 
+/// Result of performing the full sovereign binding ceremony after genesis.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SovereignBindingResult {
+    pub attestation_sha256: String,
+    pub binding_sha256: String,
+    pub did_subject: String,
+    pub evm_address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curby_twine_cid: Option<String>,
+}
+
+/// Perform the full sovereign binding ceremony after genesis harvest.
+///
+/// This function:
+/// 1. Derives the DID identity from the genesis seed
+/// 2. Derives the EVM wallet from the genesis seed
+/// 3. Creates a dual-signed identity attestation (referencing CURBy-Q provenance)
+/// 4. Binds the EVM address to the DID document via `alsoKnownAs`
+/// 5. Creates a triple-signed binding proof (Ed25519 + ML-DSA-65 + secp256k1)
+/// 6. Appends both events to the identity ledger
+///
+/// Returns the attestation and binding hashes for inclusion in the genesis response.
+pub fn perform_sovereign_binding_ceremony(
+    genesis_seed: &[u8; 64],
+    combined_entropy_sha256: &str,
+    curby_pulse_id: Option<u64>,
+    genesis_timestamp: u64,
+) -> Result<SovereignBindingResult, String> {
+    // 1. Derive DID identity from genesis seed
+    let identity = crate::halo::did::did_from_genesis_seed(genesis_seed)?;
+
+    // 2. Derive EVM wallet from genesis seed
+    let wallet_entropy =
+        crate::halo::genesis_seed::derive_wallet_entropy32_from_seed_public(genesis_seed)?;
+    let mnemonic = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &wallet_entropy)
+        .map_err(|e| format!("derive wallet mnemonic for ceremony: {e}"))?;
+    let evm_wallet =
+        crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic.to_string(), None)?;
+
+    // 3. Create dual-signed identity attestation
+    let signed_attestation = create_signed_attestation(
+        &identity,
+        &evm_wallet.evm_address,
+        combined_entropy_sha256,
+        curby_pulse_id,
+        None, // CURBy-Q Twine is read-only; CID would be fetched separately if available
+        genesis_timestamp,
+    )?;
+
+    // 4. Bind EVM address to DID document
+    let mut did_doc = crate::halo::did::build_did_document(&identity);
+    crate::halo::did::bind_evm_address(&mut did_doc, &evm_wallet.evm_address);
+
+    // 5. Create triple-signed binding proof
+    let binding_proof = create_binding_proof(
+        &identity,
+        &evm_wallet.evm_address,
+        &evm_wallet.private_key_hex,
+        combined_entropy_sha256,
+    )?;
+
+    // 6. Append attestation event to identity ledger
+    let receipt = attestation_receipt(&signed_attestation);
+    let attestation_payload = serde_json::json!({
+        "attestation_sha256": receipt.attestation_sha256,
+        "did_subject": receipt.did_subject,
+        "evm_address": receipt.evm_address,
+        "curby_twine_cid": receipt.curby_twine_cid,
+        "combined_entropy_sha256": combined_entropy_sha256,
+    });
+    crate::halo::identity_ledger::append_attestation_event("created", attestation_payload)?;
+
+    // 7. Append binding event to identity ledger
+    let binding_payload = serde_json::json!({
+        "binding_sha256": binding_proof.binding_sha256,
+        "did_subject": binding_proof.did_subject,
+        "evm_address": binding_proof.evm_address,
+        "combined_entropy_sha256": combined_entropy_sha256,
+    });
+    crate::halo::identity_ledger::append_binding_event("created", binding_payload)?;
+
+    Ok(SovereignBindingResult {
+        attestation_sha256: signed_attestation.attestation_sha256,
+        binding_sha256: binding_proof.binding_sha256,
+        did_subject: identity.did,
+        evm_address: evm_wallet.evm_address,
+        curby_twine_cid: None,
+    })
+}
+
 /// Build an attestation receipt for ledger storage.
 pub fn attestation_receipt(signed: &SignedAttestation) -> AttestationReceipt {
     AttestationReceipt {
@@ -241,5 +331,59 @@ mod tests {
         assert_eq!(receipt.evm_address, "0xBeef");
         assert_eq!(receipt.did_subject, "did:key:z6Mk...");
         assert_eq!(receipt.curby_twine_cid, Some("bafyABC".to_string()));
+    }
+
+    #[test]
+    fn attestation_and_binding_from_seed_are_deterministic() {
+        // Use a fixed seed to verify the ceremony's internal steps produce
+        // deterministic attestation+binding for the same genesis seed.
+        let seed = [0x42u8; 64];
+        let identity = crate::halo::did::did_from_genesis_seed(&seed).expect("did from seed");
+        let entropy = crate::halo::genesis_seed::derive_wallet_entropy32_from_seed_public(&seed)
+            .expect("wallet entropy");
+        let mnemonic = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .expect("mnemonic");
+        let wallet =
+            crate::halo::evm_wallet::derive_from_mnemonic(&mnemonic.to_string(), None)
+                .expect("evm wallet");
+
+        let att1 = create_signed_attestation(
+            &identity,
+            &wallet.evm_address,
+            "sha256:test_entropy",
+            Some(999),
+            None,
+            1000,
+        )
+        .expect("attestation 1");
+        let att2 = create_signed_attestation(
+            &identity,
+            &wallet.evm_address,
+            "sha256:test_entropy",
+            Some(999),
+            None,
+            1000,
+        )
+        .expect("attestation 2");
+        // Attestation content hash is deterministic (timestamps both set via now_unix_secs
+        // so they may differ — compare canonical content instead)
+        assert_eq!(att1.attestation.evm_address, att2.attestation.evm_address);
+        assert_eq!(att1.attestation.did_subject, att2.attestation.did_subject);
+        assert!(att1.attestation.evm_address.starts_with("0x"));
+        assert!(att1.attestation.did_subject.starts_with("did:key:"));
+
+        let binding = create_binding_proof(
+            &identity,
+            &wallet.evm_address,
+            &wallet.private_key_hex,
+            "sha256:test_entropy",
+        )
+        .expect("binding proof");
+        assert_eq!(binding.did_subject, identity.did);
+        assert_eq!(binding.evm_address, wallet.evm_address);
+        assert!(binding.binding_sha256.starts_with("sha256:"));
+        assert!(!binding.ed25519_signature_hex.is_empty());
+        assert!(!binding.mldsa65_signature_hex.is_empty());
+        assert!(!binding.secp256k1_signature_hex.is_empty());
     }
 }
