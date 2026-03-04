@@ -29,6 +29,7 @@ use nucleusdb::halo::onchain::{
     warn_if_simulation_mode,
 };
 use nucleusdb::halo::password;
+use nucleusdb::halo::p2pclaw;
 use nucleusdb::halo::pq::{has_wallet, sign_pq_payload_with_scope_key};
 use nucleusdb::halo::privacy_controller;
 use nucleusdb::halo::session_manager::SessionManager;
@@ -1664,6 +1665,10 @@ async fn mcp(
                     }
                 }),
             ];
+            tools.push(tool_def_p2pclaw_configure());
+            if addons::is_enabled("p2pclaw").unwrap_or(false) {
+                tools.extend(p2pclaw_tool_defs_for_listing());
+            }
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
             tools.extend(proxied);
@@ -1730,6 +1735,118 @@ fn tool_call_response(name: &str, arguments: Value) -> Value {
             })
         }
     }
+}
+
+fn tool_def_p2pclaw_configure() -> Value {
+    json!({
+        "name": "p2pclaw_configure",
+        "description": "Set or update P2PCLAW connection settings (endpoint URL, agent name, optional auth secret, tier).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "endpoint_url": {"type": "string", "description": "P2PCLAW endpoint URL (http:// or https://)."},
+                "agent_id": {"type": "string", "description": "Agent identity used for P2PCLAW auth headers."},
+                "agent_name": {"type": "string", "description": "Display name shown in P2PCLAW chat/publications."},
+                "auth_secret": {"type": "string", "description": "Optional shared secret for signed P2PCLAW requests."},
+                "tier": {"type": "string", "enum": ["tier1", "tier2"], "description": "Network tier selector.", "default": "tier1"},
+                "enable": {"type": "boolean", "description": "Enable the p2pclaw add-on after saving config.", "default": false}
+            }
+        }
+    })
+}
+
+fn p2pclaw_tool_defs_for_listing() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "p2pclaw_status",
+            "description": "Get P2PCLAW hive status: active agents, papers, and mempool size.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "p2pclaw_briefing",
+            "description": "Fetch a markdown briefing of current P2PCLAW hive activity.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "p2pclaw_list_papers",
+            "description": "List verified research papers from P2PCLAW La Rueda.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum papers to return.", "default": 20}
+                }
+            }
+        }),
+        json!({
+            "name": "p2pclaw_list_mempool",
+            "description": "List papers awaiting validation in the P2PCLAW mempool.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "p2pclaw_publish_paper",
+            "description": "Publish a research paper to the P2PCLAW hive.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "content": {"type": "string"}
+                },
+                "required": ["title", "content"]
+            }
+        }),
+        json!({
+            "name": "p2pclaw_validate_paper",
+            "description": "Submit a validation decision for a P2PCLAW mempool paper.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": {"type": "string"},
+                    "approve": {"type": "boolean"},
+                    "occam_score": {"type": "number"}
+                },
+                "required": ["paper_id", "approve"]
+            }
+        }),
+        json!({
+            "name": "p2pclaw_poll_events",
+            "description": "Poll recent P2PCLAW events (chat, publications, validations).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since": {"type": "integer"},
+                    "limit": {"type": "integer", "default": 100}
+                }
+            }
+        }),
+        json!({
+            "name": "p2pclaw_send_chat",
+            "description": "Send a chat message to the P2PCLAW hive.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string"},
+                    "channel": {"type": "string", "default": "research"}
+                },
+                "required": ["message"]
+            }
+        }),
+        json!({
+            "name": "p2pclaw_list_investigations",
+            "description": "List active investigations from the P2PCLAW hive.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "p2pclaw_search_wheel",
+            "description": "Check if similar work already exists in P2PCLAW before publishing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                },
+                "required": ["query"]
+            }
+        }),
+    ]
 }
 
 fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
@@ -1823,6 +1940,17 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "zk_compute_verify" => tool_zk_compute_verify(arguments),
         "nym_status" => tool_nym_status(arguments),
         "privacy_classify" => tool_privacy_classify(arguments),
+        "p2pclaw_status" => tool_p2pclaw_status(arguments),
+        "p2pclaw_briefing" => tool_p2pclaw_briefing(arguments),
+        "p2pclaw_list_papers" => tool_p2pclaw_list_papers(arguments),
+        "p2pclaw_list_mempool" => tool_p2pclaw_list_mempool(arguments),
+        "p2pclaw_publish_paper" => tool_p2pclaw_publish_paper(arguments),
+        "p2pclaw_validate_paper" => tool_p2pclaw_validate_paper(arguments),
+        "p2pclaw_poll_events" => tool_p2pclaw_poll_events(arguments),
+        "p2pclaw_send_chat" => tool_p2pclaw_send_chat(arguments),
+        "p2pclaw_list_investigations" => tool_p2pclaw_list_investigations(arguments),
+        "p2pclaw_search_wheel" => tool_p2pclaw_search_wheel(arguments),
+        "p2pclaw_configure" => tool_p2pclaw_configure(arguments),
         "mesh_peers" => tool_mesh_peers(arguments),
         "mesh_ping" => tool_mesh_ping(arguments),
         "mesh_call" => tool_mesh_call(arguments),
@@ -5670,6 +5798,216 @@ fn tool_privacy_classify(arguments: Value) -> Result<Value, String> {
             "error": err,
         })),
     }
+}
+
+fn p2pclaw_require_enabled() -> Result<(), String> {
+    if addons::is_enabled("p2pclaw")? {
+        return Ok(());
+    }
+    Err("p2pclaw add-on is required. Enable it via p2pclaw_configure (enable=true), halo_capabilities, or CLI.".to_string())
+}
+
+fn p2pclaw_load_config() -> Result<p2pclaw::P2PClawConfig, String> {
+    p2pclaw::load_config().map_err(|_| {
+        "P2PCLAW is not configured. Use p2pclaw_configure or dashboard Networking page."
+            .to_string()
+    })
+}
+
+fn tool_p2pclaw_status(_arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let mut cfg = p2pclaw_load_config()?;
+    let swarm = p2pclaw::ping(&cfg)?;
+    cfg.last_connected_at = now_unix_secs();
+    let _ = p2pclaw::save_config(&cfg);
+    Ok(json!({
+        "status": "ok",
+        "endpoint_url": cfg.endpoint_url,
+        "agent_id": cfg.agent_id,
+        "agent_name": cfg.agent_name,
+        "tier": cfg.tier,
+        "swarm": swarm
+    }))
+}
+
+fn tool_p2pclaw_briefing(_arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let cfg = p2pclaw_load_config()?;
+    let markdown = p2pclaw::get_briefing(&cfg)?;
+    Ok(json!({
+        "status": "ok",
+        "briefing_markdown": markdown
+    }))
+}
+
+fn tool_p2pclaw_list_papers(arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let cfg = p2pclaw_load_config()?;
+    let limit = arguments.get("limit").and_then(|v| v.as_u64());
+    let papers = p2pclaw::list_papers(&cfg, limit)?;
+    Ok(json!({
+        "status": "ok",
+        "count": papers.len(),
+        "papers": papers
+    }))
+}
+
+fn tool_p2pclaw_list_mempool(_arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let cfg = p2pclaw_load_config()?;
+    let papers = p2pclaw::list_mempool(&cfg)?;
+    Ok(json!({
+        "status": "ok",
+        "count": papers.len(),
+        "papers": papers
+    }))
+}
+
+fn tool_p2pclaw_publish_paper(arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let cfg = p2pclaw_load_config()?;
+    let title = arguments
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "title is required".to_string())?;
+    let content = arguments
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "content is required".to_string())?;
+    let result = p2pclaw::publish_paper(&cfg, title, content)?;
+    Ok(json!({
+        "status": "ok",
+        "result": result
+    }))
+}
+
+fn tool_p2pclaw_validate_paper(arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let cfg = p2pclaw_load_config()?;
+    let paper_id = arguments
+        .get("paper_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "paper_id is required".to_string())?;
+    let approve = arguments
+        .get("approve")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| "approve must be true or false".to_string())?;
+    let occam_score = arguments.get("occam_score").and_then(|v| v.as_f64());
+    let result = p2pclaw::validate_paper(&cfg, paper_id, approve, occam_score)?;
+    Ok(json!({
+        "status": "ok",
+        "result": result
+    }))
+}
+
+fn tool_p2pclaw_poll_events(arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let cfg = p2pclaw_load_config()?;
+    let since = arguments.get("since").and_then(|v| v.as_u64());
+    let limit = arguments.get("limit").and_then(|v| v.as_u64());
+    let events = p2pclaw::poll_events(&cfg, since, limit)?;
+    Ok(json!({
+        "status": "ok",
+        "count": events.len(),
+        "events": events
+    }))
+}
+
+fn tool_p2pclaw_send_chat(arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let cfg = p2pclaw_load_config()?;
+    let message = arguments
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "message is required".to_string())?;
+    let channel = arguments.get("channel").and_then(|v| v.as_str());
+    p2pclaw::send_chat(&cfg, message, channel)?;
+    Ok(json!({
+        "status": "ok",
+        "sent": true
+    }))
+}
+
+fn tool_p2pclaw_list_investigations(_arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let cfg = p2pclaw_load_config()?;
+    let investigations = p2pclaw::list_investigations(&cfg)?;
+    Ok(json!({
+        "status": "ok",
+        "count": investigations.len(),
+        "investigations": investigations
+    }))
+}
+
+fn tool_p2pclaw_search_wheel(arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let cfg = p2pclaw_load_config()?;
+    let query = arguments
+        .get("query")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "query is required".to_string())?;
+    let result = p2pclaw::search_wheel(&cfg, query)?;
+    Ok(json!({
+        "status": "ok",
+        "result": result
+    }))
+}
+
+fn tool_p2pclaw_configure(arguments: Value) -> Result<Value, String> {
+    let mut cfg = p2pclaw::load_or_default();
+    if let Some(endpoint_url) = arguments.get("endpoint_url").and_then(|v| v.as_str()) {
+        cfg.endpoint_url = endpoint_url.trim().to_string();
+    }
+    if let Some(agent_id) = arguments.get("agent_id").and_then(|v| v.as_str()) {
+        let agent_id = agent_id.trim();
+        if agent_id.is_empty() {
+            return Err("agent_id must not be empty".to_string());
+        }
+        cfg.agent_id = agent_id.to_string();
+    }
+    if let Some(agent_name) = arguments.get("agent_name").and_then(|v| v.as_str()) {
+        let agent_name = agent_name.trim();
+        if agent_name.is_empty() {
+            return Err("agent_name must not be empty".to_string());
+        }
+        cfg.agent_name = agent_name.to_string();
+    }
+    if let Some(tier) = arguments.get("tier").and_then(|v| v.as_str()) {
+        let tier = tier.trim().to_ascii_lowercase();
+        if !matches!(tier.as_str(), "tier1" | "tier2") {
+            return Err("tier must be one of: tier1, tier2".to_string());
+        }
+        cfg.tier = tier;
+    }
+    let auth_secret = arguments
+        .get("auth_secret")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let configure = p2pclaw::configure(&mut cfg, auth_secret)?;
+    if arguments
+        .get("enable")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        let _ = addons::set_enabled("p2pclaw", true)?;
+    }
+    let enabled = addons::is_enabled("p2pclaw").unwrap_or(false);
+    Ok(json!({
+        "status": "ok",
+        "enabled": enabled,
+        "auth_in_vault": configure.auth_in_vault,
+        "config": cfg,
+    }))
 }
 
 fn mesh_peer_agent_id(arguments: &Value) -> Result<String, String> {
