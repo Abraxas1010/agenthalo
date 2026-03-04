@@ -185,6 +185,28 @@ fn decrypt_with_key(
         .map_err(|e| format!("DIDComm decrypt failed: {e}"))
 }
 
+#[allow(dead_code)]
+fn body_contains_envelope_kind(body: &serde_json::Value) -> bool {
+    let direct_kind = body
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .map(|kind| {
+            kind == "authcrypt" || kind == "anoncrypt" || kind.contains('(') || kind.contains(')')
+        })
+        .unwrap_or(false);
+    if direct_kind {
+        return true;
+    }
+    serde_json::to_string(body)
+        .map(|serialized| {
+            serialized.contains("\"kind\":\"authcrypt\"")
+                || serialized.contains("\"kind\":\"anoncrypt\"")
+                || serialized.contains("anoncrypt(authcrypt)")
+                || serialized.contains("authcrypt(anoncrypt)")
+        })
+        .unwrap_or(false)
+}
+
 pub fn extract_x25519_public_key_from_doc(doc: &DIDDocument) -> Result<[u8; 32], String> {
     let method = doc
         .key_agreement
@@ -254,10 +276,37 @@ pub fn pack_authcrypt_enriched(
     serde_json::to_vec(&envelope).map_err(|e| format!("serialize authcrypt envelope: {e}"))
 }
 
-pub fn pack_anoncrypt(
+/// Pack a DIDComm message with sender-anonymous encryption.
+///
+/// # Composition restriction
+/// This function MUST NOT be used to wrap the output of `pack_authcrypt`
+/// or `pack_authcrypt_enriched`. The combined anoncrypt(authcrypt()) mode
+/// requires AES-CBC-HMAC for key-commitment safety (IOG eprint 2024/1361).
+/// AgentHALO achieves authenticated anonymity via authcrypt + Nym transport,
+/// not via envelope composition.
+///
+/// See: `lean/NucleusDB/Comms/Protocol/COMPOSITION_POLICY.md`
+///
+/// ```compile_fail
+/// use nucleusdb::halo::didcomm::pack_anoncrypt;
+/// # fn main() {}
+/// ```
+#[allow(dead_code)]
+pub(crate) fn pack_anoncrypt(
     message: &DIDCommMessage,
     recipient_x25519_public_key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
+    let nested = body_contains_envelope_kind(&message.body);
+    debug_assert!(
+        !nested,
+        "BUG: attempting anoncrypt composition over nested envelope body — violates composition policy"
+    );
+    if nested {
+        return Err(
+            "DIDComm anoncrypt composition over nested envelope body is not supported".to_string(),
+        );
+    }
+
     let plaintext =
         serde_json::to_vec(message).map_err(|e| format!("serialize DIDComm message: {e}"))?;
     let ephemeral_secret = X25519StaticSecret::random_from_rng(OsRng);
@@ -502,5 +551,45 @@ mod tests {
         )
         .expect_err("nested composition must reject");
         assert!(err.contains("nested authcrypt/anoncrypt composition is not supported"));
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn anoncrypt_body_level_composition_rejected() {
+        let recipient = crate::halo::did::did_from_genesis_seed(&seed(0x05)).expect("recipient");
+        let recipient_key =
+            extract_x25519_public_key_from_doc(&recipient.did_document).expect("recipient key");
+        let message = DIDCommMessage::new(
+            message_types::TASK_SEND,
+            None,
+            vec![recipient.did.clone()],
+            serde_json::json!({
+                "kind": "authcrypt",
+                "ciphertext": "deadbeef"
+            }),
+        );
+        let err = pack_anoncrypt(&message, &recipient_key)
+            .expect_err("body-level authcrypt composition must reject");
+        assert!(err.contains("composition"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "BUG: attempting anoncrypt composition")]
+    fn anoncrypt_debug_assert_fires_on_nested_envelope_body() {
+        let recipient = crate::halo::did::did_from_genesis_seed(&seed(0x06)).expect("recipient");
+        let recipient_key =
+            extract_x25519_public_key_from_doc(&recipient.did_document).expect("recipient key");
+        let message = DIDCommMessage::new(
+            message_types::TASK_SEND,
+            None,
+            vec![recipient.did.clone()],
+            serde_json::json!({
+                "kind": "authcrypt",
+                "ciphertext": "deadbeef"
+            }),
+        );
+
+        let _ = pack_anoncrypt(&message, &recipient_key);
     }
 }

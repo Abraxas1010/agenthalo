@@ -1,5 +1,6 @@
 import NucleusDB.Comms.Protocol.DIDCommSpec
 import NucleusDB.Comms.Protocol.AnoncryptSpec
+import NucleusDB.Comms.Protocol.CompositionPolicy
 
 namespace HeytingLean
 namespace NucleusDB
@@ -75,6 +76,46 @@ theorem rust_anoncrypt_refines_protocol
       } := by
   unfold rustAcceptsAnoncrypt acceptsAnoncryptAt
   rfl
+
+/-- Runtime acceptability model for unpack-side envelope kind checks. -/
+def rustUnpackAcceptsKind (kind : String) : Prop :=
+  kind.contains '(' = false
+    ∧ kind.contains ')' = false
+    ∧ (kind = envelopeKindTag EnvelopeKind.authcrypt
+       ∨ kind = envelopeKindTag EnvelopeKind.anoncrypt)
+
+theorem rust_unpack_rejects_composition
+    (kind : String)
+    (hNested : kind.contains '(' = true ∨ kind.contains ')' = true) :
+    ¬ rustUnpackAcceptsKind kind := by
+  intro hAccept
+  rcases hAccept with ⟨hLeft, hRight, _hValid⟩
+  rcases hNested with hL | hR
+  · rw [hL] at hLeft
+    cases hLeft
+  · rw [hR] at hRight
+    cases hRight
+
+theorem rust_unpack_accepts_iff_valid_kind
+    (kind : String) :
+    rustUnpackAcceptsKind kind ↔
+      (kind = envelopeKindTag EnvelopeKind.authcrypt
+        ∨ kind = envelopeKindTag EnvelopeKind.anoncrypt) := by
+  constructor
+  · intro h
+    exact h.2.2
+  · intro hValid
+    refine ⟨?_, ?_, hValid⟩
+    · rcases hValid with hAuth | hAnon
+      · rw [hAuth]
+        native_decide
+      · rw [hAnon]
+        native_decide
+    · rcases hValid with hAuth | hAnon
+      · rw [hAuth]
+        native_decide
+      · rw [hAnon]
+        native_decide
 
 end Security
 end NucleusDB
