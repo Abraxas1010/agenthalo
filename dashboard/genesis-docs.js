@@ -2002,33 +2002,51 @@ window.commTab = function(tab) {
 function hydrateCommRuntimePanel() {
   const panel = document.getElementById('comm-runtime-panel');
   if (!panel) return;
-  panel.innerHTML = '<div class="gdoc-loading">Querying transport status\u2026</div>';
+  panel.innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;padding:8px 0">Querying transport status\u2026</div>';
   Promise.all([
     fetch('/api/status').then(r => r.ok ? r.json() : null).catch(() => null),
     fetch('/api/genesis/status').then(r => r.ok ? r.json() : null).catch(() => null)
   ]).then(([status, genesis]) => {
     const nym = status?.nym || {};
-    const did = genesis?.did_uri || '\u2014';
-    const nymMode = nym.mode || 'unknown';
+    const did = genesis?.did_uri || null;
+    const nymMode = nym.mode || null;
     const nymHealthy = nym.healthy === true;
     const failClosed = nym.fail_closed !== false;
+    const proxy = nym.socks5_proxy || null;
+
+    const didDisplay = did
+      ? `<span style="font-size:0.72rem;word-break:break-all">${gdocEsc(did)}</span>`
+      : '<span style="color:var(--text-dim)">Not generated yet &mdash; complete <a href="#/genesis" style="color:var(--accent)">Genesis</a> first</span>';
+
+    const nymDisplay = nymMode
+      ? `${gdocEsc(nymMode)} ${nymHealthy ? '<span style="color:var(--green)">\u2713 healthy</span>' : '<span style="color:var(--accent)">\u2717 not connected</span>'}`
+      : '<span style="color:var(--text-dim)">Not configured &mdash; set <code>SOCKS5_PROXY</code> or <code>NYM_BINARY</code></span>';
+
+    const proxyDisplay = proxy
+      ? `<code style="color:var(--green)">${gdocEsc(proxy)}</code>`
+      : '<span style="color:var(--text-dim)">No proxy configured</span>';
+
     panel.innerHTML = `
-      <div class="gdoc-runtime-grid">
-        <div class="gdoc-runtime-card">
-          <div class="gdoc-runtime-label">DID Identity</div>
-          <div class="gdoc-runtime-value" style="font-size:0.75rem;word-break:break-all">${did}</div>
+      <div class="gdoc-card-row">
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">DID Identity</div>
+          <div class="gdoc-card-body">${didDisplay}</div>
         </div>
-        <div class="gdoc-runtime-card">
-          <div class="gdoc-runtime-label">Nym Mode</div>
-          <div class="gdoc-runtime-value">${nymMode} ${nymHealthy ? '<span style="color:var(--green)">\u2713 healthy</span>' : '<span style="color:var(--red)">\u2717 down</span>'}</div>
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">Nym Mixnet Transport</div>
+          <div class="gdoc-card-body">${nymDisplay}</div>
         </div>
-        <div class="gdoc-runtime-card">
-          <div class="gdoc-runtime-label">Fail-Closed</div>
-          <div class="gdoc-runtime-value">${failClosed ? '<span style="color:var(--green)">ENFORCED</span>' : '<span style="color:var(--amber)">OPEN (degraded)</span>'}</div>
+      </div>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--amber" style="flex:1">
+          <div class="gdoc-card-head">Fail-Closed Policy</div>
+          <div class="gdoc-card-body">${failClosed
+            ? '<span style="color:var(--green)">\u2713 ENFORCED</span> &mdash; external traffic blocked without proxy'
+            : '<span style="color:var(--accent)">\u26A0 OPEN (degraded)</span> &mdash; direct fallback active'}</div>
         </div>
-        <div class="gdoc-runtime-card">
-          <div class="gdoc-runtime-label">SOCKS5 Proxy</div>
-          <div class="gdoc-runtime-value">${nym.socks5_proxy || 'none'}</div>
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">SOCKS5 Proxy</div>
+          <div class="gdoc-card-body">${proxyDisplay}</div>
         </div>
       </div>
     `;
@@ -2353,9 +2371,12 @@ function commOverview() {
 function commTechnical() {
   return `
     <div class="gdoc-section">
-      <h2>DID Derivation Tree</h2>
-      <div class="gdoc-pre-wrap">
-Genesis Seed (64 bytes, AES-256-GCM at rest)
+      <div class="gdoc-section-title">DID Derivation Tree</div>
+      <p class="gdoc-text">
+        The Genesis seed is the single root from which all cryptographic material is derived.
+        HKDF with domain-separated info strings ensures each key pair is independent.
+      </p>
+      <pre class="gdoc-pre gdoc-code">Genesis Seed (64 bytes, AES-256-GCM at rest)
 \u2502
 \u251C\u2500 HKDF("agenthalo-p2p-identity-v1") \u2500\u2500\u2500\u2500\u2192 Ed25519 secret (32 bytes)
 \u2502    \u251C\u2500 Public key \u2192 multicodec 0xed01 + base58btc \u2192 did:key:z6Mk\u2026
@@ -2365,77 +2386,120 @@ Genesis Seed (64 bytes, AES-256-GCM at rest)
 \u2502    \u2514\u2500 ML-KEM-768 seed (post-quantum key exchange)
 \u2502
 \u2514\u2500 HKDF("agenthalo-wallet-entropy-v1") \u2500\u2500\u2500\u2192 32 bytes \u2192 BIP-39 mnemonic (24 words)
-     \u2514\u2500 EVM address (Alloy signer)
-      </div>
+     \u2514\u2500 EVM address (Alloy signer)</pre>
+    </div>
 
-      <h2 style="margin-top:2rem">Dual Signature Protocol</h2>
-      <p>
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Dual Signature Protocol</div>
+      <p class="gdoc-text">
         Every signed payload carries two signatures. Both must verify for the message to be accepted.
-        This provides <strong>hybrid classical + post-quantum security</strong>:
+        This provides <strong>hybrid classical + post-quantum security</strong>.
       </p>
-      <div class="gdoc-pre-wrap">
-Message M
-\u2502
-\u251C\u2500 Ed25519.sign(M) \u2500\u2500\u2192 sig_ed (64 bytes)   [classical, fast]
-\u2514\u2500 ML-DSA-65.sign(M) \u2192 sig_pq (3309 bytes) [post-quantum, NIST FIPS 204]
-
-dual_verify(doc, M, sig_ed, sig_pq):
+      <div class="gdoc-card-row">
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">Classical: Ed25519</div>
+          <div class="gdoc-card-body">
+            <code>Ed25519.sign(M)</code> &rarr; <strong>sig_ed</strong> (64 bytes)<br>
+            Fast, compact, battle-tested. Provides immediate security against classical adversaries.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">Post-Quantum: ML-DSA-65</div>
+          <div class="gdoc-card-body">
+            <code>ML-DSA-65.sign(M)</code> &rarr; <strong>sig_pq</strong> (3309 bytes)<br>
+            NIST FIPS 204. Provides protection against future quantum computers.
+          </div>
+        </div>
+      </div>
+      <pre class="gdoc-pre gdoc-code" style="margin-top:10px">dual_verify(doc, M, sig_ed, sig_pq):
   \u2713 Ed25519.verify(doc.ed25519_pk, M, sig_ed)  AND
   \u2713 ML-DSA-65.verify(doc.mldsa65_pk, M, sig_pq)
-  \u2192 both must pass
-      </div>
+  \u2192 both must pass</pre>
+    </div>
 
-      <h2 style="margin-top:2rem">Capability Token Structure</h2>
-      <table class="gdoc-table">
-        <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
-        <tbody>
-          <tr><td>grantor_did</td><td>String</td><td>DID URI of the granting agent</td></tr>
-          <tr><td>grantee_did</td><td>String</td><td>DID URI of the receiving agent</td></tr>
-          <tr><td>resource_patterns</td><td>Vec&lt;String&gt;</td><td>Glob patterns for accessible resources</td></tr>
-          <tr><td>modes</td><td>Vec&lt;AccessMode&gt;</td><td>Read, Write, Append, Control</td></tr>
-          <tr><td>not_before / not_after</td><td>u64</td><td>Unix timestamps bounding validity</td></tr>
-          <tr><td>agent_class</td><td>AgentClass</td><td>Public | Authenticated | Verified{min_tier} | Specific{did}</td></tr>
-          <tr><td>ed_signature</td><td>[u8; 64]</td><td>Ed25519 signature from grantor</td></tr>
-          <tr><td>pq_signature</td><td>Vec&lt;u8&gt;</td><td>ML-DSA-65 signature from grantor</td></tr>
-        </tbody>
-      </table>
-      <p style="margin-top:0.5rem">
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Capability Token Structure</div>
+      <p class="gdoc-text">
         <strong>GrantStore</strong> materializes accepted capabilities keyed by PUF fingerprint.
         <code>accept_capability()</code> verifies both signatures before storing.
       </p>
+      <table class="gdoc-table">
+        <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>grantor_did</code></td><td>String</td><td>DID URI of the granting agent</td></tr>
+          <tr><td><code>grantee_did</code></td><td>String</td><td>DID URI of the receiving agent</td></tr>
+          <tr><td><code>resource_patterns</code></td><td>Vec&lt;String&gt;</td><td>Glob patterns for accessible resources</td></tr>
+          <tr><td><code>modes</code></td><td>Vec&lt;AccessMode&gt;</td><td>Read, Write, Append, Control</td></tr>
+          <tr><td><code>not_before / not_after</code></td><td>u64</td><td>Unix timestamps bounding validity</td></tr>
+          <tr><td><code>agent_class</code></td><td>AgentClass</td><td>Public | Authenticated | Verified{min_tier} | Specific{did}</td></tr>
+          <tr><td><code>ed_signature</code></td><td>[u8; 64]</td><td>Ed25519 signature from grantor</td></tr>
+          <tr><td><code>pq_signature</code></td><td>Vec&lt;u8&gt;</td><td>ML-DSA-65 signature from grantor</td></tr>
+        </tbody>
+      </table>
+    </div>
 
-      <h2 style="margin-top:2rem">ZK Circuit Architecture</h2>
-      <div class="gdoc-pre-wrap">
-ZK Credential Circuit (Groth16 / BN254)
-\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-Public Inputs (9):
-  [0]   identity_commit_lo    \u2502 Pedersen(did_secret)
-  [1]   identity_commit_hi    \u2502
-  [2]   resource_commit_lo    \u2502 Pedersen(resource_pattern)
-  [3]   resource_commit_hi    \u2502
-  [4]   action_mask           \u2502 bitfield: R=1 W=2 A=4 C=8
-  [5]   epoch_lo              \u2502 current epoch
-  [6]   epoch_hi              \u2502
-  [7]   revocation_root_lo    \u2502 Merkle root of revocation set
-  [8]   revocation_root_hi    \u2502
-
-Witness (private, 16+ fields):
-  - did_secret, grant_blob, grantor_secret
-  - resource_preimage, action_preimage
-  - revocation_merkle_path + siblings
-  - time bounds, nonce
-
-Proves:
-  \u2713 I hold a valid capability token
-  \u2713 The token covers this resource + action
-  \u2713 The token is not expired
-  \u2713 The token has not been revoked
-  \u2717 Does NOT reveal: which token, who granted it, grantee identity
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">ZK Circuit Architecture</div>
+      <p class="gdoc-text">
+        The ZK credential circuit proves authorization without revealing identity,
+        capability details, or the grantor. Groth16 over BN254 with 9 public inputs.
+      </p>
+      <div class="gdoc-card-row">
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">Public Inputs (9)</div>
+          <div class="gdoc-card-body">
+            <code>identity_commit</code> &mdash; Pedersen(did_secret)<br>
+            <code>resource_commit</code> &mdash; Pedersen(resource_pattern)<br>
+            <code>action_mask</code> &mdash; bitfield: R=1 W=2 A=4 C=8<br>
+            <code>epoch</code> &mdash; current time epoch<br>
+            <code>revocation_root</code> &mdash; Merkle root of revocation set
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">Witness (Private)</div>
+          <div class="gdoc-card-body">
+            <code>did_secret</code>, <code>grant_blob</code>, <code>grantor_secret</code><br>
+            <code>resource_preimage</code>, <code>action_preimage</code><br>
+            <code>revocation_merkle_path</code> + siblings<br>
+            Time bounds, nonce (16+ fields total)
+          </div>
+        </div>
       </div>
+      <div class="gdoc-module gdoc-module--green" style="margin-top:12px">
+        <div class="gdoc-module-header">
+          <code>ZK Credential Proof</code>
+          <span class="gdoc-module-tag">Groth16 / BN254</span>
+        </div>
+        <div class="gdoc-module-body">
+          <div class="gdoc-theorem-list">
+            <div class="gdoc-theorem">
+              <span class="gdoc-thm-badge">\u2713</span>
+              <div>I hold a valid capability token</div>
+            </div>
+            <div class="gdoc-theorem">
+              <span class="gdoc-thm-badge">\u2713</span>
+              <div>The token covers this resource + action</div>
+            </div>
+            <div class="gdoc-theorem">
+              <span class="gdoc-thm-badge">\u2713</span>
+              <div>The token is not expired or revoked</div>
+            </div>
+            <div class="gdoc-theorem">
+              <span class="gdoc-thm-badge" style="color:var(--red)">\u2717</span>
+              <div>Does NOT reveal: which token, who granted it, grantee identity</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
-      <h2 style="margin-top:2rem">Privacy Transport Architecture</h2>
-      <div class="gdoc-pre-wrap">
-Outbound HTTP Request
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Privacy Transport Architecture</div>
+      <p class="gdoc-text">
+        Every outbound request passes through the Privacy Controller. Classification is deterministic
+        and fail-closed &mdash; if no proxy is configured, external traffic is blocked, not downgraded.
+      </p>
+      <pre class="gdoc-pre gdoc-code">Outbound HTTP Request
 \u2502
 \u251C\u2500 classify_url(url)
 \u2502   \u251C\u2500 is_peer(host)?               \u2192 PrivacyLevel::P2P     \u2192 SOCKS5 if available
@@ -2453,53 +2517,65 @@ Outbound HTTP Request
 \u2514\u2500 ensure_route_allowed(url)
     \u251C\u2500 proxy found    \u2192 Ok(Some(proxy_uri))
     \u251C\u2500 fail-closed    \u2192 Err("outbound blocked: ... requires mixnet")
-    \u2514\u2500 fail-open      \u2192 Ok(None) \u2192 direct fallback (degraded)
+    \u2514\u2500 fail-open      \u2192 Ok(None) \u2192 direct fallback (degraded)</pre>
 
-DIDComm-aware routing: Sensitive message types (task-send, task-status,
-task-artifact, task-cancel, credential-offer, credential-request,
-credential-issue) \u2192 always Maximum. Pings and acks exempt.
+      <div class="gdoc-module gdoc-module--amber" style="margin-top:12px">
+        <div class="gdoc-module-header">
+          <code>DIDComm-Aware Routing</code>
+          <span class="gdoc-module-tag">Message-Type Override</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p>Sensitive message types are <em>always</em> routed at <code>Maximum</code> privacy
+          regardless of destination classification:
+          <code>task-send</code>, <code>task-status</code>, <code>task-artifact</code>,
+          <code>task-cancel</code>, <code>credential-offer</code>, <code>credential-request</code>,
+          <code>credential-issue</code>. Pings and acks are exempt.</p>
+        </div>
       </div>
 
-      <h3 style="margin-top:1.5rem">Cast RPC Proxy Injection</h3>
-      <p>
-        On-chain transactions via Foundry <code>cast</code> inherit the same routing.
-        <code>apply_proxy_env_for_cast()</code> extracts <code>--rpc-url</code> from args,
-        classifies it, and injects <code>ALL_PROXY</code>, <code>HTTPS_PROXY</code>,
-        <code>SOCKS5_PROXY</code> into the child process environment.
+      <div class="gdoc-module gdoc-module--blue" style="margin-top:12px">
+        <div class="gdoc-module-header">
+          <code>apply_proxy_env_for_cast()</code>
+          <span class="gdoc-module-tag">Cast RPC Proxy Injection</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p>On-chain transactions via Foundry <code>cast</code> inherit the same routing.
+          Extracts <code>--rpc-url</code> from args, classifies it, and injects
+          <code>ALL_PROXY</code>, <code>HTTPS_PROXY</code>, <code>SOCKS5_PROXY</code>
+          into the child process environment.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Attestation &amp; On-Chain Settlement</div>
+      <div class="gdoc-card-row">
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">Attestation Circuit (Groth16 / BN254)</div>
+          <div class="gdoc-card-body">
+            <strong>5 public inputs:</strong> Merkle root over session events, SHA-256 of session digest, event count.<br><br>
+            <code>verifyAndRecord(proof, pubInputs)</code> &rarr; identified attestation<br>
+            <code>verifyAndRecordAnonymous(proof, pubInputs)</code> &rarr; anonymous attestation
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">PCN Compliance Witness</div>
+          <div class="gdoc-card-body">
+            For micropayment channels, a compliance witness proves channel conservation
+            and replay protection.<br><br>
+            <code>\u2200 ch \u2208 channels: ch.balance_left + ch.balance_right == ch.capacity</code><br>
+            Witnesses feed into the attestation circuit for on-chain settlement.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Formalization Coverage</div>
+      <p class="gdoc-text">
+        End-to-end formal verification status across all 14 subsystem layers.
+        "Proved" means Lean 4 theorems exist with no <code>sorry</code>.
       </p>
-
-      <h2 style="margin-top:2rem">Attestation Circuit</h2>
-      <div class="gdoc-pre-wrap">
-Attestation Circuit (Groth16 / BN254)
-\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-Public Inputs (5):
-  [0] merkle_root_lo     \u2502 Merkle root over session events
-  [1] merkle_root_hi     \u2502
-  [2] digest_lo          \u2502 SHA-256 of session digest
-  [3] digest_hi          \u2502
-  [4] event_count        \u2502 number of events in session
-
-Posted on-chain via:
-  verifyAndRecord(proof, pubInputs)           \u2192 identified attestation
-  verifyAndRecordAnonymous(proof, pubInputs)  \u2192 anonymous attestation
-      </div>
-
-      <h2 style="margin-top:2rem">PCN Compliance Witness</h2>
-      <div class="gdoc-pre-wrap">
-PcnComplianceWitness {
-  feasibility_root: [u8; 32],    // Merkle root of channel states
-  replay_seq: u64,               // monotonic sequence for replay protection
-  channel_count: usize,
-  valid_channels: usize,
-  invalid_channels: usize,
-}
-
-Conservation invariant (per channel):
-  balance_left + balance_right == capacity
-  \u2200 ch \u2208 channels: ch.balance_left + ch.balance_right == ch.capacity
-      </div>
-
-      <h2 style="margin-top:2rem">Formalization Coverage</h2>
       <table class="gdoc-table">
         <thead><tr><th>Layer</th><th>Rust</th><th>Lean</th><th>Gap</th></tr></thead>
         <tbody>
@@ -2509,14 +2585,14 @@ Conservation invariant (per channel):
           <tr><td>Sovereign binding</td><td>Complete + idempotent</td><td>Proved (naturality, verifiability)</td><td>Hash chain not spec'd</td></tr>
           <tr><td>DIDComm authcrypt</td><td>Complete + enrichment</td><td>Proved (T22, T23, refinement)</td><td>AEAD/ECDH axiomatized</td></tr>
           <tr><td>DIDComm anoncrypt</td><td>Complete</td><td>Proved (anoncrypt spec)</td><td>Same</td></tr>
-          <tr><td>Composition policy</td><td>API hardened</td><td>Proved (closed sum, non-composition)</td><td>\u2014</td></tr>
+          <tr><td>Composition policy</td><td>API hardened</td><td>Proved (closed sum, non-composition)</td><td>&mdash;</td></tr>
           <tr><td>DIDComm handler</td><td>Complete (7 msg types)</td><td>Partial (handler spec)</td><td>State machine not spec'd</td></tr>
           <tr><td>A2A bridge</td><td>Complete (JSON-RPC)</td><td>Partial (mesh spec)</td><td>Card doesn't carry binding yet</td></tr>
           <tr><td>ZK credentials</td><td>Complete (full roundtrip)</td><td>Proved (T17-T20, T24)</td><td>Circuit axiomatized</td></tr>
           <tr><td>Privacy controller</td><td>Complete (3-tier + infra)</td><td>Proved (T6, fail-closed)</td><td>URL parsing not spec'd</td></tr>
-          <tr><td>Identity ledger</td><td>Complete (hash-chained)</td><td>Proved (LedgerSpec + Chain + Refinement)</td><td>\u2014</td></tr>
-          <tr><td>Proof gate</td><td>Complete</td><td>Proved (ProofGateSpec + Refinement)</td><td>\u2014</td></tr>
-          <tr><td>Certificate integrity</td><td>Complete</td><td>Proved (CertificateIntegrity)</td><td>\u2014</td></tr>
+          <tr><td>Identity ledger</td><td>Complete (hash-chained)</td><td>Proved (LedgerSpec + Chain + Refinement)</td><td>&mdash;</td></tr>
+          <tr><td>Proof gate</td><td>Complete</td><td>Proved (ProofGateSpec + Refinement)</td><td>&mdash;</td></tr>
+          <tr><td>Certificate integrity</td><td>Complete</td><td>Proved (CertificateIntegrity)</td><td>&mdash;</td></tr>
         </tbody>
       </table>
     </div>
@@ -2526,32 +2602,89 @@ Conservation invariant (per channel):
 function commAccess() {
   return `
     <div class="gdoc-section">
-      <h2>CLI Commands</h2>
-      <table class="gdoc-table">
-        <thead><tr><th>Command</th><th>Description</th></tr></thead>
-        <tbody>
-          <tr><td><code>agenthalo nym status</code></td><td>Show Nym transport mode, proxy URI, health, fail-closed state</td></tr>
-          <tr><td><code>agenthalo privacy classify &lt;url&gt;</code></td><td>Show privacy level (None/P2P/Maximum) for a URL</td></tr>
-          <tr><td><code>agenthalo onchain attest</code></td><td>Generate attestation proof and post to chain (identified)</td></tr>
-          <tr><td><code>agenthalo onchain attest --anonymous</code></td><td>Post attestation without revealing DID identity</td></tr>
-          <tr><td><code>agenthalo zk prove-capability --resource &lt;pat&gt;</code></td><td>Generate ZK credential proof for a capability</td></tr>
-          <tr><td><code>agenthalo capability grant --to &lt;did&gt; --resource &lt;pat&gt;</code></td><td>Issue a dual-signed capability token</td></tr>
-          <tr><td><code>agenthalo capability list</code></td><td>List active capabilities in GrantStore</td></tr>
-        </tbody>
-      </table>
+      <div class="gdoc-section-title">CLI Commands</div>
+      <div class="gdoc-tool-list">
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">agenthalo nym status</div>
+            <span class="gdoc-tool-badge gdoc-tool-badge--read">read</span>
+          </div>
+          <div class="gdoc-tool-desc">Show Nym transport mode, proxy URI, health, fail-closed state</div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">agenthalo privacy classify &lt;url&gt;</div>
+            <span class="gdoc-tool-badge gdoc-tool-badge--read">read</span>
+          </div>
+          <div class="gdoc-tool-desc">Show privacy level (None/P2P/Maximum) for a URL</div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">agenthalo onchain attest [--anonymous]</div>
+            <span class="gdoc-tool-badge gdoc-tool-badge--admin">write</span>
+          </div>
+          <div class="gdoc-tool-desc">Generate attestation proof and post to chain. Add <code>--anonymous</code> to post without revealing DID identity.</div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">agenthalo zk prove-capability --resource &lt;pat&gt;</div>
+            <span class="gdoc-tool-badge gdoc-tool-badge--guard">guard</span>
+          </div>
+          <div class="gdoc-tool-desc">Generate ZK credential proof for a capability</div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">agenthalo capability grant --to &lt;did&gt; --resource &lt;pat&gt;</div>
+            <span class="gdoc-tool-badge gdoc-tool-badge--admin">write</span>
+          </div>
+          <div class="gdoc-tool-desc">Issue a dual-signed capability token to another agent</div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">agenthalo capability list</div>
+            <span class="gdoc-tool-badge gdoc-tool-badge--read">read</span>
+          </div>
+          <div class="gdoc-tool-desc">List active capabilities in GrantStore</div>
+        </div>
+      </div>
+    </div>
 
-      <h2 style="margin-top:2rem">MCP Tools</h2>
-      <table class="gdoc-table">
-        <thead><tr><th>Tool</th><th>Description</th></tr></thead>
-        <tbody>
-          <tr><td><code>nym_status</code></td><td>Query Nym transport status (mode, health, proxy, fail-closed)</td></tr>
-          <tr><td><code>privacy_classify</code></td><td>Classify a URL's privacy level and routing decision</td></tr>
-          <tr><td><code>onchain_attest</code></td><td>Generate and post an attestation proof</td></tr>
-          <tr><td><code>zk_credential_prove</code></td><td>Generate a ZK credential proof for anonymous authorization</td></tr>
-        </tbody>
-      </table>
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">MCP Tools</div>
+      <div class="gdoc-tool-list">
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">nym_status</div>
+            <span class="gdoc-tool-badge gdoc-tool-badge--read">read</span>
+          </div>
+          <div class="gdoc-tool-desc">Query Nym transport status (mode, health, proxy, fail-closed)</div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">privacy_classify</div>
+            <span class="gdoc-tool-badge gdoc-tool-badge--read">read</span>
+          </div>
+          <div class="gdoc-tool-desc">Classify a URL's privacy level and routing decision</div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">onchain_attest</div>
+            <span class="gdoc-tool-badge gdoc-tool-badge--admin">write</span>
+          </div>
+          <div class="gdoc-tool-desc">Generate and post an attestation proof</div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">zk_credential_prove</div>
+            <span class="gdoc-tool-badge gdoc-tool-badge--guard">guard</span>
+          </div>
+          <div class="gdoc-tool-desc">Generate a ZK credential proof for anonymous authorization</div>
+        </div>
+      </div>
+    </div>
 
-      <h2 style="margin-top:2rem">Environment Variables</h2>
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Environment Variables</div>
       <table class="gdoc-table">
         <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
         <tbody>
@@ -2563,9 +2696,11 @@ function commAccess() {
           <tr><td><code>NYM_FAIL_CLOSED</code></td><td><code>true</code></td><td>Legacy: set <code>false</code> for fail-open (prefer NYM_FAIL_OPEN)</td></tr>
         </tbody>
       </table>
+    </div>
 
-      <h2 style="margin-top:2rem">Formal Verification Bridge</h2>
-      <p>
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Formal Verification Bridge</div>
+      <p class="gdoc-text">
         The Lean categorical model in <code>lean/NucleusDB/</code> mirrors the Rust runtime.
         Key correspondences for the communication stack:
       </p>
@@ -2645,7 +2780,10 @@ function commAccess() {
         </div>
       </div>
 
-      <h2 style="margin-top:2rem">Source Files</h2>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Source Files</div>
       <table class="gdoc-table">
         <thead><tr><th>File</th><th>Role</th></tr></thead>
         <tbody>

@@ -4200,7 +4200,8 @@ input:focus, select:focus, textarea:focus {
 }
 
 /* Pre / code blocks (kept for Agent Access tab) */
-.gdoc-pre {
+.gdoc-pre,
+.gdoc-pre-wrap {
   font-family: var(--font-mono);
   font-size: 0.74rem;
   line-height: 1.45;
@@ -4211,6 +4212,65 @@ input:focus, select:focus, textarea:focus {
   padding: 14px 16px;
   overflow-x: auto;
   white-space: pre;
+}
+
+/* Tables (Technical / Access tabs) */
+.gdoc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  margin-top: 10px;
+}
+.gdoc-table th,
+.gdoc-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.gdoc-table th {
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  background: rgba(255,255,255,0.02);
+}
+.gdoc-table td {
+  color: var(--text-muted);
+}
+.gdoc-table td code {
+  color: var(--green);
+  font-size: 0.74rem;
+}
+.gdoc-table tr:hover td {
+  background: rgba(0,255,157,0.03);
+}
+
+/* Live runtime status grid (Communication overview) */
+.gdoc-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.gdoc-runtime-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.gdoc-runtime-label {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 6px;
+}
+.gdoc-runtime-value {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text);
+  word-break: break-all;
 }
 
 .gdoc-code-block {
