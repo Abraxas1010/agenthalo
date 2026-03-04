@@ -55,8 +55,20 @@ pub fn classify_url(url: &str) -> PrivacyLevel {
     match host.as_deref() {
         Some(h) if is_peer_endpoint(h) => PrivacyLevel::P2P,
         Some(h) if is_local(h) => PrivacyLevel::None,
+        Some(h) if is_public_infrastructure(h) => PrivacyLevel::None,
         _ => PrivacyLevel::Maximum,
     }
+}
+
+/// Public infrastructure endpoints that carry no privacy-sensitive data.
+/// These are randomness beacons and similar services where the request
+/// itself reveals nothing about the agent's identity or purpose.
+fn is_public_infrastructure(host: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    h == "random.colorado.edu"
+        || h == "beacon.nist.gov"
+        || h == "api.drand.sh"
+        || h.ends_with(".drand.sh")
 }
 
 pub fn should_route_didcomm_via_mixnet(message_type: &str) -> bool {
@@ -278,6 +290,26 @@ mod tests {
         assert_eq!(
             parse_host_port("2001:db8::1"),
             Some(("2001:db8::1".to_string(), None))
+        );
+    }
+
+    #[test]
+    fn classify_entropy_beacons_none() {
+        assert_eq!(
+            classify_url("https://random.colorado.edu/api/curbyq/round/latest/data"),
+            PrivacyLevel::None
+        );
+        assert_eq!(
+            classify_url("https://beacon.nist.gov/beacon/2.0/pulse/last"),
+            PrivacyLevel::None
+        );
+        assert_eq!(
+            classify_url("https://api.drand.sh/public/latest"),
+            PrivacyLevel::None
+        );
+        assert_eq!(
+            classify_url("https://testnet.drand.sh/public/latest"),
+            PrivacyLevel::None
         );
     }
 

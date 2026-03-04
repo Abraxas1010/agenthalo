@@ -4343,6 +4343,17 @@ input:focus, select:focus, textarea:focus {
 /* ================================================================
    Nav — sub-item indent (Genesis under Overview)
    ================================================================ */
+/* Sub-items are hidden by default; shown when parent is expanded */
+.nav-sub-item {
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 0.25s ease-out, opacity 0.2s;
+  opacity: 0;
+}
+.nav-sub-item.nav-sub-visible {
+  max-height: 50px;
+  opacity: 1;
+}
 .nav-sub {
   padding-left: 28px !important;
   font-size: 0.82rem;
@@ -4350,6 +4361,20 @@ input:focus, select:focus, textarea:focus {
 }
 .nav-sub .nav-icon {
   font-size: 0.82rem;
+}
+/* Expand arrow on parent nav items */
+.nav-expand-arrow {
+  font-size: 0.7rem;
+  margin-left: auto;
+  transition: transform 0.25s;
+  opacity: 0.5;
+}
+.nav-parent.nav-expanded .nav-expand-arrow {
+  transform: rotate(180deg);
+}
+.nav-parent {
+  display: flex;
+  align-items: center;
 }
 
 /* ================================================================

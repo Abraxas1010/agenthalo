@@ -537,12 +537,17 @@ function updateNavLockState() {
   if (!_setupState) return;
   const complete = _setupState.complete;
   const justUnlocked = _lastSetupComplete === false && complete === true;
+  const NAV_EXEMPT = ['setup', 'overview', 'genesis', 'identification', 'communication'];
   $$('.nav-link').forEach(a => {
     const page = a.dataset.page;
     if (page === 'setup') {
       a.classList.remove('nav-locked');
       a.classList.toggle('setup-incomplete', !complete);
       a.classList.remove('nav-unlocked');
+    } else if (NAV_EXEMPT.includes(page)) {
+      // Documentation pages are always accessible
+      a.classList.remove('nav-locked');
+      a.classList.remove('setup-incomplete');
     } else {
       a.classList.toggle('nav-locked', !complete);
       a.classList.remove('setup-incomplete');
@@ -602,17 +607,53 @@ async function route() {
   const page = hash.split('/')[0];
   const arg = hash.split('/').slice(1).join('/');
 
-  // Fetch setup state and gate navigation
+  // Fetch setup state and gate navigation.
+  // Documentation/overview pages are always accessible — setup gate only blocks operational pages.
+  const SETUP_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication'];
   const ss = await fetchSetupState();
-  if (!ss.complete && page !== 'setup') {
+  if (!ss.complete && !SETUP_EXEMPT_PAGES.includes(page)) {
     location.hash = '#/setup';
     return;
   }
 
   $$('.nav-link').forEach(a => a.classList.toggle('active', a.dataset.page === page));
+
+  // Auto-expand Overview sub-items when navigating to any overview-family page
+  const overviewFamily = ['overview', 'genesis', 'identification', 'communication'];
+  const shouldExpand = overviewFamily.includes(page);
+  const parentLink = document.getElementById('nav-overview-parent');
+  if (parentLink) {
+    parentLink.classList.toggle('nav-expanded', shouldExpand);
+  }
+  $$('.nav-sub-item[data-parent="overview"]').forEach(li => {
+    li.classList.toggle('nav-sub-visible', shouldExpand);
+  });
+
   if (pages[page]) pages[page](arg);
   else content.innerHTML = '<div class="loading">Page not found</div>';
 }
+
+// Toggle Overview sub-items on click
+document.addEventListener('click', (e) => {
+  const parentLink = e.target.closest('#nav-overview-parent');
+  if (!parentLink) return;
+  // If already on overview page, just toggle expansion without navigation
+  const currentPage = (location.hash.replace('#/', '') || 'setup').split('/')[0];
+  const overviewFamily = ['overview', 'genesis', 'identification', 'communication'];
+  if (overviewFamily.includes(currentPage)) {
+    const isExpanded = parentLink.classList.contains('nav-expanded');
+    parentLink.classList.toggle('nav-expanded', !isExpanded);
+    $$('.nav-sub-item[data-parent="overview"]').forEach(li => {
+      li.classList.toggle('nav-sub-visible', !isExpanded);
+    });
+    // Don't navigate away if toggling — but DO navigate if going TO overview from elsewhere
+    if (currentPage !== 'overview') {
+      // Let the default hash navigation happen
+    } else {
+      e.preventDefault();
+    }
+  }
+});
 
 window.addEventListener('hashchange', route);
 window.addEventListener('DOMContentLoaded', route);
@@ -2118,12 +2159,18 @@ async function renderSetup() {
     <!-- SECTION 2: Wallet -->
     <div class="setup-card-v2 ${c1c}" id="setup-wallet">
       <div class="card-header">
-        <img class="card-icon-logo" src="img/agentpmt-192.png" alt="AgentPMT" title="AgentPMT" onerror="this.outerHTML='<div class=\\'card-icon\\'>&#9883;</div>'">
+        ${agentpmtConnected
+          ? '<img class="card-icon-logo" src="img/agentpmt-192.png" alt="AgentPMT" title="AgentPMT" onerror="this.outerHTML=\'<div class=\\\'card-icon\\\'>&#9883;</div>\'">'
+          : '<div class="card-icon">&#9883;</div>'}
         <div>
           <div class="card-title">
             Your Wallet
             ${step1Done
-              ? '<span class="setup-inline-status status-done">&#10003; Connected</span>'
+              ? (agentpmtConnected
+                ? '<span class="setup-inline-status status-done">&#10003; AgentPMT Connected</span>'
+                : (agentaddressConnected
+                  ? '<span class="setup-inline-status status-done">&#10003; Agent Wallet Connected</span>'
+                  : '<span class="setup-inline-status status-done">&#10003; Connected</span>'))
               : '<span class="setup-inline-status status-missing">&#10007; Not Connected</span>'}
           </div>
           <div class="card-desc">${walletCardDesc}</div>
@@ -3143,6 +3190,12 @@ async function renderSetup() {
   await refreshSocialStatus();
   await refreshSuperSecureStatus();
   setSecurityTier(initialSecurityTier, false);
+
+  // Auto-apply "As Safe As Possible" on first visit if no tier has been set yet
+  if (!hideSafetyUI && !appliedSecurityTier && initialSecurityTier === 'max-safe') {
+    // Defer slightly to let the UI render before running the preset
+    setTimeout(() => applyTierPreset('max-safe'), 250);
+  }
 
   // --- Rescan Identity button handler ---
   const rescanBtn = document.getElementById('identity-rescan-btn');
