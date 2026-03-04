@@ -493,13 +493,7 @@ fn build_auth_headers(cfg: &P2PClawConfig, body: &str) -> Result<Vec<(String, St
     let body_hash = sha256_hex(body.as_bytes());
     let message = format!("{}:{ts}:{body_hash}", cfg.agent_id);
 
-    // TODO(pq): upgrade to HMAC-SHA512 when P2PCLAW server supports it.
-    let signature = (|| -> Result<String, String> {
-        let mut mac =
-            HmacSha256::new_from_slice(secret.as_bytes()).map_err(|e| format!("hmac init: {e}"))?;
-        mac.update(message.as_bytes());
-        Ok(hex::encode(mac.finalize().into_bytes()))
-    })();
+    let signature = compute_auth_signature_message(&message, &secret);
     secret.zeroize();
 
     let signature = signature?;
@@ -561,6 +555,24 @@ fn sha256_hex(input: &[u8]) -> String {
     hex::encode(Sha256::digest(input))
 }
 
+pub fn compute_auth_signature(
+    agent_id: &str,
+    ts_millis: u64,
+    body: &str,
+    secret: &str,
+) -> Result<String, String> {
+    let body_hash = sha256_hex(body.as_bytes());
+    let message = format!("{agent_id}:{ts_millis}:{body_hash}");
+    compute_auth_signature_message(&message, secret)
+}
+
+fn compute_auth_signature_message(message: &str, secret: &str) -> Result<String, String> {
+    // TODO(pq): upgrade to HMAC-SHA512 when P2PCLAW server supports it.
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|e| format!("hmac init: {e}"))?;
+    mac.update(message.as_bytes());
+    Ok(hex::encode(mac.finalize().into_bytes()))
+}
+
 fn load_disk_config_optional() -> Result<Option<P2PClawDiskConfig>, String> {
     let path = config::p2pclaw_config_path();
     if !path.exists() {
@@ -588,4 +600,3 @@ fn now_unix_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
-

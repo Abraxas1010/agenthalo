@@ -4,6 +4,7 @@ use nucleusdb::dashboard::api::api_router;
 use nucleusdb::dashboard::{build_state, DashboardState};
 use nucleusdb::halo::agentpmt;
 use nucleusdb::halo::auth::{save_credentials, Credentials};
+use nucleusdb::halo::config;
 use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
 use nucleusdb::halo::trace::{
     list_sessions as list_trace_sessions, now_unix_secs, session_events, TraceWriter,
@@ -2992,4 +2993,93 @@ async fn funding_operator_credit_bypasses_webhook_signature() {
     assert_eq!(body["ok"], true);
     assert_eq!(body["funded_usd"], 5.0);
     let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_addons_route_can_toggle_p2pclaw() {
+    let _guard = env_lock().lock().expect("lock env");
+    let home = std::env::temp_dir().join(format!(
+        "dashboard_addons_toggle_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.to_str().expect("utf8 home")));
+
+    let (state, db_path) = test_state("api_addons_toggle");
+    let (s1, v1) = api_get(state.clone(), "/addons").await;
+    assert_eq!(s1, StatusCode::OK, "addons get failed: {v1}");
+    assert_eq!(v1["ok"], true);
+
+    let (s2, v2) = api_post(
+        state.clone(),
+        "/addons",
+        json!({"name":"p2pclaw","enabled":true}),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK, "addons post failed: {v2}");
+    assert_eq!(v2["ok"], true);
+    assert_eq!(v2["addons"]["p2pclaw_enabled"], true);
+
+    let (s3, v3) = api_get(state, "/addons").await;
+    assert_eq!(s3, StatusCode::OK);
+    assert_eq!(v3["addons"]["p2pclaw_enabled"], true);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[tokio::test]
+async fn api_p2pclaw_configure_persists_config_and_vault_secret() {
+    let _guard = env_lock().lock().expect("lock env");
+    let home = std::env::temp_dir().join(format!(
+        "dashboard_p2pclaw_cfg_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.to_str().expect("utf8 home")));
+
+    write_wallet_json(
+        &config::pq_wallet_path(),
+        "dashboard-p2pclaw-key",
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    );
+
+    let (state, db_path) = test_state("api_p2pclaw_configure");
+    let (status, body) = api_post(
+        state.clone(),
+        "/p2pclaw/configure",
+        json!({
+            "endpoint_url":"http://localhost:3000",
+            "agent_id":"agenthalo-alice",
+            "agent_name":"Alice",
+            "auth_secret":"vault-secret",
+            "tier":"tier2"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "configure failed: {body}");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["auth_in_vault"], true);
+    assert_eq!(body["config"]["endpoint_url"], "http://localhost:3000");
+    assert_eq!(body["config"]["tier"], "tier2");
+
+    let cfg_raw = std::fs::read_to_string(config::p2pclaw_config_path()).expect("read config");
+    assert!(
+        !cfg_raw.contains("vault-secret"),
+        "plaintext secret must not be written to p2pclaw config"
+    );
+
+    let (vault_path, vault_file) = (config::pq_wallet_path(), config::vault_path());
+    let vault = Vault::open(&vault_path, &vault_file).expect("open vault");
+    let secret = vault
+        .get_key("p2pclaw_auth")
+        .expect("p2pclaw secret must be in vault");
+    assert_eq!(secret, "vault-secret");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&home);
 }
