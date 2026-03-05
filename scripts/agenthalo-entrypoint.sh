@@ -33,10 +33,16 @@ wait_for_port() {
   local name="$1"
   local port="$2"
   local timeout="${3:-30}"
+  local fatal="${4:-true}"
   local deadline=$((SECONDS + timeout))
   while ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1; do
     if [[ "$SECONDS" -ge "$deadline" ]]; then
-      die "${name} did not become ready on port ${port} within ${timeout}s"
+      if [[ "$fatal" == "true" ]]; then
+        die "${name} did not become ready on port ${port} within ${timeout}s"
+      else
+        log "WARN: ${name} did not become ready on port ${port} within ${timeout}s"
+        return 1
+      fi
     fi
     sleep 0.5
   done
@@ -116,24 +122,130 @@ log " Dashboard:      ${DASHBOARD_PORT}"
 log " MCP:            ${MCP_PORT}"
 log "============================================"
 
-if [[ -n "${NYM_PROVIDER:-}" ]]; then
-  NYM_CONFIG_DIR="${NYM_DATA_DIR}/socks5-clients/${NYM_ID}"
-  if [[ ! -d "$NYM_CONFIG_DIR" ]]; then
-    log "Initializing Nym SOCKS5 identity: ${NYM_ID}"
-    nym-socks5-client init \
-      --id "${NYM_ID}" \
-      --provider "${NYM_PROVIDER}" \
-      --port "${NYM_PORT}" \
-      2>&1 | tee "${LOG_DIR}/nym_init.log"
-  else
-    log "Reusing existing Nym identity at ${NYM_CONFIG_DIR}"
+# -- Nym mixnet transport (must start before any service that makes outbound requests) --
+# The proxy env vars (HTTP_PROXY, SOCKS5_PROXY, etc.) are baked into the image.
+# All outbound traffic routes through Nym. If Nym cannot start, outbound fails
+# (fail-closed) unless NYM_FAIL_OPEN=true.
+NYM_STARTED=0
+NYM_CONFIG_DIR="${NYM_DATA_DIR}/socks5-clients/${NYM_ID}"
+NYM_MAX_PROVIDER_ATTEMPTS="${NYM_MAX_PROVIDER_ATTEMPTS:-3}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DISCOVER_SCRIPT="${SCRIPT_DIR}/nym-discover-provider.sh"
+
+try_nym_provider() {
+  local provider="$1"
+  local attempt_label="$2"
+  log "Trying Nym provider (${attempt_label}): ${provider:0:40}..."
+
+  # Clean previous failed init so we can retry with a different provider
+  if [[ -d "$NYM_CONFIG_DIR" ]]; then
+    rm -rf "$NYM_CONFIG_DIR"
   fi
+
+  if nym-socks5-client init \
+      --id "${NYM_ID}" \
+      --provider "${provider}" \
+      --port "${NYM_PORT}" \
+      >>"${LOG_DIR}/nym_init.log" 2>&1; then
+    start_bg "nym" "${LOG_DIR}/nym.log" nym-socks5-client run --id "${NYM_ID}"
+    if wait_for_port "Nym SOCKS5" "${NYM_PORT}" 60 false; then
+      NYM_STARTED=1
+      log "Nym mixnet transport active via provider: ${provider:0:40}..."
+      return 0
+    else
+      log "WARN: Nym init succeeded but SOCKS5 port did not open"
+      # Kill the failed nym process
+      local nym_pid="${PIDS[nym]:-}"
+      if [[ -n "$nym_pid" ]] && kill -0 "$nym_pid" 2>/dev/null; then
+        kill "$nym_pid" 2>/dev/null || true
+        wait "$nym_pid" 2>/dev/null || true
+      fi
+      unset "PIDS[nym]"
+      return 1
+    fi
+  else
+    log "WARN: nym-socks5-client init failed for this provider"
+    return 1
+  fi
+}
+
+# Reuse existing identity if present and working
+if [[ -d "$NYM_CONFIG_DIR" ]]; then
+  log "Reusing existing Nym identity at ${NYM_CONFIG_DIR}"
   start_bg "nym" "${LOG_DIR}/nym.log" nym-socks5-client run --id "${NYM_ID}"
-  wait_for_port "Nym SOCKS5" "${NYM_PORT}" 60
-  log "Nym mixnet transport active."
-else
-  log "WARNING: NYM_PROVIDER not set; Nym transport disabled."
-  log "External requests requiring mixnet routing will be blocked when fail-closed."
+  if wait_for_port "Nym SOCKS5" "${NYM_PORT}" 60 false; then
+    NYM_STARTED=1
+    log "Nym mixnet transport active (existing identity)."
+  else
+    log "WARN: existing Nym identity failed to start; will re-init with discovery"
+    _nym_pid="${PIDS[nym]:-}"
+    if [[ -n "$_nym_pid" ]] && kill -0 "$_nym_pid" 2>/dev/null; then
+      kill "$_nym_pid" 2>/dev/null || true
+      wait "$_nym_pid" 2>/dev/null || true
+    fi
+    unset "PIDS[nym]"
+    rm -rf "$NYM_CONFIG_DIR"
+  fi
+fi
+
+# If not yet started, discover and try providers
+if [[ "$NYM_STARTED" -eq 0 ]]; then
+  # Temporarily clear proxy vars so discovery API calls can reach the internet
+  _saved_http_proxy="${HTTP_PROXY:-}"
+  _saved_https_proxy="${HTTPS_PROXY:-}"
+  _saved_all_proxy="${ALL_PROXY:-}"
+  _saved_socks5_proxy="${SOCKS5_PROXY:-}"
+  unset HTTP_PROXY HTTPS_PROXY ALL_PROXY SOCKS5_PROXY 2>/dev/null || true
+
+  # Collect candidate providers: user-configured first, then auto-discovered
+  PROVIDERS=()
+  if [[ -n "${NYM_PROVIDER:-}" ]]; then
+    PROVIDERS+=("${NYM_PROVIDER}")
+  fi
+
+  if [[ -x "${DISCOVER_SCRIPT}" ]]; then
+    log "Discovering Nym providers from network..."
+    while IFS= read -r addr; do
+      [[ -n "${addr}" ]] && PROVIDERS+=("${addr}")
+    done < <(NYM_PROVIDER="" "${DISCOVER_SCRIPT}" 2>>"${LOG_DIR}/nym_discovery.log" || true)
+    log "Discovered ${#PROVIDERS[@]} candidate provider(s)"
+  elif [[ ${#PROVIDERS[@]} -eq 0 ]]; then
+    log "WARN: no NYM_PROVIDER set and discovery script not found"
+  fi
+
+  # Try providers in order up to NYM_MAX_PROVIDER_ATTEMPTS
+  # NOTE: proxy vars stay cleared during init — nym-socks5-client init needs
+  # direct internet to reach validator.nymtech.net/api/
+  attempt=0
+  for provider in "${PROVIDERS[@]}"; do
+    if [[ "$attempt" -ge "$NYM_MAX_PROVIDER_ATTEMPTS" ]]; then
+      log "Reached max provider attempts (${NYM_MAX_PROVIDER_ATTEMPTS})"
+      break
+    fi
+    attempt=$((attempt + 1))
+    if try_nym_provider "$provider" "${attempt}/${NYM_MAX_PROVIDER_ATTEMPTS}"; then
+      break
+    fi
+  done
+
+  # Restore proxy vars now that Nym init/run is done
+  # (if Nym started, traffic will route through it; if not, fail-open/closed handles it)
+  [[ -n "$_saved_http_proxy" ]] && export HTTP_PROXY="$_saved_http_proxy"
+  [[ -n "$_saved_https_proxy" ]] && export HTTPS_PROXY="$_saved_https_proxy"
+  [[ -n "$_saved_all_proxy" ]] && export ALL_PROXY="$_saved_all_proxy"
+  [[ -n "$_saved_socks5_proxy" ]] && export SOCKS5_PROXY="$_saved_socks5_proxy"
+fi
+
+# Handle failure
+if [[ "$NYM_STARTED" -eq 0 ]]; then
+  if [[ "${NYM_FAIL_OPEN:-false}" == "true" ]]; then
+    log "WARNING: Nym transport failed to start. NYM_FAIL_OPEN=true — clearing proxy"
+    log "env vars. Outbound connections will go DIRECT (no mixnet privacy)."
+    unset SOCKS5_PROXY ALL_PROXY HTTP_PROXY HTTPS_PROXY
+    export NO_PROXY="*"
+  else
+    die "Nym transport failed to start and NYM_FAIL_OPEN=false. Cannot continue safely."
+  fi
 fi
 
 if [[ -f /opt/wdk-sidecar/index.mjs ]]; then

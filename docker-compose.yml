@@ -10,8 +10,9 @@ services:
       AGENTHALO_MCP_HOST: "0.0.0.0"
       AGENTHALO_MCP_PORT: "8390"
       WDK_SIDECAR_DIR: /opt/wdk-sidecar
-      NYM_PROVIDER: ${NYM_PROVIDER:-}
-      NYM_FAIL_OPEN: "false"
+      NYM_PROVIDER: "${NYM_PROVIDER:-}"
+      NYM_FAIL_OPEN: "${NYM_FAIL_OPEN:-false}"
+      NYM_MAX_PROVIDER_ATTEMPTS: "3"
     volumes:
       - agent-data:/data
     ports:

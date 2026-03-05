@@ -9,18 +9,32 @@
 # - wdk-sidecar (7321 internal)
 # =============================================================================
 
-FROM debian:trixie-slim AS nym_builder
+# -- Nym SOCKS5 client -------------------------------------------------------
+# Prebuilt binary is x86_64 only. For ARM64 we build from source.
+FROM rust:1.88-slim-trixie AS nym_builder
 
+ARG TARGETARCH
 ARG NYM_VERSION="nym-binaries-v2026.4-quark"
+ARG NYM_GIT_TAG="nym-binaries-v2026.4-quark"
 ARG NYM_SOCKS5_CLIENT_SHA256="a20d010532d1c15a44e07e154c09c926df5b21c16a149075e81c0a2bb678144a"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl && \
+    ca-certificates curl git pkg-config libssl-dev g++ && \
     rm -rf /var/lib/apt/lists/*
 
-RUN curl -fL "https://github.com/nymtech/nym/releases/download/${NYM_VERSION}/nym-socks5-client" -o /tmp/nym-socks5-client && \
-    echo "${NYM_SOCKS5_CLIENT_SHA256}  /tmp/nym-socks5-client" | sha256sum -c && \
-    install -m 0755 /tmp/nym-socks5-client /usr/local/bin/nym-socks5-client
+RUN ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" && \
+    if [ "${ARCH}" = "amd64" ]; then \
+      curl -fL "https://github.com/nymtech/nym/releases/download/${NYM_VERSION}/nym-socks5-client" \
+        -o /tmp/nym-socks5-client && \
+      echo "${NYM_SOCKS5_CLIENT_SHA256}  /tmp/nym-socks5-client" | sha256sum -c && \
+      install -m 0755 /tmp/nym-socks5-client /usr/local/bin/nym-socks5-client; \
+    else \
+      git clone --depth 1 --branch "${NYM_GIT_TAG}" https://github.com/nymtech/nym.git /tmp/nym-src && \
+      cd /tmp/nym-src && \
+      cargo build --release -p nym-socks5-client && \
+      install -m 0755 target/release/nym-socks5-client /usr/local/bin/nym-socks5-client && \
+      rm -rf /tmp/nym-src; \
+    fi
 
 FROM debian:trixie-slim AS foundry_builder
 
@@ -98,12 +112,13 @@ COPY --from=foundry_builder /usr/local/bin/cast /usr/local/bin/cast
 COPY --from=wdk_builder --chown=10001:10001 /wdk /opt/wdk-sidecar
 COPY --chown=10001:10001 scripts/agenthalo-entrypoint.sh /usr/local/bin/agenthalo-entrypoint.sh
 COPY --chown=10001:10001 scripts/agenthalo-healthcheck.sh /usr/local/bin/agenthalo-healthcheck.sh
+COPY --chown=10001:10001 scripts/nym-discover-provider.sh /usr/local/bin/nym-discover-provider.sh
 
 RUN mkdir -p "${NOMIC_MODEL_DIR}" && \
     curl -fL "${NOMIC_MODEL_ONNX_URL}" -o "${NOMIC_MODEL_DIR}/model.onnx" && \
     curl -fL "${NOMIC_MODEL_TOKENIZER_URL}" -o "${NOMIC_MODEL_DIR}/tokenizer.json"
 
-RUN chmod +x /usr/local/bin/agenthalo-entrypoint.sh /usr/local/bin/agenthalo-healthcheck.sh && \
+RUN chmod +x /usr/local/bin/agenthalo-entrypoint.sh /usr/local/bin/agenthalo-healthcheck.sh /usr/local/bin/nym-discover-provider.sh && \
     mkdir -p /data /data/logs /data/nym && \
     chown -R 10001:10001 /data /opt/wdk-sidecar /opt/models && \
     chmod 700 /data
