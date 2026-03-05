@@ -48,7 +48,7 @@ pub struct DashboardState {
     /// deserialize cost. Refreshed on-disk fingerprint changes.
     pub memory_db_cache: Arc<StdMutex<MemoryDbCache>>,
     /// Local fallback orchestrator when MCP-proxy mode is disabled.
-    pub orchestrator: Arc<crate::orchestrator::Orchestrator>,
+    pub orchestrator: Option<Arc<crate::orchestrator::Orchestrator>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,11 +137,15 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
     let pricing_table = crate::halo::pricing::default_pricing();
 
     let pty_manager = Arc::new(crate::cockpit::pty_manager::PtyManager::new(10));
-    let orchestrator = Arc::new(crate::orchestrator::Orchestrator::new(
-        pty_manager.clone(),
-        vault.clone(),
-        db_path.clone(),
-    ));
+    let orchestrator = if crate::halo::orchestrator_proxy::orchestrator_proxy_enabled() {
+        None
+    } else {
+        Some(Arc::new(crate::orchestrator::Orchestrator::new(
+            pty_manager.clone(),
+            vault.clone(),
+            db_path.clone(),
+        )))
+    };
 
     DashboardState {
         db_path,

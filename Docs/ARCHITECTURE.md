@@ -252,6 +252,8 @@ Orchestrator MCP tools (`src/mcp/tools.rs`):
 - `orchestrator_get_result`
 - `orchestrator_pipe`
 - `orchestrator_list`
+- `orchestrator_tasks`
+- `orchestrator_graph`
 - `orchestrator_stop`
 
 Dashboard routes (`src/dashboard/api.rs`):
@@ -263,6 +265,15 @@ Dashboard routes (`src/dashboard/api.rs`):
 - `POST /api/orchestrator/pipe`
 - `POST /api/orchestrator/stop`
 - `GET /api/orchestrator/agents/{id}/ws`
+
+Proxy-mode env vars (shared aliases; both dashboard and NucleusDB MCP honor both):
+- `AGENTHALO_ORCHESTRATOR_PROXY_VIA_MCP`
+- `NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO`
+- `AGENTHALO_ORCHESTRATOR_MCP_ENDPOINT`
+- `NUCLEUSDB_ORCHESTRATOR_PROXY_ENDPOINT`
+
+When proxy mode is enabled, orchestrator websocket output is provided via MCP task-status polling
+rather than direct PTY stream subscription.
 
 ## 6. Dashboard (`src/dashboard/` + `dashboard/`)
 

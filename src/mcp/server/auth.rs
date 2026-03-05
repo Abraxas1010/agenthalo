@@ -123,7 +123,10 @@ impl ToolScope {
             // Mesh network (grant: capability delegation)
             "mesh_grant" => Self::TrustAttest,
             // Orchestrator agent lifecycle
-            "orchestrator_list" | "orchestrator_get_result" => Self::Read,
+            "orchestrator_list"
+            | "orchestrator_get_result"
+            | "orchestrator_tasks"
+            | "orchestrator_graph" => Self::Read,
             "orchestrator_launch"
             | "orchestrator_send_task"
             | "orchestrator_pipe"
@@ -618,6 +621,10 @@ mod tests {
             "proof_gate_status",
             "proof_gate_verify",
             "proof_gate_requirements",
+            "orchestrator_list",
+            "orchestrator_get_result",
+            "orchestrator_tasks",
+            "orchestrator_graph",
         ];
         for t in &db_tools {
             assert_eq!(ToolScope::for_tool(t), ToolScope::Read, "tool {t}");

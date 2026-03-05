@@ -744,121 +744,17 @@ fn internal_err(msg: String) -> (StatusCode, Json<Value>) {
     api_err(StatusCode::INTERNAL_SERVER_ERROR, &msg)
 }
 
-fn truthy_env(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
 fn orchestrator_mcp_proxy_enabled() -> bool {
-    if let Ok(v) = std::env::var("AGENTHALO_ORCHESTRATOR_PROXY_VIA_MCP") {
-        return matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        );
-    }
-    std::env::var("AGENTHALO_MCP_SECRET")
-        .ok()
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false)
-        || truthy_env("AGENTHALO_ALLOW_DEV_SECRET")
-}
-
-fn orchestrator_mcp_endpoint() -> String {
-    if let Ok(explicit) = std::env::var("AGENTHALO_ORCHESTRATOR_MCP_ENDPOINT") {
-        let trimmed = explicit.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    let host = std::env::var("AGENTHALO_MCP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = std::env::var("AGENTHALO_MCP_PORT").unwrap_or_else(|_| "8390".to_string());
-    format!("http://{host}:{port}/mcp")
+    crate::halo::orchestrator_proxy::orchestrator_proxy_enabled()
 }
 
 async fn call_orchestrator_tool_via_mcp(
     tool_name: &str,
     arguments: Value,
 ) -> Result<Value, (StatusCode, Json<Value>)> {
-    let endpoint = orchestrator_mcp_endpoint();
-    let maybe_secret = std::env::var("AGENTHALO_MCP_SECRET")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            if truthy_env("AGENTHALO_ALLOW_DEV_SECRET") {
-                Some("agenthalo-dev-secret".to_string())
-            } else {
-                None
-            }
-        });
-    let name = tool_name.to_string();
-    let response = tokio::task::spawn_blocking(move || -> Result<Value, String> {
-        let mut req = http_client::post_with_timeout(&endpoint, Duration::from_secs(20))
-            .map_err(|e| format!("build orchestrator MCP request: {e}"))?
-            .content_type("application/json")
-            .header("Accept", "application/json");
-        if let Some(secret) = maybe_secret.as_deref() {
-            req = req.header(AUTHORIZATION.as_str(), &format!("Bearer {secret}"));
-        }
-
-        let body = req
-            .send_json(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": name,
-                    "arguments": arguments,
-                }
-            }))
-            .map_err(|e| format!("orchestrator MCP call failed: {e}"))?
-            .into_body()
-            .read_json::<Value>()
-            .map_err(|e| format!("parse orchestrator MCP response: {e}"))?;
-
-        if let Some(err) = body.get("error") {
-            return Err(format!("orchestrator MCP rpc error: {err}"));
-        }
-        let result = body
-            .get("result")
-            .ok_or_else(|| "orchestrator MCP response missing result".to_string())?;
-        let structured = result
-            .get("structuredContent")
-            .cloned()
-            .or_else(|| {
-                result
-                    .get("content")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.get("text"))
-                    .and_then(|v| v.as_str())
-                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
-            })
-            .ok_or_else(|| "orchestrator MCP response missing content".to_string())?;
-        if result
-            .get("isError")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            return Err(structured
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("orchestrator tool call failed")
-                .to_string());
-        }
-        Ok(structured)
-    })
-    .await
-    .map_err(|e| internal_err(format!("orchestrator MCP join error: {e}")))?
-    .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
-
-    Ok(response)
+    crate::halo::orchestrator_proxy::call_orchestrator_tool(tool_name, arguments)
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))
 }
 
 fn genesis_api_err(
@@ -4029,7 +3925,8 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
         return Ok(Json(payload));
     }
 
-    let agents = state.orchestrator.list_agents().await;
+    let orchestrator = local_orchestrator(&state)?;
+    let agents = orchestrator.list_agents().await;
     Ok(Json(json!({
         "agents": agents.into_iter().map(|a| {
             json!({
@@ -4056,7 +3953,8 @@ async fn api_orch_tasks(AxumState(state): AxumState<DashboardState>) -> ApiResul
         let payload = call_orchestrator_tool_via_mcp("orchestrator_tasks", json!({})).await?;
         return Ok(Json(payload));
     }
-    let tasks = state.orchestrator.list_tasks().await;
+    let orchestrator = local_orchestrator(&state)?;
+    let tasks = orchestrator.list_tasks().await;
     Ok(Json(json!({ "tasks": tasks })))
 }
 
@@ -4066,7 +3964,8 @@ async fn api_orch_graph(AxumState(state): AxumState<DashboardState>) -> ApiResul
         let payload = call_orchestrator_tool_via_mcp("orchestrator_graph", json!({})).await?;
         return Ok(Json(payload));
     }
-    let graph = state.orchestrator.graph_snapshot().await;
+    let orchestrator = local_orchestrator(&state)?;
+    let graph = orchestrator.graph_snapshot().await;
     Ok(Json(json!({ "graph": graph })))
 }
 
@@ -4091,8 +3990,8 @@ async fn api_orch_launch(
         .await?;
         return Ok(Json(payload));
     }
-    let launched = state
-        .orchestrator
+    let orchestrator = local_orchestrator(&state)?;
+    let launched = orchestrator
         .launch_agent(crate::orchestrator::LaunchAgentRequest {
             agent: req.agent,
             agent_name: req.agent_name.unwrap_or_else(|| "agent".to_string()),
@@ -4131,8 +4030,8 @@ async fn api_orch_task(
         .await?;
         return Ok(Json(payload));
     }
-    let task = state
-        .orchestrator
+    let orchestrator = local_orchestrator(&state)?;
+    let task = orchestrator
         .send_task(crate::orchestrator::SendTaskRequest {
             agent_id: req.agent_id,
             task: req.task,
@@ -4162,8 +4061,8 @@ async fn api_orch_pipe(
         .await?;
         return Ok(Json(payload));
     }
-    let submitted = state
-        .orchestrator
+    let orchestrator = local_orchestrator(&state)?;
+    let submitted = orchestrator
         .pipe(crate::orchestrator::PipeRequest {
             source_task_id: req.source_task_id.clone(),
             target_agent_id: req.target_agent_id.clone(),
@@ -4204,8 +4103,8 @@ async fn api_orch_stop(
         .await?;
         return Ok(Json(payload));
     }
-    let stopped = state
-        .orchestrator
+    let orchestrator = local_orchestrator(&state)?;
+    let stopped = orchestrator
         .stop_agent(crate::orchestrator::StopRequest {
             agent_id: req.agent_id,
             force: req.force.unwrap_or(false),
@@ -4229,13 +4128,20 @@ async fn ws_orch_agent_output(
         return (status, body).into_response();
     }
     if orchestrator_mcp_proxy_enabled() {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({"error":"orchestrator websocket output is unavailable when MCP proxy mode is enabled"})),
-        )
+        return ws
+            .on_upgrade(move |socket| async move {
+                handle_orch_proxy_ws(socket, agent_id).await;
+            })
             .into_response();
     }
-    let Some(session) = state.orchestrator.current_agent_session(&agent_id).await else {
+    let Ok(orchestrator) = local_orchestrator(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"local orchestrator unavailable"})),
+        )
+            .into_response();
+    };
+    let Some(session) = orchestrator.current_agent_session(&agent_id).await else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"error":"orchestrator agent session not found"})),
@@ -4292,6 +4198,95 @@ async fn handle_orch_ws(socket: WebSocket, session: Arc<crate::cockpit::pty_mana
         }
     }
     let _ = tx.close().await;
+}
+
+async fn handle_orch_proxy_ws(socket: WebSocket, agent_id: String) {
+    let (mut tx, mut rx) = futures_util::StreamExt::split(socket);
+    let mut poll = tokio::time::interval(Duration::from_millis(750));
+    let mut last_payload = String::new();
+
+    loop {
+        tokio::select! {
+            _ = poll.tick() => {
+                let payload = match call_orchestrator_tool_via_mcp("orchestrator_tasks", json!({})).await {
+                    Ok(p) => p,
+                    Err((status, body)) => {
+                        let msg = json!({
+                            "type": "error",
+                            "status": status.as_u16(),
+                            "error": body.0.get("error").and_then(|v| v.as_str()).unwrap_or("proxy task poll failed"),
+                        });
+                        let _ = tx.send(Message::Text(msg.to_string().into())).await;
+                        break;
+                    }
+                };
+                let status_msg = proxy_ws_status_payload(&payload, &agent_id);
+                let serialized = status_msg.to_string();
+                if serialized != last_payload {
+                    if tx.send(Message::Text(serialized.clone().into())).await.is_err() {
+                        break;
+                    }
+                    last_payload = serialized;
+                }
+                if matches!(
+                    status_msg.get("status").and_then(|v| v.as_str()),
+                    Some("complete" | "failed" | "timeout")
+                ) {
+                    break;
+                }
+            }
+            inbound = futures_util::StreamExt::next(&mut rx) => {
+                match inbound {
+                    Some(Ok(Message::Ping(payload))) => {
+                        let _ = tx.send(Message::Pong(payload)).await;
+                    }
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let _ = tx.close().await;
+}
+
+fn proxy_ws_status_payload(tasks_payload: &Value, agent_id: &str) -> Value {
+    let maybe_latest = tasks_payload
+        .get("tasks")
+        .and_then(|v| v.as_array())
+        .and_then(|tasks| {
+            tasks
+                .iter()
+                .rev()
+                .find(|task| task.get("agent_id").and_then(|v| v.as_str()) == Some(agent_id))
+        });
+    match maybe_latest {
+        Some(task) => json!({
+            "type": "task_status",
+            "agent_id": agent_id,
+            "task_id": task.get("task_id"),
+            "status": task.get("status").cloned().unwrap_or(json!("running")),
+            "result": task.get("result").cloned().unwrap_or(Value::Null),
+            "error": task.get("error").cloned().unwrap_or(Value::Null),
+            "exit_code": task.get("exit_code").cloned().unwrap_or(Value::Null),
+            "trace_session_id": task.get("trace_session_id").cloned().unwrap_or(Value::Null),
+        }),
+        None => json!({
+            "type": "task_status",
+            "agent_id": agent_id,
+            "status": "idle",
+        }),
+    }
+}
+
+fn local_orchestrator(
+    state: &DashboardState,
+) -> Result<Arc<crate::orchestrator::Orchestrator>, (StatusCode, Json<Value>)> {
+    state.orchestrator.clone().ok_or_else(|| {
+        api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "local orchestrator unavailable",
+        )
+    })
 }
 
 async fn api_addons_get(AxumState(_state): AxumState<DashboardState>) -> ApiResult {

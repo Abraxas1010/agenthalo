@@ -4,7 +4,6 @@ use crate::container::launcher::{
     launch_container, list_sessions as list_container_sessions,
     stop_container as launcher_stop_container, MeshConfig, RunConfig,
 };
-use crate::halo::http_client;
 use crate::immutable::WriteMode;
 use crate::orchestrator::{
     LaunchAgentRequest as OrchLaunchRequest, Orchestrator, PipeRequest as OrchPipeRequest,
@@ -39,7 +38,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex;
 
 #[derive(Debug)]
@@ -4295,118 +4293,17 @@ fn task_to_response(task: crate::orchestrator::task::Task) -> OrchestratorTaskRe
     }
 }
 
-fn truthy_env(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
 fn orchestrator_proxy_enabled() -> bool {
-    if let Ok(v) = std::env::var("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO") {
-        return matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        );
-    }
-    std::env::var("AGENTHALO_MCP_SECRET")
-        .ok()
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false)
-        || truthy_env("AGENTHALO_ALLOW_DEV_SECRET")
-}
-
-fn orchestrator_proxy_endpoint() -> String {
-    if let Ok(explicit) = std::env::var("NUCLEUSDB_ORCHESTRATOR_PROXY_ENDPOINT") {
-        let trimmed = explicit.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    let host = std::env::var("AGENTHALO_MCP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = std::env::var("AGENTHALO_MCP_PORT").unwrap_or_else(|_| "8390".to_string());
-    format!("http://{host}:{port}/mcp")
+    crate::halo::orchestrator_proxy::orchestrator_proxy_enabled()
 }
 
 async fn call_orchestrator_proxy_tool(
     tool_name: &str,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, McpError> {
-    let endpoint = orchestrator_proxy_endpoint();
-    let name = tool_name.to_string();
-    let secret = std::env::var("AGENTHALO_MCP_SECRET")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            if truthy_env("AGENTHALO_ALLOW_DEV_SECRET") {
-                Some("agenthalo-dev-secret".to_string())
-            } else {
-                None
-            }
-        });
-
-    tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
-        let mut req = http_client::post_with_timeout(&endpoint, Duration::from_secs(20))?
-            .content_type("application/json")
-            .header("Accept", "application/json");
-        if let Some(secret) = secret.as_deref() {
-            req = req.header("Authorization", &format!("Bearer {secret}"));
-        }
-        let body: serde_json::Value = req
-            .send_json(serde_json::json!({
-                "jsonrpc":"2.0",
-                "id": 1,
-                "method":"tools/call",
-                "params": {
-                    "name": name,
-                    "arguments": arguments,
-                }
-            }))
-            .map_err(|e| format!("orchestrator proxy request failed: {e}"))?
-            .into_body()
-            .read_json()
-            .map_err(|e| format!("parse orchestrator proxy response: {e}"))?;
-
-        if let Some(err) = body.get("error") {
-            return Err(format!("orchestrator proxy rpc error: {err}"));
-        }
-        let result = body
-            .get("result")
-            .ok_or_else(|| "orchestrator proxy missing result".to_string())?;
-        let structured = result
-            .get("structuredContent")
-            .cloned()
-            .or_else(|| {
-                result
-                    .get("content")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.get("text"))
-                    .and_then(|v| v.as_str())
-                    .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-            })
-            .ok_or_else(|| "orchestrator proxy missing structured content".to_string())?;
-        if result
-            .get("isError")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            return Err(structured
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("orchestrator proxy tool failed")
-                .to_string());
-        }
-        Ok(structured)
-    })
-    .await
-    .map_err(|e| McpError::internal_error(format!("orchestrator proxy join error: {e}"), None))?
-    .map_err(|e| McpError::internal_error(e, None))
+    crate::halo::orchestrator_proxy::call_orchestrator_tool(tool_name, arguments)
+        .await
+        .map_err(|e| McpError::internal_error(e, None))
 }
 
 /// npm package name for each supported agent CLI.

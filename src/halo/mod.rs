@@ -30,6 +30,7 @@ pub mod migration;
 pub mod nym;
 pub mod nym_native;
 pub mod onchain;
+pub mod orchestrator_proxy;
 pub mod p2p_discovery;
 pub mod p2p_node;
 pub mod p2pclaw;

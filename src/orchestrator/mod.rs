@@ -140,6 +140,13 @@ impl Orchestrator {
             {
                 let mut bg = self.inner.background_runs.lock().await;
                 bg.insert(task_id.clone(), handle);
+                if bg
+                    .get(&task_id)
+                    .map(tokio::task::JoinHandle::is_finished)
+                    .unwrap_or(false)
+                {
+                    bg.remove(&task_id);
+                }
             }
             Ok(task)
         }
@@ -641,5 +648,39 @@ mod tests {
             task.status,
             TaskStatus::Failed | TaskStatus::Timeout | TaskStatus::Complete
         ));
+    }
+
+    #[tokio::test]
+    async fn background_handle_is_cleaned_up_after_fast_task() {
+        let orchestrator = test_orchestrator();
+        let agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "shell".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect("launch");
+        let submitted = orchestrator
+            .send_task(SendTaskRequest {
+                agent_id: agent.agent_id,
+                task: "printf 'done'".to_string(),
+                timeout_secs: Some(30),
+                wait: false,
+            })
+            .await
+            .expect("submit task");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let handle_count = orchestrator.inner.background_runs.lock().await.len();
+        assert_eq!(handle_count, 0);
+        let task = orchestrator
+            .get_task(&submitted.task_id)
+            .await
+            .expect("task exists");
+        assert!(matches!(task.status, TaskStatus::Complete));
     }
 }
