@@ -6545,20 +6545,20 @@ async fn api_nucleusdb_memory_store(
             .lock()
             .map_err(|e| internal_err(format!("memory DB cache lock poisoned: {e}")))?;
         refresh_memory_db_cache_locked(&mut cache, &db_path)?;
-        let (stored, sealed) = {
-            let db = cache
-                .db
-                .as_mut()
-                .ok_or_else(|| internal_err("memory DB cache missing after refresh".to_string()))?;
-            let stored = memory_store
-                .store_memory(db, &text, source.as_deref())
-                .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-            let wal_path = default_wal_path(&db_path);
-            persist_snapshot_and_sync_wal(&db_path, &wal_path, db)
-                .map_err(|e| internal_err(format!("persist memory store: {e:?}")))?;
-            (stored, matches!(db.write_mode(), WriteMode::AppendOnly))
-        };
-        cache.file_mtime = db_file_mtime(&db_path);
+        let mut db = cache
+            .db
+            .as_ref()
+            .ok_or_else(|| internal_err("memory DB cache missing after refresh".to_string()))?
+            .clone();
+        let stored = memory_store
+            .store_memory(&mut db, &text, source.as_deref())
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+        let wal_path = default_wal_path(&db_path);
+        persist_snapshot_and_sync_wal(&db_path, &wal_path, &db)
+            .map_err(|e| internal_err(format!("persist memory store: {e:?}")))?;
+        let sealed = matches!(db.write_mode(), WriteMode::AppendOnly);
+        cache.db = Some(db);
+        cache.file_fingerprint = db_file_fingerprint(&db_path);
         Ok(json!({
             "ok": true,
             "key": stored.key,
@@ -6636,20 +6636,20 @@ async fn api_nucleusdb_memory_ingest(
             .lock()
             .map_err(|e| internal_err(format!("memory DB cache lock poisoned: {e}")))?;
         refresh_memory_db_cache_locked(&mut cache, &db_path)?;
-        let (stored, sealed) = {
-            let db = cache
-                .db
-                .as_mut()
-                .ok_or_else(|| internal_err("memory DB cache missing after refresh".to_string()))?;
-            let stored = memory_store
-                .ingest_document(db, &document, source.as_deref())
-                .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-            let wal_path = default_wal_path(&db_path);
-            persist_snapshot_and_sync_wal(&db_path, &wal_path, db)
-                .map_err(|e| internal_err(format!("persist memory ingest: {e:?}")))?;
-            (stored, matches!(db.write_mode(), WriteMode::AppendOnly))
-        };
-        cache.file_mtime = db_file_mtime(&db_path);
+        let mut db = cache
+            .db
+            .as_ref()
+            .ok_or_else(|| internal_err("memory DB cache missing after refresh".to_string()))?
+            .clone();
+        let stored = memory_store
+            .ingest_document(&mut db, &document, source.as_deref())
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+        let wal_path = default_wal_path(&db_path);
+        persist_snapshot_and_sync_wal(&db_path, &wal_path, &db)
+            .map_err(|e| internal_err(format!("persist memory ingest: {e:?}")))?;
+        let sealed = matches!(db.write_mode(), WriteMode::AppendOnly);
+        cache.db = Some(db);
+        cache.file_fingerprint = db_file_fingerprint(&db_path);
         Ok(json!({
             "ok": true,
             "chunks": stored.len(),
@@ -6861,19 +6861,24 @@ fn load_halo_db(db_path: &std::path::Path) -> Result<NucleusDb, (StatusCode, Jso
     load_snapshot(db_path, cfg).map_err(|e| internal_err(format!("load NucleusDB: {e:?}")))
 }
 
-fn db_file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path).ok()?.modified().ok()
+fn db_file_fingerprint(path: &std::path::Path) -> Option<super::DbFileFingerprint> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    Some(super::DbFileFingerprint {
+        modified,
+        len: meta.len(),
+    })
 }
 
 fn refresh_memory_db_cache_locked(
     cache: &mut super::MemoryDbCache,
     db_path: &std::path::Path,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    let disk_mtime = db_file_mtime(db_path);
-    let should_reload = cache.db.is_none() || cache.file_mtime != disk_mtime;
+    let disk_fingerprint = db_file_fingerprint(db_path);
+    let should_reload = cache.db.is_none() || cache.file_fingerprint != disk_fingerprint;
     if should_reload {
         cache.db = Some(load_halo_db(db_path)?);
-        cache.file_mtime = disk_mtime;
+        cache.file_fingerprint = disk_fingerprint;
     }
     Ok(())
 }

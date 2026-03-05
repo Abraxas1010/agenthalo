@@ -19,6 +19,8 @@ use nucleusdb::state::State;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use tower::ServiceExt;
@@ -941,6 +943,59 @@ async fn nucleusdb_memory_cache_reloads_after_external_db_update() {
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(&wal_path);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn nucleusdb_memory_store_persist_failure_does_not_poison_cache() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _embedding_backend_guard =
+        EnvVarGuard::set("AGENTHALO_EMBEDDING_BACKEND", Some("hash-test"));
+    let (mut state, _db_path) = test_state("ndb_memory_persist_fail");
+
+    let blocked_dir = std::env::temp_dir().join(format!(
+        "ndb_memory_persist_fail_dir_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    std::fs::create_dir_all(&blocked_dir).expect("create blocked dir");
+    std::fs::set_permissions(&blocked_dir, std::fs::Permissions::from_mode(0o500))
+        .expect("chmod blocked dir");
+    state.db_path = blocked_dir.join("blocked.ndb");
+
+    let (s1, v1) = api_get(state.clone(), "/nucleusdb/memory/stats").await;
+    assert_eq!(s1, StatusCode::OK, "initial stats should succeed: {v1}");
+    assert_eq!(v1["total_memories"], 0);
+
+    let (s2, v2) = api_post(
+        state.clone(),
+        "/nucleusdb/memory/store",
+        json!({
+            "text": "This write should fail at persist and must not remain cached.",
+            "source": "test:persist-failure",
+        }),
+    )
+    .await;
+    assert_eq!(
+        s2,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "store should fail due to persist error: {v2}"
+    );
+
+    let (s3, v3) = api_get(state, "/nucleusdb/memory/stats").await;
+    assert_eq!(
+        s3,
+        StatusCode::OK,
+        "stats after failed store should succeed: {v3}"
+    );
+    assert_eq!(
+        v3["total_memories"], 0,
+        "failed persist must not leave phantom cache data: {v3}"
+    );
+
+    std::fs::set_permissions(&blocked_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("chmod cleanup dir");
+    let _ = std::fs::remove_dir_all(&blocked_dir);
 }
 
 // ---------------------------------------------------------------------------

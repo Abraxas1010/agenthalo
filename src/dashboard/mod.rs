@@ -45,14 +45,20 @@ pub struct DashboardState {
     /// Shared memory store/embedding runtime for memory recall APIs.
     pub memory_store: Arc<crate::memory::MemoryStore>,
     /// Cached NucleusDB snapshot for memory endpoints to avoid per-request
-    /// deserialize cost. Refreshed on-disk mtime changes.
+    /// deserialize cost. Refreshed on-disk fingerprint changes.
     pub memory_db_cache: Arc<StdMutex<MemoryDbCache>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DbFileFingerprint {
+    pub modified: SystemTime,
+    pub len: u64,
 }
 
 #[derive(Debug, Default)]
 pub struct MemoryDbCache {
     pub db: Option<crate::protocol::NucleusDb>,
-    pub file_mtime: Option<SystemTime>,
+    pub file_fingerprint: Option<DbFileFingerprint>,
 }
 
 #[derive(Debug, Default)]
