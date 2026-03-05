@@ -9,6 +9,7 @@ DASHBOARD_PORT="${AGENTHALO_DASHBOARD_PORT:-3100}"
 MCP_PORT="${AGENTHALO_MCP_PORT:-8390}"
 NUCLEUSDB_PORT="${NUCLEUSDB_PORT:-8088}"
 LOG_DIR="${AGENTHALO_HOME:-/data}/logs"
+NOMIC_MODEL_DIR="${NOMIC_MODEL_DIR:-/opt/models/nomic-embed-text}"
 
 export AGENTHALO_DASHBOARD_HOST="${AGENTHALO_DASHBOARD_HOST:-0.0.0.0}"
 export AGENTHALO_MCP_HOST="${AGENTHALO_MCP_HOST:-0.0.0.0}"
@@ -97,10 +98,18 @@ trap stop_all EXIT
 mkdir -p "$LOG_DIR" "$NYM_DATA_DIR"
 chmod 700 "${AGENTHALO_HOME:-/data}" || true
 
+if [[ ! -f "${NOMIC_MODEL_DIR}/model.onnx" ]]; then
+  die "nomic-embed-text model not found at ${NOMIC_MODEL_DIR}/model.onnx"
+fi
+if [[ ! -f "${NOMIC_MODEL_DIR}/tokenizer.json" ]]; then
+  die "nomic-embed-text tokenizer not found at ${NOMIC_MODEL_DIR}/tokenizer.json"
+fi
+
 log "============================================"
 log " Agent H.A.L.O. Unified Container Starting"
 log "============================================"
 log " AGENTHALO_HOME: ${AGENTHALO_HOME:-/data}"
+log " NOMIC_MODEL_DIR: ${NOMIC_MODEL_DIR}"
 log " NYM_FAIL_OPEN:  ${NYM_FAIL_OPEN:-false}"
 log " SOCKS5_PROXY:   ${SOCKS5_PROXY:-not set}"
 log " Dashboard:      ${DASHBOARD_PORT}"

@@ -823,6 +823,78 @@ async fn nucleusdb_stats_includes_type_distribution() {
     let _ = std::fs::remove_file(&db_path);
 }
 
+#[tokio::test]
+async fn nucleusdb_memory_store_and_recall_roundtrip() {
+    let (state, db_path) = test_state("ndb_memory_roundtrip");
+    seed_session(&db_path, "memory-roundtrip-test");
+
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/nucleusdb/memory/store",
+        json!({
+            "text": "Vector search is cosine-based and scoped by mem:chunk prefix.",
+            "source": "session:memory-roundtrip-test"
+        }),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "store memory should succeed: {v1}");
+    assert_eq!(v1["ok"], true);
+    assert!(v1["key"].as_str().unwrap_or("").starts_with("mem:chunk:"));
+    assert_eq!(v1["sealed"], true);
+
+    let (s2, v2) = api_post(
+        state.clone(),
+        "/nucleusdb/memory/recall",
+        json!({
+            "query": "How does memory vector similarity work?",
+            "k": 5
+        }),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK, "recall should succeed: {v2}");
+    assert_eq!(v2["ok"], true);
+    let results = v2["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "expected at least one recall result");
+    assert!(results[0]["key"]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("mem:chunk:"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn nucleusdb_memory_ingest_and_stats() {
+    let (state, db_path) = test_state("ndb_memory_ingest_stats");
+    seed_session(&db_path, "memory-ingest-test");
+
+    let doc = "## Vector Search\nCosine distance ranks nearest embeddings.\n\n## Seal Chain\nAll writes commit, seal, and witness.";
+    let (s1, v1) = api_post(
+        state.clone(),
+        "/nucleusdb/memory/ingest",
+        json!({
+            "document": doc,
+            "source": "user:manual"
+        }),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK, "ingest should succeed: {v1}");
+    assert_eq!(v1["ok"], true);
+    assert!(v1["chunks"].as_u64().unwrap_or(0) >= 1);
+
+    let (s2, v2) = api_get(state, "/nucleusdb/memory/stats").await;
+    assert_eq!(s2, StatusCode::OK, "stats should succeed: {v2}");
+    assert_eq!(v2["ok"], true);
+    assert!(v2["total_memories"].as_u64().unwrap_or(0) >= 1);
+    assert_eq!(v2["total_dims"], 768);
+    assert!(v2["model"]
+        .as_str()
+        .unwrap_or("")
+        .contains("nomic-embed-text"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
 // ---------------------------------------------------------------------------
 // NucleusDB history returns commit history
 // ---------------------------------------------------------------------------

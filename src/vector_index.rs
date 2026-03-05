@@ -147,6 +147,11 @@ impl VectorIndex {
     pub fn get(&self, key: &str) -> Option<&[f64]> {
         self.vectors.get(key).map(|v| v.as_slice())
     }
+
+    /// Return all indexed keys (for filtered statistics/reporting).
+    pub fn all_keys(&self) -> Vec<String> {
+        self.vectors.keys().cloned().collect()
+    }
 }
 
 impl Default for VectorIndex {

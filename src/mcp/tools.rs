@@ -103,6 +103,55 @@ pub struct VerifyRequest {
     pub expected_value: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryRecallRequest {
+    /// Natural-language query describing what memory context you need.
+    pub query: String,
+    /// Number of memory fragments to return. Defaults to 5, max 20.
+    pub k: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryStoreRequest {
+    /// Memory text to store and embed.
+    pub text: String,
+    /// Optional source label (e.g. session id, user note).
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryIngestRequest {
+    /// Structured document text to chunk and ingest.
+    pub document: String,
+    /// Optional source label.
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryRecallResponse {
+    pub query: String,
+    pub k: usize,
+    pub count: usize,
+    pub results: Vec<crate::memory::MemoryRecallRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryStoreResponse {
+    pub key: String,
+    pub source: Option<String>,
+    pub created: String,
+    pub dims: usize,
+    pub sealed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryIngestResponse {
+    pub chunks: usize,
+    pub keys: Vec<String>,
+    pub source: Option<String>,
+    pub sealed: bool,
+}
+
 // ── Mesh tool request/response types ────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1596,6 +1645,92 @@ impl NucleusDbMcpService {
             value: Some(value),
             expected_value: req.expected_value,
             state_root: Some(hex_encode(&root)),
+        }))
+    }
+
+    #[tool(
+        name = "agenthalo_memory_recall",
+        description = "Recall relevant memory fragments using semantic vector search over mem:chunk:* embeddings."
+    )]
+    pub async fn memory_recall(
+        &self,
+        Parameters(req): Parameters<MemoryRecallRequest>,
+    ) -> Result<Json<MemoryRecallResponse>, McpError> {
+        let query = req.query.trim().to_string();
+        if query.is_empty() {
+            return Err(McpError::invalid_params(
+                "query must be non-empty for memory recall",
+                None,
+            ));
+        }
+        let k = req.k.unwrap_or(5).clamp(1, 20);
+        let guard = self.state.lock().await;
+        let store = crate::memory::MemoryStore::default();
+        let results = store
+            .recall(&guard.db, &query, k)
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(Json(MemoryRecallResponse {
+            query,
+            k,
+            count: results.len(),
+            results,
+        }))
+    }
+
+    #[tool(
+        name = "agenthalo_memory_store",
+        description = "Store a memory fragment, embed it, and commit it to NucleusDB with seal/witness evidence."
+    )]
+    pub async fn memory_store(
+        &self,
+        Parameters(req): Parameters<MemoryStoreRequest>,
+    ) -> Result<Json<MemoryStoreResponse>, McpError> {
+        let text = req.text.trim();
+        if text.is_empty() {
+            return Err(McpError::invalid_params("text must be non-empty", None));
+        }
+        let mut guard = self.state.lock().await;
+        let store = crate::memory::MemoryStore::default();
+        let record = store
+            .store_memory(&mut guard.db, text, req.source.as_deref())
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(|e| {
+            McpError::internal_error(format!("persist memory store failed: {e:?}"), None)
+        })?;
+        Ok(Json(MemoryStoreResponse {
+            key: record.key,
+            source: record.source,
+            created: record.created,
+            dims: store.embedding_model().dims(),
+            sealed: true,
+        }))
+    }
+
+    #[tool(
+        name = "agenthalo_memory_ingest",
+        description = "Ingest a structured document into chunked semantic memory fragments and seal them into NucleusDB."
+    )]
+    pub async fn memory_ingest(
+        &self,
+        Parameters(req): Parameters<MemoryIngestRequest>,
+    ) -> Result<Json<MemoryIngestResponse>, McpError> {
+        let document = req.document.trim();
+        if document.is_empty() {
+            return Err(McpError::invalid_params("document must be non-empty", None));
+        }
+        let mut guard = self.state.lock().await;
+        let store = crate::memory::MemoryStore::default();
+        let records = store
+            .ingest_document(&mut guard.db, document, req.source.as_deref())
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(|e| {
+            McpError::internal_error(format!("persist memory ingest failed: {e:?}"), None)
+        })?;
+        Ok(Json(MemoryIngestResponse {
+            chunks: records.len(),
+            keys: records.into_iter().map(|r| r.key).collect(),
+            source: req.source,
+            sealed: true,
         }))
     }
 

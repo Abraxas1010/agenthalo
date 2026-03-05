@@ -74,6 +74,10 @@ COPY wdk-sidecar/index.mjs ./
 
 FROM node:22-bookworm-slim
 
+ARG NOMIC_MODEL_DIR=/opt/models/nomic-embed-text
+ARG NOMIC_MODEL_ONNX_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model.onnx"
+ARG NOMIC_MODEL_TOKENIZER_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/tokenizer.json"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -95,9 +99,13 @@ COPY --from=wdk_builder --chown=10001:10001 /wdk /opt/wdk-sidecar
 COPY --chown=10001:10001 scripts/agenthalo-entrypoint.sh /usr/local/bin/agenthalo-entrypoint.sh
 COPY --chown=10001:10001 scripts/agenthalo-healthcheck.sh /usr/local/bin/agenthalo-healthcheck.sh
 
+RUN mkdir -p "${NOMIC_MODEL_DIR}" && \
+    curl -fL "${NOMIC_MODEL_ONNX_URL}" -o "${NOMIC_MODEL_DIR}/model.onnx" && \
+    curl -fL "${NOMIC_MODEL_TOKENIZER_URL}" -o "${NOMIC_MODEL_DIR}/tokenizer.json"
+
 RUN chmod +x /usr/local/bin/agenthalo-entrypoint.sh /usr/local/bin/agenthalo-healthcheck.sh && \
     mkdir -p /data /data/logs /data/nym && \
-    chown -R 10001:10001 /data /opt/wdk-sidecar && \
+    chown -R 10001:10001 /data /opt/wdk-sidecar /opt/models && \
     chmod 700 /data
 
 ENV HOME=/data
@@ -108,6 +116,7 @@ ENV AGENTHALO_MCP_HOST=0.0.0.0
 ENV AGENTHALO_MCP_PORT=8390
 ENV WDK_PORT=7321
 ENV WDK_SIDECAR_DIR=/opt/wdk-sidecar
+ENV NOMIC_MODEL_DIR=/opt/models/nomic-embed-text
 
 ENV SOCKS5_PROXY=socks5h://127.0.0.1:1080
 ENV ALL_PROXY=socks5h://127.0.0.1:1080

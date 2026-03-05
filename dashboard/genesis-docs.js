@@ -2892,7 +2892,10 @@ window.ndbDocTab = function(tab) {
       hydrateNdbRuntimePanel();
       break;
     case 'ndb-technical': el.innerHTML = ndbDocTechnical(); break;
-    case 'ndb-access': el.innerHTML = ndbDocAccess(); break;
+    case 'ndb-access':
+      el.innerHTML = ndbDocAccess();
+      hydrateNdbMemoryLive();
+      break;
   }
 };
 
@@ -3618,6 +3621,55 @@ Verifying witness signatures... 15/15 dual-signed.
     </div>
 
     <div class="gdoc-section">
+      <div class="gdoc-section-title">Live Memory Operations</div>
+      <p class="gdoc-text">
+        Store, ingest, and recall semantic memory chunks directly from the dashboard.
+        All writes go through commit/seal/witness and are indexed under <code>mem:chunk:*</code>.
+      </p>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--purple" style="flex:1">
+          <div class="gdoc-card-head">Memory Stats</div>
+          <div class="gdoc-card-body" id="ndb-memory-stats">Loading...</div>
+        </div>
+      </div>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">Recall</div>
+          <div class="gdoc-card-body">
+            <input id="ndb-memory-query" placeholder="What should I remember about vector search?" style="width:100%;margin-bottom:8px">
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="ndb-memory-k" type="number" min="1" max="20" value="5" style="width:90px">
+              <button class="btn btn-secondary" onclick="ndbMemoryRecall()">Search</button>
+            </div>
+            <div id="ndb-memory-results" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">Store Memory</div>
+          <div class="gdoc-card-body">
+            <textarea id="ndb-memory-store-text" rows="4" style="width:100%;margin-bottom:8px" placeholder="Add a durable memory fragment..."></textarea>
+            <input id="ndb-memory-store-source" style="width:100%;margin-bottom:8px" placeholder="source (optional): session:xyz">
+            <button class="btn btn-secondary" onclick="ndbMemoryStore()">Store</button>
+            <div id="ndb-memory-store-result" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--amber" style="flex:1">
+          <div class="gdoc-card-head">Ingest Document</div>
+          <div class="gdoc-card-body">
+            <textarea id="ndb-memory-ingest-doc" rows="6" style="width:100%;margin-bottom:8px" placeholder="Paste a multi-section document (## headers recommended)..."></textarea>
+            <input id="ndb-memory-ingest-source" style="width:100%;margin-bottom:8px" placeholder="source (optional): user:manual">
+            <button class="btn btn-secondary" onclick="ndbMemoryIngest()">Ingest</button>
+            <div id="ndb-memory-ingest-result" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
       <div class="gdoc-section-title">Rust Source Map</div>
       <table class="gdoc-source-table">
         <thead>
@@ -3674,3 +3726,114 @@ Verifying witness signatures... 15/15 dual-signed.
     </div>
   `;
 }
+
+async function hydrateNdbMemoryLive() {
+  const node = document.getElementById('ndb-memory-stats');
+  if (!node) return;
+  node.textContent = 'Loading memory statistics...';
+  try {
+    const res = await fetch('/api/nucleusdb/memory/stats');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    node.innerHTML = `
+      <div>Total memories: <strong>${Number(data.total_memories || 0).toLocaleString()}</strong></div>
+      <div>Index size: <strong>${Number(data.index_size || 0).toLocaleString()}</strong></div>
+      <div>Dims: <strong>${Number(data.total_dims || 0)}</strong></div>
+      <div>Model: <code>${gdocEsc(String(data.model || 'unknown'))}</code></div>
+    `;
+  } catch (err) {
+    node.textContent = `Failed to load stats: ${String(err && err.message || err)}`;
+  }
+}
+
+window.ndbMemoryRecall = async function ndbMemoryRecall() {
+  const queryEl = document.getElementById('ndb-memory-query');
+  const kEl = document.getElementById('ndb-memory-k');
+  const out = document.getElementById('ndb-memory-results');
+  if (!queryEl || !kEl || !out) return;
+  const query = (queryEl.value || '').trim();
+  const k = Math.max(1, Math.min(20, Number(kEl.value || 5)));
+  if (!query) {
+    out.textContent = 'Enter a query first.';
+    return;
+  }
+  out.textContent = 'Searching...';
+  try {
+    const res = await fetch('/api/nucleusdb/memory/recall', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query, k }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    const rows = Array.isArray(data.results) ? data.results : [];
+    if (!rows.length) {
+      out.textContent = 'No memory matches found.';
+      return;
+    }
+    out.innerHTML = rows.map((r, i) => `
+      <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid rgba(255,255,255,0.12)">
+        <div><strong>[${i + 1}]</strong> <code>${gdocEsc(r.key || '')}</code> <span style="opacity:0.75">(distance: ${Number(r.distance || 0).toFixed(4)})</span></div>
+        <div style="margin-top:4px">${gdocEsc(String(r.text || ''))}</div>
+      </div>
+    `).join('');
+  } catch (err) {
+    out.textContent = `Recall failed: ${String(err && err.message || err)}`;
+  }
+};
+
+window.ndbMemoryStore = async function ndbMemoryStore() {
+  const textEl = document.getElementById('ndb-memory-store-text');
+  const sourceEl = document.getElementById('ndb-memory-store-source');
+  const out = document.getElementById('ndb-memory-store-result');
+  if (!textEl || !sourceEl || !out) return;
+  const text = (textEl.value || '').trim();
+  const source = (sourceEl.value || '').trim();
+  if (!text) {
+    out.textContent = 'Enter memory text first.';
+    return;
+  }
+  out.textContent = 'Storing...';
+  try {
+    const res = await fetch('/api/nucleusdb/memory/store', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text, source: source || null }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    out.innerHTML = `Stored <code>${gdocEsc(data.key || '')}</code> (sealed: <strong>${data.sealed ? 'yes' : 'no'}</strong>)`;
+    textEl.value = '';
+    await hydrateNdbMemoryLive();
+  } catch (err) {
+    out.textContent = `Store failed: ${String(err && err.message || err)}`;
+  }
+};
+
+window.ndbMemoryIngest = async function ndbMemoryIngest() {
+  const docEl = document.getElementById('ndb-memory-ingest-doc');
+  const sourceEl = document.getElementById('ndb-memory-ingest-source');
+  const out = document.getElementById('ndb-memory-ingest-result');
+  if (!docEl || !sourceEl || !out) return;
+  const documentText = (docEl.value || '').trim();
+  const source = (sourceEl.value || '').trim();
+  if (!documentText) {
+    out.textContent = 'Paste a document first.';
+    return;
+  }
+  out.textContent = 'Ingesting...';
+  try {
+    const res = await fetch('/api/nucleusdb/memory/ingest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ document: documentText, source: source || null }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    out.innerHTML = `Ingested <strong>${Number(data.chunks || 0)}</strong> chunks.`;
+    docEl.value = '';
+    await hydrateNdbMemoryLive();
+  } catch (err) {
+    out.textContent = `Ingest failed: ${String(err && err.message || err)}`;
+  }
+};

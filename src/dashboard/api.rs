@@ -242,6 +242,16 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
             "/nucleusdb/vector-search",
             post(api_nucleusdb_vector_search),
         )
+        .route("/nucleusdb/memory/store", post(api_nucleusdb_memory_store))
+        .route(
+            "/nucleusdb/memory/recall",
+            post(api_nucleusdb_memory_recall),
+        )
+        .route(
+            "/nucleusdb/memory/ingest",
+            post(api_nucleusdb_memory_ingest),
+        )
+        .route("/nucleusdb/memory/stats", get(api_nucleusdb_memory_stats))
         .route(
             "/nucleusdb/grants",
             get(api_nucleusdb_grants).post(api_nucleusdb_grants_create),
@@ -371,8 +381,33 @@ pub struct VectorSearchRequest {
     prefix: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct MemoryStoreRequest {
+    text: String,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct MemoryRecallRequest {
+    query: String,
+    #[serde(default = "default_memory_k")]
+    k: usize,
+}
+
+#[derive(Deserialize)]
+pub struct MemoryIngestRequest {
+    document: String,
+    #[serde(default)]
+    source: Option<String>,
+}
+
 fn default_k() -> usize {
     10
+}
+
+fn default_memory_k() -> usize {
+    5
 }
 
 fn default_metric() -> String {
@@ -6486,6 +6521,104 @@ async fn api_nucleusdb_vector_search(
         "metric": req.metric,
         "total_vectors": db.vector_index.len(),
         "vector_count": db.vector_index.len(),
+    })))
+}
+
+async fn api_nucleusdb_memory_store(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<MemoryStoreRequest>,
+) -> ApiResult {
+    let text = req.text.trim();
+    if text.is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "text must be non-empty"));
+    }
+
+    let _guard = state.db_lock.lock().await;
+    let mut db = load_halo_db(&state.db_path)?;
+    let memory = crate::memory::MemoryStore::default();
+    let stored = memory
+        .store_memory(&mut db, text, req.source.as_deref())
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let wal_path = default_wal_path(&state.db_path);
+    persist_snapshot_and_sync_wal(&state.db_path, &wal_path, &db)
+        .map_err(|e| internal_err(format!("persist memory store: {e:?}")))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "key": stored.key,
+        "source": stored.source,
+        "created": stored.created,
+        "dims": memory.embedding_model().dims(),
+        "sealed": true,
+    })))
+}
+
+async fn api_nucleusdb_memory_recall(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<MemoryRecallRequest>,
+) -> ApiResult {
+    let query = req.query.trim();
+    if query.is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "query must be non-empty"));
+    }
+    let k = req.k.clamp(1, 20);
+    let _guard = state.db_lock.lock().await;
+    let db = load_halo_db(&state.db_path)?;
+    let memory = crate::memory::MemoryStore::default();
+    let results = memory
+        .recall(&db, query, k)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "query": query,
+        "k": k,
+        "count": results.len(),
+        "results": results,
+    })))
+}
+
+async fn api_nucleusdb_memory_ingest(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<MemoryIngestRequest>,
+) -> ApiResult {
+    let document = req.document.trim();
+    if document.is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "document must be non-empty",
+        ));
+    }
+    let _guard = state.db_lock.lock().await;
+    let mut db = load_halo_db(&state.db_path)?;
+    let memory = crate::memory::MemoryStore::default();
+    let stored = memory
+        .ingest_document(&mut db, document, req.source.as_deref())
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let wal_path = default_wal_path(&state.db_path);
+    persist_snapshot_and_sync_wal(&state.db_path, &wal_path, &db)
+        .map_err(|e| internal_err(format!("persist memory ingest: {e:?}")))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "chunks": stored.len(),
+        "keys": stored.iter().map(|r| r.key.clone()).collect::<Vec<_>>(),
+        "source": req.source,
+        "sealed": true,
+    })))
+}
+
+async fn api_nucleusdb_memory_stats(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let _guard = state.db_lock.lock().await;
+    let db = load_halo_db(&state.db_path)?;
+    let memory = crate::memory::MemoryStore::default();
+    let stats = memory.stats(&db);
+    Ok(Json(json!({
+        "ok": true,
+        "total_memories": stats.total_memories,
+        "total_dims": stats.total_dims,
+        "model": stats.model,
+        "index_size": stats.index_size,
     })))
 }
 
