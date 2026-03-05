@@ -47,7 +47,7 @@ pub struct DashboardState {
     /// Cached NucleusDB snapshot for memory endpoints to avoid per-request
     /// deserialize cost. Refreshed on-disk fingerprint changes.
     pub memory_db_cache: Arc<StdMutex<MemoryDbCache>>,
-    /// In-process orchestrator for launching and managing CLI agent tasks.
+    /// Local fallback orchestrator when MCP-proxy mode is disabled.
     pub orchestrator: Arc<crate::orchestrator::Orchestrator>,
 }
 

@@ -3,6 +3,7 @@ use crate::halo::vault::Vault;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,6 +62,8 @@ pub struct AgentPool {
     agents: tokio::sync::Mutex<BTreeMap<String, ManagedAgent>>,
 }
 
+const MAX_MANAGED_AGENTS: usize = 64;
+
 impl std::fmt::Debug for AgentPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentPool").finish_non_exhaustive()
@@ -79,6 +82,14 @@ impl AgentPool {
     pub async fn launch(&self, spec: LaunchSpec) -> Result<ManagedAgent, String> {
         let kind = normalize_agent_kind(&spec.agent)?;
         validate_capabilities(&spec.capabilities)?;
+        {
+            let agents = self.agents.lock().await;
+            if agents.len() >= MAX_MANAGED_AGENTS {
+                return Err(format!(
+                    "maximum managed agents reached ({MAX_MANAGED_AGENTS})"
+                ));
+            }
+        }
         let agent_id = format!(
             "orch-{}-{}",
             crate::pod::now_unix(),
@@ -123,17 +134,35 @@ impl AgentPool {
     }
 
     pub async fn stop(&self, agent_id: &str, force: bool) -> Result<ManagedAgent, String> {
+        let session_id = {
+            let agents = self.agents.lock().await;
+            let agent = agents
+                .get(agent_id)
+                .ok_or_else(|| format!("unknown agent_id {agent_id}"))?;
+            agent.pty_session_id.clone()
+        };
+
+        if let Some(session_id) = session_id {
+            if let Some(session) = self.pty_manager.get_session(&session_id) {
+                if !force {
+                    let _ = session.write_input(&[3]); // SIGINT (^C)
+                    for _ in 0..20 {
+                        if session.poll_exit_status().is_some() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+                let _ = session.terminate();
+            }
+            let _ = self.pty_manager.destroy_session(&session_id);
+        }
+
         let mut agents = self.agents.lock().await;
         let agent = agents
             .get_mut(agent_id)
             .ok_or_else(|| format!("unknown agent_id {agent_id}"))?;
-        if let Some(session_id) = agent.pty_session_id.clone() {
-            if force {
-                if let Some(session) = self.pty_manager.get_session(&session_id) {
-                    let _ = session.terminate();
-                }
-            }
-        }
+        agent.pty_session_id = None;
         agent.status = AgentStatus::Stopped { exit_code: 0 };
         let stopped = agent.clone();
         Ok(stopped)
@@ -164,15 +193,18 @@ impl AgentPool {
                 args.push(prompt.to_string());
             }
         }
-        let session_id = self.pty_manager.create_session(
-            &agent.command,
-            &args,
-            agent.env.clone(),
-            agent.working_dir.as_deref(),
-            120,
-            24,
-            Some(agent.agent_type.clone()),
-        )?;
+        let session_id = self
+            .pty_manager
+            .create_session(
+                &agent.command,
+                &args,
+                agent.env.clone(),
+                agent.working_dir.as_deref(),
+                120,
+                24,
+                Some(agent.agent_type.clone()),
+            )
+            .map_err(|e| format!("start task PTY session failed: {e}"))?;
         agent.pty_session_id = Some(session_id.clone());
         agent.status = AgentStatus::Busy {
             task_id: task_id.to_string(),
@@ -182,7 +214,7 @@ impl AgentPool {
             agent_type: agent.agent_type.clone(),
             task_id: task_id.to_string(),
             session_id,
-            timeout_secs: timeout_secs.unwrap_or(agent.timeout_secs).max(1),
+            timeout_secs: timeout_secs.unwrap_or(agent.timeout_secs).clamp(1, 3600),
             trace_enabled: agent.trace_enabled,
         })
     }
@@ -250,6 +282,8 @@ fn command_for_kind(kind: &str) -> (String, Vec<String>) {
                 "--output-format".to_string(),
                 "json".to_string(),
                 "--verbose".to_string(),
+                // Non-interactive orchestrator lanes cannot satisfy permission prompts.
+                // Keep this explicit because it materially elevates tool authority.
                 "--dangerously-skip-permissions".to_string(),
             ],
         ),
@@ -325,6 +359,35 @@ pub fn resolve_env_vars(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn temp_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "orch_agent_pool_test_{}_{}_{}",
+            tag,
+            std::process::id(),
+            crate::pod::now_unix()
+        ))
+    }
+
+    fn make_wallet(path: &Path, key_id: &str, seed_hex: &str) {
+        let wallet = serde_json::json!({
+            "version": 1,
+            "algorithm": "ml_dsa65",
+            "key_id": key_id,
+            "public_key_hex": "00",
+            "secret_seed_hex": seed_hex,
+            "created_at": crate::pod::now_unix(),
+        });
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&wallet).expect("serialize wallet"),
+        )
+        .expect("write wallet");
+    }
 
     #[test]
     fn resolve_env_vars_plain_works() {
@@ -338,5 +401,73 @@ mod tests {
     fn capability_validation_rejects_unknown() {
         let err = validate_capabilities(&["invalid_cap".to_string()]).expect_err("must reject");
         assert!(err.contains("unknown capability"));
+    }
+
+    #[test]
+    fn resolve_env_vars_rejects_vault_provider_without_vault() {
+        let mut env = BTreeMap::new();
+        env.insert("OPENAI_API_KEY".to_string(), "vault:openai".to_string());
+        let err = resolve_env_vars(&env, None).expect_err("vault provider without vault must fail");
+        assert!(err.contains("vault unavailable"));
+    }
+
+    #[test]
+    fn resolve_env_vars_uses_vault_provider_value() {
+        let wallet_path = temp_path("wallet.json");
+        let vault_path = temp_path("vault.enc");
+        make_wallet(
+            &wallet_path,
+            "kid-orch-test",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        );
+
+        let vault = Arc::new(
+            Vault::open(&wallet_path, &vault_path).expect("open vault for orchestrator env test"),
+        );
+        vault
+            .set_key("openai", "OPENAI_API_KEY", "sk-test-xyz")
+            .expect("set test key");
+
+        let mut env = BTreeMap::new();
+        env.insert("OPENAI_API_KEY".to_string(), "vault:openai".to_string());
+        let out = resolve_env_vars(&env, Some(&vault)).expect("resolve env vars via vault");
+        assert_eq!(
+            out,
+            vec![("OPENAI_API_KEY".to_string(), "sk-test-xyz".to_string())]
+        );
+
+        let _ = std::fs::remove_file(wallet_path);
+        let _ = std::fs::remove_file(vault_path);
+    }
+
+    #[tokio::test]
+    async fn launch_respects_max_managed_agents_limit() {
+        let pool = AgentPool::new(Arc::new(PtyManager::new(64)), None);
+        for idx in 0..MAX_MANAGED_AGENTS {
+            pool.launch(LaunchSpec {
+                agent: "shell".to_string(),
+                agent_name: format!("a{idx}"),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 10,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect("launch within limit");
+        }
+        let err = pool
+            .launch(LaunchSpec {
+                agent: "shell".to_string(),
+                agent_name: "overflow".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 10,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect_err("must reject overflow");
+        assert!(err.contains("maximum managed agents"));
     }
 }

@@ -1665,6 +1665,7 @@ async fn mcp(
                     }
                 }),
             ];
+            tools.extend(orchestrator_tool_defs_for_listing());
             tools.push(tool_def_p2pclaw_configure());
             if addons::is_enabled("p2pclaw").unwrap_or(false) {
                 tools.extend(p2pclaw_tool_defs_for_listing());
@@ -1753,6 +1754,97 @@ fn tool_def_p2pclaw_configure() -> Value {
             }
         }
     })
+}
+
+fn orchestrator_tool_defs_for_listing() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "orchestrator_launch",
+            "description": "Launch a managed agent instance for orchestrated tasks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent": {"type":"string", "description":"claude | codex | gemini | openclaw | shell"},
+                    "agent_name": {"type":"string"},
+                    "working_dir": {"type":"string"},
+                    "env": {"type":"object"},
+                    "timeout_secs": {"type":"integer", "default": 600},
+                    "trace": {"type":"boolean", "default": true},
+                    "capabilities": {"type":"array", "items": {"type":"string"}}
+                },
+                "required": ["agent", "agent_name"]
+            }
+        }),
+        json!({
+            "name": "orchestrator_send_task",
+            "description": "Submit a task to a launched orchestrator agent.",
+            "inputSchema": {
+                "type":"object",
+                "properties": {
+                    "agent_id": {"type":"string"},
+                    "task": {"type":"string"},
+                    "format": {"type":"string"},
+                    "timeout_secs": {"type":"integer"},
+                    "wait": {"type":"boolean", "default": true}
+                },
+                "required": ["agent_id", "task"]
+            }
+        }),
+        json!({
+            "name": "orchestrator_get_result",
+            "description": "Get task status/result by task_id (optionally wait for completion).",
+            "inputSchema": {
+                "type":"object",
+                "properties": {
+                    "task_id": {"type":"string"},
+                    "wait": {"type":"boolean", "default": true},
+                    "timeout_secs": {"type":"integer", "default": 60}
+                },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
+            "name": "orchestrator_pipe",
+            "description": "Create task-graph pipe from source task output to target agent input.",
+            "inputSchema": {
+                "type":"object",
+                "properties": {
+                    "source_task_id": {"type":"string"},
+                    "target_agent_id": {"type":"string"},
+                    "transform": {"type":"string"},
+                    "task_prefix": {"type":"string"}
+                },
+                "required": ["source_task_id", "target_agent_id"]
+            }
+        }),
+        json!({
+            "name": "orchestrator_list",
+            "description": "List launched orchestrator agents and status.",
+            "inputSchema": {"type":"object","properties":{}}
+        }),
+        json!({
+            "name": "orchestrator_tasks",
+            "description": "List orchestrator tasks and current status.",
+            "inputSchema": {"type":"object","properties":{}}
+        }),
+        json!({
+            "name": "orchestrator_graph",
+            "description": "Get current orchestrator task graph snapshot.",
+            "inputSchema": {"type":"object","properties":{}}
+        }),
+        json!({
+            "name": "orchestrator_stop",
+            "description": "Stop a launched orchestrator agent and finalize session state.",
+            "inputSchema": {
+                "type":"object",
+                "properties": {
+                    "agent_id": {"type":"string"},
+                    "force": {"type":"boolean", "default": false}
+                },
+                "required": ["agent_id"]
+            }
+        }),
+    ]
 }
 
 fn p2pclaw_tool_defs_for_listing() -> Vec<Value> {
@@ -1956,6 +2048,14 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "mesh_call" => tool_mesh_call(arguments),
         "mesh_exchange_envelope" => tool_mesh_exchange_envelope(arguments),
         "mesh_grant" => tool_mesh_grant(arguments),
+        "orchestrator_launch" => tool_orchestrator_launch(arguments),
+        "orchestrator_send_task" => tool_orchestrator_send_task(arguments),
+        "orchestrator_get_result" => tool_orchestrator_get_result(arguments),
+        "orchestrator_pipe" => tool_orchestrator_pipe(arguments),
+        "orchestrator_list" => tool_orchestrator_list(arguments),
+        "orchestrator_tasks" => tool_orchestrator_tasks(arguments),
+        "orchestrator_graph" => tool_orchestrator_graph(arguments),
+        "orchestrator_stop" => tool_orchestrator_stop(arguments),
         "nucleusdb_help" => tool_nucleusdb_help(arguments),
         "nucleusdb_status" => tool_nucleusdb_status(arguments),
         "nucleusdb_query" => tool_nucleusdb_query(arguments),
@@ -6424,11 +6524,227 @@ where
         .map_err(|_| "nucleusdb tool worker panicked".to_string())?
 }
 
+fn local_orchestrator() -> &'static nucleusdb::orchestrator::Orchestrator {
+    static ORCH: OnceLock<nucleusdb::orchestrator::Orchestrator> = OnceLock::new();
+    ORCH.get_or_init(|| {
+        let vault =
+            nucleusdb::halo::vault::Vault::open(&config::pq_wallet_path(), &config::vault_path())
+                .ok()
+                .map(Arc::new);
+        let pty_manager = Arc::new(nucleusdb::cockpit::pty_manager::PtyManager::new(24));
+        nucleusdb::orchestrator::Orchestrator::new(pty_manager, vault, config::db_path())
+    })
+}
+
+fn run_orchestrator_call<F, Fut>(call: F) -> Result<Value, String>
+where
+    F: FnOnce(nucleusdb::orchestrator::Orchestrator) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<Value, String>> + Send + 'static,
+{
+    let orchestrator = local_orchestrator().clone();
+    let handle = std::thread::Builder::new()
+        .name("agenthalo-mcp-orchestrator-tool".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || -> Result<Value, String> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("build orchestrator tool runtime: {e}"))?;
+            runtime.block_on(async move { call(orchestrator).await })
+        })
+        .map_err(|e| format!("spawn orchestrator tool worker: {e}"))?;
+    handle
+        .join()
+        .map_err(|_| "orchestrator tool worker panicked".to_string())?
+}
+
 fn parse_tool_args<T: serde::de::DeserializeOwned>(
     arguments: Value,
     tool_name: &str,
 ) -> Result<T, String> {
     serde_json::from_value(arguments).map_err(|e| format!("invalid arguments for {tool_name}: {e}"))
+}
+
+fn orchestrator_task_to_json(task: nucleusdb::orchestrator::task::Task) -> Value {
+    json!({
+        "task_id": task.task_id,
+        "agent_id": task.agent_id,
+        "status": match task.status {
+            nucleusdb::orchestrator::task::TaskStatus::Pending => "pending",
+            nucleusdb::orchestrator::task::TaskStatus::Running => "running",
+            nucleusdb::orchestrator::task::TaskStatus::Complete => "complete",
+            nucleusdb::orchestrator::task::TaskStatus::Failed => "failed",
+            nucleusdb::orchestrator::task::TaskStatus::Timeout => "timeout",
+        },
+        "result": task.result,
+        "error": task.error,
+        "exit_code": task.exit_code,
+        "input_tokens": task.usage.input_tokens,
+        "output_tokens": task.usage.output_tokens,
+        "cost_usd": task.usage.estimated_cost_usd,
+        "trace_session_id": task.trace_session_id,
+    })
+}
+
+fn tool_orchestrator_launch(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::OrchestratorLaunchRequest =
+        parse_tool_args(arguments, "orchestrator_launch")?;
+    run_orchestrator_call(move |orchestrator| async move {
+        let launched = orchestrator
+            .launch_agent(nucleusdb::orchestrator::LaunchAgentRequest {
+                agent: req.agent,
+                agent_name: req.agent_name,
+                working_dir: req.working_dir,
+                env: req.env,
+                timeout_secs: req.timeout_secs.unwrap_or(600),
+                trace: req.trace.unwrap_or(true),
+                capabilities: req.capabilities,
+            })
+            .await?;
+        Ok(json!({
+            "agent_id": launched.agent_id,
+            "session_id": launched.pty_session_id,
+            "status": "idle",
+            "agent": launched.agent_type,
+            "agent_name": launched.agent_name,
+            "capabilities": launched.capabilities,
+        }))
+    })
+}
+
+fn tool_orchestrator_send_task(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::OrchestratorSendTaskRequest =
+        parse_tool_args(arguments, "orchestrator_send_task")?;
+    run_orchestrator_call(move |orchestrator| async move {
+        let task = orchestrator
+            .send_task(nucleusdb::orchestrator::SendTaskRequest {
+                agent_id: req.agent_id,
+                task: req.task,
+                timeout_secs: req.timeout_secs,
+                wait: req.wait.unwrap_or(true),
+            })
+            .await?;
+        Ok(orchestrator_task_to_json(task))
+    })
+}
+
+fn tool_orchestrator_get_result(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::OrchestratorGetResultRequest =
+        parse_tool_args(arguments, "orchestrator_get_result")?;
+    run_orchestrator_call(move |orchestrator| async move {
+        let wait = req.wait.unwrap_or(true);
+        let timeout = req.timeout_secs.unwrap_or(60).clamp(1, 600);
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(task) = orchestrator.get_task(&req.task_id).await {
+                if !wait
+                    || matches!(
+                        task.status,
+                        nucleusdb::orchestrator::task::TaskStatus::Complete
+                            | nucleusdb::orchestrator::task::TaskStatus::Failed
+                            | nucleusdb::orchestrator::task::TaskStatus::Timeout
+                    )
+                {
+                    return Ok(orchestrator_task_to_json(task));
+                }
+            } else {
+                return Err(format!("unknown task_id {}", req.task_id));
+            }
+            if started.elapsed() >= std::time::Duration::from_secs(timeout) {
+                let task = orchestrator
+                    .get_task(&req.task_id)
+                    .await
+                    .ok_or_else(|| "task disappeared".to_string())?;
+                return Ok(orchestrator_task_to_json(task));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+    })
+}
+
+fn tool_orchestrator_pipe(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::OrchestratorPipeRequest =
+        parse_tool_args(arguments, "orchestrator_pipe")?;
+    run_orchestrator_call(move |orchestrator| async move {
+        let submitted = orchestrator
+            .pipe(nucleusdb::orchestrator::PipeRequest {
+                source_task_id: req.source_task_id.clone(),
+                target_agent_id: req.target_agent_id.clone(),
+                transform: req.transform,
+                task_prefix: req.task_prefix,
+            })
+            .await?;
+        Ok(json!({
+            "source_task_id": req.source_task_id,
+            "target_agent_id": req.target_agent_id,
+            "status": submitted.as_ref().map(|task| match task.status {
+                nucleusdb::orchestrator::task::TaskStatus::Complete => "complete",
+                nucleusdb::orchestrator::task::TaskStatus::Failed => "failed",
+                nucleusdb::orchestrator::task::TaskStatus::Timeout => "timeout",
+                _ => "running",
+            }).unwrap_or("linked"),
+            "task_id": submitted.map(|t| t.task_id),
+        }))
+    })
+}
+
+fn tool_orchestrator_list(_arguments: Value) -> Result<Value, String> {
+    run_orchestrator_call(|orchestrator| async move {
+        let agents = orchestrator.list_agents().await;
+        Ok(json!({
+            "agents": agents.into_iter().map(|a| {
+                json!({
+                    "agent_id": a.agent_id,
+                    "agent_name": a.agent_name,
+                    "agent_type": a.agent_type,
+                    "status": match a.status {
+                        nucleusdb::orchestrator::agent_pool::AgentStatus::Idle => "idle",
+                        nucleusdb::orchestrator::agent_pool::AgentStatus::Busy { .. } => "busy",
+                        nucleusdb::orchestrator::agent_pool::AgentStatus::Stopped { .. } => "stopped",
+                    },
+                    "tasks_completed": a.tasks_completed,
+                    "total_cost_usd": a.total_cost_usd,
+                    "capabilities": a.capabilities,
+                    "launched_at": a.launched_at,
+                })
+            }).collect::<Vec<_>>()
+        }))
+    })
+}
+
+fn tool_orchestrator_tasks(_arguments: Value) -> Result<Value, String> {
+    run_orchestrator_call(|orchestrator| async move {
+        let tasks = orchestrator.list_tasks().await;
+        Ok(json!({
+            "tasks": tasks.into_iter().map(orchestrator_task_to_json).collect::<Vec<_>>()
+        }))
+    })
+}
+
+fn tool_orchestrator_graph(_arguments: Value) -> Result<Value, String> {
+    run_orchestrator_call(|orchestrator| async move {
+        let graph = orchestrator.graph_snapshot().await;
+        Ok(json!({ "graph": graph }))
+    })
+}
+
+fn tool_orchestrator_stop(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::OrchestratorStopRequest =
+        parse_tool_args(arguments, "orchestrator_stop")?;
+    run_orchestrator_call(move |orchestrator| async move {
+        let stopped = orchestrator
+            .stop_agent(nucleusdb::orchestrator::StopRequest {
+                agent_id: req.agent_id,
+                force: req.force.unwrap_or(false),
+            })
+            .await?;
+        Ok(json!({
+            "agent_id": stopped.agent_id,
+            "status": stopped.status,
+            "trace_session_id": stopped.trace_session_id,
+            "attestation_ready": stopped.attestation_ready,
+        }))
+    })
 }
 
 fn tool_nucleusdb_help(_arguments: Value) -> Result<Value, String> {

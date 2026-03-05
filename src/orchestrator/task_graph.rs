@@ -13,7 +13,7 @@ pub enum PipeTransform {
 }
 
 impl PipeTransform {
-    pub fn parse(raw: Option<&str>, task_prefix: Option<&str>) -> Self {
+    pub fn parse(raw: Option<&str>, task_prefix: Option<&str>) -> Result<Self, String> {
         let mut transforms = Vec::new();
         let base = raw.unwrap_or("identity").trim();
         if !base.is_empty() && !base.eq_ignore_ascii_case("identity") {
@@ -24,7 +24,7 @@ impl PipeTransform {
             } else if let Some(suffix) = base.strip_prefix("suffix:") {
                 transforms.push(Self::Suffix(suffix.to_string()));
             } else {
-                transforms.push(Self::Identity);
+                return Err(format!("unknown pipe transform '{base}'"));
             }
         } else {
             transforms.push(Self::Identity);
@@ -33,9 +33,9 @@ impl PipeTransform {
             transforms.insert(0, Self::Prefix(prefix.to_string()));
         }
         if transforms.len() == 1 {
-            transforms.remove(0)
+            Ok(transforms.remove(0))
         } else {
-            Self::Chain(transforms)
+            Ok(Self::Chain(transforms))
         }
     }
 
@@ -136,44 +136,47 @@ impl TaskGraph {
         if edge.target_agent_id.trim().is_empty() {
             return Err("target_agent_id must not be empty".to_string());
         }
-        if edge.source_task_id == edge.target_agent_id {
+        let source_node = self
+            .nodes
+            .get(&edge.source_task_id)
+            .ok_or_else(|| format!("unknown source_task_id {}", edge.source_task_id))?;
+        if source_node.agent_id == edge.target_agent_id {
             return Err("pipe edge would introduce a cycle".to_string());
         }
-        // For cycle detection, target synthetic node key is source->target-agent.
-        let target_node = format!("pipe:{}:{}", edge.source_task_id, edge.target_agent_id);
-        if self.would_cycle(&edge.source_task_id, &target_node) {
+        if self.agent_would_cycle(&source_node.agent_id, &edge.target_agent_id) {
             return Err("pipe edge would introduce a cycle".to_string());
         }
         self.edges.push(edge);
         Ok(())
     }
 
-    fn would_cycle(&self, source: &str, target: &str) -> bool {
-        if source == target {
+    fn agent_would_cycle(&self, source_agent: &str, target_agent: &str) -> bool {
+        if source_agent == target_agent {
             return true;
         }
         let mut graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for edge in &self.edges {
+            let Some(source_node) = self.nodes.get(&edge.source_task_id) else {
+                continue;
+            };
             graph
-                .entry(edge.source_task_id.clone())
+                .entry(source_node.agent_id.clone())
                 .or_default()
-                .insert(format!(
-                    "pipe:{}:{}",
-                    edge.source_task_id, edge.target_agent_id
-                ));
+                .insert(edge.target_agent_id.clone());
         }
         graph
-            .entry(source.to_string())
+            .entry(source_agent.to_string())
             .or_default()
-            .insert(target.to_string());
+            .insert(target_agent.to_string());
 
-        let mut stack = vec![target.to_string()];
+        // A new source->target edge introduces a cycle if target can already reach source.
+        let mut stack = vec![target_agent.to_string()];
         let mut seen = BTreeSet::new();
         while let Some(node) = stack.pop() {
             if !seen.insert(node.clone()) {
                 continue;
             }
-            if node == source {
+            if node == source_agent {
                 return true;
             }
             if let Some(next) = graph.get(&node) {
@@ -202,16 +205,18 @@ mod tests {
 
     #[test]
     fn parse_transform_uses_task_prefix() {
-        let t = PipeTransform::parse(Some("identity"), Some("pre: "));
+        let t = PipeTransform::parse(Some("identity"), Some("pre: ")).expect("parse transform");
         assert_eq!(t.apply("x"), "pre: x");
     }
 
     #[test]
     fn graph_adds_edges_and_detects_direct_cycle() {
         let mut graph = TaskGraph::default();
+        graph.upsert_node("t1", "a", TaskStatus::Complete);
+        graph.upsert_node("t2", "b", TaskStatus::Complete);
         graph
             .add_edge(TaskEdge {
-                source_task_id: "a".to_string(),
+                source_task_id: "t1".to_string(),
                 target_agent_id: "b".to_string(),
                 transform: PipeTransform::Identity,
                 generated_task_id: None,
@@ -219,12 +224,28 @@ mod tests {
             .expect("first edge");
         let err = graph
             .add_edge(TaskEdge {
-                source_task_id: "a".to_string(),
+                source_task_id: "t1".to_string(),
                 target_agent_id: "a".to_string(),
                 transform: PipeTransform::Identity,
                 generated_task_id: None,
             })
             .expect_err("must reject cycle");
         assert!(err.contains("cycle"));
+
+        let reverse_err = graph
+            .add_edge(TaskEdge {
+                source_task_id: "t2".to_string(),
+                target_agent_id: "a".to_string(),
+                transform: PipeTransform::Identity,
+                generated_task_id: None,
+            })
+            .expect_err("reverse dependency should be rejected as cycle");
+        assert!(reverse_err.contains("cycle"));
+    }
+
+    #[test]
+    fn parse_transform_rejects_unknown() {
+        let err = PipeTransform::parse(Some("regex:s/foo/bar/"), None).expect_err("must reject");
+        assert!(err.contains("unknown pipe transform"));
     }
 }

@@ -127,7 +127,7 @@ impl ToolScope {
             "orchestrator_launch"
             | "orchestrator_send_task"
             | "orchestrator_pipe"
-            | "orchestrator_stop" => Self::Container,
+            | "orchestrator_stop" => Self::TrustAttest,
             // Unknown tools default to most restrictive
             _ => Self::TrustAttest,
         }
@@ -673,6 +673,16 @@ mod tests {
         ];
         for t in &container_tools {
             assert_eq!(ToolScope::for_tool(t), ToolScope::Container, "tool {t}");
+        }
+
+        let orchestrator_attest_tools = [
+            "orchestrator_launch",
+            "orchestrator_send_task",
+            "orchestrator_pipe",
+            "orchestrator_stop",
+        ];
+        for t in &orchestrator_attest_tools {
+            assert_eq!(ToolScope::for_tool(t), ToolScope::TrustAttest, "tool {t}");
         }
         // Unknown tools → most restrictive
         assert_eq!(ToolScope::for_tool("unknown_tool"), ToolScope::TrustAttest);

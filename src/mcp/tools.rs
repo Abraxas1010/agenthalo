@@ -4,6 +4,7 @@ use crate::container::launcher::{
     launch_container, list_sessions as list_container_sessions,
     stop_container as launcher_stop_container, MeshConfig, RunConfig,
 };
+use crate::halo::http_client;
 use crate::immutable::WriteMode;
 use crate::orchestrator::{
     LaunchAgentRequest as OrchLaunchRequest, Orchestrator, PipeRequest as OrchPipeRequest,
@@ -38,6 +39,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 #[derive(Debug)]
@@ -3786,6 +3788,26 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<OrchestratorLaunchRequest>,
     ) -> Result<Json<OrchestratorLaunchResponse>, McpError> {
+        if orchestrator_proxy_enabled() {
+            let proxied = call_orchestrator_proxy_tool(
+                "orchestrator_launch",
+                serde_json::to_value(&req).map_err(|e| {
+                    McpError::internal_error(
+                        format!("serialize orchestrator launch proxy payload: {e}"),
+                        None,
+                    )
+                })?,
+            )
+            .await?;
+            let parsed: OrchestratorLaunchResponse =
+                serde_json::from_value(proxied).map_err(|e| {
+                    McpError::internal_error(
+                        format!("decode orchestrator launch proxy response: {e}"),
+                        None,
+                    )
+                })?;
+            return Ok(Json(parsed));
+        }
         let orchestrator = { self.state.lock().await.orchestrator.clone() };
         let launched = orchestrator
             .launch_agent(OrchLaunchRequest {
@@ -3802,7 +3824,7 @@ impl NucleusDbMcpService {
         Ok(Json(OrchestratorLaunchResponse {
             agent_id: launched.agent_id,
             session_id: launched.pty_session_id,
-            status: "running".to_string(),
+            status: "idle".to_string(),
             agent: launched.agent_type,
             agent_name: launched.agent_name,
             capabilities: launched.capabilities,
@@ -3817,6 +3839,26 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<OrchestratorSendTaskRequest>,
     ) -> Result<Json<OrchestratorTaskResponse>, McpError> {
+        if orchestrator_proxy_enabled() {
+            let proxied = call_orchestrator_proxy_tool(
+                "orchestrator_send_task",
+                serde_json::to_value(&req).map_err(|e| {
+                    McpError::internal_error(
+                        format!("serialize orchestrator send_task proxy payload: {e}"),
+                        None,
+                    )
+                })?,
+            )
+            .await?;
+            let parsed: OrchestratorTaskResponse =
+                serde_json::from_value(proxied).map_err(|e| {
+                    McpError::internal_error(
+                        format!("decode orchestrator send_task proxy response: {e}"),
+                        None,
+                    )
+                })?;
+            return Ok(Json(parsed));
+        }
         let orchestrator = { self.state.lock().await.orchestrator.clone() };
         if req.task.trim().is_empty() {
             return Err(McpError::invalid_params("task must be non-empty", None));
@@ -3830,10 +3872,6 @@ impl NucleusDbMcpService {
             })
             .await
             .map_err(|e| McpError::invalid_params(e, None))?;
-        {
-            let mut guard = self.state.lock().await;
-            persist_orchestrator_task_locked(&mut guard, &task)?;
-        }
         Ok(Json(task_to_response(task)))
     }
 
@@ -3845,9 +3883,29 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<OrchestratorGetResultRequest>,
     ) -> Result<Json<OrchestratorTaskResponse>, McpError> {
+        if orchestrator_proxy_enabled() {
+            let proxied = call_orchestrator_proxy_tool(
+                "orchestrator_get_result",
+                serde_json::to_value(&req).map_err(|e| {
+                    McpError::internal_error(
+                        format!("serialize orchestrator get_result proxy payload: {e}"),
+                        None,
+                    )
+                })?,
+            )
+            .await?;
+            let parsed: OrchestratorTaskResponse =
+                serde_json::from_value(proxied).map_err(|e| {
+                    McpError::internal_error(
+                        format!("decode orchestrator get_result proxy response: {e}"),
+                        None,
+                    )
+                })?;
+            return Ok(Json(parsed));
+        }
         let orchestrator = { self.state.lock().await.orchestrator.clone() };
         let wait = req.wait.unwrap_or(true);
-        let timeout = req.timeout_secs.unwrap_or(60).max(1);
+        let timeout = req.timeout_secs.unwrap_or(60).clamp(1, 600);
         let started = std::time::Instant::now();
         loop {
             if let Some(task) = orchestrator.get_task(&req.task_id).await {
@@ -3886,6 +3944,26 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<OrchestratorPipeRequest>,
     ) -> Result<Json<OrchestratorPipeResponse>, McpError> {
+        if orchestrator_proxy_enabled() {
+            let proxied = call_orchestrator_proxy_tool(
+                "orchestrator_pipe",
+                serde_json::to_value(&req).map_err(|e| {
+                    McpError::internal_error(
+                        format!("serialize orchestrator pipe proxy payload: {e}"),
+                        None,
+                    )
+                })?,
+            )
+            .await?;
+            let parsed: OrchestratorPipeResponse =
+                serde_json::from_value(proxied).map_err(|e| {
+                    McpError::internal_error(
+                        format!("decode orchestrator pipe proxy response: {e}"),
+                        None,
+                    )
+                })?;
+            return Ok(Json(parsed));
+        }
         let orchestrator = { self.state.lock().await.orchestrator.clone() };
         let submitted = orchestrator
             .pipe(OrchPipeRequest {
@@ -3896,19 +3974,18 @@ impl NucleusDbMcpService {
             })
             .await
             .map_err(|e| McpError::invalid_params(e, None))?;
-        {
-            let graph = orchestrator.graph_snapshot().await;
-            let mut guard = self.state.lock().await;
-            persist_orchestrator_graph_locked(&mut guard, &graph)?;
-        }
         Ok(Json(OrchestratorPipeResponse {
             source_task_id: req.source_task_id,
             target_agent_id: req.target_agent_id,
-            status: if submitted.is_some() {
-                "running".to_string()
-            } else {
-                "linked".to_string()
-            },
+            status: submitted
+                .as_ref()
+                .map(|task| match task.status {
+                    crate::orchestrator::task::TaskStatus::Complete => "complete".to_string(),
+                    crate::orchestrator::task::TaskStatus::Failed => "failed".to_string(),
+                    crate::orchestrator::task::TaskStatus::Timeout => "timeout".to_string(),
+                    _ => "running".to_string(),
+                })
+                .unwrap_or_else(|| "linked".to_string()),
             task_id: submitted.map(|t| t.task_id),
         }))
     }
@@ -3918,6 +3995,18 @@ impl NucleusDbMcpService {
         description = "List launched orchestrator agents and status."
     )]
     pub async fn orchestrator_list(&self) -> Result<Json<OrchestratorListResponse>, McpError> {
+        if orchestrator_proxy_enabled() {
+            let proxied =
+                call_orchestrator_proxy_tool("orchestrator_list", serde_json::json!({})).await?;
+            let parsed: OrchestratorListResponse =
+                serde_json::from_value(proxied).map_err(|e| {
+                    McpError::internal_error(
+                        format!("decode orchestrator list proxy response: {e}"),
+                        None,
+                    )
+                })?;
+            return Ok(Json(parsed));
+        }
         let orchestrator = { self.state.lock().await.orchestrator.clone() };
         let agents = orchestrator.list_agents().await;
         let views = agents
@@ -3950,6 +4039,26 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<OrchestratorStopRequest>,
     ) -> Result<Json<OrchestratorStopResponse>, McpError> {
+        if orchestrator_proxy_enabled() {
+            let proxied = call_orchestrator_proxy_tool(
+                "orchestrator_stop",
+                serde_json::to_value(&req).map_err(|e| {
+                    McpError::internal_error(
+                        format!("serialize orchestrator stop proxy payload: {e}"),
+                        None,
+                    )
+                })?,
+            )
+            .await?;
+            let parsed: OrchestratorStopResponse =
+                serde_json::from_value(proxied).map_err(|e| {
+                    McpError::internal_error(
+                        format!("decode orchestrator stop proxy response: {e}"),
+                        None,
+                    )
+                })?;
+            return Ok(Json(parsed));
+        }
         let orchestrator = { self.state.lock().await.orchestrator.clone() };
         let stopped = orchestrator
             .stop_agent(OrchStopRequest {
@@ -4186,45 +4295,118 @@ fn task_to_response(task: crate::orchestrator::task::Task) -> OrchestratorTaskRe
     }
 }
 
-fn persist_orchestrator_task_locked(
-    state: &mut ServiceState,
-    task: &crate::orchestrator::task::Task,
-) -> Result<(), McpError> {
-    let key = format!("orch:task:{}", task.task_id);
-    let value = serde_json::to_value(task)
-        .map_err(|e| McpError::internal_error(format!("serialize orchestrator task: {e}"), None))?;
-    state
-        .db
-        .put_typed(&key, crate::typed_value::TypedValue::Json(value))
-        .map_err(|e| McpError::internal_error(format!("persist orchestrator task: {e}"), None))?;
-    persist_snapshot_and_sync_wal(&state.db_path, &state.wal_path, &state.db).map_err(|e| {
-        McpError::internal_error(
-            format!("persist orchestrator task snapshot+wal: {e:?}"),
-            None,
-        )
-    })?;
-    Ok(())
+fn truthy_env(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
-fn persist_orchestrator_graph_locked(
-    state: &mut ServiceState,
-    graph: &crate::orchestrator::task_graph::TaskGraph,
-) -> Result<(), McpError> {
-    let key = "orch:graph:active";
-    let value = serde_json::to_value(graph).map_err(|e| {
-        McpError::internal_error(format!("serialize orchestrator graph: {e}"), None)
-    })?;
-    state
-        .db
-        .put_typed(key, crate::typed_value::TypedValue::Json(value))
-        .map_err(|e| McpError::internal_error(format!("persist orchestrator graph: {e}"), None))?;
-    persist_snapshot_and_sync_wal(&state.db_path, &state.wal_path, &state.db).map_err(|e| {
-        McpError::internal_error(
-            format!("persist orchestrator graph snapshot+wal: {e:?}"),
-            None,
-        )
-    })?;
-    Ok(())
+fn orchestrator_proxy_enabled() -> bool {
+    if let Ok(v) = std::env::var("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO") {
+        return matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        );
+    }
+    std::env::var("AGENTHALO_MCP_SECRET")
+        .ok()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+        || truthy_env("AGENTHALO_ALLOW_DEV_SECRET")
+}
+
+fn orchestrator_proxy_endpoint() -> String {
+    if let Ok(explicit) = std::env::var("NUCLEUSDB_ORCHESTRATOR_PROXY_ENDPOINT") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    let host = std::env::var("AGENTHALO_MCP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = std::env::var("AGENTHALO_MCP_PORT").unwrap_or_else(|_| "8390".to_string());
+    format!("http://{host}:{port}/mcp")
+}
+
+async fn call_orchestrator_proxy_tool(
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let endpoint = orchestrator_proxy_endpoint();
+    let name = tool_name.to_string();
+    let secret = std::env::var("AGENTHALO_MCP_SECRET")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            if truthy_env("AGENTHALO_ALLOW_DEV_SECRET") {
+                Some("agenthalo-dev-secret".to_string())
+            } else {
+                None
+            }
+        });
+
+    tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let mut req = http_client::post_with_timeout(&endpoint, Duration::from_secs(20))?
+            .content_type("application/json")
+            .header("Accept", "application/json");
+        if let Some(secret) = secret.as_deref() {
+            req = req.header("Authorization", &format!("Bearer {secret}"));
+        }
+        let body: serde_json::Value = req
+            .send_json(serde_json::json!({
+                "jsonrpc":"2.0",
+                "id": 1,
+                "method":"tools/call",
+                "params": {
+                    "name": name,
+                    "arguments": arguments,
+                }
+            }))
+            .map_err(|e| format!("orchestrator proxy request failed: {e}"))?
+            .into_body()
+            .read_json()
+            .map_err(|e| format!("parse orchestrator proxy response: {e}"))?;
+
+        if let Some(err) = body.get("error") {
+            return Err(format!("orchestrator proxy rpc error: {err}"));
+        }
+        let result = body
+            .get("result")
+            .ok_or_else(|| "orchestrator proxy missing result".to_string())?;
+        let structured = result
+            .get("structuredContent")
+            .cloned()
+            .or_else(|| {
+                result
+                    .get("content")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.get("text"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            })
+            .ok_or_else(|| "orchestrator proxy missing structured content".to_string())?;
+        if result
+            .get("isError")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            return Err(structured
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("orchestrator proxy tool failed")
+                .to_string());
+        }
+        Ok(structured)
+    })
+    .await
+    .map_err(|e| McpError::internal_error(format!("orchestrator proxy join error: {e}"), None))?
+    .map_err(|e| McpError::internal_error(e, None))
 }
 
 /// npm package name for each supported agent CLI.
@@ -4295,6 +4477,29 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
         let wal_path = NucleusDbMcpService::default_wal_path(db_path);
         let _ = std::fs::remove_file(wal_path);
+    }
+
+    struct EnvVarRestore {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvVarRestore {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            if let Some(prev) = &self.prev {
+                std::env::set_var(self.key, prev);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
     }
 
     #[test]
@@ -4639,7 +4844,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn orchestrator_launch_and_task_roundtrip_shell() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _proxy = EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
         let db_path = temp_db_path("orchestrator_roundtrip");
         let service = NucleusDbMcpService::new(&db_path).expect("service");
 
@@ -4655,7 +4863,7 @@ mod tests {
             }))
             .await
             .expect("launch shell");
-        assert_eq!(launch.status, "running");
+        assert_eq!(launch.status, "idle");
         assert_eq!(launch.agent, "shell");
 
         let Json(task) = service
@@ -4679,7 +4887,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn orchestrator_launch_rejects_unknown_capability() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _proxy = EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
         let db_path = temp_db_path("orchestrator_invalid_cap");
         let service = NucleusDbMcpService::new(&db_path).expect("service");
         let result = service
@@ -4701,5 +4912,165 @@ mod tests {
             }
         }
         cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn orchestrator_pipe_triggers_followup_task() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _proxy = EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
+        let db_path = temp_db_path("orchestrator_pipe");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(src_agent) = service
+            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                agent: "shell".to_string(),
+                agent_name: "src".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: Some(30),
+                trace: Some(false),
+                capabilities: vec!["memory_read".to_string()],
+            }))
+            .await
+            .expect("launch source");
+        let Json(dst_agent) = service
+            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                agent: "shell".to_string(),
+                agent_name: "dst".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: Some(30),
+                trace: Some(false),
+                capabilities: vec!["memory_read".to_string()],
+            }))
+            .await
+            .expect("launch target");
+
+        let Json(source_task) = service
+            .orchestrator_send_task(Parameters(OrchestratorSendTaskRequest {
+                agent_id: src_agent.agent_id,
+                task: "printf '{\"result\":\"hello\"}'".to_string(),
+                format: None,
+                timeout_secs: Some(30),
+                wait: Some(true),
+            }))
+            .await
+            .expect("source task");
+        assert_eq!(source_task.status, "complete");
+
+        let Json(pipe_resp) = service
+            .orchestrator_pipe(Parameters(OrchestratorPipeRequest {
+                source_task_id: source_task.task_id,
+                target_agent_id: dst_agent.agent_id,
+                transform: Some("json_extract:.result".to_string()),
+                task_prefix: Some("echo ".to_string()),
+            }))
+            .await
+            .expect("pipe");
+        assert!(matches!(
+            pipe_resp.status.as_str(),
+            "complete" | "running" | "linked"
+        ));
+        assert!(pipe_resp.task_id.is_some());
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn orchestrator_timeout_marks_task_timeout() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _proxy = EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
+        let db_path = temp_db_path("orchestrator_timeout");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(launch) = service
+            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                agent: "shell".to_string(),
+                agent_name: "slow-shell".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: Some(1),
+                trace: Some(false),
+                capabilities: vec!["memory_read".to_string()],
+            }))
+            .await
+            .expect("launch");
+
+        let result = service
+            .orchestrator_send_task(Parameters(OrchestratorSendTaskRequest {
+                agent_id: launch.agent_id,
+                task: "sleep 2; echo done".to_string(),
+                format: None,
+                timeout_secs: Some(1),
+                wait: Some(true),
+            }))
+            .await;
+        match result {
+            Ok(Json(task)) => assert_eq!(task.status, "timeout"),
+            Err(err) => {
+                let dbg = format!("{err:?}");
+                assert!(dbg.contains("timeout"));
+            }
+        }
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn orchestrator_error_path_does_not_leak_secrets() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _proxy = EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
+        let db_path = temp_db_path("orchestrator_sanitize");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let result = service
+            .orchestrator_send_task(Parameters(OrchestratorSendTaskRequest {
+                agent_id: "missing-agent".to_string(),
+                task: "echo should-fail".to_string(),
+                format: None,
+                timeout_secs: Some(5),
+                wait: Some(true),
+            }))
+            .await;
+        match result {
+            Ok(_) => panic!("send task should fail"),
+            Err(err) => {
+                let dbg = format!("{err:?}");
+                assert!(!dbg.contains("AGENTHALO_MCP_SECRET"));
+                assert!(dbg.contains("unknown agent_id"));
+            }
+        }
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[test]
+    fn task_to_response_preserves_trace_session_id() {
+        let task = crate::orchestrator::task::Task {
+            task_id: "task-123".to_string(),
+            agent_id: "orch-abc".to_string(),
+            prompt: "noop".to_string(),
+            status: crate::orchestrator::task::TaskStatus::Complete,
+            result: Some("ok".to_string()),
+            error: None,
+            exit_code: Some(0),
+            usage: crate::orchestrator::task::TaskUsage {
+                input_tokens: 12,
+                output_tokens: 34,
+                estimated_cost_usd: 0.0001,
+            },
+            started_at: Some(1),
+            completed_at: Some(2),
+            trace_session_id: Some("orch-trace-task-123".to_string()),
+        };
+        let response = task_to_response(task);
+        assert_eq!(response.status, "complete");
+        assert_eq!(
+            response.trace_session_id.as_deref(),
+            Some("orch-trace-task-123")
+        );
     }
 }
