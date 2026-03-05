@@ -874,6 +874,69 @@ async fn nucleusdb_memory_store_and_recall_roundtrip() {
 }
 
 #[tokio::test]
+async fn nucleusdb_memory_recall_handles_negation_and_paraphrase_gap() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _embedding_backend_guard =
+        EnvVarGuard::set("AGENTHALO_EMBEDDING_BACKEND", Some("hash-test"));
+    let (state, db_path) = test_state("ndb_memory_negation_paraphrase");
+    seed_session(&db_path, "memory-negation-test");
+
+    let (s1, _) = api_post(
+        state.clone(),
+        "/nucleusdb/memory/store",
+        json!({
+            "text": "This endpoint is not private and can be viewed by all users.",
+            "source": "session:negation"
+        }),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK);
+
+    let (s2, _) = api_post(
+        state.clone(),
+        "/nucleusdb/memory/store",
+        json!({
+            "text": "Machine-checked proofs establish formal verification of software correctness.",
+            "source": "session:paraphrase"
+        }),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK);
+
+    let (s3, v3) = api_post(
+        state.clone(),
+        "/nucleusdb/memory/recall",
+        json!({
+            "query": "endpoint not private",
+            "k": 2
+        }),
+    )
+    .await;
+    assert_eq!(s3, StatusCode::OK);
+    assert!(v3["results"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .contains("not private"));
+
+    let (s4, v4) = api_post(
+        state,
+        "/nucleusdb/memory/recall",
+        json!({
+            "query": "mathematical guarantees for software behavior",
+            "k": 2
+        }),
+    )
+    .await;
+    assert_eq!(s4, StatusCode::OK);
+    assert!(v4["results"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Machine-checked proofs"));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn nucleusdb_memory_ingest_and_stats() {
     let _guard = env_lock().lock().expect("lock env");
     let _embedding_backend_guard =

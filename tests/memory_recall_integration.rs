@@ -128,6 +128,51 @@ fn test_memory_prefix_isolation() {
 }
 
 #[test]
+fn test_negation_and_paraphrase_recall_quality() {
+    let mut db = test_db();
+    let memory = test_store();
+    memory
+        .store_memory(
+            &mut db,
+            "The endpoint is not private and remains visible to all operators.",
+            Some("session:test"),
+        )
+        .expect("store not private");
+    memory
+        .store_memory(
+            &mut db,
+            "Machine-checked proofs provide formal verification for software correctness.",
+            Some("session:test"),
+        )
+        .expect("store proof");
+    memory
+        .store_memory(
+            &mut db,
+            "Banana orchard irrigation schedule.",
+            Some("session:test"),
+        )
+        .expect("store noise");
+
+    let neg_hits = memory
+        .recall(&db, "endpoint not private", 2)
+        .expect("neg recall");
+    assert!(
+        neg_hits[0].text.contains("not private"),
+        "negation-sensitive rerank failed: {:?}",
+        neg_hits
+    );
+
+    let paraphrase_hits = memory
+        .recall(&db, "mathematical guarantees for software behavior", 2)
+        .expect("paraphrase recall");
+    assert!(
+        paraphrase_hits[0].text.contains("Machine-checked proofs"),
+        "query expansion bridge failed: {:?}",
+        paraphrase_hits
+    );
+}
+
+#[test]
 fn test_memory_survives_restart() {
     let db_path = temp_db_path("survives_restart");
     let memory = test_store();
