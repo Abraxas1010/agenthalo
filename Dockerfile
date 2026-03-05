@@ -15,7 +15,7 @@ FROM rust:1.88-slim-trixie AS nym_builder
 
 ARG TARGETARCH
 ARG NYM_VERSION="nym-binaries-v2026.4-quark"
-ARG NYM_GIT_TAG="nym-binaries-v2026.4-quark"
+ARG NYM_GIT_COMMIT="a2081af6038ef3ef40b3d9368299d2676a2fbb6a"
 ARG NYM_SOCKS5_CLIENT_SHA256="a20d010532d1c15a44e07e154c09c926df5b21c16a149075e81c0a2bb678144a"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -29,9 +29,12 @@ RUN ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" && \
       echo "${NYM_SOCKS5_CLIENT_SHA256}  /tmp/nym-socks5-client" | sha256sum -c && \
       install -m 0755 /tmp/nym-socks5-client /usr/local/bin/nym-socks5-client; \
     else \
-      git clone --depth 1 --branch "${NYM_GIT_TAG}" https://github.com/nymtech/nym.git /tmp/nym-src && \
+      git init /tmp/nym-src && \
       cd /tmp/nym-src && \
-      cargo build --release -p nym-socks5-client && \
+      git remote add origin https://github.com/nymtech/nym.git && \
+      git fetch --depth 1 origin "${NYM_GIT_COMMIT}" && \
+      git checkout --detach FETCH_HEAD && \
+      cargo build --locked --release -p nym-socks5-client && \
       install -m 0755 target/release/nym-socks5-client /usr/local/bin/nym-socks5-client && \
       rm -rf /tmp/nym-src; \
     fi

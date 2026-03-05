@@ -192,10 +192,16 @@ fi
 if [[ "$NYM_STARTED" -eq 0 ]]; then
   # Temporarily clear proxy vars so discovery API calls can reach the internet
   _saved_http_proxy="${HTTP_PROXY:-}"
+  _saved_http_proxy_lc="${http_proxy:-}"
   _saved_https_proxy="${HTTPS_PROXY:-}"
+  _saved_https_proxy_lc="${https_proxy:-}"
   _saved_all_proxy="${ALL_PROXY:-}"
+  _saved_all_proxy_lc="${all_proxy:-}"
   _saved_socks5_proxy="${SOCKS5_PROXY:-}"
-  unset HTTP_PROXY HTTPS_PROXY ALL_PROXY SOCKS5_PROXY 2>/dev/null || true
+  _saved_socks5_proxy_lc="${socks5_proxy:-}"
+  _saved_no_proxy="${NO_PROXY:-}"
+  _saved_no_proxy_lc="${no_proxy:-}"
+  unset HTTP_PROXY HTTPS_PROXY ALL_PROXY SOCKS5_PROXY http_proxy https_proxy all_proxy socks5_proxy 2>/dev/null || true
 
   # Collect candidate providers: user-configured first, then auto-discovered
   PROVIDERS=()
@@ -212,6 +218,18 @@ if [[ "$NYM_STARTED" -eq 0 ]]; then
   elif [[ ${#PROVIDERS[@]} -eq 0 ]]; then
     log "WARN: no NYM_PROVIDER set and discovery script not found"
   fi
+
+  # Deduplicate while preserving provider order.
+  declare -A _provider_seen=()
+  _providers_dedup=()
+  for provider in "${PROVIDERS[@]}"; do
+    [[ -n "$provider" ]] || continue
+    if [[ -z "${_provider_seen[$provider]+x}" ]]; then
+      _provider_seen["$provider"]=1
+      _providers_dedup+=("$provider")
+    fi
+  done
+  PROVIDERS=("${_providers_dedup[@]}")
 
   # Try providers in order up to NYM_MAX_PROVIDER_ATTEMPTS
   # NOTE: proxy vars stay cleared during init — nym-socks5-client init needs
@@ -231,9 +249,15 @@ if [[ "$NYM_STARTED" -eq 0 ]]; then
   # Restore proxy vars now that Nym init/run is done
   # (if Nym started, traffic will route through it; if not, fail-open/closed handles it)
   [[ -n "$_saved_http_proxy" ]] && export HTTP_PROXY="$_saved_http_proxy"
+  [[ -n "$_saved_http_proxy_lc" ]] && export http_proxy="$_saved_http_proxy_lc"
   [[ -n "$_saved_https_proxy" ]] && export HTTPS_PROXY="$_saved_https_proxy"
+  [[ -n "$_saved_https_proxy_lc" ]] && export https_proxy="$_saved_https_proxy_lc"
   [[ -n "$_saved_all_proxy" ]] && export ALL_PROXY="$_saved_all_proxy"
+  [[ -n "$_saved_all_proxy_lc" ]] && export all_proxy="$_saved_all_proxy_lc"
   [[ -n "$_saved_socks5_proxy" ]] && export SOCKS5_PROXY="$_saved_socks5_proxy"
+  [[ -n "$_saved_socks5_proxy_lc" ]] && export socks5_proxy="$_saved_socks5_proxy_lc"
+  [[ -n "$_saved_no_proxy" ]] && export NO_PROXY="$_saved_no_proxy"
+  [[ -n "$_saved_no_proxy_lc" ]] && export no_proxy="$_saved_no_proxy_lc"
 fi
 
 # Handle failure
@@ -241,8 +265,9 @@ if [[ "$NYM_STARTED" -eq 0 ]]; then
   if [[ "${NYM_FAIL_OPEN:-false}" == "true" ]]; then
     log "WARNING: Nym transport failed to start. NYM_FAIL_OPEN=true — clearing proxy"
     log "env vars. Outbound connections will go DIRECT (no mixnet privacy)."
-    unset SOCKS5_PROXY ALL_PROXY HTTP_PROXY HTTPS_PROXY
+    unset SOCKS5_PROXY ALL_PROXY HTTP_PROXY HTTPS_PROXY socks5_proxy all_proxy http_proxy https_proxy
     export NO_PROXY="*"
+    export no_proxy="*"
   else
     die "Nym transport failed to start and NYM_FAIL_OPEN=false. Cannot continue safely."
   fi
