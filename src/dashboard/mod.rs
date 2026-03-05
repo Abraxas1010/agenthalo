@@ -11,6 +11,7 @@ use axum::Router;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::SystemTime;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 
@@ -43,6 +44,15 @@ pub struct DashboardState {
     pub pricing_table: std::collections::HashMap<String, crate::halo::pricing::ModelPricing>,
     /// Shared memory store/embedding runtime for memory recall APIs.
     pub memory_store: Arc<crate::memory::MemoryStore>,
+    /// Cached NucleusDB snapshot for memory endpoints to avoid per-request
+    /// deserialize cost. Refreshed on-disk mtime changes.
+    pub memory_db_cache: Arc<StdMutex<MemoryDbCache>>,
+}
+
+#[derive(Debug, Default)]
+pub struct MemoryDbCache {
+    pub db: Option<crate::protocol::NucleusDb>,
+    pub file_mtime: Option<SystemTime>,
 }
 
 #[derive(Debug, Default)]
@@ -127,6 +137,7 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         proxy_config,
         pricing_table,
         memory_store: Arc::new(crate::memory::MemoryStore::default()),
+        memory_db_cache: Arc::new(StdMutex::new(MemoryDbCache::default())),
     }
 }
 

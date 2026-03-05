@@ -1,5 +1,6 @@
 //! Tests for the dashboard API security and correctness.
 
+use nucleusdb::cli::default_witness_cfg;
 use nucleusdb::dashboard::api::api_router;
 use nucleusdb::dashboard::{build_state, DashboardState};
 use nucleusdb::halo::agentpmt;
@@ -10,6 +11,10 @@ use nucleusdb::halo::trace::{
     list_sessions as list_trace_sessions, now_unix_secs, session_events, TraceWriter,
 };
 use nucleusdb::halo::vault::Vault;
+use nucleusdb::memory::MemoryStore;
+use nucleusdb::persistence::{default_wal_path, persist_snapshot_and_sync_wal};
+use nucleusdb::protocol::{NucleusDb, VcBackend};
+use nucleusdb::state::State;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -899,6 +904,43 @@ async fn nucleusdb_memory_ingest_and_stats() {
         .contains("nomic-embed-text"));
 
     let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn nucleusdb_memory_cache_reloads_after_external_db_update() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _embedding_backend_guard =
+        EnvVarGuard::set("AGENTHALO_EMBEDDING_BACKEND", Some("hash-test"));
+    let (state, db_path) = test_state("ndb_memory_cache_reload");
+
+    let (s1, v1) = api_get(state.clone(), "/nucleusdb/memory/stats").await;
+    assert_eq!(s1, StatusCode::OK, "initial stats should succeed: {v1}");
+    assert_eq!(v1["total_memories"], 0);
+
+    let mut db = NucleusDb::new(
+        State::new(vec![]),
+        VcBackend::BinaryMerkle,
+        default_witness_cfg(),
+    );
+    MemoryStore::default()
+        .store_memory(
+            &mut db,
+            "External write should force memory cache reload on next request.",
+            Some("external:update"),
+        )
+        .expect("external memory store");
+    let wal_path = default_wal_path(&db_path);
+    persist_snapshot_and_sync_wal(&db_path, &wal_path, &db).expect("persist external update");
+
+    let (s2, v2) = api_get(state, "/nucleusdb/memory/stats").await;
+    assert_eq!(s2, StatusCode::OK, "stats after external update: {v2}");
+    assert!(
+        v2["total_memories"].as_u64().unwrap_or(0) >= 1,
+        "cache should reload and observe external write: {v2}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&wal_path);
 }
 
 // ---------------------------------------------------------------------------

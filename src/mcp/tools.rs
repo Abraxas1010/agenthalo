@@ -1671,10 +1671,12 @@ impl NucleusDbMcpService {
         let state = self.state.clone();
         let query_for_task = query.clone();
         let results = tokio::task::spawn_blocking(move || {
-            let guard = state.blocking_lock();
-            guard
-                .memory_store
-                .recall(&guard.db, &query_for_task, k)
+            let (memory_store, db_snapshot) = {
+                let guard = state.blocking_lock();
+                (guard.memory_store.clone(), guard.db.clone())
+            };
+            memory_store
+                .recall(&db_snapshot, &query_for_task, k)
                 .map_err(|e| McpError::invalid_params(e, None))
         })
         .await
