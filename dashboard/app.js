@@ -557,7 +557,7 @@ function renderCryptoOverlay(status) {
           await apiPost('/crypto/create-password', { password, confirm });
           _cryptoStatus = null;
           const ok = await ensureCryptoUnlocked(true);
-          if (ok) { await autoGenesis(); route(); }
+          if (ok) { route(); }
         } catch (e) {
           if (errorEl) errorEl.textContent = String(e && e.message || e);
         } finally {
@@ -576,7 +576,7 @@ function renderCryptoOverlay(status) {
           await apiPost('/crypto/unlock', { password });
           _cryptoStatus = null;
           const ok = await ensureCryptoUnlocked(true);
-          if (ok) { await autoGenesis(); route(); }
+          if (ok) { route(); }
         } catch (e) {
           if (errorEl) errorEl.textContent = String(e && e.message || e);
         } finally {
@@ -861,18 +861,11 @@ async function route() {
   const page = hash.split('/')[0];
   const arg = hash.split('/').slice(1).join('/');
 
-  // Auto-genesis: silently generate genesis seed if crypto is unlocked but genesis
-  // hasn't run yet. This covers both password-protected (called after unlock) and
-  // no-password container (called on first route) cases.
+  // Genesis ceremony: always show the visual ceremony if genesis hasn't been done yet.
+  // The ceremony handles the harvest POST + staged animation so the user sees
+  // entropy sources being gathered and combined.
   let genesisOk = await fetchGenesisStatus();
   if (!genesisOk) {
-    await autoGenesis();
-    _genesisComplete = null;  // force re-fetch
-    _genesisStatusFetchedAt = 0;
-    genesisOk = await fetchGenesisStatus();
-  }
-  // If auto-genesis still didn't work, gate on setup/genesis pages only.
-  if (!genesisOk && !['setup', 'genesis'].includes(page)) {
     if (overlay) overlay.style.display = '';
     showGenesisCeremony();
     return;
