@@ -22,6 +22,10 @@ const QUERY_EXPANSION_MODEL_ENV: &str = "AGENTHALO_MEMORY_QUERY_EXPANSION_MODEL"
 const RERANK_ENABLED_ENV: &str = "AGENTHALO_MEMORY_RERANK";
 const RERANK_CANDIDATE_MULTIPLIER_ENV: &str = "AGENTHALO_MEMORY_RERANK_CANDIDATE_MULTIPLIER";
 const RERANK_MAX_CANDIDATES_ENV: &str = "AGENTHALO_MEMORY_RERANK_MAX_CANDIDATES";
+const FUSED_BASE_SIMILARITY_WEIGHT: f64 = 0.50;
+const FUSED_PAIRWISE_BIENCODER_WEIGHT: f64 = 0.28;
+const FUSED_LEXICAL_WEIGHT: f64 = 0.12;
+const FUSED_NEGATION_WEIGHT: f64 = 0.10;
 
 #[derive(Debug, Clone, Copy)]
 struct RecallPipelineConfig {
@@ -292,23 +296,32 @@ impl MemoryStore {
         candidates.truncate(candidate_k);
 
         let reranked = if cfg.rerank_enabled {
-            let query_vector_for_pair = self
-                .embedding_model
-                .embed(q, "search_query: ")
-                .unwrap_or_else(|_| query_vec.clone());
+            let query_vector_for_pair = if expanded_query == q {
+                query_vec.clone()
+            } else {
+                self.embedding_model
+                    .embed(q, "search_query: ")
+                    .unwrap_or_else(|_| query_vec.clone())
+            };
             let mut scored = candidates
                 .into_iter()
                 .map(|candidate| {
                     let base_similarity = distance_to_similarity(candidate.base_distance);
-                    let pair_similarity = self
-                        .pair_similarity(&expanded_query, &candidate.text, &query_vector_for_pair)
+                    let pairwise_biencoder_similarity = self
+                        .pairwise_biencoder_similarity(
+                            &expanded_query,
+                            &candidate.text,
+                            &query_vector_for_pair,
+                        )
                         .unwrap_or(base_similarity);
                     let lexical = lexical_overlap_score(&expanded_query, &candidate.text);
                     let negation = negation_alignment_score(q, &candidate.text);
-                    let fused_similarity = (0.50 * base_similarity
-                        + 0.28 * pair_similarity
-                        + 0.12 * lexical
-                        + 0.10 * negation)
+                    // Provisional weights tuned for initial recall quality; calibrate
+                    // against a held-out eval set before hardening.
+                    let fused_similarity = (FUSED_BASE_SIMILARITY_WEIGHT * base_similarity
+                        + FUSED_PAIRWISE_BIENCODER_WEIGHT * pairwise_biencoder_similarity
+                        + FUSED_LEXICAL_WEIGHT * lexical
+                        + FUSED_NEGATION_WEIGHT * negation)
                         .clamp(0.0, 1.0);
                     let fused_distance = similarity_to_distance(fused_similarity);
                     (candidate, fused_distance)
@@ -355,14 +368,15 @@ impl MemoryStore {
         expand_query_hyde_local(query)
     }
 
-    fn pair_similarity(
+    fn pairwise_biencoder_similarity(
         &self,
         expanded_query: &str,
         document: &str,
         query_vec: &[f64],
     ) -> Result<f64, String> {
-        // Pairwise scoring pass. This is slower than first-pass retrieval but
-        // gives the scorer direct query+document interaction.
+        // Pairwise bi-encoder scoring pass (NOT a cross-encoder). We embed
+        // query+document text together and compare that embedding to the query
+        // embedding, then fuse with other signals.
         let joint_input =
             format!("query: {expanded_query}\n\ncandidate_document: {document}\n\nrelevance:");
         let pair_vec = self.embedding_model.embed(&joint_input, "search_query: ")?;
@@ -565,9 +579,21 @@ fn split_negated_terms(text: &str) -> (HashSet<String>, HashSet<String>) {
     let mut i = 0;
     while i < tokens.len() {
         let token = &tokens[i];
-        if NEGATORS.contains(&token.as_str()) && i + 1 < tokens.len() {
-            negated.insert(tokens[i + 1].clone());
-            i += 2;
+        if NEGATORS.contains(&token.as_str()) {
+            let mut j = i + 1;
+            let mut captured = 0usize;
+            while j < tokens.len() && captured < 3 {
+                let next = &tokens[j];
+                if NEGATORS.contains(&next.as_str()) {
+                    break;
+                }
+                if next.len() > 2 && !is_negation_scope_stopword(next) {
+                    negated.insert(next.clone());
+                    captured += 1;
+                }
+                j += 1;
+            }
+            i = j;
             continue;
         }
         if token.len() > 2 {
@@ -576,6 +602,43 @@ fn split_negated_terms(text: &str) -> (HashSet<String>, HashSet<String>) {
         i += 1;
     }
     (positive, negated)
+}
+
+fn is_negation_scope_stopword(token: &str) -> bool {
+    matches!(
+        token,
+        "a" | "an"
+            | "the"
+            | "to"
+            | "of"
+            | "for"
+            | "in"
+            | "on"
+            | "at"
+            | "by"
+            | "is"
+            | "are"
+            | "was"
+            | "were"
+            | "be"
+            | "been"
+            | "being"
+            | "and"
+            | "or"
+            | "but"
+            | "if"
+            | "then"
+            | "that"
+            | "this"
+            | "these"
+            | "those"
+            | "with"
+            | "as"
+            | "from"
+            | "it"
+            | "its"
+            | "into"
+    )
 }
 
 fn negation_alignment_score(query: &str, document: &str) -> f64 {
@@ -592,6 +655,8 @@ fn negation_alignment_score(query: &str, document: &str) -> f64 {
 }
 
 fn expand_query_hyde_local(query: &str) -> String {
+    // Lightweight fallback expansion. This is intentionally heuristic and
+    // keyword-driven; the LLM expansion path is the general mechanism.
     let lower = query.to_ascii_lowercase();
     let mut expansions: Vec<&str> = Vec::new();
     if lower.contains("mathematical guarantees") {
@@ -875,6 +940,15 @@ mod tests {
             "negation-aware rerank should prioritize the negated match: {:?}",
             hits
         );
+    }
+
+    #[test]
+    fn test_split_negated_terms_captures_multi_token_scope() {
+        let (positive, negated) = split_negated_terms("endpoint is not a private service route");
+        assert!(negated.contains("private"));
+        assert!(negated.contains("service"));
+        assert!(negated.contains("route"));
+        assert!(!positive.contains("private"));
     }
 
     #[test]
