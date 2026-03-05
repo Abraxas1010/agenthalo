@@ -2575,8 +2575,61 @@ async function renderSetup() {
 
     </div>
 
+    <!-- CLI Agent Setup (above OpenRouter) -->
+    <div class="setup-card-v2" id="setup-cli-agents" style="margin-bottom:0;border-bottom:none;border-radius:10px 10px 0 0">
+      <div class="card-header">
+        <div class="card-icon">&#9000;</div>
+        <div>
+          <div class="card-title">Install Agent CLIs</div>
+          <div class="card-desc">Install and authenticate coding agent CLIs &mdash; each opens a browser for secure OAuth login</div>
+        </div>
+      </div>
+      <div class="cli-agents-grid" id="cli-agents-grid">
+        <div class="cli-agent-row" data-cli="claude">
+          <div class="cli-agent-info">
+            <div class="cli-agent-name">Claude Code</div>
+            <div class="cli-agent-provider">Anthropic</div>
+          </div>
+          <div class="cli-agent-status" id="cli-status-claude">Checking...</div>
+          <div class="cli-agent-actions">
+            <button class="btn btn-sm btn-primary cli-install-btn" data-cli="claude">Install</button>
+            <button class="btn btn-sm cli-auth-btn" data-cli="claude" disabled>Authenticate</button>
+          </div>
+        </div>
+        <div class="cli-agent-row" data-cli="codex">
+          <div class="cli-agent-info">
+            <div class="cli-agent-name">Codex</div>
+            <div class="cli-agent-provider">OpenAI</div>
+          </div>
+          <div class="cli-agent-status" id="cli-status-codex">Checking...</div>
+          <div class="cli-agent-actions">
+            <button class="btn btn-sm btn-primary cli-install-btn" data-cli="codex">Install</button>
+            <button class="btn btn-sm cli-auth-btn" data-cli="codex" disabled>Authenticate</button>
+          </div>
+        </div>
+        <div class="cli-agent-row" data-cli="gemini">
+          <div class="cli-agent-info">
+            <div class="cli-agent-name">Gemini CLI</div>
+            <div class="cli-agent-provider">Google</div>
+          </div>
+          <div class="cli-agent-status" id="cli-status-gemini">Checking...</div>
+          <div class="cli-agent-actions">
+            <button class="btn btn-sm btn-primary cli-install-btn" data-cli="gemini">Install</button>
+            <button class="btn btn-sm cli-auth-btn" data-cli="gemini" disabled>Authenticate</button>
+          </div>
+        </div>
+      </div>
+      <div id="cli-auth-terminal-wrap" style="display:none;margin-top:14px">
+        <div style="font-size:12px;color:var(--accent);margin-bottom:6px" id="cli-auth-terminal-label">Authentication session</div>
+        <div id="cli-auth-terminal" style="height:260px;border:1px solid var(--border);border-radius:6px;overflow:hidden"></div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button class="btn btn-sm" id="cli-auth-terminal-close">Close Terminal</button>
+        </div>
+      </div>
+    </div>
+
     <!-- SECTION 3: OpenRouter LLM Key -->
-    <div class="setup-card-v2 ${c2c}" id="setup-llm">
+    <div class="setup-card-v2 ${c2c}" id="setup-llm" style="border-radius:0 0 10px 10px;border-top:1px solid var(--border);margin-top:0">
       <div class="card-header">
         <img class="card-icon-logo-dark" src="img/openrouter-logo.svg" alt="OpenRouter" title="OpenRouter">
         <div>
@@ -2754,6 +2807,129 @@ async function renderSetup() {
   }
 
   // ---- Wire up interactive elements ----
+
+  // --- CLI Agent Install & Auth ---
+  (async () => {
+    const cliAgents = ['claude', 'codex', 'gemini'];
+    // Detect installed CLIs
+    for (const cli of cliAgents) {
+      const statusEl = document.getElementById('cli-status-' + cli);
+      const row = document.querySelector('.cli-agent-row[data-cli="' + cli + '"]');
+      if (!row) continue;
+      const installBtn = row.querySelector('.cli-install-btn');
+      const authBtn = row.querySelector('.cli-auth-btn');
+      try {
+        const resp = await api('/cli/detect/' + cli);
+        if (resp.installed) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span>';
+          if (installBtn) { installBtn.textContent = 'Reinstall'; installBtn.classList.remove('btn-primary'); }
+          if (authBtn) authBtn.disabled = false;
+        } else {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Not installed</span>';
+          if (authBtn) authBtn.disabled = true;
+        }
+      } catch (_e) {
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Unknown</span>';
+      }
+    }
+    // Install button handlers
+    for (const btn of $$('.cli-install-btn')) {
+      btn.addEventListener('click', async () => {
+        const cli = btn.dataset.cli;
+        const statusEl = document.getElementById('cli-status-' + cli);
+        btn.disabled = true;
+        btn.textContent = 'Installing...';
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--yellow)">Installing via npm...</span>';
+        try {
+          const resp = await apiPost('/cli/install/' + cli, {});
+          if (resp.success) {
+            if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span>';
+            btn.textContent = 'Reinstall';
+            btn.classList.remove('btn-primary');
+            const row = btn.closest('.cli-agent-row');
+            const authBtn = row && row.querySelector('.cli-auth-btn');
+            if (authBtn) authBtn.disabled = false;
+          } else {
+            const errMsg = (resp.stderr || '').slice(0, 200);
+            if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Install failed: ' + esc(errMsg) + '</span>';
+          }
+        } catch (e) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Error: ' + esc(String(e.message || e)) + '</span>';
+        }
+        btn.disabled = false;
+        if (btn.textContent === 'Installing...') btn.textContent = 'Install';
+      });
+    }
+    // Auth button handlers — open a PTY terminal for OAuth flow
+    let _cliAuthTerm = null;
+    let _cliAuthFitAddon = null;
+    let _cliAuthWs = null;
+    for (const btn of $$('.cli-auth-btn')) {
+      btn.addEventListener('click', async () => {
+        const cli = btn.dataset.cli;
+        const statusEl = document.getElementById('cli-status-' + cli);
+        btn.disabled = true;
+        btn.textContent = 'Starting...';
+        try {
+          const resp = await apiPost('/cli/auth/' + cli, {});
+          if (!resp.session_id) throw new Error('no session returned');
+          // Show embedded terminal for the auth session
+          const termWrap = document.getElementById('cli-auth-terminal-wrap');
+          const termEl = document.getElementById('cli-auth-terminal');
+          const termLabel = document.getElementById('cli-auth-terminal-label');
+          if (termWrap) termWrap.style.display = 'block';
+          if (termLabel) termLabel.textContent = cli.charAt(0).toUpperCase() + cli.slice(1) + ' authentication — complete the login in your browser';
+          // Clean up any previous terminal
+          if (_cliAuthWs) { try { _cliAuthWs.close(); } catch (_e) {} _cliAuthWs = null; }
+          if (_cliAuthTerm) { try { _cliAuthTerm.dispose(); } catch (_e) {} _cliAuthTerm = null; }
+          if (termEl) termEl.innerHTML = '';
+          // Create xterm instance
+          if (typeof Terminal !== 'undefined' && termEl) {
+            _cliAuthTerm = new Terminal({ cursorBlink: true, fontSize: 13, theme: { background: '#0a0a0a', foreground: '#33ff33' } });
+            _cliAuthFitAddon = new FitAddon.FitAddon();
+            _cliAuthTerm.loadAddon(_cliAuthFitAddon);
+            _cliAuthTerm.open(termEl);
+            try { _cliAuthFitAddon.fit(); } catch (_e) {}
+            // Connect WebSocket
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = proto + '//' + location.host + '/api/cockpit/sessions/' + resp.session_id + '/ws';
+            _cliAuthWs = new WebSocket(wsUrl);
+            _cliAuthWs.binaryType = 'arraybuffer';
+            _cliAuthWs.onmessage = (ev) => {
+              if (ev.data instanceof ArrayBuffer) {
+                _cliAuthTerm.write(new Uint8Array(ev.data));
+              } else {
+                _cliAuthTerm.write(ev.data);
+              }
+            };
+            _cliAuthWs.onclose = () => {
+              _cliAuthTerm.write('\r\n\x1b[90m--- session ended ---\x1b[0m\r\n');
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Auth complete</span>';
+            };
+            _cliAuthTerm.onData((data) => {
+              if (_cliAuthWs && _cliAuthWs.readyState === WebSocket.OPEN) {
+                _cliAuthWs.send(data);
+              }
+            });
+          }
+        } catch (e) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Auth error: ' + esc(String(e.message || e)) + '</span>';
+        }
+        btn.disabled = false;
+        btn.textContent = 'Authenticate';
+      });
+    }
+    // Close terminal button
+    const closeTermBtn = document.getElementById('cli-auth-terminal-close');
+    if (closeTermBtn) {
+      closeTermBtn.addEventListener('click', () => {
+        if (_cliAuthWs) { try { _cliAuthWs.close(); } catch (_e) {} _cliAuthWs = null; }
+        if (_cliAuthTerm) { try { _cliAuthTerm.dispose(); } catch (_e) {} _cliAuthTerm = null; }
+        const termWrap = document.getElementById('cli-auth-terminal-wrap');
+        if (termWrap) termWrap.style.display = 'none';
+      });
+    }
+  })();
 
   // AgentPMT token save
   const saveBtn = document.getElementById('setup-save-agentpmt');

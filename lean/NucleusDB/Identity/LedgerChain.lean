@@ -31,13 +31,148 @@ def latestBindingForDid (did : String) (entries : List IdentityLedgerEntrySpec) 
     (fun acc e => if isBindingForDid did e then some e else acc)
     none
 
-/-- Append-only monotonicity witness used by the refinement plan. -/
+/-- Deprecated: tautological witness kept for backward compatibility.
+Use `append_preserves_monotone` instead. -/
 theorem append_only_monotonicity
     (entries : List IdentityLedgerEntrySpec)
     (newEntry : IdentityLedgerEntrySpec)
     (h : chainMonotone (entries ++ [newEntry])) :
     chainMonotone (entries ++ [newEntry]) := by
   exact h
+
+/-- The last element of `entries ++ [x]` is always `x`. -/
+theorem getLast?_append_singleton
+    (entries : List IdentityLedgerEntrySpec)
+    (x : IdentityLedgerEntrySpec) :
+    (entries ++ [x]).getLast? = some x := by
+  induction entries with
+  | nil =>
+      simp
+  | cons head tail ih =>
+      cases tail with
+      | nil =>
+          simp
+      | cons next rest =>
+          simpa [List.cons_append, List.getLast?_cons_cons] using ih
+
+/-- Appending one correctly-sequenced entry preserves sequence monotonicity. -/
+theorem append_preserves_monotone
+    (entries : List IdentityLedgerEntrySpec)
+    (newEntry : IdentityLedgerEntrySpec)
+    (hMono : chainMonotone entries)
+    (hLink : ∀ last, entries.getLast? = some last → newEntry.seq = last.seq + 1) :
+    chainMonotone (entries ++ [newEntry]) := by
+  induction entries with
+  | nil =>
+      simp [chainMonotone]
+  | cons head tail ih =>
+      cases tail with
+      | nil =>
+          have hLast : [head].getLast? = some head := by simp
+          have hSeq : newEntry.seq = head.seq + 1 := hLink head hLast
+          simp [chainMonotone, hSeq]
+      | cons mid tail' =>
+          simp [chainMonotone] at hMono ⊢
+          refine ⟨hMono.1, ?_⟩
+          have hTail :
+              ∀ last, (mid :: tail').getLast? = some last →
+                newEntry.seq = last.seq + 1 := by
+            intro last hLast
+            exact hLink last (by simpa using hLast)
+          exact ih hMono.2 hTail
+
+/-- Appending one correctly-linked entry preserves hash-link structure. -/
+theorem append_preserves_linked
+    (entries : List IdentityLedgerEntrySpec)
+    (newEntry : IdentityLedgerEntrySpec)
+    (hLinked : chainLinked entries)
+    (hLink : ∀ last, entries.getLast? = some last →
+      newEntry.prevHash = some last.entryHash) :
+    chainLinked (entries ++ [newEntry]) := by
+  induction entries with
+  | nil =>
+      simp [chainLinked]
+  | cons head tail ih =>
+      cases tail with
+      | nil =>
+          have hLast : [head].getLast? = some head := by simp
+          have hPrev : newEntry.prevHash = some head.entryHash := hLink head hLast
+          simp [chainLinked, hPrev]
+      | cons mid tail' =>
+          simp [chainLinked] at hLinked ⊢
+          refine ⟨hLinked.1, ?_⟩
+          have hTail :
+              ∀ last, (mid :: tail').getLast? = some last →
+                newEntry.prevHash = some last.entryHash := by
+            intro last hLast
+            exact hLink last (by simpa using hLast)
+          exact ih hLinked.2 hTail
+
+/-- Appending one hash-valid entry preserves per-entry hash validity. -/
+theorem append_preserves_hashes
+    (entries : List IdentityLedgerEntrySpec)
+    (newEntry : IdentityLedgerEntrySpec)
+    (hHashes : chainHashesValid entries)
+    (hNewHash : hashMatches newEntry) :
+    chainHashesValid (entries ++ [newEntry]) := by
+  induction entries with
+  | nil =>
+      simp [chainHashesValid, hNewHash]
+  | cons head tail ih =>
+      simp [chainHashesValid] at hHashes ⊢
+      exact ⟨hHashes.1, ih hHashes.2⟩
+
+/-- Provenance composability for monotone chains under shared boundary witness. -/
+theorem chain_transitivity
+    (entries : List IdentityLedgerEntrySpec)
+    (a b : IdentityLedgerEntrySpec)
+    (hMono : chainMonotone (entries ++ [a]))
+    (hSeq : b.seq = a.seq + 1) :
+    chainMonotone (entries ++ [a, b]) := by
+  have hExt :
+      chainMonotone ((entries ++ [a]) ++ [b]) := by
+    refine append_preserves_monotone (entries ++ [a]) b hMono ?_
+    intro last hLast
+    have hEqSome :
+        (some last : Option IdentityLedgerEntrySpec) = some a := by
+      simpa [hLast] using getLast?_append_singleton entries a
+    have hLastEq : last = a := Option.some.inj hEqSome
+    simpa [hLastEq] using hSeq
+  simpa [List.append_assoc] using hExt
+
+/-- Provenance composability: appending a correctly linked, sequenced, and
+hash-valid entry preserves full chain well-formedness. -/
+theorem chain_composable
+    (entries : List IdentityLedgerEntrySpec)
+    (a b : IdentityLedgerEntrySpec)
+    (ha : wellFormedIdentityChain (entries ++ [a]))
+    (hLink : b.prevHash = some a.entryHash)
+    (hSeq : b.seq = a.seq + 1)
+    (hHash : hashMatches b) :
+    wellFormedIdentityChain (entries ++ [a, b]) := by
+  rcases ha with ⟨hLinked, hMono, hHashes⟩
+  have hLinkedExt : chainLinked ((entries ++ [a]) ++ [b]) := by
+    refine append_preserves_linked (entries ++ [a]) b hLinked ?_
+    intro last hLast
+    have hEqSome :
+        (some last : Option IdentityLedgerEntrySpec) = some a := by
+      simpa [hLast] using getLast?_append_singleton entries a
+    have hLastEq : last = a := Option.some.inj hEqSome
+    simpa [hLastEq] using hLink
+  have hMonoExt : chainMonotone ((entries ++ [a]) ++ [b]) :=
+    append_preserves_monotone (entries ++ [a]) b hMono (by
+      intro last hLast
+      have hEqSome :
+          (some last : Option IdentityLedgerEntrySpec) = some a := by
+        simpa [hLast] using getLast?_append_singleton entries a
+      have hLastEq : last = a := Option.some.inj hEqSome
+      simpa [hLastEq] using hSeq)
+  have hHashesExt : chainHashesValid ((entries ++ [a]) ++ [b]) :=
+    append_preserves_hashes (entries ++ [a]) b hHashes hHash
+  refine ⟨?_, ?_, ?_⟩
+  · simpa [List.append_assoc] using hLinkedExt
+  · simpa [List.append_assoc] using hMonoExt
+  · simpa [List.append_assoc] using hHashesExt
 
 /-- If an entry hash no longer matches computed hash, local validity fails. -/
 theorem tampering_detectable

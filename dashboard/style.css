@@ -5114,4 +5114,46 @@ input:focus, select:focus, textarea:focus {
   .gdoc-pre { font-size: 0.64rem; }
   .genesis-stages { width: 82%; font-size: 0.72rem; }
   .genesis-status { max-width: 90vw; font-size: 0.8rem; }
+  .cli-agent-row { flex-direction: column; gap: 8px; }
+}
+
+/* --- CLI Agent Setup --- */
+.cli-agents-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.cli-agent-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.cli-agent-row:last-child { border-bottom: none; }
+.cli-agent-info {
+  flex: 1;
+  min-width: 120px;
+}
+.cli-agent-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-bright);
+}
+.cli-agent-provider {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.cli-agent-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 100px;
+  text-align: center;
+}
+.cli-agent-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
 }
