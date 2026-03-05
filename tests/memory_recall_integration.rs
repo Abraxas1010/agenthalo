@@ -10,15 +10,39 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn enable_hash_backend() -> MutexGuard<'static, ()> {
+struct HashBackendGuard {
+    _guard: MutexGuard<'static, ()>,
+    previous: Option<String>,
+}
+
+impl Drop for HashBackendGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(v) => {
+                // SAFETY: test-only env mutation is serialized by the guard lock.
+                unsafe { std::env::set_var("AGENTHALO_EMBEDDING_BACKEND", v) };
+            }
+            None => {
+                // SAFETY: test-only env mutation is serialized by the guard lock.
+                unsafe { std::env::remove_var("AGENTHALO_EMBEDDING_BACKEND") };
+            }
+        }
+    }
+}
+
+fn enable_hash_backend() -> HashBackendGuard {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let guard = LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
         .expect("lock env");
+    let previous = std::env::var("AGENTHALO_EMBEDDING_BACKEND").ok();
     // SAFETY: test-only env mutation is serialized by env_lock().
     unsafe { std::env::set_var("AGENTHALO_EMBEDDING_BACKEND", "hash-test") };
-    guard
+    HashBackendGuard {
+        _guard: guard,
+        previous,
+    }
 }
 
 fn test_store() -> MemoryStore {

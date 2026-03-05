@@ -42,6 +42,7 @@ struct ServiceState {
     db_path: PathBuf,
     wal_path: PathBuf,
     work_record_store: WorkRecordStore,
+    memory_store: crate::memory::MemoryStore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1334,6 +1335,7 @@ impl NucleusDbMcpService {
             db_path,
             wal_path,
             work_record_store: WorkRecordStore::new(),
+            memory_store: crate::memory::MemoryStore::default(),
         })
     }
 
@@ -1362,6 +1364,7 @@ impl NucleusDbMcpService {
             db_path,
             wal_path,
             work_record_store: WorkRecordStore::new(),
+            memory_store: crate::memory::MemoryStore::default(),
         })
     }
 
@@ -1665,11 +1668,19 @@ impl NucleusDbMcpService {
             ));
         }
         let k = req.k.unwrap_or(5).clamp(1, 20);
-        let guard = self.state.lock().await;
-        let store = crate::memory::MemoryStore::default();
-        let results = store
-            .recall(&guard.db, &query, k)
-            .map_err(|e| McpError::invalid_params(e, None))?;
+        let state = self.state.clone();
+        let query_for_task = query.clone();
+        let results = tokio::task::spawn_blocking(move || {
+            let guard = state.blocking_lock();
+            guard
+                .memory_store
+                .recall(&guard.db, &query_for_task, k)
+                .map_err(|e| McpError::invalid_params(e, None))
+        })
+        .await
+        .map_err(|e| {
+            McpError::internal_error(format!("memory_recall task join failed: {e}"), None)
+        })??;
         Ok(Json(MemoryRecallResponse {
             query,
             k,
@@ -1690,21 +1701,31 @@ impl NucleusDbMcpService {
         if text.is_empty() {
             return Err(McpError::invalid_params("text must be non-empty", None));
         }
-        let mut guard = self.state.lock().await;
-        let store = crate::memory::MemoryStore::default();
-        let record = store
-            .store_memory(&mut guard.db, text, req.source.as_deref())
-            .map_err(|e| McpError::invalid_params(e, None))?;
-        persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(|e| {
-            McpError::internal_error(format!("persist memory store failed: {e:?}"), None)
-        })?;
-        Ok(Json(MemoryStoreResponse {
-            key: record.key,
-            source: record.source,
-            created: record.created,
-            dims: store.embedding_model().dims(),
-            sealed: matches!(guard.db.write_mode(), WriteMode::AppendOnly),
-        }))
+        let text_owned = text.to_string();
+        let source = req.source.clone();
+        let state = self.state.clone();
+        let response = tokio::task::spawn_blocking(move || {
+            let mut guard = state.blocking_lock();
+            let memory_store = guard.memory_store.clone();
+            let record = memory_store
+                .store_memory(&mut guard.db, &text_owned, source.as_deref())
+                .map_err(|e| McpError::invalid_params(e, None))?;
+            persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(
+                |e| McpError::internal_error(format!("persist memory store failed: {e:?}"), None),
+            )?;
+            Ok(MemoryStoreResponse {
+                key: record.key,
+                source: record.source,
+                created: record.created,
+                dims: memory_store.embedding_model().dims(),
+                sealed: matches!(guard.db.write_mode(), WriteMode::AppendOnly),
+            })
+        })
+        .await
+        .map_err(|e| {
+            McpError::internal_error(format!("memory_store task join failed: {e}"), None)
+        })??;
+        Ok(Json(response))
     }
 
     #[tool(
@@ -1719,20 +1740,30 @@ impl NucleusDbMcpService {
         if document.is_empty() {
             return Err(McpError::invalid_params("document must be non-empty", None));
         }
-        let mut guard = self.state.lock().await;
-        let store = crate::memory::MemoryStore::default();
-        let records = store
-            .ingest_document(&mut guard.db, document, req.source.as_deref())
-            .map_err(|e| McpError::invalid_params(e, None))?;
-        persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(|e| {
-            McpError::internal_error(format!("persist memory ingest failed: {e:?}"), None)
-        })?;
-        Ok(Json(MemoryIngestResponse {
-            chunks: records.len(),
-            keys: records.into_iter().map(|r| r.key).collect(),
-            source: req.source,
-            sealed: matches!(guard.db.write_mode(), WriteMode::AppendOnly),
-        }))
+        let document_owned = document.to_string();
+        let source = req.source.clone();
+        let state = self.state.clone();
+        let response = tokio::task::spawn_blocking(move || {
+            let mut guard = state.blocking_lock();
+            let memory_store = guard.memory_store.clone();
+            let records = memory_store
+                .ingest_document(&mut guard.db, &document_owned, source.as_deref())
+                .map_err(|e| McpError::invalid_params(e, None))?;
+            persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(
+                |e| McpError::internal_error(format!("persist memory ingest failed: {e:?}"), None),
+            )?;
+            Ok(MemoryIngestResponse {
+                chunks: records.len(),
+                keys: records.into_iter().map(|r| r.key).collect(),
+                source,
+                sealed: matches!(guard.db.write_mode(), WriteMode::AppendOnly),
+            })
+        })
+        .await
+        .map_err(|e| {
+            McpError::internal_error(format!("memory_ingest task join failed: {e}"), None)
+        })??;
+        Ok(Json(response))
     }
 
     #[tool(

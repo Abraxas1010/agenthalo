@@ -6533,25 +6533,32 @@ async fn api_nucleusdb_memory_store(
     if text.is_empty() {
         return Err(api_err(StatusCode::BAD_REQUEST, "text must be non-empty"));
     }
-
-    let _guard = state.db_lock.lock().await;
-    let mut db = load_halo_db(&state.db_path)?;
-    let memory = crate::memory::MemoryStore::default();
-    let stored = memory
-        .store_memory(&mut db, text, req.source.as_deref())
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let wal_path = default_wal_path(&state.db_path);
-    persist_snapshot_and_sync_wal(&state.db_path, &wal_path, &db)
-        .map_err(|e| internal_err(format!("persist memory store: {e:?}")))?;
-
-    Ok(Json(json!({
-        "ok": true,
-        "key": stored.key,
-        "source": stored.source,
-        "created": stored.created,
-        "dims": memory.embedding_model().dims(),
-        "sealed": matches!(db.write_mode(), WriteMode::AppendOnly),
-    })))
+    let text = text.to_string();
+    let source = req.source.clone();
+    let db_path = state.db_path.clone();
+    let db_lock = state.db_lock.clone();
+    let memory_store = state.memory_store.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _guard = db_lock.blocking_lock();
+        let mut db = load_halo_db(&db_path)?;
+        let stored = memory_store
+            .store_memory(&mut db, &text, source.as_deref())
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+        let wal_path = default_wal_path(&db_path);
+        persist_snapshot_and_sync_wal(&db_path, &wal_path, &db)
+            .map_err(|e| internal_err(format!("persist memory store: {e:?}")))?;
+        Ok(json!({
+            "ok": true,
+            "key": stored.key,
+            "source": stored.source,
+            "created": stored.created,
+            "dims": memory_store.embedding_model().dims(),
+            "sealed": matches!(db.write_mode(), WriteMode::AppendOnly),
+        }))
+    })
+    .await
+    .map_err(|e| internal_err(format!("memory store task join failed: {e}")))??;
+    Ok(Json(result))
 }
 
 async fn api_nucleusdb_memory_recall(
@@ -6563,20 +6570,27 @@ async fn api_nucleusdb_memory_recall(
         return Err(api_err(StatusCode::BAD_REQUEST, "query must be non-empty"));
     }
     let k = req.k.clamp(1, 20);
-    let _guard = state.db_lock.lock().await;
-    let db = load_halo_db(&state.db_path)?;
-    let memory = crate::memory::MemoryStore::default();
-    let results = memory
-        .recall(&db, query, k)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-
-    Ok(Json(json!({
-        "ok": true,
-        "query": query,
-        "k": k,
-        "count": results.len(),
-        "results": results,
-    })))
+    let query = query.to_string();
+    let db_path = state.db_path.clone();
+    let db_lock = state.db_lock.clone();
+    let memory_store = state.memory_store.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _guard = db_lock.blocking_lock();
+        let db = load_halo_db(&db_path)?;
+        let results = memory_store
+            .recall(&db, &query, k)
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+        Ok(json!({
+            "ok": true,
+            "query": query,
+            "k": k,
+            "count": results.len(),
+            "results": results,
+        }))
+    })
+    .await
+    .map_err(|e| internal_err(format!("memory recall task join failed: {e}")))??;
+    Ok(Json(result))
 }
 
 async fn api_nucleusdb_memory_ingest(
@@ -6590,30 +6604,44 @@ async fn api_nucleusdb_memory_ingest(
             "document must be non-empty",
         ));
     }
-    let _guard = state.db_lock.lock().await;
-    let mut db = load_halo_db(&state.db_path)?;
-    let memory = crate::memory::MemoryStore::default();
-    let stored = memory
-        .ingest_document(&mut db, document, req.source.as_deref())
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let wal_path = default_wal_path(&state.db_path);
-    persist_snapshot_and_sync_wal(&state.db_path, &wal_path, &db)
-        .map_err(|e| internal_err(format!("persist memory ingest: {e:?}")))?;
-
-    Ok(Json(json!({
-        "ok": true,
-        "chunks": stored.len(),
-        "keys": stored.iter().map(|r| r.key.clone()).collect::<Vec<_>>(),
-        "source": req.source,
-        "sealed": matches!(db.write_mode(), WriteMode::AppendOnly),
-    })))
+    let document = document.to_string();
+    let source = req.source.clone();
+    let db_path = state.db_path.clone();
+    let db_lock = state.db_lock.clone();
+    let memory_store = state.memory_store.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _guard = db_lock.blocking_lock();
+        let mut db = load_halo_db(&db_path)?;
+        let stored = memory_store
+            .ingest_document(&mut db, &document, source.as_deref())
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+        let wal_path = default_wal_path(&db_path);
+        persist_snapshot_and_sync_wal(&db_path, &wal_path, &db)
+            .map_err(|e| internal_err(format!("persist memory ingest: {e:?}")))?;
+        Ok(json!({
+            "ok": true,
+            "chunks": stored.len(),
+            "keys": stored.iter().map(|r| r.key.clone()).collect::<Vec<_>>(),
+            "source": source,
+            "sealed": matches!(db.write_mode(), WriteMode::AppendOnly),
+        }))
+    })
+    .await
+    .map_err(|e| internal_err(format!("memory ingest task join failed: {e}")))??;
+    Ok(Json(result))
 }
 
 async fn api_nucleusdb_memory_stats(AxumState(state): AxumState<DashboardState>) -> ApiResult {
-    let _guard = state.db_lock.lock().await;
-    let db = load_halo_db(&state.db_path)?;
-    let memory = crate::memory::MemoryStore::default();
-    let stats = memory.stats(&db);
+    let db_path = state.db_path.clone();
+    let db_lock = state.db_lock.clone();
+    let memory_store = state.memory_store.clone();
+    let stats = tokio::task::spawn_blocking(move || {
+        let _guard = db_lock.blocking_lock();
+        let db = load_halo_db(&db_path)?;
+        Ok::<crate::memory::MemoryStats, (StatusCode, Json<Value>)>(memory_store.stats(&db))
+    })
+    .await
+    .map_err(|e| internal_err(format!("memory stats task join failed: {e}")))??;
     Ok(Json(json!({
         "ok": true,
         "total_memories": stats.total_memories,

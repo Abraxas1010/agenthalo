@@ -41,6 +41,8 @@ pub struct DashboardState {
     pub proxy_config: crate::halo::pricing::ProxyConfig,
     /// Pricing table for cost calculation.
     pub pricing_table: std::collections::HashMap<String, crate::halo::pricing::ModelPricing>,
+    /// Shared memory store/embedding runtime for memory recall APIs.
+    pub memory_store: Arc<crate::memory::MemoryStore>,
 }
 
 #[derive(Debug, Default)]
@@ -124,6 +126,7 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         crypto_state: Arc::new(StdMutex::new(CryptoState::new())),
         proxy_config,
         pricing_table,
+        memory_store: Arc::new(crate::memory::MemoryStore::default()),
     }
 }
 

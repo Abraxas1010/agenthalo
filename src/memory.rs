@@ -37,6 +37,7 @@ pub struct MemoryStats {
     pub index_size: usize,
 }
 
+#[derive(Debug, Clone)]
 pub struct MemoryStore {
     embedding_model: EmbeddingModel,
 }
