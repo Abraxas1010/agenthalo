@@ -332,6 +332,16 @@ GET    /events                    (SSE stream)
 
 See tables in CLAUDE.md § Cockpit API endpoints and § Vault + Proxy endpoints.
 
+### CLI Agent & OpenClaw Harness API (new, 2026-03-04)
+
+```
+GET    /api/cli/detect/{agent}          # Check if CLI is on PATH (claude/codex/gemini/openclaw)
+POST   /api/cli/install/{agent}         # npm install -g <package>
+POST   /api/cli/auth/{agent}            # Launch OAuth/onboard via PTY session
+GET    /api/openclaw/gateway-status     # Check if OpenClaw gateway daemon is running
+POST   /api/openclaw/wire-mcp           # Inject NucleusDB + HALO MCP servers into ~/.openclaw/openclaw.json
+```
+
 ## 8. Key Dependencies
 
 | Crate | Purpose |

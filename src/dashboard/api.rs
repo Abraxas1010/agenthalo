@@ -218,6 +218,9 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/cli/detect/{agent}", get(api_cli_detect))
         .route("/cli/install/{agent}", post(api_cli_install))
         .route("/cli/auth/{agent}", post(api_cli_auth))
+        // OpenClaw harness
+        .route("/openclaw/gateway-status", get(api_openclaw_gateway_status))
+        .route("/openclaw/wire-mcp", post(api_openclaw_wire_mcp))
         // Deploy
         .route("/deploy/catalog", get(api_deploy_catalog))
         .route("/deploy/preflight", post(api_deploy_preflight))
@@ -7168,6 +7171,14 @@ fn cli_agent_meta(agent: &str) -> Option<CliAgentMeta> {
             auth_args: &[],
             detect_cmd: "gemini",
         }),
+        "openclaw" => Some(CliAgentMeta {
+            install_cmd: "npm",
+            install_args: &["install", "-g", "openclaw@latest"],
+            // Onboard wizard handles auth, gateway setup, and daemon install.
+            auth_cmd: "openclaw",
+            auth_args: &["onboard", "--install-daemon"],
+            detect_cmd: "openclaw",
+        }),
         _ => None,
     }
 }
@@ -7266,6 +7277,159 @@ async fn api_cli_auth(
         "session_id": id,
         "ws_url": format!("/api/cockpit/sessions/{}/ws", id),
     })))
+}
+
+// ---------------------------------------------------------------------------
+// OpenClaw harness — gateway status & MCP wiring
+// ---------------------------------------------------------------------------
+
+/// GET /api/openclaw/gateway-status — check if the OpenClaw gateway daemon is running.
+async fn api_openclaw_gateway_status() -> ApiResult {
+    let installed = tokio::task::spawn_blocking(|| {
+        std::process::Command::new("which")
+            .arg("openclaw")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
+
+    if !installed {
+        return Ok(Json(json!({
+            "installed": false,
+            "gateway_running": false,
+            "detail": "openclaw CLI not found on PATH",
+        })));
+    }
+
+    let status_output = tokio::task::spawn_blocking(|| {
+        std::process::Command::new("openclaw")
+            .args(["gateway", "status"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+    })
+    .await
+    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("join error: {e}")))?
+    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("status check failed: {e}")))?;
+
+    let stdout = String::from_utf8_lossy(&status_output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&status_output.stderr).to_string();
+    let running = status_output.status.success();
+
+    Ok(Json(json!({
+        "installed": true,
+        "gateway_running": running,
+        "stdout": stdout.trim(),
+        "stderr": stderr.trim(),
+    })))
+}
+
+/// POST /api/openclaw/wire-mcp — inject NucleusDB + HALO MCP server configs
+/// into the user's `~/.openclaw/openclaw.json` so OpenClaw agents can call
+/// all NucleusDB tools via stdio transport.
+async fn api_openclaw_wire_mcp(
+    AxumState(state): AxumState<DashboardState>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+
+    let result = tokio::task::spawn_blocking(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let config_path = std::path::Path::new(&home)
+            .join(".openclaw")
+            .join("openclaw.json");
+
+        // Read existing config or start fresh
+        let mut config: serde_json::Value = if config_path.exists() {
+            let contents = std::fs::read_to_string(&config_path)
+                .map_err(|e| format!("failed to read {}: {e}", config_path.display()))?;
+            serde_json::from_str(&contents)
+                .map_err(|e| format!("failed to parse {}: {e}", config_path.display()))?
+        } else {
+            // Create parent dir if needed
+            if let Some(parent) = config_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+            }
+            serde_json::json!({})
+        };
+
+        // Resolve paths to our MCP server binaries
+        let nucleusdb_mcp_path = resolve_binary("nucleusdb-mcp");
+        let agenthalo_mcp_path = resolve_binary("agenthalo-mcp-server");
+
+        // Build MCP server entries
+        let nucleusdb_entry = serde_json::json!({
+            "command": nucleusdb_mcp_path.as_deref().unwrap_or("nucleusdb-mcp"),
+            "args": []
+        });
+        let agenthalo_entry = serde_json::json!({
+            "command": agenthalo_mcp_path.as_deref().unwrap_or("agenthalo-mcp-server"),
+            "args": []
+        });
+
+        // Navigate to agents.defaults.mcpServers (create path if missing)
+        let agents = config
+            .as_object_mut()
+            .ok_or_else(|| "config root is not an object".to_string())?
+            .entry("agents")
+            .or_insert_with(|| serde_json::json!({}));
+        let defaults = agents
+            .as_object_mut()
+            .ok_or_else(|| "agents is not an object".to_string())?
+            .entry("defaults")
+            .or_insert_with(|| serde_json::json!({}));
+        let mcp_servers = defaults
+            .as_object_mut()
+            .ok_or_else(|| "defaults is not an object".to_string())?
+            .entry("mcpServers")
+            .or_insert_with(|| serde_json::json!({}));
+        let servers_map = mcp_servers
+            .as_object_mut()
+            .ok_or_else(|| "mcpServers is not an object".to_string())?;
+
+        servers_map.insert("nucleusdb".to_string(), nucleusdb_entry);
+        servers_map.insert("agenthalo".to_string(), agenthalo_entry);
+
+        // Write back with pretty formatting
+        let serialized = serde_json::to_string_pretty(&config)
+            .map_err(|e| format!("serialization failed: {e}"))?;
+
+        // Atomic write: temp file + rename
+        let tmp_path = config_path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &serialized)
+            .map_err(|e| format!("failed to write {}: {e}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, &config_path)
+            .map_err(|e| format!("failed to rename to {}: {e}", config_path.display()))?;
+
+        Ok::<_, String>(serde_json::json!({
+            "config_path": config_path.display().to_string(),
+            "nucleusdb_mcp": nucleusdb_mcp_path,
+            "agenthalo_mcp": agenthalo_mcp_path,
+            "tools_wired": ["nucleusdb", "agenthalo"],
+        }))
+    })
+    .await
+    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("join error: {e}")))?
+    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+
+    Ok(Json(json!({
+        "success": true,
+        "detail": result,
+    })))
+}
+
+/// Try to find a binary on PATH, returning the absolute path if found.
+fn resolve_binary(name: &str) -> Option<String> {
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
