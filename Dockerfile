@@ -9,7 +9,7 @@
 # - wdk-sidecar (7321 internal)
 # =============================================================================
 
-FROM debian:bookworm-slim AS nym_builder
+FROM debian:trixie-slim AS nym_builder
 
 ARG NYM_VERSION="nym-binaries-v2026.4-quark"
 ARG NYM_SOCKS5_CLIENT_SHA256="a20d010532d1c15a44e07e154c09c926df5b21c16a149075e81c0a2bb678144a"
@@ -22,7 +22,7 @@ RUN curl -fL "https://github.com/nymtech/nym/releases/download/${NYM_VERSION}/ny
     echo "${NYM_SOCKS5_CLIENT_SHA256}  /tmp/nym-socks5-client" | sha256sum -c && \
     install -m 0755 /tmp/nym-socks5-client /usr/local/bin/nym-socks5-client
 
-FROM debian:bookworm-slim AS foundry_builder
+FROM debian:trixie-slim AS foundry_builder
 
 ARG FOUNDRY_VERSION="v1.5.0"
 ARG TARGETARCH
@@ -48,10 +48,10 @@ RUN ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" && \
     tar -xzf /tmp/foundry.tar.gz -C /tmp && \
     install -m 0755 /tmp/cast /usr/local/bin/cast
 
-FROM rust:1.88-slim-bookworm AS rust_builder
+FROM rust:1.88-slim-trixie AS rust_builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev && \
+    pkg-config libssl-dev g++ && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -65,14 +65,14 @@ RUN cargo build --release \
     --bin agenthalo-mcp-server \
     --bin nucleusdb-server
 
-FROM node:22-bookworm-slim AS wdk_builder
+FROM node:22-trixie-slim AS wdk_builder
 
 WORKDIR /wdk
 COPY wdk-sidecar/package.json wdk-sidecar/package-lock.json ./
 RUN npm ci --production
 COPY wdk-sidecar/index.mjs ./
 
-FROM node:22-bookworm-slim
+FROM node:22-trixie-slim
 
 ARG NOMIC_MODEL_DIR=/opt/models/nomic-embed-text
 ARG NOMIC_MODEL_ONNX_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model.onnx"
