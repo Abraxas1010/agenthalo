@@ -3083,3 +3083,37 @@ async fn api_p2pclaw_configure_persists_config_and_vault_secret() {
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[tokio::test]
+async fn api_p2pclaw_status_requires_authentication() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
+    let (state, db_path, creds_path) = test_state_unauth("api_p2pclaw_status_auth");
+    let (status, body) = api_get(state, "/p2pclaw/status").await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "p2pclaw status must require authentication: {body}"
+    );
+    assert_eq!(body["code"], "auth_required");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn api_p2pclaw_briefing_requires_authentication() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
+    let (state, db_path, creds_path) = test_state_unauth("api_p2pclaw_briefing_auth");
+    let (status, body) = api_get(state, "/p2pclaw/briefing").await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "p2pclaw briefing must require authentication: {body}"
+    );
+    assert_eq!(body["code"], "auth_required");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}

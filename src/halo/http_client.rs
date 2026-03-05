@@ -52,6 +52,7 @@ pub fn post_with_timeout(
 
 fn build_direct_agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
+        .proxy(None) // Override env-level HTTP_PROXY/HTTPS_PROXY; PrivacyLevel::None must be truly direct.
         .timeout_global(Some(timeout))
         .build()
         .into()

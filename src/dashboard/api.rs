@@ -3886,7 +3886,8 @@ async fn api_p2pclaw_configure(
     })))
 }
 
-async fn api_p2pclaw_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+async fn api_p2pclaw_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
     let mut cfg = p2pclaw_load_config_for_api()?;
     let swarm = p2pclaw::ping(&cfg).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
     cfg.last_connected_at = now_unix_secs();
@@ -3898,7 +3899,8 @@ async fn api_p2pclaw_status(AxumState(_state): AxumState<DashboardState>) -> Api
     })))
 }
 
-async fn api_p2pclaw_briefing(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
+async fn api_p2pclaw_briefing(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
     let cfg = p2pclaw_load_config_for_api()?;
     let briefing = p2pclaw::get_briefing(&cfg).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
     Ok(Json(json!({

@@ -1,0 +1,10 @@
+target/
+.git/
+wdk-sidecar/node_modules/
+*.env
+.env
+.env.*
+.agenthalo/
+artifacts/
+WIP/
+Docs/
