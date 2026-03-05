@@ -49,6 +49,42 @@ theorem mesh_consensus_join_characterization (a b z : Nat) :
   · intro h
     exact (Nat.max_le).2 h
 
+/-- Consensus merge is associative, enabling deterministic multi-peer reduction. -/
+theorem mesh_consensus_associative (a b c : Nat) :
+    meshConsensusStep (meshConsensusStep a b) c =
+      meshConsensusStep a (meshConsensusStep b c) := by
+  simp [meshConsensusStep, Nat.max_assoc]
+
+/-- Folding consensus steps preserves safety from the initial local height. -/
+theorem mesh_consensus_fold_safe (localHeight : Nat) (peerHeights : List Nat) :
+    localHeight ≤ peerHeights.foldl meshConsensusStep localHeight := by
+  induction peerHeights generalizing localHeight with
+  | nil =>
+      simp
+  | cons peer rest ih =>
+      simp [List.foldl_cons]
+      exact Nat.le_trans (mesh_consensus_safe localHeight peer)
+        (ih (meshConsensusStep localHeight peer))
+
+/-- Any participating peer height is bounded by the final folded consensus height. -/
+theorem mesh_consensus_fold_includes_peer
+    (localHeight : Nat) (peerHeights : List Nat)
+    (peerHeight : Nat) (hMem : peerHeight ∈ peerHeights) :
+    peerHeight ≤ peerHeights.foldl meshConsensusStep localHeight := by
+  induction peerHeights generalizing localHeight with
+  | nil =>
+      cases hMem
+  | cons head tail ih =>
+      simp [List.foldl_cons] at hMem ⊢
+      cases hMem with
+      | inl hEq =>
+          subst hEq
+          exact Nat.le_trans
+            (mesh_consensus_valid localHeight peerHeight)
+            (mesh_consensus_fold_safe (meshConsensusStep localHeight peerHeight) tail)
+      | inr hTail =>
+          exact ih (meshConsensusStep localHeight head) hTail
+
 end Mesh
 end Comms
 end NucleusDB

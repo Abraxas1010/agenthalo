@@ -28,27 +28,50 @@ theorem witness_capacity_recovery (n f : Nat) (hf : f ≤ n) :
 /-- If a fork is observed, zero-faulty witness assumptions are inconsistent. -/
 theorem fork_without_faulty_witness_impossible
     (a b : SignedCheckpoint)
-    (totalWitnesses faultyWitnesses : Nat)
+    (faultyWitnesses : Nat)
     (hIntegrity : faultyWitnesses = 0 → ¬ Fork a b)
     (hFork : Fork a b) :
     faultyWitnesses > 0 := by
-  have _hTotalWitnesses : Nat := totalWitnesses
   by_cases hZero : faultyWitnesses = 0
   · exact False.elim ((hIntegrity hZero) hFork)
   · exact Nat.pos_of_ne_zero hZero
 
-/-- Fork evidence implies either faulty witnesses exist or fork integrity was violated. -/
+/-- Positive witness capacity implies faults are strictly below total witnesses. -/
+theorem positive_capacity_implies_faults_below_total
+    (totalWitnesses faultyWitnesses : Nat)
+    (hQuorum : witnessCapacity totalWitnesses faultyWitnesses > 0) :
+    faultyWitnesses < totalWitnesses := by
+  have hNotGe : ¬ totalWitnesses ≤ faultyWitnesses := by
+    intro hle
+    have hSubZero : witnessCapacity totalWitnesses faultyWitnesses = 0 := by
+      simp [witnessCapacity, Nat.sub_eq_zero_of_le hle]
+    have hNotPos : ¬ witnessCapacity totalWitnesses faultyWitnesses > 0 := by
+      simp [hSubZero]
+    exact hNotPos hQuorum
+  exact Nat.lt_of_not_ge hNotGe
+
+/-- Fork evidence forces existence of at least one faulty witness under the
+runtime integrity assumption. -/
 theorem fork_requires_byzantine_witness
     (a b : SignedCheckpoint)
     (hFork : Fork a b)
     (totalWitnesses faultyWitnesses : Nat)
     (hQuorum : witnessCapacity totalWitnesses faultyWitnesses > 0)
     (hIntegrity : faultyWitnesses = 0 → ¬ Fork a b) :
+    faultyWitnesses > 0 := by
+  have _hBound : faultyWitnesses < totalWitnesses :=
+    positive_capacity_implies_faults_below_total totalWitnesses faultyWitnesses hQuorum
+  exact fork_without_faulty_witness_impossible a b faultyWitnesses hIntegrity hFork
+
+/-- Compatibility corollary preserving the original disjunctive shape. -/
+theorem fork_requires_byzantine_witness_or_no_fork
+    (a b : SignedCheckpoint)
+    (hFork : Fork a b)
+    (totalWitnesses faultyWitnesses : Nat)
+    (hQuorum : witnessCapacity totalWitnesses faultyWitnesses > 0)
+    (hIntegrity : faultyWitnesses = 0 → ¬ Fork a b) :
     faultyWitnesses > 0 ∨ ¬ Fork a b := by
-  have _hQuorum : witnessCapacity totalWitnesses faultyWitnesses > 0 := hQuorum
-  have hFaulty : faultyWitnesses > 0 :=
-    fork_without_faulty_witness_impossible a b totalWitnesses faultyWitnesses hIntegrity hFork
-  exact Or.inl hFaulty
+  exact Or.inl (fork_requires_byzantine_witness a b hFork totalWitnesses faultyWitnesses hQuorum hIntegrity)
 
 end Adversarial
 end NucleusDB
