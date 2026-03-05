@@ -99,6 +99,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "wrap" => cmd_wrap(&args[2..]),
         "unwrap" => cmd_unwrap(&args[2..]),
         "setup" => cmd_setup(&args[2..]),
+        "harness" => cmd_harness(&args[2..]),
         "dashboard" => cmd_dashboard(&args[2..]),
         "doctor" => cmd_doctor(&args[2..]),
         "version" | "--version" | "-V" => {
@@ -4432,6 +4433,160 @@ fn cmd_unwrap(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_harness(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("help");
+    match sub {
+        "detect" => {
+            let agents = ["claude", "codex", "gemini", "openclaw"];
+            println!();
+            println!("  Agent CLI detection:");
+            println!();
+            for agent in &agents {
+                let path = std::process::Command::new("which")
+                    .arg(agent)
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                if let Some(p) = path {
+                    println!("    {agent:<12} INSTALLED  ({p})");
+                } else {
+                    println!("    {agent:<12} NOT FOUND");
+                }
+            }
+            println!();
+            Ok(())
+        }
+        "install" => {
+            let agent = args.get(1).ok_or(
+                "usage: agenthalo harness install <claude|codex|gemini|openclaw>",
+            )?;
+            let pkg = match agent.as_str() {
+                "claude" => "@anthropic-ai/claude-code",
+                "codex" => "@openai/codex",
+                "gemini" => "@google/gemini-cli",
+                "openclaw" => "openclaw@latest",
+                other => return Err(format!("unknown agent: {other}")),
+            };
+            println!("  Installing {agent} ({pkg})...");
+            let status = std::process::Command::new("npm")
+                .args(["install", "-g", pkg])
+                .status()
+                .map_err(|e| format!("failed to run npm: {e}"))?;
+            if status.success() {
+                println!("  OK — {agent} installed.");
+            } else {
+                return Err(format!("npm install failed with exit code {:?}", status.code()));
+            }
+            Ok(())
+        }
+        "wire-mcp" => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            let config_path = Path::new(&home).join(".openclaw").join("openclaw.json");
+
+            let mut config: serde_json::Value = if config_path.exists() {
+                let contents = std::fs::read_to_string(&config_path)
+                    .map_err(|e| format!("read {}: {e}", config_path.display()))?;
+                serde_json::from_str(&contents)
+                    .map_err(|e| format!("parse {}: {e}", config_path.display()))?
+            } else {
+                if let Some(parent) = config_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+                }
+                serde_json::json!({})
+            };
+
+            let ndb_cmd = which_path("nucleusdb-mcp").unwrap_or_else(|| "nucleusdb-mcp".to_string());
+            let halo_cmd = which_path("agenthalo-mcp-server").unwrap_or_else(|| "agenthalo-mcp-server".to_string());
+
+            let ndb_entry = serde_json::json!({ "command": ndb_cmd, "args": [] });
+            let halo_entry = serde_json::json!({ "command": halo_cmd, "args": [] });
+
+            let agents = config.as_object_mut().ok_or("config root is not an object")?
+                .entry("agents").or_insert_with(|| serde_json::json!({}));
+            let defaults = agents.as_object_mut().ok_or("agents is not an object")?
+                .entry("defaults").or_insert_with(|| serde_json::json!({}));
+            let mcp_servers = defaults.as_object_mut().ok_or("defaults is not an object")?
+                .entry("mcpServers").or_insert_with(|| serde_json::json!({}));
+            let servers = mcp_servers.as_object_mut().ok_or("mcpServers is not an object")?;
+
+            servers.insert("nucleusdb".to_string(), ndb_entry);
+            servers.insert("agenthalo".to_string(), halo_entry);
+
+            let serialized = serde_json::to_string_pretty(&config)
+                .map_err(|e| format!("serialize: {e}"))?;
+            let tmp = config_path.with_extension("json.tmp");
+            std::fs::write(&tmp, &serialized)
+                .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+            std::fs::rename(&tmp, &config_path)
+                .map_err(|e| format!("rename: {e}"))?;
+
+            println!();
+            println!("  MCP servers wired into {}", config_path.display());
+            println!("    nucleusdb   → {ndb_cmd}");
+            println!("    agenthalo   → {halo_cmd}");
+            println!();
+            Ok(())
+        }
+        "gateway-status" => {
+            let which = std::process::Command::new("which")
+                .arg("openclaw")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !which {
+                println!("  OpenClaw CLI not found on PATH.");
+                return Ok(());
+            }
+            let output = std::process::Command::new("openclaw")
+                .args(["gateway", "status"])
+                .output()
+                .map_err(|e| format!("failed to check gateway: {e}"))?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if output.status.success() {
+                println!("  Gateway: RUNNING");
+                if !stdout.trim().is_empty() {
+                    println!("  {}", stdout.trim());
+                }
+            } else {
+                println!("  Gateway: NOT RUNNING");
+                if !stderr.trim().is_empty() {
+                    println!("  {}", stderr.trim());
+                }
+            }
+            Ok(())
+        }
+        "help" | "--help" | "-h" => {
+            println!("agenthalo harness - CLI agent management and OpenClaw integration");
+            println!();
+            println!("Subcommands:");
+            println!("  detect                           Detect all supported agent CLIs on PATH");
+            println!("  install <claude|codex|gemini|openclaw>");
+            println!("                                   Install an agent CLI via npm");
+            println!("  wire-mcp                         Wire NucleusDB + HALO MCP servers into OpenClaw config");
+            println!("  gateway-status                   Check if OpenClaw gateway daemon is running");
+            println!("  help                             Show this help");
+            Ok(())
+        }
+        other => Err(format!("unknown harness subcommand: {other}. Run `agenthalo harness help`.")),
+    }
+}
+
+fn which_path(cmd: &str) -> Option<String> {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn cmd_setup(_args: &[String]) -> Result<(), String> {
     config::ensure_halo_dir()?;
 
@@ -4660,6 +4815,30 @@ fn cmd_doctor(_args: &[String]) -> Result<(), String> {
         );
     }
 
+    // Agent CLIs
+    println!("  Agent CLIs:");
+    for cli in ["claude", "codex", "gemini", "openclaw"] {
+        let found = which_path(cli);
+        if let Some(p) = found {
+            println!("    {cli:<12}      INSTALLED  ({p})");
+        } else {
+            println!("    {cli:<12}      NOT FOUND");
+        }
+    }
+
+    // OpenClaw gateway
+    if which_path("openclaw").is_some() {
+        let gw = std::process::Command::new("openclaw")
+            .args(["gateway", "status"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        println!(
+            "  OpenClaw gateway:   {}",
+            if gw { "RUNNING" } else { "NOT RUNNING" }
+        );
+    }
+
     // License
     println!("  License:            Community (free)");
 
@@ -4718,7 +4897,7 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install|wire-mcp|gateway-status]\n                             Agent CLI management and OpenClaw MCP wiring\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
   NYM_FAIL_CLOSED=0           Legacy equivalent of NYM_FAIL_OPEN=1"
     );
 }

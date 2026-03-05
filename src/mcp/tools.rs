@@ -254,6 +254,54 @@ pub struct MeshGrantResponse {
 
 // ── End mesh types ──────────────────────────────────────────────────
 
+// ── CLI agent & harness types ───────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CliDetectRequest {
+    /// Agent CLI to detect: "claude", "codex", "gemini", or "openclaw".
+    pub agent: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CliDetectResponse {
+    pub agent: String,
+    pub installed: bool,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CliInstallRequest {
+    /// Agent CLI to install: "claude", "codex", "gemini", or "openclaw".
+    pub agent: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CliInstallResponse {
+    pub agent: String,
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OpenClawGatewayStatusResponse {
+    pub installed: bool,
+    pub gateway_running: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OpenClawWireMcpResponse {
+    pub success: bool,
+    pub config_path: String,
+    pub tools_wired: Vec<String>,
+    pub nucleusdb_mcp_path: Option<String>,
+    pub agenthalo_mcp_path: Option<String>,
+}
+
+// ── End CLI agent types ─────────────────────────────────────────────
+
 fn parse_mesh_access_modes(
     modes: &[String],
 ) -> Result<Vec<crate::pod::capability::AccessMode>, String> {
@@ -3598,6 +3646,227 @@ impl NucleusDbMcpService {
             peer_agent_id: req.peer_agent_id,
         }))
     }
+
+    // ── CLI agent management tools ─────────────────────────────────
+
+    #[tool(
+        name = "cli_detect",
+        description = "Detect whether an agent CLI is installed on this host. Supports claude, codex, gemini, openclaw. Example: {\"agent\":\"claude\"}"
+    )]
+    pub async fn cli_detect(
+        &self,
+        Parameters(req): Parameters<CliDetectRequest>,
+    ) -> Result<Json<CliDetectResponse>, McpError> {
+        let agent = req.agent.trim().to_lowercase();
+        let detect_cmd = cli_detect_command(&agent)
+            .ok_or_else(|| McpError::invalid_params(format!("unknown agent: {agent}"), None))?;
+        let (installed, path) = tokio::task::spawn_blocking(move || {
+            let output = Command::new("which")
+                .arg(&detect_cmd)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    (true, if p.is_empty() { None } else { Some(p) })
+                }
+                _ => (false, None),
+            }
+        })
+        .await
+        .unwrap_or((false, None));
+        Ok(Json(CliDetectResponse {
+            agent,
+            installed,
+            path,
+        }))
+    }
+
+    #[tool(
+        name = "cli_install",
+        description = "Install an agent CLI via npm. Supports claude (@anthropic-ai/claude-code), codex (@openai/codex), gemini (@google/gemini-cli), openclaw (openclaw@latest). Example: {\"agent\":\"openclaw\"}"
+    )]
+    pub async fn cli_install(
+        &self,
+        Parameters(req): Parameters<CliInstallRequest>,
+    ) -> Result<Json<CliInstallResponse>, McpError> {
+        let agent = req.agent.trim().to_lowercase();
+        let npm_package = cli_npm_package(&agent)
+            .ok_or_else(|| McpError::invalid_params(format!("unknown agent: {agent}"), None))?;
+        let pkg = npm_package.to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            Command::new("npm")
+                .args(["install", "-g", &pkg])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("join error: {e}"), None))?
+        .map_err(|e| McpError::internal_error(format!("install failed: {e}"), None))?;
+
+        Ok(Json(CliInstallResponse {
+            agent,
+            success: result.status.success(),
+            exit_code: result.status.code(),
+            stdout: String::from_utf8_lossy(&result.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&result.stderr).to_string(),
+        }))
+    }
+
+    #[tool(
+        name = "openclaw_gateway_status",
+        description = "Check whether the OpenClaw CLI is installed and whether its gateway daemon is running. No parameters required."
+    )]
+    pub async fn openclaw_gateway_status(
+        &self,
+    ) -> Result<Json<OpenClawGatewayStatusResponse>, McpError> {
+        let (installed, running, detail) = tokio::task::spawn_blocking(|| {
+            let which = Command::new("which")
+                .arg("openclaw")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !which {
+                return (false, false, "openclaw CLI not found on PATH".to_string());
+            }
+            let status = Command::new("openclaw")
+                .args(["gateway", "status"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output();
+            match status {
+                Ok(o) => {
+                    let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    let detail = if !stdout.is_empty() {
+                        stdout
+                    } else {
+                        stderr
+                    };
+                    (true, o.status.success(), detail)
+                }
+                Err(e) => (true, false, format!("failed to run status check: {e}")),
+            }
+        })
+        .await
+        .unwrap_or((false, false, "task join failed".to_string()));
+        Ok(Json(OpenClawGatewayStatusResponse {
+            installed,
+            gateway_running: running,
+            detail,
+        }))
+    }
+
+    #[tool(
+        name = "openclaw_wire_mcp",
+        description = "Wire NucleusDB and HALO MCP servers into OpenClaw's configuration (~/.openclaw/openclaw.json). After wiring, any OpenClaw agent session can call all 37+ NucleusDB tools via stdio transport. No parameters required."
+    )]
+    pub async fn openclaw_wire_mcp(
+        &self,
+    ) -> Result<Json<OpenClawWireMcpResponse>, McpError> {
+        let result = tokio::task::spawn_blocking(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            let config_path = std::path::Path::new(&home)
+                .join(".openclaw")
+                .join("openclaw.json");
+
+            let mut config: serde_json::Value = if config_path.exists() {
+                let contents = std::fs::read_to_string(&config_path)
+                    .map_err(|e| format!("read {}: {e}", config_path.display()))?;
+                serde_json::from_str(&contents)
+                    .map_err(|e| format!("parse {}: {e}", config_path.display()))?
+            } else {
+                if let Some(parent) = config_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+                }
+                serde_json::json!({})
+            };
+
+            let ndb_path = resolve_binary_path("nucleusdb-mcp");
+            let halo_path = resolve_binary_path("agenthalo-mcp-server");
+
+            let ndb_entry = serde_json::json!({
+                "command": ndb_path.as_deref().unwrap_or("nucleusdb-mcp"),
+                "args": []
+            });
+            let halo_entry = serde_json::json!({
+                "command": halo_path.as_deref().unwrap_or("agenthalo-mcp-server"),
+                "args": []
+            });
+
+            let agents = config.as_object_mut()
+                .ok_or("config root is not an object")?
+                .entry("agents").or_insert_with(|| serde_json::json!({}));
+            let defaults = agents.as_object_mut()
+                .ok_or("agents is not an object")?
+                .entry("defaults").or_insert_with(|| serde_json::json!({}));
+            let mcp_servers = defaults.as_object_mut()
+                .ok_or("defaults is not an object")?
+                .entry("mcpServers").or_insert_with(|| serde_json::json!({}));
+            let servers_map = mcp_servers.as_object_mut()
+                .ok_or("mcpServers is not an object")?;
+
+            servers_map.insert("nucleusdb".to_string(), ndb_entry);
+            servers_map.insert("agenthalo".to_string(), halo_entry);
+
+            let serialized = serde_json::to_string_pretty(&config)
+                .map_err(|e| format!("serialize: {e}"))?;
+            let tmp = config_path.with_extension("json.tmp");
+            std::fs::write(&tmp, &serialized)
+                .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+            std::fs::rename(&tmp, &config_path)
+                .map_err(|e| format!("rename: {e}"))?;
+
+            Ok::<_, String>(OpenClawWireMcpResponse {
+                success: true,
+                config_path: config_path.display().to_string(),
+                tools_wired: vec!["nucleusdb".to_string(), "agenthalo".to_string()],
+                nucleusdb_mcp_path: ndb_path,
+                agenthalo_mcp_path: halo_path,
+            })
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("join: {e}"), None))?
+        .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(result))
+    }
+}
+
+/// CLI detect command for each supported agent.
+fn cli_detect_command(agent: &str) -> Option<&'static str> {
+    match agent {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "gemini" => Some("gemini"),
+        "openclaw" => Some("openclaw"),
+        _ => None,
+    }
+}
+
+/// npm package name for each supported agent CLI.
+fn cli_npm_package(agent: &str) -> Option<&'static str> {
+    match agent {
+        "claude" => Some("@anthropic-ai/claude-code"),
+        "codex" => Some("@openai/codex"),
+        "gemini" => Some("@google/gemini-cli"),
+        "openclaw" => Some("openclaw@latest"),
+        _ => None,
+    }
+}
+
+/// Resolve a binary name to its absolute path via `which`.
+fn resolve_binary_path(name: &str) -> Option<String> {
+    Command::new("which")
+        .arg(name)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]

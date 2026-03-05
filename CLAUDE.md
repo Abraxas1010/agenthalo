@@ -106,6 +106,34 @@ The Cockpit transforms the dashboard into an agent orchestration terminal — la
 | POST | `/api/proxy/v1/chat/completions` | Yes | OpenAI-compatible proxy |
 | GET | `/api/proxy/v1/models` | Yes | List available models |
 
+### CLI Agent & OpenClaw Harness endpoints
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/cli/detect/:agent` | No | Check if CLI is on PATH (claude/codex/gemini/openclaw) |
+| POST | `/api/cli/install/:agent` | Yes | Install agent CLI via npm |
+| POST | `/api/cli/auth/:agent` | Yes | Launch OAuth/onboard via PTY session |
+| GET | `/api/openclaw/gateway-status` | No | Check if OpenClaw gateway daemon is running |
+| POST | `/api/openclaw/wire-mcp` | Yes | Inject NucleusDB + HALO MCP servers into `~/.openclaw/openclaw.json` |
+
+### CLI commands (`agenthalo harness`)
+
+| Subcommand | Purpose |
+|------------|---------|
+| `detect` | Detect all 4 agent CLIs on PATH |
+| `install <agent>` | Install via npm (claude/codex/gemini/openclaw) |
+| `wire-mcp` | Wire NucleusDB + HALO MCP into OpenClaw config |
+| `gateway-status` | Check OpenClaw gateway daemon |
+
+### MCP tools (via `nucleusdb-mcp`)
+
+| Tool | Purpose |
+|------|---------|
+| `cli_detect` | Detect agent CLI on PATH |
+| `cli_install` | Install agent CLI via npm |
+| `openclaw_gateway_status` | Check OpenClaw gateway daemon status |
+| `openclaw_wire_mcp` | Wire NucleusDB + HALO MCP servers into OpenClaw config |
+
 "Auth = Yes" means `require_sensitive_access()` — requires `agenthalo auth` or `AGENTHALO_API_KEY`.
 
 ## Key Conventions
