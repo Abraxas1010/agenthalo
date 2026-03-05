@@ -58,7 +58,8 @@ const PROVIDER_INFO = {
 // -- Routing ------------------------------------------------------------------
 const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
-  identification: renderIdentificationPage, communication: renderCommunicationPage, networking: renderNetworkingPage,
+  identification: renderIdentificationPage, communication: renderCommunicationPage, 'nucleusdb-docs': renderNucleusDBDocsPage,
+  networking: renderNetworkingPage,
   trust: renderTrust, nucleusdb: renderNucleusDB, cockpit: renderCockpit, deploy: renderDeploy };
 
 const NETWORKS = [
@@ -101,6 +102,10 @@ function renderIdentificationPage() {
 function renderCommunicationPage() {
   if (typeof renderCommunication === 'function') renderCommunication();
   else content.innerHTML = '<div class="loading">Communication docs module not loaded.</div>';
+}
+function renderNucleusDBDocsPage() {
+  if (typeof renderNucleusDBDocs === 'function') renderNucleusDBDocs();
+  else content.innerHTML = '<div class="loading">NucleusDB docs module not loaded.</div>';
 }
 async function renderNetworkingPage() {
   let available = [];
@@ -564,6 +569,11 @@ function renderCryptoOverlay(status) {
           createBtn.disabled = false;
         }
       };
+      // Enter key on confirm field triggers create
+      const confirmInput = $('#crypto-create-confirm', overlay);
+      if (confirmInput) confirmInput.addEventListener('keydown', e => { if (e.key === 'Enter') createBtn.click(); });
+      const createInput = $('#crypto-create-password', overlay);
+      if (createInput) createInput.addEventListener('keydown', e => { if (e.key === 'Enter' && confirmInput) confirmInput.focus(); });
     }
   } else {
     const unlockBtn = $('#crypto-unlock-btn', overlay);
@@ -583,6 +593,9 @@ function renderCryptoOverlay(status) {
           unlockBtn.disabled = false;
         }
       };
+      // Enter key on password field triggers unlock
+      const unlockInput = $('#crypto-unlock-password', overlay);
+      if (unlockInput) unlockInput.addEventListener('keydown', e => { if (e.key === 'Enter') unlockBtn.click(); });
     }
   }
 }
@@ -799,7 +812,7 @@ function updateNavLockState() {
   if (!_setupState) return;
   const complete = _setupState.complete;
   const justUnlocked = _lastSetupComplete === false && complete === true;
-  const NAV_EXEMPT = ['setup', 'overview', 'genesis', 'identification', 'communication'];
+  const NAV_EXEMPT = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs'];
   $$('.nav-link').forEach(a => {
     const page = a.dataset.page;
     if (page === 'setup') {
@@ -874,7 +887,7 @@ async function route() {
 
   // Fetch setup state and gate navigation.
   // Documentation/overview pages are always accessible — setup gate only blocks operational pages.
-  const SETUP_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication'];
+  const SETUP_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs'];
   const ss = await fetchSetupState();
   if (!ss.complete && !SETUP_EXEMPT_PAGES.includes(page)) {
     location.hash = '#/setup';
@@ -884,7 +897,7 @@ async function route() {
   $$('.nav-link').forEach(a => a.classList.toggle('active', a.dataset.page === page));
 
   // Auto-expand Overview sub-items when navigating to any overview-family page
-  const overviewFamily = ['overview', 'genesis', 'identification', 'communication'];
+  const overviewFamily = ['overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs'];
   const shouldExpand = overviewFamily.includes(page);
   const parentLink = document.getElementById('nav-overview-parent');
   if (parentLink) {
@@ -904,7 +917,7 @@ document.addEventListener('click', (e) => {
   if (!parentLink) return;
   // If already on overview page, just toggle expansion without navigation
   const currentPage = (location.hash.replace('#/', '') || 'setup').split('/')[0];
-  const overviewFamily = ['overview', 'genesis', 'identification', 'communication'];
+  const overviewFamily = ['overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs'];
   if (overviewFamily.includes(currentPage)) {
     const isExpanded = parentLink.classList.contains('nav-expanded');
     parentLink.classList.toggle('nav-expanded', !isExpanded);

@@ -3815,6 +3815,7 @@ input:focus, select:focus, textarea:focus {
 .gdoc-card--blue { border-left: 3px solid var(--blue); }
 .gdoc-card--green { border-left: 3px solid var(--green); }
 .gdoc-card--amber { border-left: 3px solid var(--accent); }
+.gdoc-card--purple { border-left: 3px solid var(--purple); }
 
 .gdoc-card-icon-lg {
   font-size: 1.8rem;
@@ -3825,6 +3826,7 @@ input:focus, select:focus, textarea:focus {
 .gdoc-card--blue .gdoc-card-icon-lg { color: var(--blue); }
 .gdoc-card--green .gdoc-card-icon-lg { color: var(--green); }
 .gdoc-card--amber .gdoc-card-icon-lg { color: var(--accent); }
+.gdoc-card--purple .gdoc-card-icon-lg { color: var(--purple); }
 
 .gdoc-card-head {
   font-size: 0.85rem;
@@ -4110,6 +4112,7 @@ input:focus, select:focus, textarea:focus {
 .gdoc-module--blue { border-left: 3px solid var(--blue); }
 .gdoc-module--green { border-left: 3px solid var(--green); }
 .gdoc-module--amber { border-left: 3px solid var(--accent); }
+.gdoc-module--purple { border-left: 3px solid var(--purple); }
 
 .gdoc-module-header {
   display: flex;
@@ -4466,6 +4469,8 @@ input:focus, select:focus, textarea:focus {
 
 .ovw-card--blue { border-left: 3px solid var(--blue); }
 .ovw-card--green { border-left: 3px solid var(--green); }
+.ovw-card--purple { border-left: 3px solid var(--purple); }
+.ovw-card--amber { border-left: 3px solid var(--accent); }
 
 .ovw-card-header {
   display: flex;
@@ -4489,6 +4494,8 @@ input:focus, select:focus, textarea:focus {
 
 .ovw-card-icon--blue { color: var(--blue); border-color: rgba(75, 163, 255, 0.2); background: rgba(75, 163, 255, 0.06); }
 .ovw-card-icon--green { color: var(--green); border-color: rgba(0, 255, 65, 0.2); background: rgba(0, 255, 65, 0.06); }
+.ovw-card-icon--amber { color: var(--accent); border-color: rgba(255, 106, 0, 0.2); background: rgba(255, 106, 0, 0.06); }
+.ovw-card-icon--purple { color: var(--purple); border-color: rgba(196, 155, 255, 0.2); background: rgba(196, 155, 255, 0.06); }
 
 .ovw-card-titles {
   flex: 1;

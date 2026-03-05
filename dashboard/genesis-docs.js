@@ -109,6 +109,21 @@ const DOCS_PAGES = [
       { val: 'DIDComm', lbl: 'Messaging' },
     ],
   },
+  {
+    id: 'nucleusdb-docs',
+    title: 'Memories',
+    subtitle: 'Proof-Carrying Algebraic Database',
+    icon: '\u2622',
+    color: 'purple',
+    status: 'live',
+    summary: 'The database that proves its own integrity. NucleusDB is a category-theoretic key-value store where every commit extends a monotone seal chain, every query can be verified against a vector commitment, and sheaf coherence ensures multi-view consistency. Three commitment backends (Binary Merkle, KZG, IPA), dual-signed witnesses (Ed25519 + ML-DSA-65), append-only mode, vector similarity search, and a SQL surface \u2014 all formally verified in Lean 4.',
+    stats: [
+      { val: '3', lbl: 'VC Backends' },
+      { val: '\u221E', lbl: 'Seal Chain' },
+      { val: 'Sheaf', lbl: 'Coherence' },
+      { val: 'PQ', lbl: 'Witnesses' },
+    ],
+  },
 ];
 
 function renderDocsOverview() {
@@ -2805,6 +2820,855 @@ function commAccess() {
           <tr><td><code>src/trust/onchain.rs</code></td><td>Trust bridge (PUF attestation + cast proxy)</td></tr>
           <tr><td><code>src/pcn/adapter.rs</code></td><td>PCN compliance witness + conservation</td></tr>
           <tr><td><code>src/halo/identity_ledger.rs</code></td><td>Hash-chained, append-only identity ledger with PQ signatures</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+
+/* ================================================================
+   NUCLEUSDB DOCUMENTATION PAGE
+   ================================================================ */
+
+function renderNucleusDBDocs() {
+  const content = document.getElementById('content');
+  content.innerHTML = `
+    <!-- Hero Banner -->
+    <div class="gdoc-hero">
+      <div class="gdoc-hero-img-wrap">
+        <img class="gdoc-hero-img" src="img/nucleus_db_hero.png" alt="NucleusDB"
+             onerror="this.style.display='none'">
+      </div>
+      <div class="gdoc-hero-copy">
+        <div class="gdoc-hero-kicker">Agent H.A.L.O. // Data Layer</div>
+        <div class="gdoc-hero-title">Memories</div>
+        <div class="gdoc-hero-subtitle" style="font-size:0.85rem;opacity:0.7;margin-top:-2px">Powered by NucleusDB</div>
+        <div class="gdoc-hero-subtitle">Proof-Carrying Algebraic Database</div>
+        <div class="gdoc-hero-sep"></div>
+        <div class="gdoc-hero-stat-row">
+          <div class="gdoc-hero-stat">
+            <div class="gdoc-hero-stat-val">3</div>
+            <div class="gdoc-hero-stat-lbl">VC Backends</div>
+          </div>
+          <div class="gdoc-hero-stat">
+            <div class="gdoc-hero-stat-val">\u221E</div>
+            <div class="gdoc-hero-stat-lbl">Seal Chain</div>
+          </div>
+          <div class="gdoc-hero-stat">
+            <div class="gdoc-hero-stat-val">Sheaf</div>
+            <div class="gdoc-hero-stat-lbl">Coherence</div>
+          </div>
+          <div class="gdoc-hero-stat">
+            <div class="gdoc-hero-stat-val">PQ</div>
+            <div class="gdoc-hero-stat-lbl">Witnesses</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab Bar -->
+    <div class="gdoc-tabs">
+      <button class="gdoc-tab active" data-tab="ndb-overview" onclick="ndbDocTab('ndb-overview')">F1:OVERVIEW</button>
+      <button class="gdoc-tab" data-tab="ndb-technical" onclick="ndbDocTab('ndb-technical')">F2:TECHNICAL</button>
+      <button class="gdoc-tab" data-tab="ndb-access" onclick="ndbDocTab('ndb-access')">F3:ACCESS</button>
+    </div>
+
+    <div id="ndb-doc-content"></div>
+  `;
+  ndbDocTab('ndb-overview');
+}
+
+window.ndbDocTab = function(tab) {
+  document.querySelectorAll('.gdoc-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  const el = document.getElementById('ndb-doc-content');
+  if (!el) return;
+
+  switch (tab) {
+    case 'ndb-overview':
+      el.innerHTML = ndbDocOverview();
+      hydrateNdbRuntimePanel();
+      break;
+    case 'ndb-technical': el.innerHTML = ndbDocTechnical(); break;
+    case 'ndb-access': el.innerHTML = ndbDocAccess(); break;
+  }
+};
+
+async function hydrateNdbRuntimePanel() {
+  const node = document.getElementById('ndb-runtime-panel');
+  if (!node) return;
+  node.innerHTML = '<div class="gdoc-text">Loading database status...</div>';
+  try {
+    const [status, stats] = await Promise.all([
+      fetch('/api/nucleusdb/status').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/nucleusdb/stats').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+    const keyCount = stats?.key_count || 0;
+    const commitCount = stats?.commit_count || 0;
+    const dbSize = stats?.db_size_bytes || 0;
+    const backend = status?.backend || 'binary_merkle';
+    const backendNames = { binary_merkle: 'Binary Merkle', kzg: 'KZG', ipa: 'IPA' };
+    const chainOk = status?.exists && commitCount > 0;
+    const fmtBytes = (b) => b < 1024 ? b + ' B' : b < 1048576 ? (b/1024).toFixed(1) + ' KB' : (b/1048576).toFixed(1) + ' MB';
+
+    node.innerHTML = `
+      <div class="gdoc-card-row">
+        <div class="gdoc-card gdoc-card--${chainOk ? 'green' : 'amber'}">
+          <div class="gdoc-card-head">Seal Chain</div>
+          <div class="gdoc-card-body">${chainOk ? 'Healthy \u2713 (Seal #' + commitCount + ')' : status?.exists ? 'Empty \u2014 no commits yet' : 'No database'}</div>
+        </div>
+        <div class="gdoc-card gdoc-card--purple">
+          <div class="gdoc-card-head">Backend</div>
+          <div class="gdoc-card-body">${gdocEsc(backendNames[backend] || backend)}</div>
+        </div>
+        <div class="gdoc-card gdoc-card--blue">
+          <div class="gdoc-card-head">Keys</div>
+          <div class="gdoc-card-body">${keyCount.toLocaleString()} keys (${fmtBytes(dbSize)})</div>
+        </div>
+        <div class="gdoc-card gdoc-card--green">
+          <div class="gdoc-card-head">Commits</div>
+          <div class="gdoc-card-body">${commitCount.toLocaleString()} state transitions</div>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    node.innerHTML = `
+      <div class="gdoc-card gdoc-card--amber">
+        <div class="gdoc-card-head">Database Status</div>
+        <div class="gdoc-card-body">Could not load NucleusDB status. ${gdocEsc(String(err && err.message || err))}</div>
+      </div>
+    `;
+  }
+}
+
+
+/* ================================================================
+   NUCLEUSDB TAB 1: HIGH-LEVEL OVERVIEW
+   ================================================================ */
+function ndbDocOverview() {
+  return `
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Live Database Status</div>
+      <div id="ndb-runtime-panel"></div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">What Is NucleusDB?</div>
+      <p class="gdoc-text">
+        NucleusDB is a <strong>proof-carrying algebraic database</strong> \u2014 a key-value store
+        where every mutation generates cryptographic evidence of correctness and every query can
+        be verified against a binding commitment. It is the persistent memory of your agent:
+        the place where identity records, session traces, wallet state, configuration, and
+        operational data live \u2014 all protected by the same formal framework that governs
+        Genesis and Identification.
+      </p>
+      <p class="gdoc-text">
+        Unlike conventional databases that trust their own storage layer, NucleusDB
+        <strong>proves</strong> that its data is intact. Each commit extends a monotone seal chain
+        (the same one anchored by your Genesis nucleus), each value is bound into a vector
+        commitment, and a sheaf coherence layer ensures that different views of the same data
+        agree. The formal model is verified in Lean 4 with zero <code>sorry</code>.
+      </p>
+      <div class="gdoc-pipeline" style="margin:12px 0 16px">
+        <div class="gdoc-pipeline-box" style="text-align:center;letter-spacing:1px">
+          <strong>State</strong> &nbsp;\u2192&nbsp;
+          <strong>\u0394 Delta</strong> &nbsp;\u2192&nbsp;
+          <strong>Commit</strong> &nbsp;\u2192&nbsp;
+          <strong>Seal</strong> &nbsp;\u2192&nbsp;
+          <strong>Witness</strong> &nbsp;\u2192&nbsp;
+          <strong>Verify</strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Why Does This Matter?</div>
+      <div class="gdoc-card-row">
+        <div class="gdoc-card gdoc-card--purple">
+          <div class="gdoc-card-icon-lg">\u2200</div>
+          <div class="gdoc-card-head">Algebraic Structure</div>
+          <div class="gdoc-card-body">
+            NucleusDB is modeled as a <strong>category</strong>: objects are states (vectors of field
+            elements), morphisms are deltas (write operations), and composition is sequential application.
+            This means every database operation is a morphism in a mathematically precise sense \u2014
+            identity morphisms are empty deltas, composition is associative, and invariant preservation
+            is proved by induction over morphism sequences.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--green">
+          <div class="gdoc-card-icon-lg">\u26D3</div>
+          <div class="gdoc-card-head">Tamper Evidence</div>
+          <div class="gdoc-card-body">
+            Every commit extends a <strong>monotone seal chain</strong>:
+            <code>seal\u2099 = SHA-256("NucleusDB.MonotoneSeal|" || seal\u2099\u208B\u2081 || kv_digest\u2099)</code>.
+            Monotone extension means every previously committed key-value pair is preserved.
+            Deleting or modifying a historical record would require finding a SHA-256 preimage
+            \u2014 a 2\u00B9\u00B2\u2078 operation. The genesis seal anchors the entire chain to your agent's
+            birth ceremony.
+          </div>
+        </div>
+      </div>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--blue">
+          <div class="gdoc-card-icon-lg">\u26A1</div>
+          <div class="gdoc-card-head">Vector Commitments</div>
+          <div class="gdoc-card-body">
+            Three pluggable commitment backends \u2014 <strong>Binary Merkle</strong> (hash-based,
+            post-quantum safe), <strong>KZG</strong> (elliptic curve, constant-size proofs),
+            and <strong>IPA</strong> (inner product argument, no trusted setup) \u2014 bind each
+            state snapshot to a compact digest. Any individual key-value pair can be verified
+            against the commitment without downloading the entire database.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--amber">
+          <div class="gdoc-card-icon-lg">\u2630</div>
+          <div class="gdoc-card-head">Sheaf Coherence</div>
+          <div class="gdoc-card-body">
+            Multiple subsystems (identity, wallet, sessions) each see a <strong>local section</strong>
+            of the database through their own lens. The sheaf coherence layer verifies that these
+            local views agree on shared keys \u2014 no contradictions, no silent overwrites. When
+            views conflict, the coherence proof records the exact disagreement for resolution.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">How It Works</div>
+      <div class="gdoc-pipeline">
+
+        <div class="gdoc-pipeline-stage">
+          <div class="gdoc-pipeline-badge">1</div>
+          <div class="gdoc-pipeline-label">State \u2014 The Current Snapshot</div>
+        </div>
+        <div class="gdoc-pipeline-box">
+          The database state is a <strong>vector of field elements</strong> (<code>Vec&lt;u64&gt;</code>).
+          Each position is a logical key (mapped through a <code>KeyMap</code> that translates
+          string keys to vector indices). This flat vector representation enables efficient
+          commitment computation and algebraic operations.
+        </div>
+
+        <div class="gdoc-pipeline-arrow">\u25BC</div>
+
+        <div class="gdoc-pipeline-stage">
+          <div class="gdoc-pipeline-badge">2</div>
+          <div class="gdoc-pipeline-label">Delta \u2014 The Transition</div>
+        </div>
+        <div class="gdoc-pipeline-box">
+          A <strong>delta</strong> is a list of <code>(index, value)</code> writes. Applying a delta
+          to a state produces a new state. In category-theoretic terms, deltas are morphisms:
+          <code>apply(prev, delta) = next</code>. Composition of deltas is sequential application.
+          The empty delta is the identity morphism.
+        </div>
+
+        <div class="gdoc-pipeline-arrow">\u25BC</div>
+
+        <div class="gdoc-pipeline-stage">
+          <div class="gdoc-pipeline-badge">3</div>
+          <div class="gdoc-pipeline-label">Commit \u2014 Bind to Commitment</div>
+        </div>
+        <div class="gdoc-pipeline-box gdoc-pipeline-box--accent">
+          The new state vector is committed via the active <strong>vector commitment scheme</strong>
+          (Binary Merkle, KZG, or IPA). The commitment is a compact digest that binds the entire
+          state: any single value can be opened and verified against it. A <code>CommitCertificate</code>
+          bundles the previous state, the delta, the authorization proof, and a constructive witness
+          that <code>next = apply(prev, delta)</code>.
+        </div>
+
+        <div class="gdoc-pipeline-arrow">\u25BC</div>
+
+        <div class="gdoc-pipeline-stage">
+          <div class="gdoc-pipeline-badge">4</div>
+          <div class="gdoc-pipeline-label">Seal \u2014 Extend the Chain</div>
+        </div>
+        <div class="gdoc-pipeline-box gdoc-pipeline-box--green">
+          The monotone seal chain extends: the new seal is computed from the previous seal and
+          the key-value digest of the current state. <strong>Monotone extension</strong> is verified
+          before sealing: all previously committed values must still be present and unchanged.
+          Only new keys or zero-to-nonzero transitions are permitted.
+          <br><br>
+          In <strong>append-only mode</strong>, the database additionally rejects value changes on
+          existing keys \u2014 data can only grow, never be modified. This is the strictest integrity
+          guarantee: a pure append-only log.
+        </div>
+
+        <div class="gdoc-pipeline-arrow">\u25BC</div>
+
+        <div class="gdoc-pipeline-stage">
+          <div class="gdoc-pipeline-badge">5</div>
+          <div class="gdoc-pipeline-label">Witness \u2014 Dual-Signed Attestation</div>
+        </div>
+        <div class="gdoc-pipeline-box">
+          Each commit is signed by a <strong>witness quorum</strong> using dual signatures:
+          <strong>Ed25519</strong> (classical) and <strong>ML-DSA-65</strong> (post-quantum, FIPS 204).
+          The witness threshold is configurable (e.g., 2-of-3). Both signature algorithms must
+          verify for a witness to count. This ensures tamper evidence even against future
+          quantum adversaries.
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Data Types</div>
+      <p class="gdoc-text">
+        NucleusDB stores more than integers. The <strong>typed value layer</strong> maps rich
+        data types onto the underlying algebraic vector:
+      </p>
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">Primitive Types</div>
+          <div class="gdoc-card-body">
+            <strong>Integer</strong> (u64), <strong>Float</strong> (f64 as bits),
+            <strong>Boolean</strong> (0/1), <strong>String</strong> (blob-stored, hash-indexed),
+            <strong>Bytes</strong> (arbitrary binary), <strong>JSON</strong> (structured documents).
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">Vector Embeddings</div>
+          <div class="gdoc-card-body">
+            <strong>Vector</strong> type stores float arrays for semantic similarity search.
+            The built-in <strong>vector index</strong> supports cosine, L2, and inner-product metrics.
+            Search returns the top-k nearest neighbors by distance. Dimensions are enforced
+            after the first insert.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--purple" style="flex:1">
+          <div class="gdoc-card-head">SQL Surface</div>
+          <div class="gdoc-card-body">
+            A SQL query interface translates familiar <code>SELECT</code>, <code>INSERT</code>,
+            <code>CREATE TABLE</code> syntax into NucleusDB operations. The SQL layer preserves
+            all integrity guarantees \u2014 every SQL write goes through the same commit/seal/witness
+            pipeline as direct API calls. Includes <code>SET MODE APPEND_ONLY</code> for locking
+            down the database.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Genesis Integration</div>
+      <div class="gdoc-callout">
+        <div class="gdoc-callout-icon">\u2693</div>
+        <div class="gdoc-callout-body">
+          The Genesis entropy ceremony anchors the NucleusDB seal chain. The genesis hash
+          becomes the <strong>initial seal</strong> via <code>genesis_seal_with_anchor()</code>,
+          binding every future database commit to the agent's birth identity. Tampering with
+          the genesis seed would invalidate the entire database history \u2014 the chain of trust
+          is unbroken from entropy void to the latest commit.
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
+/* ================================================================
+   NUCLEUSDB TAB 2: TECHNICAL DETAILS
+   ================================================================ */
+function ndbDocTechnical() {
+  return `
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Category-Theoretic Architecture</div>
+      <p class="gdoc-text">
+        NucleusDB is formalized as a category in the mathematical sense. The Lean 4 formalization
+        mirrors the Rust implementation with machine-checked proofs of correctness.
+      </p>
+
+      <div class="gdoc-module gdoc-module--purple">
+        <div class="gdoc-module-header">
+          <code>Core/Nucleus.lean</code>
+          <span class="gdoc-module-tag">Category of State Transitions</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p>Defines <code>NucleusSystem</code>: a category whose <strong>objects</strong> are states
+          (<code>Vec u64</code>) and whose <strong>morphisms</strong> are deltas (write operations).
+          The <code>apply</code> function is the action of morphisms on objects.
+          Identity morphisms are empty deltas. Composition is sequential application.</p>
+          <p>This is the foundational abstraction: every subsystem \u2014 identity, wallet, sessions,
+          genesis \u2014 is an instance of this same categorical pattern. Properties proved once
+          for <code>NucleusSystem</code> automatically hold for all instances.</p>
+        </div>
+      </div>
+
+      <div class="gdoc-module gdoc-module--blue">
+        <div class="gdoc-module-header">
+          <code>Core/Authorization.lean</code>
+          <span class="gdoc-module-tag">Authorized Morphisms</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p><code>AuthorizationPolicy</code> is a predicate on morphisms. An <code>AuthorizedDelta</code>
+          bundles a delta with a constructive proof that the policy permits it. This is a
+          <strong>typed morphism</strong>: you cannot apply a transition without proving authorization.
+          The policy requires explicit authorization, non-empty actor ID, and delta-local constraints.</p>
+          <div class="gdoc-theorem-list">
+            <div class="gdoc-theorem">
+              <span class="gdoc-thm-badge">\u2713</span>
+              <div><code>authPolicy_rejects_unauthorized</code><br>
+              <span class="gdoc-thm-desc">No unauthorized actor can apply any delta. Proved by contradiction.</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="gdoc-module gdoc-module--green">
+        <div class="gdoc-module-header">
+          <code>Core/Certificates.lean</code> + <code>Core/Ledger.lean</code>
+          <span class="gdoc-module-tag">Commit Chain as Diagram</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p>A <code>CommitCertificate</code> is a verified morphism: previous state, delta,
+          authorization proof, and constructive witness that <code>next = apply(prev, delta)</code>.
+          The ledger is a <strong>chain complex</strong> \u2014 a sequence of certificates where each
+          entry chains to the previous via hash.</p>
+          <div class="gdoc-theorem-list">
+            <div class="gdoc-theorem">
+              <span class="gdoc-thm-badge">\u2713</span>
+              <div><code>verifyCommitCertificate_sound</code><br>
+              <span class="gdoc-thm-desc">Every constructed certificate is valid. Soundness by construction.</span></div>
+            </div>
+            <div class="gdoc-theorem">
+              <span class="gdoc-thm-badge">\u2713</span>
+              <div><code>verifyLedger_cons</code><br>
+              <span class="gdoc-thm-desc">Ledger verification is inductive: valid head + valid tail = valid chain.</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="gdoc-module gdoc-module--amber">
+        <div class="gdoc-module-header">
+          <code>Core/Invariants.lean</code>
+          <span class="gdoc-module-tag">Invariant Preservation</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p><code>PreservedBy</code> states that a state invariant is preserved across all morphisms.
+          <code>replay</code> composes a sequence of deltas. The key theorem proves that invariant
+          preservation is compositional.</p>
+          <div class="gdoc-theorem-list">
+            <div class="gdoc-theorem">
+              <span class="gdoc-thm-badge">\u2713</span>
+              <div><code>replay_preserves</code><br>
+              <span class="gdoc-thm-desc">If <code>apply</code> preserves an invariant for every delta, then replaying
+              any list of deltas preserves it. Inductive proof over the morphism sequence.</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Monotone Seal Chain (Rust Runtime)</div>
+      <p class="gdoc-text">
+        The Rust implementation in <code>immutable.rs</code> implements the seal chain with
+        monotone extension verification. The formal model in <code>Core/SealChain.lean</code>
+        provides the specification.
+      </p>
+
+      <div class="gdoc-card gdoc-card--purple" style="margin-top:12px">
+        <div class="gdoc-card-head">Seal Chain Protocol</div>
+        <div class="gdoc-card-body">
+<pre style="font-family:var(--font-mono);font-size:0.82rem;line-height:1.5;margin:0;white-space:pre;overflow-x:auto">
+Seal Chain Structure
+\u2502
+\u251C\u2500\u2500 genesis_seal()
+\u2502   \u2514\u2500\u2500 SHA-256("NucleusDB.MonotoneSeal|" || [0;32] || [0;32])
+\u2502       Base case: empty database, empty digest
+\u2502
+\u251C\u2500\u2500 genesis_seal_with_anchor(anchor)
+\u2502   \u2514\u2500\u2500 SHA-256("NucleusDB.MonotoneSeal|" || [0;32] || SHA-256(anchor))
+\u2502       Genesis identity hash anchors the chain
+\u2502
+\u251C\u2500\u2500 next_seal(prev_seal, kv_digest)
+\u2502   \u2514\u2500\u2500 SHA-256("NucleusDB.MonotoneSeal|" || prev_seal || kv_digest)
+\u2502       Forward extension: new state digest linked to previous seal
+\u2502
+\u251C\u2500\u2500 verify_monotone_extension(old_state, new_state)
+\u2502   \u251C\u2500\u2500 All nonzero values in old_state present and unchanged in new_state
+\u2502   \u251C\u2500\u2500 Zero-to-nonzero transitions permitted (new keys)
+\u2502   \u2514\u2500\u2500 Value changes and deletions REJECTED
+\u2502
+\u2514\u2500\u2500 verify_seal_chain(seals, states)
+    \u2514\u2500\u2500 Inductive: each seal must equal next_seal(prev, kv_digest(state))
+        Chain-wide integrity: one tampered entry invalidates all successors</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Vector Commitment Backends</div>
+      <p class="gdoc-text">
+        NucleusDB implements a <strong>pluggable vector commitment</strong> (VC) layer via the
+        <code>VC</code> trait: <code>commit</code>, <code>open</code>, <code>verify</code>,
+        <code>digest</code>. Three backends are available:
+      </p>
+
+      <div class="gdoc-card-row" style="margin-top:10px">
+        <div class="gdoc-card gdoc-card--green" style="flex:1">
+          <div class="gdoc-card-head">Binary Merkle</div>
+          <div class="gdoc-card-body">
+            <strong>Hash-based</strong> (SHA-256). Proof size: O(log n). Post-quantum safe by
+            construction \u2014 no elliptic curve assumptions. The default backend for production
+            deployments. Domain-separated with <code>nucleusdb.vc.binary_merkle.v1</code>.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--blue" style="flex:1">
+          <div class="gdoc-card-head">KZG</div>
+          <div class="gdoc-card-body">
+            <strong>Polynomial commitment</strong> (Kate-Zaverucha-Goldberg). Constant-size proofs
+            regardless of vector length. Requires a trusted setup (structured reference string).
+            Domain-separated with <code>nucleusdb.vc.kzg.v1</code>. Best for on-chain verification.
+          </div>
+        </div>
+        <div class="gdoc-card gdoc-card--amber" style="flex:1">
+          <div class="gdoc-card-head">IPA</div>
+          <div class="gdoc-card-body">
+            <strong>Inner Product Argument</strong>. Logarithmic proof size, no trusted setup.
+            Domain-separated with <code>nucleusdb.vc.ipa.v1</code>. A middle ground: smaller proofs
+            than Merkle, no setup ceremony like KZG.
+          </div>
+        </div>
+      </div>
+
+      <div class="gdoc-module gdoc-module--purple" style="margin-top:16px">
+        <div class="gdoc-module-header">
+          <code>commitment/mod.rs</code>
+          <span class="gdoc-module-tag">Commitment Policy</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p><code>CommitmentPolicy</code> validates that the selected VC scheme matches the
+          security profile and that the polynomial degree bound is sufficient for the state vector
+          length. Scheme-profile mismatches (e.g., KZG with a PQ-only profile) are rejected
+          at configuration time, not at commit time.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Sheaf Coherence</div>
+      <p class="gdoc-text">
+        NucleusDB uses <strong>sheaf theory</strong> to manage multi-view consistency.
+        Different subsystems (identity, sessions, wallet) each see a <em>local section</em>
+        of the global state through their own lens. The sheaf coherence verifier ensures
+        these local views agree.
+      </p>
+
+      <div class="gdoc-module gdoc-module--green">
+        <div class="gdoc-module-header">
+          <code>Sheaf/Coherence.lean</code> + <code>sheaf/coherence.rs</code>
+          <span class="gdoc-module-tag">Local Sections + Gluing</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p>A <code>LocalSection</code> is a lens-specific key-value view. <code>build_sheaf_coherence</code>
+          checks all local sections for key conflicts \u2014 if two lenses assign different values to
+          the same key, the proof records the conflict. <code>SheafCoherenceProof</code> carries a
+          boolean coherence flag, a list of conflicting keys, and a digest for efficient comparison.</p>
+          <p>The Lean formalization in <code>Sheaf/Coherence.lean</code> proves that coherent
+          local sections produce a well-defined global section \u2014 the <strong>gluing axiom</strong>
+          of sheaf theory.</p>
+        </div>
+      </div>
+
+      <div class="gdoc-module gdoc-module--blue">
+        <div class="gdoc-module-header">
+          <code>Sheaf/MaterializationFunctor.lean</code>
+          <span class="gdoc-module-tag">Naturality</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p>A <code>MaterializationFunctor</code> maps internal states to external key-value
+          projections. The <code>naturality</code> law ensures transport-equivalent states
+          produce identical projections. This is a natural transformation: internal bookkeeping
+          changes are invisible to external observers.</p>
+          <div class="gdoc-theorem-list">
+            <div class="gdoc-theorem">
+              <span class="gdoc-thm-badge">\u2713</span>
+              <div><code>materialize_transport_eq</code><br>
+              <span class="gdoc-thm-desc">Transport-equivalent states materialize identically. The naturality square commutes.</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="gdoc-module gdoc-module--amber">
+        <div class="gdoc-module-header">
+          <code>Sheaf/ChainGluing.lean</code> + <code>Sheaf/ChainTransport.lean</code>
+          <span class="gdoc-module-tag">Chain-Level Coherence</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p><code>ChainGluing</code> extends sheaf coherence to entire commit chains: local
+          ledger fragments must glue consistently into a global ledger. <code>ChainTransport</code>
+          defines structure-preserving maps between chains that preserve the seal relationship
+          \u2014 a functor between chain categories.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Dual-Signed Witnesses</div>
+      <p class="gdoc-text">
+        NucleusDB commits are attested by a configurable witness quorum. Each witness signs with
+        <strong>both</strong> classical (Ed25519) and post-quantum (ML-DSA-65) algorithms.
+      </p>
+
+      <div class="gdoc-card gdoc-card--purple" style="margin-top:12px">
+        <div class="gdoc-card-head">Witness Architecture</div>
+        <div class="gdoc-card-body">
+<pre style="font-family:var(--font-mono);font-size:0.82rem;line-height:1.5;margin:0;white-space:pre;overflow-x:auto">
+WitnessConfig
+\u2502
+\u251C\u2500\u2500 threshold: usize          (e.g., 2-of-3 quorum)
+\u251C\u2500\u2500 witnesses: Vec&lt;String&gt;    (named witness identities)
+\u251C\u2500\u2500 signing_algorithm: Ed25519 | MlDsa65
+\u2502
+\u251C\u2500\u2500 Ed25519 keys             (classical, 256-bit)
+\u2502   \u251C\u2500\u2500 signing_keys:   per-witness
+\u2502   \u2514\u2500\u2500 verifying_keys: per-witness
+\u2502
+\u2514\u2500\u2500 ML-DSA-65 keys           (post-quantum, FIPS 204)
+    \u251C\u2500\u2500 signing_keys:   per-witness
+    \u2514\u2500\u2500 verifying_keys: per-witness
+
+Attestation:
+  commit_hash = SHA-512(state || delta || seal)
+  sig_ed25519 = Ed25519.sign(sk, commit_hash)
+  sig_mldsa65 = MlDsa65.sign(sk, commit_hash)
+  BOTH must verify for a witness attestation to count.</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Security Formalization</div>
+      <p class="gdoc-text">
+        The security model is formalized in Lean 4 under <code>lean/NucleusDB/Security/</code>:
+      </p>
+      <div class="gdoc-module gdoc-module--green">
+        <div class="gdoc-module-header">
+          <code>Security/Assumptions.lean</code> + <code>Security/Reductions.lean</code>
+          <span class="gdoc-module-tag">Cryptographic Assumptions</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p>Formal statement of hash-function collision resistance, binding properties of
+          vector commitments, and computational hardness assumptions. Reduction theorems
+          prove that breaking NucleusDB's integrity requires breaking these underlying primitives.</p>
+        </div>
+      </div>
+
+      <div class="gdoc-module gdoc-module--blue">
+        <div class="gdoc-module-header">
+          <code>Security/CertificateIntegrity.lean</code>
+          <span class="gdoc-module-tag">End-to-End Integrity</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p>Proves that the commit certificate chain provides end-to-end integrity: a valid
+          certificate chain implies that the current state is the unique result of applying
+          every authorized delta in sequence from the genesis state.</p>
+        </div>
+      </div>
+
+      <div class="gdoc-module gdoc-module--amber">
+        <div class="gdoc-module-header">
+          <code>Security/Refinement.lean</code> + <code>Security/ProofGateSpec.lean</code>
+          <span class="gdoc-module-tag">Refinement + Access Control</span>
+        </div>
+        <div class="gdoc-module-body">
+          <p>The refinement module proves that the Rust runtime is a valid refinement of the
+          Lean specification \u2014 every observable behavior of the implementation is permitted
+          by the spec. The proof gate enforces that certain operations (e.g., seal verification,
+          witness validation) must succeed before state transitions are accepted.</p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
+/* ================================================================
+   NUCLEUSDB TAB 3: ACCESS
+   ================================================================ */
+function ndbDocAccess() {
+  return `
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Dashboard Interface</div>
+      <p class="gdoc-text">
+        The <a href="#/nucleusdb" style="color:#c49bff">NucleusDB interactive page</a> provides
+        a full management interface with live data browsing, SQL queries, vector search,
+        seal verification, and access control management. Navigate there via the sidebar.
+      </p>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">CLI Commands</div>
+      <p class="gdoc-text">
+        The <code>nucleusdb</code> CLI provides direct terminal access to the database:
+      </p>
+      <div class="gdoc-code-block">
+        <div class="gdoc-code-title">Interactive REPL</div>
+        <pre class="gdoc-pre gdoc-code">$ nucleusdb repl
+NucleusDB v0.3.0 \u2014 Proof-Carrying Algebraic Database
+Type .help for commands, .quit to exit.
+
+nucleusdb> SET key1 42
+OK (commit #1, seal extended)
+
+nucleusdb> GET key1
+42
+
+nucleusdb> VERIFY key1
+\u2713 Key "key1" verified against Binary Merkle commitment.
+  Value: 42
+  Root:  a3f7c9...d42e
+  Proof: [sibling hashes...]
+
+nucleusdb> SET MODE APPEND_ONLY
+OK \u2014 database locked to append-only mode.</pre>
+      </div>
+      <div class="gdoc-code-block">
+        <div class="gdoc-code-title">SQL surface</div>
+        <pre class="gdoc-pre gdoc-code">$ nucleusdb sql "SELECT * FROM kv WHERE key LIKE 'session.%'"
++------------------+--------+-------+
+| key              | type   | value |
++------------------+--------+-------+
+| session.count    | int    | 14    |
+| session.last_ts  | int    | 1709  |
++------------------+--------+-------+
+
+$ nucleusdb sql "INSERT INTO kv (key, type, value) VALUES ('memo', 'string', 'hello')"
+OK (commit #15, seal extended)</pre>
+      </div>
+      <div class="gdoc-code-block">
+        <div class="gdoc-code-title">Export and verify</div>
+        <pre class="gdoc-pre gdoc-code">$ nucleusdb export --format json > backup.json
+Exported 42 keys to JSON.
+
+$ nucleusdb verify --full
+Verifying seal chain... 15 seals OK.
+Verifying monotone extension... OK.
+Verifying vector commitments... 15/15 verified.
+Verifying witness signatures... 15/15 dual-signed.
+\u2713 Database integrity verified.</pre>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">HTTP API</div>
+      <p class="gdoc-text">
+        The NucleusDB server exposes a REST API (default port 8088, internal to the container):
+      </p>
+      <div class="gdoc-tool-list">
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">GET /nucleusdb/status</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--read">Read</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Returns database existence, backend type, and chain health.
+          </div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">GET /nucleusdb/stats</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--read">Read</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Key count, commit count, database size, type distribution.
+          </div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">POST /nucleusdb/edit</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--guard">Write</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Create or update a key-value pair. Goes through full commit/seal/witness pipeline.
+            Body: <code>{"key": "...", "type": "integer|string|json|vector", "value": ...}</code>
+          </div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">GET /nucleusdb/verify/:key</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--read">Verify</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Verifies a single key against the vector commitment. Returns proof and verification status.
+          </div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">POST /nucleusdb/sql</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--guard">SQL</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Execute a SQL query. Read queries return results; write queries go through the commit pipeline.
+            Body: <code>{"query": "SELECT ..."}</code>
+          </div>
+        </div>
+        <div class="gdoc-tool">
+          <div class="gdoc-tool-header">
+            <div class="gdoc-tool-name">POST /nucleusdb/vector-search</div>
+            <div class="gdoc-tool-badge gdoc-tool-badge--read">Search</div>
+          </div>
+          <div class="gdoc-tool-desc">
+            Similarity search over vector embeddings. Returns top-k nearest neighbors.
+            Body: <code>{"query": [0.1, 0.2, ...], "k": 5, "metric": "cosine"}</code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Rust Source Map</div>
+      <table class="gdoc-source-table">
+        <thead>
+          <tr><th>File</th><th>Role</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>src/state.rs</code></td><td>State + Delta: core algebraic types (Vec&lt;u64&gt; + writes)</td></tr>
+          <tr><td><code>src/immutable.rs</code></td><td>Monotone seal chain: extension, sealing, verification</td></tr>
+          <tr><td><code>src/vc/mod.rs</code></td><td>Vector commitment trait (commit/open/verify/digest)</td></tr>
+          <tr><td><code>src/vc/binary_merkle.rs</code></td><td>Binary Merkle tree VC backend</td></tr>
+          <tr><td><code>src/vc/kzg.rs</code></td><td>KZG polynomial commitment backend</td></tr>
+          <tr><td><code>src/vc/ipa.rs</code></td><td>Inner Product Argument backend</td></tr>
+          <tr><td><code>src/commitment/mod.rs</code></td><td>Commitment policy validation, scheme registry</td></tr>
+          <tr><td><code>src/sheaf/coherence.rs</code></td><td>Sheaf coherence: local sections, conflict detection, gluing</td></tr>
+          <tr><td><code>src/witness.rs</code></td><td>Dual-signed witnesses (Ed25519 + ML-DSA-65), quorum</td></tr>
+          <tr><td><code>src/materialize.rs</code></td><td>State materialization (functorial projection)</td></tr>
+          <tr><td><code>src/keymap.rs</code></td><td>String key \u2194 vector index mapping</td></tr>
+          <tr><td><code>src/typed_value.rs</code></td><td>Rich type layer (int, float, string, json, vector, bytes)</td></tr>
+          <tr><td><code>src/vector_index.rs</code></td><td>Vector similarity search (cosine, L2, inner product)</td></tr>
+          <tr><td><code>src/sql/mod.rs</code></td><td>SQL parser and executor</td></tr>
+          <tr><td><code>src/persistence.rs</code></td><td>Disk persistence (state snapshots, blob store)</td></tr>
+          <tr><td><code>src/security.rs</code></td><td>Security profiles, VC profile selection</td></tr>
+          <tr><td><code>src/audit.rs</code></td><td>Audit log, commit history</td></tr>
+          <tr><td><code>src/api.rs</code></td><td>HTTP API routes (/nucleusdb/*)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="gdoc-section">
+      <div class="gdoc-section-title">Lean Formalization Map</div>
+      <table class="gdoc-source-table">
+        <thead>
+          <tr><th>Module</th><th>Role</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>Core/Nucleus.lean</code></td><td>NucleusSystem category (objects, morphisms, composition)</td></tr>
+          <tr><td><code>Core/Authorization.lean</code></td><td>Authorization policy, typed morphisms</td></tr>
+          <tr><td><code>Core/Certificates.lean</code></td><td>CommitCertificate, constructive witness</td></tr>
+          <tr><td><code>Core/Ledger.lean</code></td><td>Chain complex, inductive ledger verification</td></tr>
+          <tr><td><code>Core/Invariants.lean</code></td><td>Invariant preservation, replay theorem</td></tr>
+          <tr><td><code>Core/SealChain.lean</code></td><td>Seal chain formal model</td></tr>
+          <tr><td><code>Core/NaturalTransformation.lean</code></td><td>Natural transformations between functors</td></tr>
+          <tr><td><code>Sheaf/Coherence.lean</code></td><td>Sheaf gluing axiom, local section agreement</td></tr>
+          <tr><td><code>Sheaf/MaterializationFunctor.lean</code></td><td>Functorial projection, naturality law</td></tr>
+          <tr><td><code>Sheaf/ChainGluing.lean</code></td><td>Chain-level sheaf coherence</td></tr>
+          <tr><td><code>Sheaf/ChainTransport.lean</code></td><td>Structure-preserving maps between chains</td></tr>
+          <tr><td><code>Security/Assumptions.lean</code></td><td>Cryptographic hardness assumptions</td></tr>
+          <tr><td><code>Security/Reductions.lean</code></td><td>Reduction theorems (integrity \u2192 primitives)</td></tr>
+          <tr><td><code>Security/CertificateIntegrity.lean</code></td><td>End-to-end certificate chain integrity</td></tr>
+          <tr><td><code>Security/Refinement.lean</code></td><td>Runtime-to-spec refinement proof</td></tr>
+          <tr><td><code>Security/ProofGateSpec.lean</code></td><td>Mandatory proof gate for state transitions</td></tr>
         </tbody>
       </table>
     </div>
