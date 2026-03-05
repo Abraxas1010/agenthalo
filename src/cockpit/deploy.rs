@@ -301,9 +301,7 @@ fn route_working_dir<'a>(
     requested_dir: Option<&'a str>,
     args: &mut Vec<String>,
 ) -> Option<&'a str> {
-    let Some(dir) = requested_dir.map(str::trim).filter(|d| !d.is_empty()) else {
-        return None;
-    };
+    let dir = requested_dir.map(str::trim).filter(|d| !d.is_empty())?;
     // Not all CLIs support --cwd. Route working-dir by agent capability:
     // - shell: use PTY process cwd directly
     // - claude: supports --cwd flag

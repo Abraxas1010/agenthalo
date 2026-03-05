@@ -141,7 +141,7 @@ fn entry_payload_for_hash(entry: &IdentityLedgerEntry) -> String {
         entry
             .expires_at
             .map(|v| v.to_string())
-            .unwrap_or_else(String::new),
+            .unwrap_or_default(),
         entry.status,
         payload_json,
         entry.genesis_entropy_sha256.as_deref().unwrap_or(""),
@@ -163,7 +163,7 @@ fn entry_payload_for_hash_legacy(entry: &IdentityLedgerEntry) -> String {
         entry
             .expires_at
             .map(|v| v.to_string())
-            .unwrap_or_else(String::new),
+            .unwrap_or_default(),
         entry.status,
         payload_json,
         entry.prev_hash.as_deref().unwrap_or(""),

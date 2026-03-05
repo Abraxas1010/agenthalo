@@ -105,7 +105,7 @@ pub fn hybrid_encap(
     let mut rng = OsRng;
 
     // X25519 ephemeral key agreement
-    let x25519_ephemeral_sk = X25519StaticSecret::random_from_rng(&mut rng);
+    let x25519_ephemeral_sk = X25519StaticSecret::random_from_rng(rng);
     let x25519_ephemeral_pk = X25519PublicKey::from(&x25519_ephemeral_sk);
     let x25519_ss = x25519_ephemeral_sk.diffie_hellman(recipient_x25519_pk);
 
@@ -211,7 +211,7 @@ mod tests {
         let (x25519_sk, x25519_pk, dk) = test_keypair();
         let ek = dk.encapsulation_key();
 
-        let encap = hybrid_encap(&x25519_pk, Some(&ek), TEST_INFO).unwrap();
+        let encap = hybrid_encap(&x25519_pk, Some(ek), TEST_INFO).unwrap();
         assert!(encap.mlkem_ciphertext.is_some());
 
         let decap = hybrid_decap(
@@ -233,8 +233,8 @@ mod tests {
         let ek1 = dk1.encapsulation_key();
         let ek2 = dk2.encapsulation_key();
 
-        let r1 = hybrid_encap(&x25519_pk1, Some(&ek1), TEST_INFO).unwrap();
-        let r2 = hybrid_encap(&x25519_pk2, Some(&ek2), TEST_INFO).unwrap();
+        let r1 = hybrid_encap(&x25519_pk1, Some(ek1), TEST_INFO).unwrap();
+        let r2 = hybrid_encap(&x25519_pk2, Some(ek2), TEST_INFO).unwrap();
 
         assert_ne!(r1.shared_secret, r2.shared_secret);
     }
@@ -244,7 +244,7 @@ mod tests {
         let (_, x25519_pk, dk) = test_keypair();
         let ek = dk.encapsulation_key();
 
-        let r = hybrid_encap(&x25519_pk, Some(&ek), TEST_INFO).unwrap();
+        let r = hybrid_encap(&x25519_pk, Some(ek), TEST_INFO).unwrap();
         assert_eq!(r.mlkem_ciphertext.as_ref().unwrap().len(), 1088);
     }
 
@@ -281,7 +281,7 @@ mod tests {
         let (x25519_sk, x25519_pk, dk) = test_keypair();
         let ek = dk.encapsulation_key();
 
-        let encap = hybrid_encap(&x25519_pk, Some(&ek), TEST_INFO).unwrap();
+        let encap = hybrid_encap(&x25519_pk, Some(ek), TEST_INFO).unwrap();
         let mut tampered_ct = encap.mlkem_ciphertext.clone().unwrap();
         tampered_ct[0] ^= 0xFF;
 

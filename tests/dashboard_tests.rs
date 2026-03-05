@@ -1,4 +1,5 @@
 //! Tests for the dashboard API security and correctness.
+#![allow(clippy::await_holding_lock)]
 
 use nucleusdb::cli::default_witness_cfg;
 use nucleusdb::dashboard::api::api_router;
@@ -3354,4 +3355,69 @@ async fn api_p2pclaw_briefing_requires_authentication() {
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn api_orchestrator_routes_return_json() {
+    let _guard = env_lock().lock().expect("lock env");
+    let (state, db_path) = test_state("api_orchestrator_routes");
+
+    let (s_agents, v_agents) = api_get(state.clone(), "/orchestrator/agents").await;
+    assert_eq!(s_agents, StatusCode::OK, "agents route failed: {v_agents}");
+    assert!(v_agents["agents"].is_array());
+
+    let (s_tasks, v_tasks) = api_get(state.clone(), "/orchestrator/tasks").await;
+    assert_eq!(s_tasks, StatusCode::OK, "tasks route failed: {v_tasks}");
+    assert!(v_tasks["tasks"].is_array());
+
+    let (s_graph, v_graph) = api_get(state, "/orchestrator/graph").await;
+    assert_eq!(s_graph, StatusCode::OK, "graph route failed: {v_graph}");
+    assert!(v_graph["graph"].is_object());
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_orchestrator_launch_and_task_shell_roundtrip() {
+    let _guard = env_lock().lock().expect("lock env");
+    let (state, db_path) = test_state("api_orchestrator_launch_task");
+
+    let (s_launch, v_launch) = api_post(
+        state.clone(),
+        "/orchestrator/launch",
+        json!({
+            "agent":"shell",
+            "agent_name":"dash-shell",
+            "timeout_secs":30,
+            "trace":false,
+            "capabilities":["memory_read","memory_write"]
+        }),
+    )
+    .await;
+    assert_eq!(s_launch, StatusCode::OK, "launch failed: {v_launch}");
+    let agent_id = v_launch["agent_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(!agent_id.is_empty());
+
+    let (s_task, v_task) = api_post(
+        state.clone(),
+        "/orchestrator/task",
+        json!({
+            "agent_id": agent_id,
+            "task":"printf 'dashboard-orchestrator'",
+            "wait": true,
+            "timeout_secs": 30
+        }),
+    )
+    .await;
+    assert_eq!(s_task, StatusCode::OK, "task failed: {v_task}");
+    assert_eq!(v_task["task"]["status"], "complete");
+    assert!(v_task["task"]["result"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("dashboard-orchestrator"));
+
+    let _ = std::fs::remove_file(&db_path);
 }

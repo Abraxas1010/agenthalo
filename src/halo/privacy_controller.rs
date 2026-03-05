@@ -9,23 +9,13 @@ pub enum PrivacyLevel {
     None,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PrivacyConfig {
     pub force_level: Option<PrivacyLevel>,
     #[serde(default)]
     pub always_maximum: Vec<String>,
     #[serde(default)]
     pub always_none: Vec<String>,
-}
-
-impl Default for PrivacyConfig {
-    fn default() -> Self {
-        Self {
-            force_level: None,
-            always_maximum: Vec::new(),
-            always_none: Vec::new(),
-        }
-    }
 }
 
 impl PrivacyConfig {

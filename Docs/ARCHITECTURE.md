@@ -231,6 +231,39 @@ Browser (xterm.js)  ←WebSocket→  ws_bridge.rs  ←broadcast→  PtySession  
 
 **Master plan reference:** `WIP/cockpit_master_plan_2026-02-25.md`
 
+### 5.5 Orchestrator Subsystem (`src/orchestrator/`)
+
+The orchestrator is an in-process multi-agent coordinator built on top of
+`PtyManager` and HALO tracing. It provides explicit agent lifecycle, task
+execution, piped task DAGs, and mesh delegation helpers.
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `orchestrator` | `orchestrator/mod.rs` | Public orchestration API and shared state (`launch`, `task`, `pipe`, `stop`, list/snapshot) |
+| `agent_pool` | `orchestrator/agent_pool.rs` | Managed agent sessions with allowlisted CLIs + capability checks |
+| `task` | `orchestrator/task.rs` | Task model and status transitions (`pending/running/complete/failed/timeout`) |
+| `task_graph` | `orchestrator/task_graph.rs` | DAG edges, transform parsing/apply, cycle rejection |
+| `trace_bridge` | `orchestrator/trace_bridge.rs` | PTY output stream to HALO trace events + telemetry/cost accumulation |
+| `a2a` | `orchestrator/a2a.rs` | Remote mesh delegation wrapper for orchestrator tasks |
+
+Orchestrator MCP tools (`src/mcp/tools.rs`):
+- `orchestrator_launch`
+- `orchestrator_send_task`
+- `orchestrator_get_result`
+- `orchestrator_pipe`
+- `orchestrator_list`
+- `orchestrator_stop`
+
+Dashboard routes (`src/dashboard/api.rs`):
+- `GET /api/orchestrator/agents`
+- `GET /api/orchestrator/tasks`
+- `GET /api/orchestrator/graph`
+- `POST /api/orchestrator/launch`
+- `POST /api/orchestrator/task`
+- `POST /api/orchestrator/pipe`
+- `POST /api/orchestrator/stop`
+- `GET /api/orchestrator/agents/{id}/ws`
+
 ## 6. Dashboard (`src/dashboard/` + `dashboard/`)
 
 ### 6.1 Server Side

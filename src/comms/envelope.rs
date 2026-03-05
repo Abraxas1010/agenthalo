@@ -8,6 +8,25 @@ use crate::comms::didcomm::{
 };
 use crate::halo::did::{DIDDocument, DIDIdentity};
 use crate::pod::capability::CapabilityToken;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OrchestratorTaskEnvelope {
+    pub task_id: String,
+    pub source_agent_id: String,
+    pub target_agent_id: String,
+    pub prompt: String,
+    pub timeout_secs: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OrchestratorResultEnvelope {
+    pub task_id: String,
+    pub status: String,
+    pub result: Option<String>,
+    pub error: Option<String>,
+    pub exit_code: Option<i32>,
+}
 
 /// Generate a deterministic-ish unique message ID from timestamp + pid.
 pub fn generate_message_id() -> String {
@@ -129,6 +148,78 @@ pub fn unwrap_mcp_response(
         }
         other => Err(format!("expected McpToolResponse, got {other:?}")),
     }
+}
+
+/// Wrap an orchestrator task dispatch as DIDComm McpToolCall payload.
+pub fn wrap_orchestrator_task(
+    sender: &DIDIdentity,
+    recipient_doc: &DIDDocument,
+    task: &OrchestratorTaskEnvelope,
+    capabilities: &[CapabilityToken],
+) -> Result<DIDCommEnvelope, String> {
+    let caps: Vec<serde_json::Value> = capabilities
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("serialize capability token(s): {e}"))?;
+    wrap_mcp_call(
+        sender,
+        recipient_doc,
+        "orchestrator_send_task",
+        serde_json::json!({
+            "agent_id": task.target_agent_id,
+            "task": task.prompt,
+            "wait": true,
+            "timeout_secs": task.timeout_secs,
+            "orchestrator_task_id": task.task_id,
+            "capability_tokens": caps,
+        }),
+    )
+}
+
+/// Decode a normalized orchestrator result from MCP/DIDComm tool result content.
+pub fn unwrap_orchestrator_result(
+    result: serde_json::Value,
+) -> Result<OrchestratorResultEnvelope, String> {
+    // Supports direct orchestrator response as well as MCP structured content wrappers.
+    if let Ok(parsed) = serde_json::from_value::<OrchestratorResultEnvelope>(result.clone()) {
+        return Ok(parsed);
+    }
+    if let Some(sc) = result.get("structuredContent") {
+        if let Ok(parsed) = serde_json::from_value::<OrchestratorResultEnvelope>(sc.clone()) {
+            return Ok(parsed);
+        }
+    }
+    let task_id = result
+        .get("task_id")
+        .or_else(|| result.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let status = result
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("failed")
+        .to_string();
+    let result_text = result
+        .get("result")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let error = result
+        .get("error")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let exit_code = result
+        .get("exit_code")
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32);
+    Ok(OrchestratorResultEnvelope {
+        task_id,
+        status,
+        result: result_text,
+        error,
+        exit_code,
+    })
 }
 
 /// Wrap a ProofEnvelope in a DIDComm message.

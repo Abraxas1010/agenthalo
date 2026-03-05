@@ -874,6 +874,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)]
     async fn didcomm_mcp_tool_call_executes_local_tool_under_default_auth() {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let workspace = tempdir().expect("tempdir");
@@ -984,6 +985,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)]
     async fn didcomm_mcp_tool_call_without_capability_returns_forbidden_payload() {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let workspace = tempdir().expect("tempdir");
@@ -1072,6 +1074,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)]
     async fn didcomm_sender_did_binding_mismatch_is_rejected() {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let workspace = tempdir().expect("tempdir");

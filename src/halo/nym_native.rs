@@ -52,38 +52,38 @@ impl Default for NativeMixnetConfig {
 
 impl NativeMixnetConfig {
     pub fn from_env() -> Self {
-        let mut cfg = Self::default();
-        cfg.enabled = std::env::var("NYM_NATIVE_ENABLED")
-            .ok()
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false);
-        cfg.requested_gateway = std::env::var("NYM_NATIVE_GATEWAY")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
-        cfg.include_surbs = std::env::var("NYM_SURBS")
-            .ok()
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or(32);
-        cfg.cover_traffic_interval_secs = std::env::var("NYM_COVER_TRAFFIC_SECS")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(0);
-        cfg.register_inbound = std::env::var("NYM_REGISTER_INBOUND")
-            .ok()
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(true);
-        cfg
+        Self {
+            enabled: std::env::var("NYM_NATIVE_ENABLED")
+                .ok()
+                .map(|v| {
+                    matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )
+                })
+                .unwrap_or(false),
+            requested_gateway: std::env::var("NYM_NATIVE_GATEWAY")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            include_surbs: std::env::var("NYM_SURBS")
+                .ok()
+                .and_then(|v| v.trim().parse::<u32>().ok())
+                .unwrap_or(32),
+            cover_traffic_interval_secs: std::env::var("NYM_COVER_TRAFFIC_SECS")
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(0),
+            register_inbound: std::env::var("NYM_REGISTER_INBOUND")
+                .ok()
+                .map(|v| {
+                    matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )
+                })
+                .unwrap_or(true),
+        }
     }
 }
 

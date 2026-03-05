@@ -60,7 +60,7 @@ const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
   identification: renderIdentificationPage, communication: renderCommunicationPage, 'nucleusdb-docs': renderNucleusDBDocsPage,
   networking: renderNetworkingPage,
-  trust: renderTrust, nucleusdb: renderNucleusDB, cockpit: renderCockpit, deploy: renderDeploy };
+  trust: renderTrust, nucleusdb: renderNucleusDB, orchestrator: renderOrchestrator, cockpit: renderCockpit, deploy: renderDeploy };
 
 const NETWORKS = [
   {
@@ -4272,6 +4272,30 @@ function renderCockpit() {
       <div class="card" style="padding:2rem;text-align:center;color:var(--amber);">
         <p style="font-size:1.5rem;">&#9654; Cockpit unavailable</p>
         <p style="margin-top:1rem;color:var(--text-dim);">cockpit.js failed to load.</p>
+      </div>`;
+  }
+}
+
+// =============================================================================
+// PAGE: Orchestrator
+// =============================================================================
+function renderOrchestrator() {
+  content.innerHTML = `
+    <div class="page-header">
+      <h1>Orchestrator</h1>
+      <p class="subtitle">Launch, task, and monitor managed agent sessions</p>
+    </div>
+    <div id="orchestrator-root"></div>
+  `;
+
+  const root = document.getElementById('orchestrator-root');
+  if (window.OrchestratorPage && typeof window.OrchestratorPage.render === 'function') {
+    window.OrchestratorPage.render(root);
+  } else {
+    root.innerHTML = `
+      <div class="card" style="padding:2rem;text-align:center;color:var(--amber);">
+        <p style="font-size:1.5rem;">&#9881; Orchestrator unavailable</p>
+        <p style="margin-top:1rem;color:var(--text-dim);">orchestrator.js failed to load.</p>
       </div>`;
   }
 }

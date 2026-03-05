@@ -3542,7 +3542,7 @@ fn tool_identity_pod_share(arguments: Value) -> Result<Value, String> {
         let hex = grantee_hex
             .as_deref()
             .ok_or_else(|| "grantee_puf_hex is required when require_grants=true".to_string())?;
-        let grantee = decode_hex_32_mcp(&hex)?;
+        let grantee = decode_hex_32_mcp(hex)?;
         let grants = load_grants_for_mcp();
         nucleusdb::pod::identity_share::filter_records_by_grants(&selected, &grants, &grantee)
     } else {
@@ -4575,7 +4575,7 @@ fn tool_zk_prove_credential(arguments: Value) -> Result<Value, String> {
         .unwrap_or_else(now_unix_secs);
 
     let (pk, _vk) = cached_credential_keypair()?;
-    let bundle = zk_credential::prove_credential(&pk, &grant, grantee_did, requested, now)?;
+    let bundle = zk_credential::prove_credential(pk, &grant, grantee_did, requested, now)?;
     Ok(json!({
         "status": "ok",
         "proof_bundle": bundle,
@@ -4591,7 +4591,7 @@ fn tool_zk_verify_credential(arguments: Value) -> Result<Value, String> {
     let bundle: zk_credential::CredentialProofBundle =
         serde_json::from_value(bundle_value).map_err(|e| format!("parse proof_bundle: {e}"))?;
     let (_pk, vk) = cached_credential_keypair()?;
-    let verified = zk_credential::verify_credential_proof(&vk, &bundle)?;
+    let verified = zk_credential::verify_credential_proof(vk, &bundle)?;
     Ok(json!({
         "status": "ok",
         "verified": verified,
@@ -4628,7 +4628,7 @@ fn tool_zk_prove_anonymous_membership(arguments: Value) -> Result<Value, String>
 
     let (pk, _vk) = cached_credential_keypair()?;
     let bundle = zk_credential::prove_anonymous_membership(
-        &pk,
+        pk,
         &grant,
         grantee_did,
         requested,
@@ -4650,7 +4650,7 @@ fn tool_zk_verify_anonymous_membership(arguments: Value) -> Result<Value, String
     let bundle: zk_credential::AnonymousCredentialProofBundle =
         serde_json::from_value(bundle_value).map_err(|e| format!("parse proof_bundle: {e}"))?;
     let (_pk, vk) = cached_credential_keypair()?;
-    let verified = zk_credential::verify_anonymous_membership_proof(&vk, &bundle)?;
+    let verified = zk_credential::verify_anonymous_membership_proof(vk, &bundle)?;
     Ok(json!({
         "status": "ok",
         "verified": verified,
@@ -5010,6 +5010,7 @@ fn parse_tx_hash(raw: &str) -> Option<String> {
         .map(|tok| tok.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_onchain_workflow_call(
     function_signature: &str,
     function_args: Vec<String>,
@@ -6533,8 +6534,10 @@ fn tool_nucleusdb_container_launch(arguments: Value) -> Result<Value, String> {
         .map(std::path::PathBuf::from);
     let env_vars = req.env.into_iter().collect::<Vec<(String, String)>>();
     let mesh = req.mesh.map(|cfg| {
-        let mut mesh_cfg = nucleusdb::container::MeshConfig::default();
-        mesh_cfg.enabled = cfg.enabled.unwrap_or(true);
+        let mut mesh_cfg = nucleusdb::container::MeshConfig {
+            enabled: cfg.enabled.unwrap_or(true),
+            ..nucleusdb::container::MeshConfig::default()
+        };
         if let Some(port) = cfg.mcp_port {
             mesh_cfg.mcp_port = port;
         }
@@ -7620,6 +7623,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)]
     async fn didcomm_receive_executes_local_tool_call() {
         use axum::routing::get;
         use axum::{Json, Router};
@@ -7743,6 +7747,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)]
     async fn didcomm_receive_rejects_tool_call_without_capability_grant() {
         use axum::routing::get;
         use axum::{Json, Router};

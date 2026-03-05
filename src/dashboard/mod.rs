@@ -47,6 +47,8 @@ pub struct DashboardState {
     /// Cached NucleusDB snapshot for memory endpoints to avoid per-request
     /// deserialize cost. Refreshed on-disk fingerprint changes.
     pub memory_db_cache: Arc<StdMutex<MemoryDbCache>>,
+    /// In-process orchestrator for launching and managing CLI agent tasks.
+    pub orchestrator: Arc<crate::orchestrator::Orchestrator>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +81,12 @@ impl CryptoState {
             session: crate::halo::session_manager::SessionManager::new(),
             migration_status: crate::halo::migration::detect_migration_status(),
         }
+    }
+}
+
+impl Default for CryptoState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -128,6 +136,13 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
     let proxy_config = crate::halo::pricing::load_proxy_config();
     let pricing_table = crate::halo::pricing::default_pricing();
 
+    let pty_manager = Arc::new(crate::cockpit::pty_manager::PtyManager::new(10));
+    let orchestrator = Arc::new(crate::orchestrator::Orchestrator::new(
+        pty_manager.clone(),
+        vault.clone(),
+        db_path.clone(),
+    ));
+
     DashboardState {
         db_path,
         credentials_path,
@@ -135,7 +150,7 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         grant_store,
         grant_store_path,
         vault,
-        pty_manager: Arc::new(crate::cockpit::pty_manager::PtyManager::new(10)),
+        pty_manager,
         key_store,
         wdk_manager: Arc::new(StdMutex::new(crate::halo::wdk_proxy::WdkManager::new())),
         wdk_unlock_state: Arc::new(StdMutex::new(WdkUnlockState::default())),
@@ -144,6 +159,7 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         pricing_table,
         memory_store: Arc::new(crate::memory::MemoryStore::default()),
         memory_db_cache: Arc::new(StdMutex::new(MemoryDbCache::default())),
+        orchestrator,
     }
 }
 

@@ -378,15 +378,14 @@ pub fn submit_certificate(path: &Path) -> Result<PathBuf, String> {
         ));
     }
 
-    if verification.metadata.signature_ed25519.is_some()
-        || verification.metadata.signing_key_multibase.is_some()
+    if (verification.metadata.signature_ed25519.is_some()
+        || verification.metadata.signing_key_multibase.is_some())
+        && verification.metadata.signature_valid != Some(true)
     {
-        if verification.metadata.signature_valid != Some(true) {
-            return Err(format!(
-                "certificate {} has invalid Ed25519 signature metadata",
-                path.display()
-            ));
-        }
+        return Err(format!(
+            "certificate {} has invalid Ed25519 signature metadata",
+            path.display()
+        ));
     }
 
     if let (Some(cert_did), Some(local)) = (

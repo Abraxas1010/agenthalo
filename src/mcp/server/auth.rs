@@ -122,6 +122,12 @@ impl ToolScope {
             "mesh_call" | "mesh_exchange_envelope" => Self::Write,
             // Mesh network (grant: capability delegation)
             "mesh_grant" => Self::TrustAttest,
+            // Orchestrator agent lifecycle
+            "orchestrator_list" | "orchestrator_get_result" => Self::Read,
+            "orchestrator_launch"
+            | "orchestrator_send_task"
+            | "orchestrator_pipe"
+            | "orchestrator_stop" => Self::Container,
             // Unknown tools default to most restrictive
             _ => Self::TrustAttest,
         }

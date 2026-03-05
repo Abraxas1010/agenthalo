@@ -52,6 +52,7 @@ use crate::verifier::gate as proof_gate;
 use crate::witness::WitnessSignatureAlgorithm;
 use crate::VcBackend;
 
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State as AxumState};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -59,9 +60,11 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bip39::{Language, Mnemonic};
+use futures_util::SinkExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
@@ -98,6 +101,14 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/costs/by-model", get(api_costs_by_model))
         .route("/costs/paid", get(api_costs_paid))
         .route("/networking/available", get(api_networking_available))
+        .route("/orchestrator/agents", get(api_orch_agents))
+        .route("/orchestrator/tasks", get(api_orch_tasks))
+        .route("/orchestrator/graph", get(api_orch_graph))
+        .route("/orchestrator/launch", post(api_orch_launch))
+        .route("/orchestrator/task", post(api_orch_task))
+        .route("/orchestrator/pipe", post(api_orch_pipe))
+        .route("/orchestrator/stop", post(api_orch_stop))
+        .route("/orchestrator/agents/{id}/ws", get(ws_orch_agent_output))
         .route("/addons", get(api_addons_get).post(api_addons_post))
         .route("/p2pclaw/configure", post(api_p2pclaw_configure))
         .route("/p2pclaw/status", get(api_p2pclaw_status))
@@ -682,6 +693,41 @@ pub struct AgentAuthorizeRequest {
 #[derive(Deserialize)]
 pub struct AgentRevokeRequest {
     agent_id: String,
+}
+
+#[derive(Deserialize)]
+struct OrchestratorLaunchApiRequest {
+    agent: String,
+    agent_name: Option<String>,
+    working_dir: Option<String>,
+    #[serde(default)]
+    env: std::collections::BTreeMap<String, String>,
+    timeout_secs: Option<u64>,
+    trace: Option<bool>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct OrchestratorTaskApiRequest {
+    agent_id: String,
+    task: String,
+    timeout_secs: Option<u64>,
+    wait: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct OrchestratorPipeApiRequest {
+    source_task_id: String,
+    target_agent_id: String,
+    transform: Option<String>,
+    task_prefix: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OrchestratorStopApiRequest {
+    agent_id: String,
+    force: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3859,6 +3905,199 @@ async fn api_networking_available(AxumState(_state): AxumState<DashboardState>) 
     })))
 }
 
+async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let agents = state.orchestrator.list_agents().await;
+    let data: Vec<Value> = agents
+        .into_iter()
+        .map(|a| {
+            json!({
+                "agent_id": a.agent_id,
+                "agent_name": a.agent_name,
+                "agent_type": a.agent_type,
+                "status": match a.status {
+                    crate::orchestrator::agent_pool::AgentStatus::Idle => "idle",
+                    crate::orchestrator::agent_pool::AgentStatus::Busy { .. } => "busy",
+                    crate::orchestrator::agent_pool::AgentStatus::Stopped { .. } => "stopped",
+                },
+                "tasks_completed": a.tasks_completed,
+                "total_cost_usd": a.total_cost_usd,
+                "capabilities": a.capabilities,
+                "launched_at": a.launched_at,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "agents": data })))
+}
+
+async fn api_orch_tasks(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let tasks = state.orchestrator.list_tasks().await;
+    Ok(Json(json!({ "tasks": tasks })))
+}
+
+async fn api_orch_graph(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let graph = state.orchestrator.graph_snapshot().await;
+    Ok(Json(json!({ "graph": graph })))
+}
+
+async fn api_orch_launch(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<OrchestratorLaunchApiRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let launched = state
+        .orchestrator
+        .launch_agent(crate::orchestrator::LaunchAgentRequest {
+            agent: req.agent,
+            agent_name: req.agent_name.unwrap_or_else(|| "agent".to_string()),
+            working_dir: req.working_dir,
+            env: req.env,
+            timeout_secs: req.timeout_secs.unwrap_or(600),
+            trace: req.trace.unwrap_or(true),
+            capabilities: req.capabilities,
+        })
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "agent_id": launched.agent_id,
+        "status": "running",
+        "agent_name": launched.agent_name,
+        "agent_type": launched.agent_type,
+        "capabilities": launched.capabilities,
+    })))
+}
+
+async fn api_orch_task(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<OrchestratorTaskApiRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let task = state
+        .orchestrator
+        .send_task(crate::orchestrator::SendTaskRequest {
+            agent_id: req.agent_id,
+            task: req.task,
+            timeout_secs: req.timeout_secs,
+            wait: req.wait.unwrap_or(true),
+        })
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({ "task": task })))
+}
+
+async fn api_orch_pipe(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<OrchestratorPipeApiRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let submitted = state
+        .orchestrator
+        .pipe(crate::orchestrator::PipeRequest {
+            source_task_id: req.source_task_id.clone(),
+            target_agent_id: req.target_agent_id.clone(),
+            transform: req.transform,
+            task_prefix: req.task_prefix,
+        })
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "source_task_id": req.source_task_id,
+        "target_agent_id": req.target_agent_id,
+        "status": if submitted.is_some() { "running" } else { "linked" },
+        "task_id": submitted.map(|t| t.task_id),
+    })))
+}
+
+async fn api_orch_stop(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<OrchestratorStopApiRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let stopped = state
+        .orchestrator
+        .stop_agent(crate::orchestrator::StopRequest {
+            agent_id: req.agent_id,
+            force: req.force.unwrap_or(false),
+        })
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "agent_id": stopped.agent_id,
+        "status": stopped.status,
+        "trace_session_id": stopped.trace_session_id,
+        "attestation_ready": stopped.attestation_ready,
+    })))
+}
+
+async fn ws_orch_agent_output(
+    ws: WebSocketUpgrade,
+    Path(agent_id): Path<String>,
+    AxumState(state): AxumState<DashboardState>,
+) -> Response {
+    if let Err((status, body)) = require_sensitive_access(&state) {
+        return (status, body).into_response();
+    }
+    let Some(session) = state.orchestrator.current_agent_session(&agent_id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"orchestrator agent session not found"})),
+        )
+            .into_response();
+    };
+    ws.on_upgrade(move |socket| async move {
+        handle_orch_ws(socket, session).await;
+    })
+    .into_response()
+}
+
+async fn handle_orch_ws(socket: WebSocket, session: Arc<crate::cockpit::pty_manager::PtySession>) {
+    let (mut tx, mut rx) = futures_util::StreamExt::split(socket);
+    let mut out_rx = session.subscribe_output();
+    loop {
+        tokio::select! {
+            outbound = out_rx.recv() => {
+                match outbound {
+                    Ok(crate::cockpit::pty_manager::SessionEvent::Output(bytes)) => {
+                        if tx.send(Message::Binary(bytes.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(crate::cockpit::pty_manager::SessionEvent::Status(status)) => {
+                        let msg = json!({"type":"status","status": format!("{status:?}")}).to_string();
+                        if tx.send(Message::Text(msg.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            inbound = futures_util::StreamExt::next(&mut rx) => {
+                match inbound {
+                    Some(Ok(Message::Text(text))) => {
+                        if session.write_input(text.as_bytes()).is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if session.write_input(&bytes).is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Ping(payload))) => {
+                        let _ = tx.send(Message::Pong(payload)).await;
+                    }
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(Message::Pong(_))) => {}
+                }
+            }
+        }
+    }
+    let _ = tx.close().await;
+}
+
 async fn api_addons_get(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let addons_cfg = addons::load_or_default();
     Ok(Json(json!({
@@ -5267,7 +5506,7 @@ async fn api_proxy_chat(
         tokio::task::spawn_blocking(move || {
             let stream_result =
                 proxy::proxy_chat_stream_sync(&vault, &req_for_proxy, |data_payload| {
-                    tx.send(Ok(Event::default().data(data_payload.to_string())))
+                    tx.send(Ok(Event::default().data(data_payload)))
                         .map_err(|_| "stream receiver dropped".to_string())
                 });
             match stream_result {
@@ -5395,7 +5634,7 @@ async fn api_metered_proxy_chat(
                 &pricing_table,
                 markup_pct,
                 |data_payload| {
-                    tx.send(Ok(Event::default().data(data_payload.to_string())))
+                    tx.send(Ok(Event::default().data(data_payload)))
                         .map_err(|_| "stream receiver dropped".to_string())
                 },
             );
@@ -7185,8 +7424,12 @@ fn cli_agent_meta(agent: &str) -> Option<CliAgentMeta> {
 
 /// GET /api/cli/detect/{agent} — check if a CLI is installed on the host.
 async fn api_cli_detect(Path(agent): Path<String>) -> ApiResult {
-    let meta = cli_agent_meta(&agent)
-        .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, &format!("unknown CLI agent `{agent}`")))?;
+    let meta = cli_agent_meta(&agent).ok_or_else(|| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("unknown CLI agent `{agent}`"),
+        )
+    })?;
     let installed = tokio::task::spawn_blocking({
         let cmd = meta.detect_cmd.to_string();
         move || {
@@ -7229,8 +7472,12 @@ async fn api_cli_install(
     Path(agent): Path<String>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let meta = cli_agent_meta(&agent)
-        .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, &format!("unknown CLI agent `{agent}`")))?;
+    let meta = cli_agent_meta(&agent).ok_or_else(|| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("unknown CLI agent `{agent}`"),
+        )
+    })?;
     let cmd = meta.install_cmd.to_string();
     let args: Vec<String> = meta.install_args.iter().map(|s| s.to_string()).collect();
     let result = tokio::task::spawn_blocking(move || {
@@ -7241,8 +7488,18 @@ async fn api_cli_install(
             .output()
     })
     .await
-    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("join error: {e}")))?
-    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("install failed: {e}")))?;
+    .map_err(|e| {
+        api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("join error: {e}"),
+        )
+    })?
+    .map_err(|e| {
+        api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("install failed: {e}"),
+        )
+    })?;
 
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
@@ -7264,14 +7521,31 @@ async fn api_cli_auth(
     Path(agent): Path<String>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let meta = cli_agent_meta(&agent)
-        .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, &format!("unknown CLI agent `{agent}`")))?;
+    let meta = cli_agent_meta(&agent).ok_or_else(|| {
+        api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("unknown CLI agent `{agent}`"),
+        )
+    })?;
     let cmd = meta.auth_cmd.to_string();
     let args: Vec<String> = meta.auth_args.iter().map(|s| s.to_string()).collect();
     let id = state
         .pty_manager
-        .create_session(&cmd, &args, vec![], None, 120, 24, Some(format!("{agent}-auth")))
-        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("failed to start auth: {e}")))?;
+        .create_session(
+            &cmd,
+            &args,
+            vec![],
+            None,
+            120,
+            24,
+            Some(format!("{agent}-auth")),
+        )
+        .map_err(|e| {
+            api_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("failed to start auth: {e}"),
+            )
+        })?;
     Ok(Json(json!({
         "agent": agent,
         "session_id": id,
@@ -7311,8 +7585,18 @@ async fn api_openclaw_gateway_status() -> ApiResult {
             .output()
     })
     .await
-    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("join error: {e}")))?
-    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("status check failed: {e}")))?;
+    .map_err(|e| {
+        api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("join error: {e}"),
+        )
+    })?
+    .map_err(|e| {
+        api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("status check failed: {e}"),
+        )
+    })?;
 
     let stdout = String::from_utf8_lossy(&status_output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&status_output.stderr).to_string();
@@ -7329,9 +7613,7 @@ async fn api_openclaw_gateway_status() -> ApiResult {
 /// POST /api/openclaw/wire-mcp — inject NucleusDB + HALO MCP server configs
 /// into the user's `~/.openclaw/openclaw.json` so OpenClaw agents can call
 /// all NucleusDB tools via stdio transport.
-async fn api_openclaw_wire_mcp(
-    AxumState(state): AxumState<DashboardState>,
-) -> ApiResult {
+async fn api_openclaw_wire_mcp(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
 
     let result = tokio::task::spawn_blocking(|| {
@@ -7411,7 +7693,12 @@ async fn api_openclaw_wire_mcp(
         }))
     })
     .await
-    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("join error: {e}")))?
+    .map_err(|e| {
+        api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("join error: {e}"),
+        )
+    })?
     .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
 
     Ok(Json(json!({

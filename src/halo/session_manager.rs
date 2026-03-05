@@ -314,7 +314,7 @@ mod tests {
         let mut sm = SessionManager::new();
         let now = now_unix();
         sm.record_failed_attempt(now);
-        assert!(sm.locked_until_unix() >= now + 1);
+        assert!(sm.locked_until_unix() > now);
         sm.record_failed_attempt(now + 2);
         assert!(sm.failed_attempts() >= 2);
     }

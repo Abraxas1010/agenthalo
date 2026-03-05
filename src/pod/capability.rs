@@ -157,6 +157,7 @@ fn delegation_chain_valid(token: &CapabilityToken) -> bool {
 }
 
 /// Create a capability token signed by the grantor DID identity.
+#[allow(clippy::too_many_arguments)]
 pub fn create_capability(
     grantor: &DIDIdentity,
     grantee_did: &str,

@@ -4460,9 +4460,9 @@ fn cmd_harness(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "install" => {
-            let agent = args.get(1).ok_or(
-                "usage: agenthalo harness install <claude|codex|gemini|openclaw>",
-            )?;
+            let agent = args
+                .get(1)
+                .ok_or("usage: agenthalo harness install <claude|codex|gemini|openclaw>")?;
             let pkg = match agent.as_str() {
                 "claude" => "@anthropic-ai/claude-code",
                 "codex" => "@openai/codex",
@@ -4478,7 +4478,10 @@ fn cmd_harness(args: &[String]) -> Result<(), String> {
             if status.success() {
                 println!("  OK — {agent} installed.");
             } else {
-                return Err(format!("npm install failed with exit code {:?}", status.code()));
+                return Err(format!(
+                    "npm install failed with exit code {:?}",
+                    status.code()
+                ));
             }
             Ok(())
         }
@@ -4499,30 +4502,42 @@ fn cmd_harness(args: &[String]) -> Result<(), String> {
                 serde_json::json!({})
             };
 
-            let ndb_cmd = which_path("nucleusdb-mcp").unwrap_or_else(|| "nucleusdb-mcp".to_string());
-            let halo_cmd = which_path("agenthalo-mcp-server").unwrap_or_else(|| "agenthalo-mcp-server".to_string());
+            let ndb_cmd =
+                which_path("nucleusdb-mcp").unwrap_or_else(|| "nucleusdb-mcp".to_string());
+            let halo_cmd = which_path("agenthalo-mcp-server")
+                .unwrap_or_else(|| "agenthalo-mcp-server".to_string());
 
             let ndb_entry = serde_json::json!({ "command": ndb_cmd, "args": [] });
             let halo_entry = serde_json::json!({ "command": halo_cmd, "args": [] });
 
-            let agents = config.as_object_mut().ok_or("config root is not an object")?
-                .entry("agents").or_insert_with(|| serde_json::json!({}));
-            let defaults = agents.as_object_mut().ok_or("agents is not an object")?
-                .entry("defaults").or_insert_with(|| serde_json::json!({}));
-            let mcp_servers = defaults.as_object_mut().ok_or("defaults is not an object")?
-                .entry("mcpServers").or_insert_with(|| serde_json::json!({}));
-            let servers = mcp_servers.as_object_mut().ok_or("mcpServers is not an object")?;
+            let agents = config
+                .as_object_mut()
+                .ok_or("config root is not an object")?
+                .entry("agents")
+                .or_insert_with(|| serde_json::json!({}));
+            let defaults = agents
+                .as_object_mut()
+                .ok_or("agents is not an object")?
+                .entry("defaults")
+                .or_insert_with(|| serde_json::json!({}));
+            let mcp_servers = defaults
+                .as_object_mut()
+                .ok_or("defaults is not an object")?
+                .entry("mcpServers")
+                .or_insert_with(|| serde_json::json!({}));
+            let servers = mcp_servers
+                .as_object_mut()
+                .ok_or("mcpServers is not an object")?;
 
             servers.insert("nucleusdb".to_string(), ndb_entry);
             servers.insert("agenthalo".to_string(), halo_entry);
 
-            let serialized = serde_json::to_string_pretty(&config)
-                .map_err(|e| format!("serialize: {e}"))?;
+            let serialized =
+                serde_json::to_string_pretty(&config).map_err(|e| format!("serialize: {e}"))?;
             let tmp = config_path.with_extension("json.tmp");
             std::fs::write(&tmp, &serialized)
                 .map_err(|e| format!("write {}: {e}", tmp.display()))?;
-            std::fs::rename(&tmp, &config_path)
-                .map_err(|e| format!("rename: {e}"))?;
+            std::fs::rename(&tmp, &config_path).map_err(|e| format!("rename: {e}"))?;
 
             println!();
             println!("  MCP servers wired into {}", config_path.display());
@@ -4568,11 +4583,15 @@ fn cmd_harness(args: &[String]) -> Result<(), String> {
             println!("  install <claude|codex|gemini|openclaw>");
             println!("                                   Install an agent CLI via npm");
             println!("  wire-mcp                         Wire NucleusDB + HALO MCP servers into OpenClaw config");
-            println!("  gateway-status                   Check if OpenClaw gateway daemon is running");
+            println!(
+                "  gateway-status                   Check if OpenClaw gateway daemon is running"
+            );
             println!("  help                             Show this help");
             Ok(())
         }
-        other => Err(format!("unknown harness subcommand: {other}. Run `agenthalo harness help`.")),
+        other => Err(format!(
+            "unknown harness subcommand: {other}. Run `agenthalo harness help`."
+        )),
     }
 }
 

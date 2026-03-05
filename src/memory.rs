@@ -50,21 +50,21 @@ impl Default for RecallPipelineConfig {
 
 impl RecallPipelineConfig {
     fn from_env() -> Self {
-        let mut cfg = Self::default();
-        cfg.query_expansion_enabled = env_bool(QUERY_EXPANSION_ENABLED_ENV, true);
-        cfg.llm_query_expansion_enabled = env_bool(QUERY_EXPANSION_LLM_ENV, false);
-        cfg.rerank_enabled = env_bool(RERANK_ENABLED_ENV, true);
-        cfg.candidate_multiplier = std::env::var(RERANK_CANDIDATE_MULTIPLIER_ENV)
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .map(|n| n.clamp(1, 16))
-            .unwrap_or(DEFAULT_CANDIDATE_MULTIPLIER);
-        cfg.max_candidates = std::env::var(RERANK_MAX_CANDIDATES_ENV)
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .map(|n| n.clamp(RECALL_MAX_K, 500))
-            .unwrap_or(DEFAULT_MAX_CANDIDATES);
-        cfg
+        Self {
+            query_expansion_enabled: env_bool(QUERY_EXPANSION_ENABLED_ENV, true),
+            llm_query_expansion_enabled: env_bool(QUERY_EXPANSION_LLM_ENV, false),
+            rerank_enabled: env_bool(RERANK_ENABLED_ENV, true),
+            candidate_multiplier: std::env::var(RERANK_CANDIDATE_MULTIPLIER_ENV)
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .map(|n| n.clamp(1, 16))
+                .unwrap_or(DEFAULT_CANDIDATE_MULTIPLIER),
+            max_candidates: std::env::var(RERANK_MAX_CANDIDATES_ENV)
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .map(|n| n.clamp(RECALL_MAX_K, 500))
+                .unwrap_or(DEFAULT_MAX_CANDIDATES),
+        }
     }
 }
 
@@ -388,7 +388,6 @@ impl MemoryStore {
         let total_memories = db
             .keymap
             .all_keys()
-            .into_iter()
             .filter(|(k, _)| {
                 k.starts_with(MEMORY_KEY_PREFIX)
                     && !k.ends_with(MEMORY_META_SUFFIX)

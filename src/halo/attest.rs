@@ -345,7 +345,7 @@ pub fn verify_anonymous_membership_proof(proof: &AnonymousMembershipProof) -> Re
 
 /// Decode variable-length hex string to bytes (supports both SHA-256 and SHA-512 lengths).
 fn hex_decode_var(s: &str) -> Result<Vec<u8>, String> {
-    if s.len() % 2 != 0 || s.is_empty() {
+    if s.is_empty() || !s.len().is_multiple_of(2) {
         return Err(format!("invalid hex hash length {}", s.len()));
     }
     let mut out = Vec::with_capacity(s.len() / 2);

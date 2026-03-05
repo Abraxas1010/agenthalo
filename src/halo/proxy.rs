@@ -229,6 +229,7 @@ pub fn metered_proxy_sync(
     })
 }
 
+#[allow(clippy::result_large_err)]
 pub fn metered_proxy_stream_sync<F>(
     vault: &Vault,
     key_store: &Arc<CustomerKeyStore>,
@@ -604,8 +605,8 @@ where
     })?;
 
     let reader = resp.into_body().into_reader();
-    let mut lines = BufReader::new(reader).lines();
-    while let Some(line) = lines.next() {
+    let lines = BufReader::new(reader).lines();
+    for line in lines {
         let line = line.map_err(|e| StreamForwardError {
             message: format!("read upstream stream line: {e}"),
             telemetry: telemetry.clone(),

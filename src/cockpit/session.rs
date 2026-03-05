@@ -1,18 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SessionStatus {
+    #[default]
     Starting,
     Active,
-    Done { exit_code: i32 },
-    Error { message: String },
-}
-
-impl Default for SessionStatus {
-    fn default() -> Self {
-        Self::Starting
-    }
+    Done {
+        exit_code: i32,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

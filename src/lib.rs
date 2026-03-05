@@ -16,6 +16,7 @@ pub mod materialize;
 pub mod mcp;
 pub mod memory;
 pub mod multitenant;
+pub mod orchestrator;
 pub mod pcn;
 pub mod persistence;
 pub mod pod;

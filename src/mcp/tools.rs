@@ -5,6 +5,10 @@ use crate::container::launcher::{
     stop_container as launcher_stop_container, MeshConfig, RunConfig,
 };
 use crate::immutable::WriteMode;
+use crate::orchestrator::{
+    LaunchAgentRequest as OrchLaunchRequest, Orchestrator, PipeRequest as OrchPipeRequest,
+    SendTaskRequest as OrchSendTaskRequest, StopRequest as OrchStopRequest,
+};
 use crate::pcn::{channel_snapshot, ChannelSnapshot, SettlementOp};
 use crate::persistence::{init_wal, load_wal, persist_snapshot_and_sync_wal, truncate_wal};
 use crate::protocol::{NucleusDb, QueryProof, VcBackend};
@@ -43,6 +47,7 @@ struct ServiceState {
     wal_path: PathBuf,
     work_record_store: WorkRecordStore,
     memory_store: crate::memory::MemoryStore,
+    orchestrator: Orchestrator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +157,114 @@ pub struct MemoryIngestResponse {
     pub keys: Vec<String>,
     pub source: Option<String>,
     pub sealed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorLaunchRequest {
+    /// Agent kind: claude | codex | gemini | openclaw | shell
+    pub agent: String,
+    /// Human-friendly label for this launched instance.
+    pub agent_name: String,
+    /// Optional working directory for task execution.
+    pub working_dir: Option<String>,
+    /// Environment variables. Values prefixed with "vault:" resolve from Vault.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Per-task timeout for this agent.
+    pub timeout_secs: Option<u64>,
+    /// Enable HALO trace capture for this agent's tasks.
+    pub trace: Option<bool>,
+    /// Capability set granted to this agent.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorLaunchResponse {
+    pub agent_id: String,
+    pub session_id: Option<String>,
+    pub status: String,
+    pub agent: String,
+    pub agent_name: String,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorSendTaskRequest {
+    pub agent_id: String,
+    pub task: String,
+    /// Optional response format hint (currently passthrough).
+    pub format: Option<String>,
+    pub timeout_secs: Option<u64>,
+    pub wait: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorTaskResponse {
+    pub task_id: String,
+    pub agent_id: String,
+    pub status: String,
+    pub result: Option<String>,
+    pub error: Option<String>,
+    pub exit_code: Option<i32>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost_usd: Option<f64>,
+    pub trace_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorGetResultRequest {
+    pub task_id: String,
+    pub wait: Option<bool>,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorPipeRequest {
+    pub source_task_id: String,
+    pub target_agent_id: String,
+    pub transform: Option<String>,
+    pub task_prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorPipeResponse {
+    pub source_task_id: String,
+    pub target_agent_id: String,
+    pub status: String,
+    pub task_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorListResponse {
+    pub agents: Vec<OrchestratorAgentView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorAgentView {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub agent_type: String,
+    pub status: String,
+    pub tasks_completed: u32,
+    pub total_cost_usd: f64,
+    pub capabilities: Vec<String>,
+    pub launched_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorStopRequest {
+    pub agent_id: String,
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorStopResponse {
+    pub agent_id: String,
+    pub status: String,
+    pub trace_session_id: Option<String>,
+    pub attestation_ready: bool,
 }
 
 // ── Mesh tool request/response types ────────────────────────────────
@@ -1378,8 +1491,16 @@ impl NucleusDbMcpService {
             .map_err(|e| format!("failed to save snapshot {}: {e:?}", db_path.display()))?;
         init_wal(&wal_path, &db)
             .map_err(|e| format!("failed to initialize WAL {}: {e:?}", wal_path.display()))?;
+        let vault = crate::halo::vault::Vault::open(
+            &crate::halo::config::pq_wallet_path(),
+            &crate::halo::config::vault_path(),
+        )
+        .ok()
+        .map(Arc::new);
+        let pty_manager = Arc::new(crate::cockpit::pty_manager::PtyManager::new(24));
         Ok(ServiceState {
             db,
+            orchestrator: Orchestrator::new(pty_manager, vault, db_path.clone()),
             db_path,
             wal_path,
             work_record_store: WorkRecordStore::new(),
@@ -1407,8 +1528,16 @@ impl NucleusDbMcpService {
         };
         init_wal(&wal_path, &db)
             .map_err(|e| format!("failed to initialize WAL {}: {e:?}", wal_path.display()))?;
+        let vault = crate::halo::vault::Vault::open(
+            &crate::halo::config::pq_wallet_path(),
+            &crate::halo::config::vault_path(),
+        )
+        .ok()
+        .map(Arc::new);
+        let pty_manager = Arc::new(crate::cockpit::pty_manager::PtyManager::new(24));
         Ok(ServiceState {
             db,
+            orchestrator: Orchestrator::new(pty_manager, vault, db_path.clone()),
             db_path,
             wal_path,
             work_record_store: WorkRecordStore::new(),
@@ -2067,8 +2196,10 @@ impl NucleusDbMcpService {
             .map(PathBuf::from);
         let env_vars = req.env.into_iter().collect::<Vec<(String, String)>>();
         let mesh = req.mesh.map(|cfg| {
-            let mut mesh_cfg = MeshConfig::default();
-            mesh_cfg.enabled = cfg.enabled.unwrap_or(true);
+            let mut mesh_cfg = MeshConfig {
+                enabled: cfg.enabled.unwrap_or(true),
+                ..MeshConfig::default()
+            };
             if let Some(port) = cfg.mcp_port {
                 mesh_cfg.mcp_port = port;
             }
@@ -3647,6 +3778,194 @@ impl NucleusDbMcpService {
         }))
     }
 
+    #[tool(
+        name = "orchestrator_launch",
+        description = "Launch a managed agent instance for orchestrated tasks. Example: {\"agent\":\"codex\",\"agent_name\":\"reviewer\",\"timeout_secs\":600,\"trace\":true,\"capabilities\":[\"memory_read\",\"memory_write\"]}"
+    )]
+    pub async fn orchestrator_launch(
+        &self,
+        Parameters(req): Parameters<OrchestratorLaunchRequest>,
+    ) -> Result<Json<OrchestratorLaunchResponse>, McpError> {
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        let launched = orchestrator
+            .launch_agent(OrchLaunchRequest {
+                agent: req.agent,
+                agent_name: req.agent_name,
+                working_dir: req.working_dir,
+                env: req.env,
+                timeout_secs: req.timeout_secs.unwrap_or(600),
+                trace: req.trace.unwrap_or(true),
+                capabilities: req.capabilities,
+            })
+            .await
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(Json(OrchestratorLaunchResponse {
+            agent_id: launched.agent_id,
+            session_id: launched.pty_session_id,
+            status: "running".to_string(),
+            agent: launched.agent_type,
+            agent_name: launched.agent_name,
+            capabilities: launched.capabilities,
+        }))
+    }
+
+    #[tool(
+        name = "orchestrator_send_task",
+        description = "Submit a task to a launched orchestrator agent. Example: {\"agent_id\":\"orch-...\",\"task\":\"Review src/main.rs\",\"wait\":true}"
+    )]
+    pub async fn orchestrator_send_task(
+        &self,
+        Parameters(req): Parameters<OrchestratorSendTaskRequest>,
+    ) -> Result<Json<OrchestratorTaskResponse>, McpError> {
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        if req.task.trim().is_empty() {
+            return Err(McpError::invalid_params("task must be non-empty", None));
+        }
+        let task = orchestrator
+            .send_task(OrchSendTaskRequest {
+                agent_id: req.agent_id.clone(),
+                task: req.task,
+                timeout_secs: req.timeout_secs,
+                wait: req.wait.unwrap_or(true),
+            })
+            .await
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        {
+            let mut guard = self.state.lock().await;
+            persist_orchestrator_task_locked(&mut guard, &task)?;
+        }
+        Ok(Json(task_to_response(task)))
+    }
+
+    #[tool(
+        name = "orchestrator_get_result",
+        description = "Get task status/result by task_id. Optionally wait for completion. Example: {\"task_id\":\"task-...\",\"wait\":true,\"timeout_secs\":60}"
+    )]
+    pub async fn orchestrator_get_result(
+        &self,
+        Parameters(req): Parameters<OrchestratorGetResultRequest>,
+    ) -> Result<Json<OrchestratorTaskResponse>, McpError> {
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        let wait = req.wait.unwrap_or(true);
+        let timeout = req.timeout_secs.unwrap_or(60).max(1);
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(task) = orchestrator.get_task(&req.task_id).await {
+                if !wait
+                    || matches!(
+                        task.status,
+                        crate::orchestrator::task::TaskStatus::Complete
+                            | crate::orchestrator::task::TaskStatus::Failed
+                            | crate::orchestrator::task::TaskStatus::Timeout
+                    )
+                {
+                    return Ok(Json(task_to_response(task)));
+                }
+            } else {
+                return Err(McpError::invalid_params(
+                    format!("unknown task_id {}", req.task_id),
+                    None,
+                ));
+            }
+            if started.elapsed() >= std::time::Duration::from_secs(timeout) {
+                let task = orchestrator
+                    .get_task(&req.task_id)
+                    .await
+                    .ok_or_else(|| McpError::invalid_params("task disappeared", None))?;
+                return Ok(Json(task_to_response(task)));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+    }
+
+    #[tool(
+        name = "orchestrator_pipe",
+        description = "Create task-graph pipe from source task output to target agent input. Example: {\"source_task_id\":\"task-a\",\"target_agent_id\":\"orch-b\",\"transform\":\"json_extract:.suggestions\"}"
+    )]
+    pub async fn orchestrator_pipe(
+        &self,
+        Parameters(req): Parameters<OrchestratorPipeRequest>,
+    ) -> Result<Json<OrchestratorPipeResponse>, McpError> {
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        let submitted = orchestrator
+            .pipe(OrchPipeRequest {
+                source_task_id: req.source_task_id.clone(),
+                target_agent_id: req.target_agent_id.clone(),
+                transform: req.transform.clone(),
+                task_prefix: req.task_prefix.clone(),
+            })
+            .await
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        {
+            let graph = orchestrator.graph_snapshot().await;
+            let mut guard = self.state.lock().await;
+            persist_orchestrator_graph_locked(&mut guard, &graph)?;
+        }
+        Ok(Json(OrchestratorPipeResponse {
+            source_task_id: req.source_task_id,
+            target_agent_id: req.target_agent_id,
+            status: if submitted.is_some() {
+                "running".to_string()
+            } else {
+                "linked".to_string()
+            },
+            task_id: submitted.map(|t| t.task_id),
+        }))
+    }
+
+    #[tool(
+        name = "orchestrator_list",
+        description = "List launched orchestrator agents and status."
+    )]
+    pub async fn orchestrator_list(&self) -> Result<Json<OrchestratorListResponse>, McpError> {
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        let agents = orchestrator.list_agents().await;
+        let views = agents
+            .into_iter()
+            .map(|a| OrchestratorAgentView {
+                agent_id: a.agent_id,
+                agent_name: a.agent_name,
+                agent_type: a.agent_type,
+                status: match a.status {
+                    crate::orchestrator::agent_pool::AgentStatus::Idle => "idle".to_string(),
+                    crate::orchestrator::agent_pool::AgentStatus::Busy { .. } => "busy".to_string(),
+                    crate::orchestrator::agent_pool::AgentStatus::Stopped { .. } => {
+                        "stopped".to_string()
+                    }
+                },
+                tasks_completed: a.tasks_completed,
+                total_cost_usd: a.total_cost_usd,
+                capabilities: a.capabilities,
+                launched_at: a.launched_at,
+            })
+            .collect();
+        Ok(Json(OrchestratorListResponse { agents: views }))
+    }
+
+    #[tool(
+        name = "orchestrator_stop",
+        description = "Stop a launched orchestrator agent and finalize its session state."
+    )]
+    pub async fn orchestrator_stop(
+        &self,
+        Parameters(req): Parameters<OrchestratorStopRequest>,
+    ) -> Result<Json<OrchestratorStopResponse>, McpError> {
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        let stopped = orchestrator
+            .stop_agent(OrchStopRequest {
+                agent_id: req.agent_id,
+                force: req.force.unwrap_or(false),
+            })
+            .await
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(Json(OrchestratorStopResponse {
+            agent_id: stopped.agent_id,
+            status: stopped.status,
+            trace_session_id: stopped.trace_session_id,
+            attestation_ready: stopped.attestation_ready,
+        }))
+    }
+
     // ── CLI agent management tools ─────────────────────────────────
 
     #[tool(
@@ -3662,7 +3981,7 @@ impl NucleusDbMcpService {
             .ok_or_else(|| McpError::invalid_params(format!("unknown agent: {agent}"), None))?;
         let (installed, path) = tokio::task::spawn_blocking(move || {
             let output = Command::new("which")
-                .arg(&detect_cmd)
+                .arg(detect_cmd)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output();
@@ -3740,11 +4059,7 @@ impl NucleusDbMcpService {
                 Ok(o) => {
                     let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
                     let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                    let detail = if !stdout.is_empty() {
-                        stdout
-                    } else {
-                        stderr
-                    };
+                    let detail = if !stdout.is_empty() { stdout } else { stderr };
                     (true, o.status.success(), detail)
                 }
                 Err(e) => (true, false, format!("failed to run status check: {e}")),
@@ -3763,9 +4078,7 @@ impl NucleusDbMcpService {
         name = "openclaw_wire_mcp",
         description = "Wire NucleusDB and HALO MCP servers into OpenClaw's configuration (~/.openclaw/openclaw.json). After wiring, any OpenClaw agent session can call all 37+ NucleusDB tools via stdio transport. No parameters required."
     )]
-    pub async fn openclaw_wire_mcp(
-        &self,
-    ) -> Result<Json<OpenClawWireMcpResponse>, McpError> {
+    pub async fn openclaw_wire_mcp(&self) -> Result<Json<OpenClawWireMcpResponse>, McpError> {
         let result = tokio::task::spawn_blocking(|| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
             let config_path = std::path::Path::new(&home)
@@ -3797,28 +4110,34 @@ impl NucleusDbMcpService {
                 "args": []
             });
 
-            let agents = config.as_object_mut()
+            let agents = config
+                .as_object_mut()
                 .ok_or("config root is not an object")?
-                .entry("agents").or_insert_with(|| serde_json::json!({}));
-            let defaults = agents.as_object_mut()
+                .entry("agents")
+                .or_insert_with(|| serde_json::json!({}));
+            let defaults = agents
+                .as_object_mut()
                 .ok_or("agents is not an object")?
-                .entry("defaults").or_insert_with(|| serde_json::json!({}));
-            let mcp_servers = defaults.as_object_mut()
+                .entry("defaults")
+                .or_insert_with(|| serde_json::json!({}));
+            let mcp_servers = defaults
+                .as_object_mut()
                 .ok_or("defaults is not an object")?
-                .entry("mcpServers").or_insert_with(|| serde_json::json!({}));
-            let servers_map = mcp_servers.as_object_mut()
+                .entry("mcpServers")
+                .or_insert_with(|| serde_json::json!({}));
+            let servers_map = mcp_servers
+                .as_object_mut()
                 .ok_or("mcpServers is not an object")?;
 
             servers_map.insert("nucleusdb".to_string(), ndb_entry);
             servers_map.insert("agenthalo".to_string(), halo_entry);
 
-            let serialized = serde_json::to_string_pretty(&config)
-                .map_err(|e| format!("serialize: {e}"))?;
+            let serialized =
+                serde_json::to_string_pretty(&config).map_err(|e| format!("serialize: {e}"))?;
             let tmp = config_path.with_extension("json.tmp");
             std::fs::write(&tmp, &serialized)
                 .map_err(|e| format!("write {}: {e}", tmp.display()))?;
-            std::fs::rename(&tmp, &config_path)
-                .map_err(|e| format!("rename: {e}"))?;
+            std::fs::rename(&tmp, &config_path).map_err(|e| format!("rename: {e}"))?;
 
             Ok::<_, String>(OpenClawWireMcpResponse {
                 success: true,
@@ -3844,6 +4163,68 @@ fn cli_detect_command(agent: &str) -> Option<&'static str> {
         "openclaw" => Some("openclaw"),
         _ => None,
     }
+}
+
+fn task_to_response(task: crate::orchestrator::task::Task) -> OrchestratorTaskResponse {
+    OrchestratorTaskResponse {
+        task_id: task.task_id,
+        agent_id: task.agent_id,
+        status: match task.status {
+            crate::orchestrator::task::TaskStatus::Pending => "pending".to_string(),
+            crate::orchestrator::task::TaskStatus::Running => "running".to_string(),
+            crate::orchestrator::task::TaskStatus::Complete => "complete".to_string(),
+            crate::orchestrator::task::TaskStatus::Failed => "failed".to_string(),
+            crate::orchestrator::task::TaskStatus::Timeout => "timeout".to_string(),
+        },
+        result: task.result,
+        error: task.error,
+        exit_code: task.exit_code,
+        input_tokens: Some(task.usage.input_tokens),
+        output_tokens: Some(task.usage.output_tokens),
+        cost_usd: Some(task.usage.estimated_cost_usd),
+        trace_session_id: task.trace_session_id,
+    }
+}
+
+fn persist_orchestrator_task_locked(
+    state: &mut ServiceState,
+    task: &crate::orchestrator::task::Task,
+) -> Result<(), McpError> {
+    let key = format!("orch:task:{}", task.task_id);
+    let value = serde_json::to_value(task)
+        .map_err(|e| McpError::internal_error(format!("serialize orchestrator task: {e}"), None))?;
+    state
+        .db
+        .put_typed(&key, crate::typed_value::TypedValue::Json(value))
+        .map_err(|e| McpError::internal_error(format!("persist orchestrator task: {e}"), None))?;
+    persist_snapshot_and_sync_wal(&state.db_path, &state.wal_path, &state.db).map_err(|e| {
+        McpError::internal_error(
+            format!("persist orchestrator task snapshot+wal: {e:?}"),
+            None,
+        )
+    })?;
+    Ok(())
+}
+
+fn persist_orchestrator_graph_locked(
+    state: &mut ServiceState,
+    graph: &crate::orchestrator::task_graph::TaskGraph,
+) -> Result<(), McpError> {
+    let key = "orch:graph:active";
+    let value = serde_json::to_value(graph).map_err(|e| {
+        McpError::internal_error(format!("serialize orchestrator graph: {e}"), None)
+    })?;
+    state
+        .db
+        .put_typed(key, crate::typed_value::TypedValue::Json(value))
+        .map_err(|e| McpError::internal_error(format!("persist orchestrator graph: {e}"), None))?;
+    persist_snapshot_and_sync_wal(&state.db_path, &state.wal_path, &state.db).map_err(|e| {
+        McpError::internal_error(
+            format!("persist orchestrator graph snapshot+wal: {e:?}"),
+            None,
+        )
+    })?;
+    Ok(())
 }
 
 /// npm package name for each supported agent CLI.
@@ -3875,6 +4256,7 @@ mod tests {
     use crate::test_support::env_lock;
     use crate::typed_value::{TypeTag, TypedValue};
     use serde_json::json;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3916,6 +4298,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::await_holding_lock)]
     fn mesh_call_didcomm_executes_remote_tool() {
         let join = std::thread::Builder::new()
             .name("mesh_call_didcomm_executes_remote_tool".to_string())
@@ -4253,5 +4636,70 @@ mod tests {
     fn mesh_mode_parser_rejects_empty_list() {
         let err = parse_mesh_access_modes(&[]).expect_err("must reject empty");
         assert!(err.contains("at least one"));
+    }
+
+    #[tokio::test]
+    async fn orchestrator_launch_and_task_roundtrip_shell() {
+        let db_path = temp_db_path("orchestrator_roundtrip");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(launch) = service
+            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                agent: "shell".to_string(),
+                agent_name: "unit-shell".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: Some(30),
+                trace: Some(false),
+                capabilities: vec!["memory_read".to_string(), "memory_write".to_string()],
+            }))
+            .await
+            .expect("launch shell");
+        assert_eq!(launch.status, "running");
+        assert_eq!(launch.agent, "shell");
+
+        let Json(task) = service
+            .orchestrator_send_task(Parameters(OrchestratorSendTaskRequest {
+                agent_id: launch.agent_id,
+                task: "printf 'hello-orchestrator'".to_string(),
+                format: None,
+                timeout_secs: Some(30),
+                wait: Some(true),
+            }))
+            .await
+            .expect("run task");
+        assert_eq!(task.status, "complete");
+        assert!(task
+            .result
+            .as_deref()
+            .unwrap_or_default()
+            .contains("hello-orchestrator"));
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_launch_rejects_unknown_capability() {
+        let db_path = temp_db_path("orchestrator_invalid_cap");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let result = service
+            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                agent: "shell".to_string(),
+                agent_name: "unit-shell".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: Some(30),
+                trace: Some(false),
+                capabilities: vec!["bogus_capability".to_string()],
+            }))
+            .await;
+        match result {
+            Ok(_) => panic!("invalid capability should fail"),
+            Err(err) => {
+                let dbg = format!("{err:?}");
+                assert!(dbg.contains("unknown capability"));
+            }
+        }
+        cleanup_db_files(&db_path);
     }
 }

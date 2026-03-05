@@ -183,6 +183,12 @@ impl WdkManager {
     }
 }
 
+impl Default for WdkManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for WdkManager {
     fn drop(&mut self) {
         self.stop();

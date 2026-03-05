@@ -55,6 +55,7 @@ src/
 ├── cockpit/             Browser terminal orchestration (PTY, WebSocket, deploy)
 ├── dashboard/           Web UI server (axum + rust-embed)
 ├── mcp/                 MCP tool server implementation
+├── orchestrator/        Multi-agent orchestration (agent pool, task DAG, trace bridge, A2A)
 ├── puf/                 Hardware PUF fingerprinting
 ├── trust/               Trust scoring
 ├── transparency/        Certificate Transparency integration
@@ -133,6 +134,17 @@ The Cockpit transforms the dashboard into an agent orchestration terminal — la
 | `cli_install` | Install agent CLI via npm |
 | `openclaw_gateway_status` | Check OpenClaw gateway daemon status |
 | `openclaw_wire_mcp` | Wire NucleusDB + HALO MCP servers into OpenClaw config |
+
+### Orchestrator MCP tools (via `nucleusdb-mcp`)
+
+| Tool | Purpose |
+|------|---------|
+| `orchestrator_launch` | Launch a managed agent session with capability constraints |
+| `orchestrator_send_task` | Submit a task to a managed agent |
+| `orchestrator_get_result` | Fetch current/final task status and result payload |
+| `orchestrator_pipe` | Create a DAG edge from one task result to another agent task |
+| `orchestrator_list` | List orchestrated agents and tasks |
+| `orchestrator_stop` | Stop a managed agent session and finalize trace metadata |
 
 "Auth = Yes" means `require_sensitive_access()` — requires `agenthalo auth` or `AGENTHALO_API_KEY`.
 
