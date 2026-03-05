@@ -2,7 +2,6 @@ use crate::embeddings::{EmbeddingModel, DEFAULT_EMBEDDING_DIMS};
 use crate::protocol::{CommitError, NucleusDb};
 use crate::state::Delta;
 use crate::typed_value::TypedValue;
-use crate::vector_index::DistanceMetric;
 use chrono::Utc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -75,11 +74,26 @@ impl MemoryStore {
 
         if let Some(TypedValue::Text(existing)) = db.get_typed(&key) {
             if existing == memory_text && db.get_typed(&vector_key).is_some() {
+                let existing_meta = db.get_typed(&meta_key).and_then(|tv| match tv {
+                    TypedValue::Json(meta) => Some(meta),
+                    _ => None,
+                });
+                let existing_source = existing_meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("source"))
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                let existing_created = existing_meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("created"))
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| now.clone());
                 return Ok(MemoryRecord {
                     key,
                     text: existing,
-                    source: source_clean.map(ToString::to_string),
-                    created: now,
+                    source: existing_source.or_else(|| source_clean.map(ToString::to_string)),
+                    created: existing_created,
                 });
             }
         }
@@ -167,18 +181,22 @@ impl MemoryStore {
             .map_err(|e| format!("embed query: {e}"))?;
         let mut results = db
             .vector_index
-            .search(&query_vec, db.vector_index.len(), DistanceMetric::Cosine)
-            .map_err(|e| format!("vector search failed: {e}"))?;
-
-        results.retain(|r| {
-            r.key.starts_with(MEMORY_KEY_PREFIX) && r.key.ends_with(MEMORY_VECTOR_SUFFIX)
-        });
+            .all_keys()
+            .into_iter()
+            .filter(|key| key.starts_with(MEMORY_KEY_PREFIX) && key.ends_with(MEMORY_VECTOR_SUFFIX))
+            .filter_map(|key| {
+                let vec = db.vector_index.get(&key)?;
+                let distance = crate::embeddings::cosine_distance(&query_vec, vec).ok()?;
+                Some((key, distance))
+            })
+            .collect::<Vec<_>>();
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(k);
 
         let mapped = results
             .into_iter()
-            .filter_map(|r| {
-                let base_key = r.key.strip_suffix(MEMORY_VECTOR_SUFFIX)?.to_string();
+            .filter_map(|(vector_key, distance)| {
+                let base_key = vector_key.strip_suffix(MEMORY_VECTOR_SUFFIX)?.to_string();
                 let typed = db.get_typed(&base_key)?;
                 let text = match typed {
                     TypedValue::Text(t) => t,
@@ -201,7 +219,7 @@ impl MemoryStore {
                 };
                 Some(MemoryRecallRecord {
                     key: base_key,
-                    distance: r.distance,
+                    distance,
                     text,
                     source,
                     created,
@@ -252,7 +270,7 @@ pub fn chunk_document(document: &str) -> Vec<String> {
     let mut sections: Vec<String> = Vec::new();
     let mut current = Vec::<String>::new();
     for line in document.lines() {
-        if line.trim_start().starts_with("## ") && !current.is_empty() {
+        if is_heading_boundary(line) && !current.is_empty() {
             sections.push(current.join("\n").trim().to_string());
             current.clear();
         }
@@ -305,6 +323,22 @@ pub fn chunk_document(document: &str) -> Vec<String> {
     chunks
 }
 
+fn is_heading_boundary(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with('#') {
+        return false;
+    }
+    let hash_count = trimmed.chars().take_while(|c| *c == '#').count();
+    if !(1..=6).contains(&hash_count) {
+        return false;
+    }
+    trimmed
+        .chars()
+        .nth(hash_count)
+        .map(|c| c.is_ascii_whitespace())
+        .unwrap_or(false)
+}
+
 fn format_commit_error(err: CommitError) -> String {
     match err {
         CommitError::SheafIncoherent => "sheaf coherence check failed".to_string(),
@@ -321,6 +355,7 @@ fn format_commit_error(err: CommitError) -> String {
 mod tests {
     use super::*;
     use crate::cli::default_witness_cfg;
+    use crate::embeddings::{EmbeddingModel, DEFAULT_EMBEDDING_DIMS, DEFAULT_MODEL_NAME};
     use crate::protocol::VcBackend;
     use crate::state::State;
 
@@ -330,10 +365,17 @@ mod tests {
         NucleusDb::new(State::new(vec![]), VcBackend::BinaryMerkle, cfg)
     }
 
+    fn test_store() -> MemoryStore {
+        MemoryStore::new(EmbeddingModel::new_hash_test_backend(
+            DEFAULT_MODEL_NAME,
+            DEFAULT_EMBEDDING_DIMS,
+        ))
+    }
+
     #[test]
     fn test_store_and_recall_roundtrip() {
         let mut db = test_db();
-        let store = MemoryStore::default();
+        let store = test_store();
         store
             .store_memory(
                 &mut db,
@@ -358,6 +400,16 @@ mod tests {
     }
 
     #[test]
+    fn test_chunk_with_mixed_header_depths() {
+        let doc = "# one\nalpha section contains enough words to be retained.\n\n### two\nbeta section also contains enough words to be retained.\n\n#### three\ngamma section remains long enough for chunk retention.";
+        let chunks = chunk_document(doc);
+        assert!(
+            chunks.len() >= 3,
+            "expected mixed heading levels to split sections"
+        );
+    }
+
+    #[test]
     fn test_chunk_max_size() {
         let long = std::iter::repeat_n("word", 3000)
             .collect::<Vec<_>>()
@@ -376,7 +428,7 @@ mod tests {
     #[test]
     fn test_idempotent_store() {
         let mut db = test_db();
-        let store = MemoryStore::default();
+        let store = test_store();
         let a = store
             .store_memory(&mut db, "idempotent memory text", Some("session:a"))
             .expect("store a");
@@ -387,12 +439,16 @@ mod tests {
         let after_entries = db.entries.len();
         assert_eq!(a.key, b.key);
         assert_eq!(before_entries, after_entries);
+        assert_eq!(
+            a.created, b.created,
+            "idempotent read should preserve created timestamp"
+        );
     }
 
     #[test]
     fn test_seal_chain_integrity() {
         let mut db = test_db();
-        let store = MemoryStore::default();
+        let store = test_store();
         let _ = store
             .store_memory(&mut db, "seal chain memory one", Some("test"))
             .expect("store one");

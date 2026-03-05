@@ -7,7 +7,28 @@ use nucleusdb::state::State;
 
 use rmcp::handler::server::wrapper::Parameters;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+fn enable_hash_backend() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let guard = LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("lock env");
+    // SAFETY: test-only env mutation is serialized by env_lock().
+    unsafe { std::env::set_var("AGENTHALO_EMBEDDING_BACKEND", "hash-test") };
+    guard
+}
+
+fn test_store() -> MemoryStore {
+    MemoryStore::new(
+        nucleusdb::embeddings::EmbeddingModel::new_hash_test_backend(
+            nucleusdb::embeddings::DEFAULT_MODEL_NAME,
+            nucleusdb::embeddings::DEFAULT_EMBEDDING_DIMS,
+        ),
+    )
+}
 
 fn temp_db_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -35,7 +56,7 @@ fn test_db() -> NucleusDb {
 #[test]
 fn test_store_and_recall_roundtrip() {
     let mut db = test_db();
-    let memory = MemoryStore::default();
+    let memory = test_store();
     memory
         .store_memory(
             &mut db,
@@ -53,7 +74,7 @@ fn test_store_and_recall_roundtrip() {
 #[test]
 fn test_memory_ingest_document() {
     let mut db = test_db();
-    let memory = MemoryStore::default();
+    let memory = test_store();
     let doc =
         "## One\nVector commitments bind state.\n\n## Two\nWitness signatures attest commits.";
     let stored = memory
@@ -65,7 +86,7 @@ fn test_memory_ingest_document() {
 #[test]
 fn test_memory_prefix_isolation() {
     let mut db = test_db();
-    let memory = MemoryStore::default();
+    let memory = test_store();
     memory
         .store_memory(&mut db, "memory key content", Some("session:test"))
         .expect("memory store");
@@ -85,7 +106,7 @@ fn test_memory_prefix_isolation() {
 #[test]
 fn test_memory_survives_restart() {
     let db_path = temp_db_path("survives_restart");
-    let memory = MemoryStore::default();
+    let memory = test_store();
     {
         let mut db = test_db();
         memory
@@ -111,6 +132,7 @@ fn test_memory_survives_restart() {
 
 #[tokio::test]
 async fn test_mcp_memory_recall() {
+    let _env_guard = enable_hash_backend();
     let db_path = temp_db_path("mcp_roundtrip");
     let service = NucleusDbMcpService::new(&db_path).expect("service");
     let stored = service

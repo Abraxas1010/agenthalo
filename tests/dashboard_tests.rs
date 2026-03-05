@@ -825,6 +825,9 @@ async fn nucleusdb_stats_includes_type_distribution() {
 
 #[tokio::test]
 async fn nucleusdb_memory_store_and_recall_roundtrip() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _embedding_backend_guard =
+        EnvVarGuard::set("AGENTHALO_EMBEDDING_BACKEND", Some("hash-test"));
     let (state, db_path) = test_state("ndb_memory_roundtrip");
     seed_session(&db_path, "memory-roundtrip-test");
 
@@ -840,7 +843,7 @@ async fn nucleusdb_memory_store_and_recall_roundtrip() {
     assert_eq!(s1, StatusCode::OK, "store memory should succeed: {v1}");
     assert_eq!(v1["ok"], true);
     assert!(v1["key"].as_str().unwrap_or("").starts_with("mem:chunk:"));
-    assert_eq!(v1["sealed"], true);
+    assert_eq!(v1["sealed"], false);
 
     let (s2, v2) = api_post(
         state.clone(),
@@ -865,6 +868,9 @@ async fn nucleusdb_memory_store_and_recall_roundtrip() {
 
 #[tokio::test]
 async fn nucleusdb_memory_ingest_and_stats() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _embedding_backend_guard =
+        EnvVarGuard::set("AGENTHALO_EMBEDDING_BACKEND", Some("hash-test"));
     let (state, db_path) = test_state("ndb_memory_ingest_stats");
     seed_session(&db_path, "memory-ingest-test");
 

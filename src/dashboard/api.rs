@@ -42,6 +42,7 @@ use crate::halo::viewer::export_session_json;
 use crate::halo::wrap;
 use crate::halo::x402;
 use crate::halo::{proxy, vault};
+use crate::immutable::WriteMode;
 use crate::persistence::{default_wal_path, load_snapshot, persist_snapshot_and_sync_wal};
 use crate::pod::acl::{AccessGrant, GrantPermissions, GrantRequest};
 use crate::protocol::NucleusDb;
@@ -6549,7 +6550,7 @@ async fn api_nucleusdb_memory_store(
         "source": stored.source,
         "created": stored.created,
         "dims": memory.embedding_model().dims(),
-        "sealed": true,
+        "sealed": matches!(db.write_mode(), WriteMode::AppendOnly),
     })))
 }
 
@@ -6604,7 +6605,7 @@ async fn api_nucleusdb_memory_ingest(
         "chunks": stored.len(),
         "keys": stored.iter().map(|r| r.key.clone()).collect::<Vec<_>>(),
         "source": req.source,
-        "sealed": true,
+        "sealed": matches!(db.write_mode(), WriteMode::AppendOnly),
     })))
 }
 

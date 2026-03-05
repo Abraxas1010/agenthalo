@@ -174,14 +174,26 @@ fn compute_distance(a: &[f64], b: &[f64], metric: DistanceMetric) -> f64 {
 
 /// Cosine distance = 1 - cosine_similarity.  Range: [0, 2].
 fn cosine_distance(a: &[f64], b: &[f64]) -> f64 {
+    cosine_distance_checked(a, b).unwrap_or(1.0)
+}
+
+/// Cosine distance with explicit error reporting.
+pub fn cosine_distance_checked(a: &[f64], b: &[f64]) -> Result<f64, String> {
+    if a.len() != b.len() {
+        return Err(format!(
+            "cosine distance dimension mismatch: {} vs {}",
+            a.len(),
+            b.len()
+        ));
+    }
     let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
     let norm_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
     let denom = norm_a * norm_b;
     if denom == 0.0 {
-        return 1.0;
+        return Err("cosine distance undefined for zero-norm vectors".to_string());
     }
-    1.0 - (dot / denom)
+    Ok(1.0 - (dot / denom))
 }
 
 /// L2 (Euclidean) distance.

@@ -4,6 +4,7 @@ use crate::container::launcher::{
     launch_container, list_sessions as list_container_sessions,
     stop_container as launcher_stop_container, MeshConfig, RunConfig,
 };
+use crate::immutable::WriteMode;
 use crate::pcn::{channel_snapshot, ChannelSnapshot, SettlementOp};
 use crate::persistence::{init_wal, load_wal, persist_snapshot_and_sync_wal, truncate_wal};
 use crate::protocol::{NucleusDb, QueryProof, VcBackend};
@@ -1702,7 +1703,7 @@ impl NucleusDbMcpService {
             source: record.source,
             created: record.created,
             dims: store.embedding_model().dims(),
-            sealed: true,
+            sealed: matches!(guard.db.write_mode(), WriteMode::AppendOnly),
         }))
     }
 
@@ -1730,7 +1731,7 @@ impl NucleusDbMcpService {
             chunks: records.len(),
             keys: records.into_iter().map(|r| r.key).collect(),
             source: req.source,
-            sealed: true,
+            sealed: matches!(guard.db.write_mode(), WriteMode::AppendOnly),
         }))
     }
 
