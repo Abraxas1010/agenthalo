@@ -219,17 +219,8 @@ if [[ "$NYM_STARTED" -eq 0 ]]; then
     log "WARN: no NYM_PROVIDER set and discovery script not found"
   fi
 
-  # Deduplicate while preserving provider order.
-  declare -A _provider_seen=()
-  _providers_dedup=()
-  for provider in "${PROVIDERS[@]}"; do
-    [[ -n "$provider" ]] || continue
-    if [[ -z "${_provider_seen[$provider]+x}" ]]; then
-      _provider_seen["$provider"]=1
-      _providers_dedup+=("$provider")
-    fi
-  done
-  PROVIDERS=("${_providers_dedup[@]}")
+  # scripts/nym-discover-provider.sh already deduplicates provider addresses.
+  # Keep entrypoint ordering as collected (user-configured first, then discovery).
 
   # Try providers in order up to NYM_MAX_PROVIDER_ATTEMPTS
   # NOTE: proxy vars stay cleared during init — nym-socks5-client init needs
