@@ -4137,7 +4137,7 @@ impl NucleusDbMcpService {
             return Ok(Json(parsed));
         }
         let orchestrator = { self.state.lock().await.orchestrator.clone() };
-        Ok(Json(orchestrator.mesh_status()))
+        Ok(Json(orchestrator.mesh_status_async().await))
     }
 
     #[tool(

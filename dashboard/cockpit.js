@@ -349,6 +349,9 @@
   class CockpitManager {
     constructor() {
       this.layout = localStorage.getItem('cockpit_layout') || '1';
+      this.meshCollapsed = localStorage.getItem('cockpit_mesh_collapsed') === '1';
+      const cfgPollMs = Number(window.__cockpitConfig?.meshPollMs);
+      this.meshPollMs = Number.isFinite(cfgPollMs) && cfgPollMs >= 1000 ? cfgPollMs : 10000;
       this.sessions = new Map();
       this.activeTab = null;
       this.root = null;
@@ -375,6 +378,7 @@
       this.meshBodyEl = hostEl.querySelector('#cockpit-mesh-body');
       this.meshSelfEl = hostEl.querySelector('#cockpit-mesh-self');
       this.meshPeerListEl = hostEl.querySelector('#cockpit-mesh-peers');
+      this.setMeshCollapsed(this.meshCollapsed);
       this.bindUi(hostEl);
       this.restoreSessions();
       this.consumePendingLaunch();
@@ -416,9 +420,17 @@
       });
       hostEl.querySelector('#cockpit-new').addEventListener('click', (ev) => this.toggleNewDropdown(ev.currentTarget));
       hostEl.querySelector('#cockpit-mesh-toggle')?.addEventListener('click', () => {
-        this.meshSidebarEl?.classList.toggle('collapsed');
+        this.setMeshCollapsed(!this.meshCollapsed);
       });
       document.addEventListener('click', () => this.hideDropdown());
+    }
+
+    setMeshCollapsed(collapsed) {
+      this.meshCollapsed = !!collapsed;
+      this.meshSidebarEl?.classList.toggle('collapsed', this.meshCollapsed);
+      try {
+        localStorage.setItem('cockpit_mesh_collapsed', this.meshCollapsed ? '1' : '0');
+      } catch (_e) {}
     }
 
     bindShortcuts() {
@@ -485,7 +497,7 @@
       this.refreshMeshStatus().catch(() => {});
       this.meshTimer = setInterval(() => {
         this.refreshMeshStatus().catch(() => {});
-      }, 10000);
+      }, this.meshPollMs);
     }
 
     stopMeshPoll() {

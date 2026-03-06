@@ -3990,7 +3990,7 @@ async fn api_orch_mesh(AxumState(state): AxumState<DashboardState>) -> ApiResult
     }
     let orchestrator = local_orchestrator(&state)?;
     Ok(Json(
-        serde_json::to_value(orchestrator.mesh_status())
+        serde_json::to_value(orchestrator.mesh_status_async().await)
             .map_err(|e| internal_err(format!("serialize mesh status: {e}")))?,
     ))
 }

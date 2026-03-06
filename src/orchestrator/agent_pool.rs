@@ -133,15 +133,13 @@ impl AgentPool {
                 kind, self.budget.allowed_kinds
             ));
         }
-        {
-            let agents = self.agents.lock().await;
-            let max_agents = self.budget.max_agents.min(MAX_MANAGED_AGENTS);
-            if agents.len() >= max_agents {
-                return Err(format!(
-                    "container budget exceeded: max {} agents",
-                    max_agents
-                ));
-            }
+        let mut agents = self.agents.lock().await;
+        let max_agents = self.budget.max_agents.min(MAX_MANAGED_AGENTS);
+        if agents.len() >= max_agents {
+            return Err(format!(
+                "container budget exceeded: max {} agents",
+                max_agents
+            ));
         }
         let agent_id = format!(
             "orch-{}-{}",
@@ -183,7 +181,6 @@ impl AgentPool {
             env,
             env_remove,
         };
-        let mut agents = self.agents.lock().await;
         agents.insert(agent_id, managed.clone());
         Ok(managed)
     }

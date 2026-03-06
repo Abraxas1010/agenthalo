@@ -544,6 +544,20 @@ impl Orchestrator {
         }
     }
 
+    /// Async wrapper for mesh status probing so network pings do not block
+    /// Tokio worker threads serving API/MCP handlers.
+    pub async fn mesh_status_async(&self) -> MeshStatusResponse {
+        let orchestrator = self.clone();
+        tokio::task::spawn_blocking(move || orchestrator.mesh_status())
+            .await
+            .unwrap_or_else(|_| MeshStatusResponse {
+                enabled: false,
+                self_agent_id: None,
+                peers: Vec::new(),
+                network_name: None,
+            })
+    }
+
     pub async fn get_task(&self, task_id: &str) -> Option<Task> {
         let tasks = self.inner.tasks.lock().await;
         tasks.get(task_id).cloned()
@@ -927,6 +941,88 @@ mod tests {
         );
         let status = orchestrator.status().await;
         assert_eq!(status.budget, budget);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_send_task_enforces_busy_budget() {
+        let budget = ContainerBudget {
+            max_agents: 4,
+            max_concurrent_busy: 1,
+            allowed_kinds: Vec::new(),
+        };
+        let orchestrator = Orchestrator::with_budget(
+            Arc::new(PtyManager::new(8)),
+            None,
+            PathBuf::from("/tmp/orch_busy_budget.ndb"),
+            budget,
+        );
+        let first = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "first".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect("launch first");
+        let second = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "second".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect("launch second");
+
+        let _first_task = orchestrator
+            .send_task(SendTaskRequest {
+                agent_id: first.agent_id.clone(),
+                task: "sleep 2".to_string(),
+                timeout_secs: Some(10),
+                wait: false,
+            })
+            .await
+            .expect("first task submit");
+
+        for _ in 0..20 {
+            if orchestrator.status().await.agents_busy >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let err = orchestrator
+            .send_task(SendTaskRequest {
+                agent_id: second.agent_id.clone(),
+                task: "printf hi".to_string(),
+                timeout_secs: Some(10),
+                wait: true,
+            })
+            .await
+            .expect_err("busy budget should reject second task");
+        assert!(err.contains("concurrent busy limit reached"));
+
+        let _ = orchestrator
+            .stop_agent(StopRequest {
+                agent_id: first.agent_id,
+                force: true,
+            })
+            .await;
+        let _ = orchestrator
+            .stop_agent(StopRequest {
+                agent_id: second.agent_id,
+                force: true,
+            })
+            .await;
     }
 
     #[tokio::test]

@@ -6749,7 +6749,7 @@ fn tool_orchestrator_graph(_arguments: Value) -> Result<Value, String> {
 
 fn tool_orchestrator_mesh_status(_arguments: Value) -> Result<Value, String> {
     run_orchestrator_call(|orchestrator| async move {
-        serde_json::to_value(orchestrator.mesh_status())
+        serde_json::to_value(orchestrator.mesh_status_async().await)
             .map_err(|e| format!("serialize orchestrator mesh status: {e}"))
     })
 }

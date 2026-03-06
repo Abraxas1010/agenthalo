@@ -4265,6 +4265,9 @@ function renderCockpit() {
   `;
 
   const root = document.getElementById('cockpit-root');
+  window.__cockpitConfig = {
+    meshPollMs: 10000,
+  };
   if (window.CockpitPage && typeof window.CockpitPage.mount === 'function') {
     window.CockpitPage.mount(root);
   } else {
