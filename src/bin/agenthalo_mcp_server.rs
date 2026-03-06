@@ -1830,7 +1830,7 @@ fn orchestrator_tool_defs_for_listing() -> Vec<Value> {
         }),
         json!({
             "name": "orchestrator_graph",
-            "description": "Get current orchestrator task graph snapshot.",
+            "description": "Get current orchestrator task graph snapshot. graph.nodes is an object map keyed by task_id; graph.edges is an array.",
             "inputSchema": {"type":"object","properties":{}}
         }),
         json!({
@@ -6567,6 +6567,7 @@ fn parse_tool_args<T: serde::de::DeserializeOwned>(
 }
 
 fn orchestrator_task_to_json(task: nucleusdb::orchestrator::task::Task) -> Value {
+    let result = task.result;
     json!({
         "task_id": task.task_id,
         "agent_id": task.agent_id,
@@ -6578,7 +6579,8 @@ fn orchestrator_task_to_json(task: nucleusdb::orchestrator::task::Task) -> Value
             nucleusdb::orchestrator::task::TaskStatus::Timeout => "timeout",
         },
         "answer": task.answer,
-        "result": task.result,
+        "output": result.clone(),
+        "result": result,
         "error": task.error,
         "exit_code": task.exit_code,
         "input_tokens": task.usage.input_tokens,
@@ -6728,7 +6730,14 @@ fn tool_orchestrator_tasks(_arguments: Value) -> Result<Value, String> {
 fn tool_orchestrator_graph(_arguments: Value) -> Result<Value, String> {
     run_orchestrator_call(|orchestrator| async move {
         let graph = orchestrator.graph_snapshot().await;
-        Ok(json!({ "graph": graph }))
+        let node_count = graph.nodes.len();
+        let edge_count = graph.edges.len();
+        Ok(json!({
+            "graph": graph,
+            "node_count": node_count,
+            "edge_count": edge_count,
+            "nodes_shape": "object_map",
+        }))
     })
 }
 

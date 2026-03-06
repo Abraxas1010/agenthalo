@@ -3963,11 +3963,13 @@ async fn api_orch_graph(AxumState(state): AxumState<DashboardState>) -> ApiResul
     require_sensitive_access(&state)?;
     if orchestrator_mcp_proxy_enabled() {
         let payload = call_orchestrator_tool_via_mcp("orchestrator_graph", json!({})).await?;
-        return Ok(Json(payload));
+        return Ok(Json(enrich_orchestrator_graph_payload(payload)));
     }
     let orchestrator = local_orchestrator(&state)?;
     let graph = orchestrator.graph_snapshot().await;
-    Ok(Json(json!({ "graph": graph })))
+    Ok(Json(enrich_orchestrator_graph_payload(
+        json!({ "graph": graph }),
+    )))
 }
 
 async fn api_orch_launch(
@@ -4270,7 +4272,14 @@ fn proxy_ws_status_payload(tasks_payload: &Value, agent_id: &str) -> Value {
             "task_id": task.get("task_id"),
             "status": task.get("status").cloned().unwrap_or(json!("running")),
             "answer": task.get("answer").cloned().unwrap_or(Value::Null),
-            "result": task.get("result").cloned().unwrap_or(Value::Null),
+            "output": task.get("output")
+                .cloned()
+                .or_else(|| task.get("result").cloned())
+                .unwrap_or(Value::Null),
+            "result": task.get("result")
+                .cloned()
+                .or_else(|| task.get("output").cloned())
+                .unwrap_or(Value::Null),
             "error": task.get("error").cloned().unwrap_or(Value::Null),
             "exit_code": task.get("exit_code").cloned().unwrap_or(Value::Null),
             "trace_session_id": task.get("trace_session_id").cloned().unwrap_or(Value::Null),
@@ -4281,6 +4290,40 @@ fn proxy_ws_status_payload(tasks_payload: &Value, agent_id: &str) -> Value {
             "status": "idle",
         }),
     }
+}
+
+fn enrich_orchestrator_graph_payload(payload: Value) -> Value {
+    let graph = payload.get("graph").cloned().unwrap_or(Value::Null);
+    let derived_node_count = graph
+        .get("nodes")
+        .and_then(Value::as_object)
+        .map(|nodes| nodes.len())
+        .unwrap_or(0);
+    let derived_edge_count = graph
+        .get("edges")
+        .and_then(Value::as_array)
+        .map(|edges| edges.len())
+        .unwrap_or(0);
+    let node_count = payload
+        .get("node_count")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(derived_node_count);
+    let edge_count = payload
+        .get("edge_count")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(derived_edge_count);
+    let nodes_shape = payload
+        .get("nodes_shape")
+        .and_then(Value::as_str)
+        .unwrap_or("object_map");
+    json!({
+        "graph": graph,
+        "node_count": node_count,
+        "edge_count": edge_count,
+        "nodes_shape": nodes_shape,
+    })
 }
 
 fn local_orchestrator(

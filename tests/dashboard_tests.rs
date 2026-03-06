@@ -3373,6 +3373,11 @@ async fn api_orchestrator_routes_return_json() {
     let (s_graph, v_graph) = api_get(state, "/orchestrator/graph").await;
     assert_eq!(s_graph, StatusCode::OK, "graph route failed: {v_graph}");
     assert!(v_graph["graph"].is_object());
+    assert!(v_graph["graph"]["nodes"].is_object());
+    assert!(v_graph["graph"]["edges"].is_array());
+    assert_eq!(v_graph["nodes_shape"], "object_map");
+    assert!(v_graph["node_count"].is_number());
+    assert!(v_graph["edge_count"].is_number());
 
     let _ = std::fs::remove_file(&db_path);
 }

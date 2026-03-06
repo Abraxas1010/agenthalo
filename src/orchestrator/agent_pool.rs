@@ -203,7 +203,7 @@ impl AgentPool {
         }
         let mut args = agent.static_args.clone();
         match agent.agent_type.as_str() {
-            // Shell: prompt is the command string after `sh -lc`
+            // Shell: prompt is the command string after `sh -c`
             "shell" => args.push(prompt.to_string()),
             // Claude CLI: prompt is a positional argument (not a flag)
             // Codex CLI: prompt is a positional argument (not a flag)
@@ -330,7 +330,15 @@ fn command_for_kind(kind: &str) -> (String, Vec<String>, Vec<String>) {
             vec!["run".to_string(), "--non-interactive".to_string()],
             Vec::new(),
         ),
-        _ => ("sh".to_string(), vec!["-lc".to_string()], Vec::new()),
+        _ => (
+            "sh".to_string(),
+            vec!["-c".to_string()],
+            vec![
+                "ENV".to_string(),
+                "BASH_ENV".to_string(),
+                "PROMPT_COMMAND".to_string(),
+            ],
+        ),
     }
 }
 
@@ -446,6 +454,15 @@ mod tests {
         assert!(claude_remove.contains(&"CLAUDECODE".to_string()));
         let (_, _, codex_remove) = command_for_kind("codex");
         assert!(codex_remove.contains(&"CODEX_CLI".to_string()));
+    }
+
+    #[test]
+    fn shell_command_uses_non_login_mode() {
+        let (_, shell_args, shell_remove) = command_for_kind("shell");
+        assert_eq!(shell_args, vec!["-c".to_string()]);
+        assert!(shell_remove.contains(&"ENV".to_string()));
+        assert!(shell_remove.contains(&"BASH_ENV".to_string()));
+        assert!(shell_remove.contains(&"PROMPT_COMMAND".to_string()));
     }
 
     #[test]

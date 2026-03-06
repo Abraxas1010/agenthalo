@@ -188,3 +188,4 @@ The Cockpit transforms the dashboard into an agent orchestration terminal — la
 5. **Cockpit command allowlist** — only catalog commands + shells; no arbitrary command execution
 6. **Shell `-c`/`--command` blocked** — PTY sessions are interactive only
 7. **Touch assets.rs** after any `dashboard/` file change
+8. **Trace query semantics.** `TraceWriter` persists events to the DB file path on disk. Long-lived MCP service SQL state is in-memory, so trace inspection should use HALO trace APIs/tools (or reload from disk) when validating newly written trace rows.

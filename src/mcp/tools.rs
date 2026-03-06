@@ -208,6 +208,9 @@ pub struct OrchestratorTaskResponse {
     pub agent_id: String,
     pub status: String,
     pub answer: Option<String>,
+    /// Backward-compatible alias of `result`.
+    #[serde(default)]
+    pub output: Option<String>,
     pub result: Option<String>,
     pub error: Option<String>,
     pub exit_code: Option<i32>,
@@ -225,6 +228,15 @@ pub struct OrchestratorTasksResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OrchestratorGraphResponse {
     pub graph: serde_json::Value,
+    /// Number of task nodes in `graph.nodes`.
+    #[serde(default)]
+    pub node_count: usize,
+    /// Number of edges in `graph.edges`.
+    #[serde(default)]
+    pub edge_count: usize,
+    /// Container shape for `graph.nodes` (`object_map`).
+    #[serde(default)]
+    pub nodes_shape: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4071,7 +4083,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "orchestrator_graph",
-        description = "Get current orchestrator task graph snapshot."
+        description = "Get current orchestrator task graph snapshot. graph.nodes is an object map keyed by task_id; graph.edges is an array."
     )]
     pub async fn orchestrator_graph(&self) -> Result<Json<OrchestratorGraphResponse>, McpError> {
         if orchestrator_proxy_enabled() {
@@ -4088,10 +4100,15 @@ impl NucleusDbMcpService {
         }
         let orchestrator = { self.state.lock().await.orchestrator.clone() };
         let graph = orchestrator.graph_snapshot().await;
+        let node_count = graph.nodes.len();
+        let edge_count = graph.edges.len();
         Ok(Json(OrchestratorGraphResponse {
             graph: serde_json::to_value(graph).map_err(|e| {
                 McpError::internal_error(format!("serialize orchestrator graph: {e}"), None)
             })?,
+            node_count,
+            edge_count,
+            nodes_shape: "object_map".to_string(),
         }))
     }
 
@@ -4339,6 +4356,7 @@ fn cli_detect_command(agent: &str) -> Option<&'static str> {
 }
 
 fn task_to_response(task: crate::orchestrator::task::Task) -> OrchestratorTaskResponse {
+    let result = task.result;
     OrchestratorTaskResponse {
         task_id: task.task_id,
         agent_id: task.agent_id,
@@ -4350,7 +4368,8 @@ fn task_to_response(task: crate::orchestrator::task::Task) -> OrchestratorTaskRe
             crate::orchestrator::task::TaskStatus::Timeout => "timeout".to_string(),
         },
         answer: task.answer,
-        result: task.result,
+        output: result.clone(),
+        result,
         error: task.error,
         exit_code: task.exit_code,
         input_tokens: Some(task.usage.input_tokens),
@@ -4847,6 +4866,7 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("hello-orchestrator"));
+        assert_eq!(task.output, task.result);
 
         cleanup_db_files(&db_path);
     }
@@ -5038,9 +5058,44 @@ mod tests {
         };
         let response = task_to_response(task);
         assert_eq!(response.status, "complete");
+        assert_eq!(response.output.as_deref(), Some("ok"));
         assert_eq!(
             response.trace_session_id.as_deref(),
             Some("orch-trace-task-123")
         );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn orchestrator_graph_response_reports_shape_and_counts() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _proxy = EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
+        let db_path = temp_db_path("orchestrator_graph_shape");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(graph) = service.orchestrator_graph().await.expect("graph snapshot");
+        assert_eq!(graph.nodes_shape, "object_map");
+        assert!(graph.graph["nodes"].is_object());
+        assert!(graph.graph["edges"].is_array());
+        assert_eq!(
+            graph.node_count,
+            graph
+                .graph
+                .get("nodes")
+                .and_then(|v| v.as_object())
+                .map(|m| m.len())
+                .unwrap_or(0)
+        );
+        assert_eq!(
+            graph.edge_count,
+            graph
+                .graph
+                .get("edges")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0)
+        );
+
+        cleanup_db_files(&db_path);
     }
 }

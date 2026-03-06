@@ -277,6 +277,15 @@ fn extract_answer(agent_type: &str, output: &str, exit_code: i32) -> Option<Stri
 
 fn extract_claude_answer(output: &str) -> Option<String> {
     let mut last = None;
+    let trimmed = output.trim();
+    if !trimmed.is_empty() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            collect_claude_text_candidates(&value, &mut last);
+            if last.is_some() {
+                return last;
+            }
+        }
+    }
     for line in output.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -285,14 +294,27 @@ fn extract_claude_answer(output: &str) -> Option<String> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
             continue;
         };
-        if let Some(text) = extract_claude_text_from_value(&value) {
-            let clean = text.trim();
-            if !clean.is_empty() {
-                last = Some(clean.to_string());
+        collect_claude_text_candidates(&value, &mut last);
+    }
+    last
+}
+
+fn collect_claude_text_candidates(value: &serde_json::Value, last: &mut Option<String>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_claude_text_candidates(item, last);
+            }
+        }
+        _ => {
+            if let Some(text) = extract_claude_text_from_value(value) {
+                let clean = text.trim();
+                if !clean.is_empty() {
+                    *last = Some(clean.to_string());
+                }
             }
         }
     }
-    last
 }
 
 fn extract_claude_text_from_value(value: &serde_json::Value) -> Option<String> {
@@ -414,6 +436,12 @@ mod tests {
             extract_answer("claude", output, 0).as_deref(),
             Some("real answer")
         );
+    }
+
+    #[test]
+    fn extract_claude_answer_supports_json_array_payloads() {
+        let output = r#"[{"type":"system","subtype":"init","cwd":"/tmp"},{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"4"}]}},{"type":"result","result":"4"}]"#;
+        assert_eq!(extract_answer("claude", output, 0).as_deref(), Some("4"));
     }
 
     #[test]
