@@ -42,6 +42,7 @@ pub struct PtySession {
     command: String,
     args: Vec<String>,
     output_tx: broadcast::Sender<SessionEvent>,
+    captured_output: Mutex<Vec<u8>>,
     input_bytes: AtomicU64,
     output_bytes: AtomicU64,
     trace_flushed: AtomicBool,
@@ -120,8 +121,23 @@ impl PtySession {
     pub fn publish_output(&self, bytes: Vec<u8>) {
         if !bytes.is_empty() {
             self.note_output(bytes.len() as u64);
+            if let Ok(mut captured) = self.captured_output.lock() {
+                const MAX_CAPTURED_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+                captured.extend_from_slice(&bytes);
+                if captured.len() > MAX_CAPTURED_OUTPUT_BYTES {
+                    let overflow = captured.len() - MAX_CAPTURED_OUTPUT_BYTES;
+                    captured.drain(..overflow);
+                }
+            }
         }
         let _ = self.output_tx.send(SessionEvent::Output(bytes));
+    }
+
+    pub fn snapshot_output(&self) -> Vec<u8> {
+        self.captured_output
+            .lock()
+            .map(|buf| buf.clone())
+            .unwrap_or_default()
     }
 
     pub fn note_input(&self, n: u64) {
@@ -300,6 +316,7 @@ impl PtyManager {
             command: command.to_string(),
             args: args.to_vec(),
             output_tx,
+            captured_output: Mutex::new(Vec::new()),
             input_bytes: AtomicU64::new(0),
             output_bytes: AtomicU64::new(0),
             trace_flushed: AtomicBool::new(false),

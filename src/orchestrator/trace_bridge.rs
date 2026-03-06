@@ -152,35 +152,53 @@ pub async fn collect_task_output(
         trace_enabled,
     )?;
     let mut rx = session.subscribe_output();
+    let initial_output = session.snapshot_output();
+    if !initial_output.is_empty() {
+        bridge.process_bytes(&initial_output)?;
+    }
     let timeout = std::time::Duration::from_secs(timeout_secs.max(1));
     let deadline = tokio::time::Instant::now() + timeout;
     let exit_code = loop {
+        match session.status() {
+            crate::cockpit::session::SessionStatus::Done { exit_code } => break exit_code,
+            crate::cockpit::session::SessionStatus::Error { message } => {
+                bridge.finalize(HaloSessionStatus::Failed)?;
+                return Err(message);
+            }
+            _ => {}
+        }
+        if let Some(code) = session.poll_exit_status() {
+            break code;
+        }
         let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remain.is_zero() {
             let _ = session.terminate();
             bridge.finalize(HaloSessionStatus::Interrupted)?;
             return Err(format!("task timeout after {timeout_secs}s"));
         }
-        let event = tokio::time::timeout(remain, rx.recv())
-            .await
-            .map_err(|_| format!("task timeout after {timeout_secs}s"))?;
-        match event {
-            Ok(SessionEvent::Output(bytes)) => {
-                bridge.process_bytes(&bytes)?;
-            }
-            Ok(SessionEvent::Status(crate::cockpit::session::SessionStatus::Done {
-                exit_code: code,
-            })) => {
-                break code;
-            }
-            Ok(SessionEvent::Status(crate::cockpit::session::SessionStatus::Error { message })) => {
-                bridge.finalize(HaloSessionStatus::Failed)?;
-                return Err(message);
-            }
-            Ok(SessionEvent::Status(_)) => {}
-            Err(broadcast::error::RecvError::Lagged(_)) => {}
-            Err(broadcast::error::RecvError::Closed) => {
-                break session.poll_exit_status().unwrap_or(1);
+        let poll_slice = std::time::Duration::from_millis(100);
+        let wait_for = std::cmp::min(remain, poll_slice);
+        if let Ok(event) = tokio::time::timeout(wait_for, rx.recv()).await {
+            match event {
+                Ok(SessionEvent::Output(bytes)) => {
+                    bridge.process_bytes(&bytes)?;
+                }
+                Ok(SessionEvent::Status(crate::cockpit::session::SessionStatus::Done {
+                    exit_code: code,
+                })) => {
+                    break code;
+                }
+                Ok(SessionEvent::Status(crate::cockpit::session::SessionStatus::Error {
+                    message,
+                })) => {
+                    bridge.finalize(HaloSessionStatus::Failed)?;
+                    return Err(message);
+                }
+                Ok(SessionEvent::Status(_)) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => {
+                    break session.poll_exit_status().unwrap_or(1);
+                }
             }
         }
     };
@@ -405,6 +423,8 @@ fn as_non_empty_str(value: &serde_json::Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cockpit::pty_manager::PtyManager;
+    use std::sync::Arc;
 
     #[test]
     fn strip_ansi_sequences_removes_control_codes() {
@@ -450,5 +470,37 @@ mod tests {
             extract_answer("shell", "error: command not found", 127),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn collect_task_output_handles_fast_exit_before_subscribe() {
+        let manager = PtyManager::new(1);
+        let id = manager
+            .create_session(
+                "/bin/sh",
+                &["-c".to_string(), "echo fast-shell".to_string()],
+                vec![],
+                None,
+                120,
+                24,
+                Some("shell".to_string()),
+            )
+            .expect("create session");
+        let session = manager.get_session(&id).expect("session exists");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let outcome = collect_task_output(
+            Arc::clone(&session),
+            "shell",
+            std::path::Path::new("/tmp/trace_bridge_fast_exit_test.ndb"),
+            "trace-fast-exit",
+            "echo fast-shell",
+            false,
+            3,
+        )
+        .await
+        .expect("collect output");
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.output.contains("fast-shell"));
+        manager.destroy_session(&id).expect("destroy session");
     }
 }

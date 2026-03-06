@@ -4873,6 +4873,63 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
+    async fn orchestrator_shell_trace_wait_roundtrip_multiple_tasks() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _proxy = EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
+        let db_path = temp_db_path("orchestrator_shell_trace_wait");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(launch) = service
+            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                agent: "shell".to_string(),
+                agent_name: "trace-shell".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: Some(30),
+                model: None,
+                trace: Some(true),
+                capabilities: vec!["memory_read".to_string()],
+            }))
+            .await
+            .expect("launch shell");
+        assert_eq!(launch.status, "idle");
+
+        let tasks = [
+            ("true", ""),
+            ("printf 'trace-shell-ok'", "trace-shell-ok"),
+            ("echo trace-shell-done", "trace-shell-done"),
+        ];
+
+        for (command, expected) in tasks {
+            let Json(task) = service
+                .orchestrator_send_task(Parameters(OrchestratorSendTaskRequest {
+                    agent_id: launch.agent_id.clone(),
+                    task: command.to_string(),
+                    format: None,
+                    timeout_secs: Some(20),
+                    wait: Some(true),
+                }))
+                .await
+                .expect("run traced shell task");
+            assert_eq!(task.status, "complete", "command `{command}`");
+            if !expected.is_empty() {
+                assert!(
+                    task.result
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains(expected),
+                    "command `{command}` output mismatch"
+                );
+            }
+            assert!(task.trace_session_id.is_some(), "command `{command}`");
+            assert_eq!(task.output, task.result);
+        }
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn orchestrator_launch_rejects_unknown_capability() {
         let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let _proxy = EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
