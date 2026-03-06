@@ -2,7 +2,7 @@
 name = "nucleusdb"
 version = "0.1.0"
 edition = "2021"
-description = "Verifiable database with vector commitments, post-quantum signatures, and Certificate Transparency"
+description = "Agent H.A.L.O. — Human-AI Agent Lifecycle Orchestrator. Tamper-proof observability for AI agents, built on NucleusDB (verifiable database with vector commitments, post-quantum signatures, and Certificate Transparency)."
 license = "Apoth3osis-License-Stack-v1"
 repository = "https://github.com/Abraxas1010/agenthalo"
 

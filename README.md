@@ -19,7 +19,7 @@ We humbly thank the collective intelligence of humanity for providing the techno
 </p>
 
 <p align="center">
-  <strong>Agent H.A.L.O.</strong> — <strong>H</strong>osted <strong>A</strong>gent <strong>L</strong>ogic <strong>O</strong>rbit<br>
+  <strong>Agent H.A.L.O.</strong> — <strong>H</strong>uman-AI <strong>A</strong>gent <strong>L</strong>ifecycle <strong>O</strong>rchestrator<br>
   <em>Tamper-proof observability for AI agents.</em>
 </p>
 
@@ -27,27 +27,27 @@ We humbly thank the collective intelligence of humanity for providing the techno
 
 <table>
 <tr>
-<td width="25%" align="center"><strong>H</strong><br><sub>Hardware / Host</sub><br><em>The Energy Shell</em></td>
+<td width="25%" align="center"><strong>H</strong><br><sub>Human-AI</sub><br><em>The Interface</em></td>
 <td width="25%" align="center"><strong>A</strong><br><sub>Agent</sub><br><em>The Identity</em></td>
-<td width="25%" align="center"><strong>L</strong><br><sub>Logic / Lightcone</sub><br><em>The Intelligence</em></td>
-<td width="25%" align="center"><strong>O</strong><br><sub>Orbit / Outer-layer</sub><br><em>The Markov Blanket</em></td>
+<td width="25%" align="center"><strong>L</strong><br><sub>Lifecycle</sub><br><em>The Continuity</em></td>
+<td width="25%" align="center"><strong>O</strong><br><sub>Orchestrator</sub><br><em>The Conductor</em></td>
 </tr>
 <tr>
-<td align="center"><sub>PUF fingerprint, hardware entropy, the physical substrate the agent inhabits</sub></td>
+<td align="center"><sub>The human-AI boundary — sovereign observation, cryptographic trust anchoring, PUF-bound hardware identity</sub></td>
 <td align="center"><sub>Wallet identity, cryptographic keypair, the self that persists across sessions</sub></td>
-<td align="center"><sub>Reasoning traces, tool calls, decisions — the causal lightcone of each action</sub></td>
-<td align="center"><sub>The observability boundary — everything inside is the agent, everything outside is the record</sub></td>
+<td align="center"><sub>Traces, tool calls, decisions, costs — the full causal history from launch to completion</sub></td>
+<td align="center"><sub>Multi-agent coordination — budget enforcement, mesh networking, task DAGs, container management</sub></td>
 </tr>
 </table>
 
 <br>
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-![Tests](https://img.shields.io/badge/tests-262%20passing-brightgreen.svg)
-![Lean 4](https://img.shields.io/badge/Lean%204-63%20modules-blue.svg)
+![Tests](https://img.shields.io/badge/tests-875%20passing-brightgreen.svg)
+![Lean 4](https://img.shields.io/badge/Lean%204-131%20modules-blue.svg)
 ![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
 
-[The Problem](#the-problem) · [Quick Start](#quick-start) · [Web Dashboard](#web-dashboard) · [The Algebraic Foundation](#the-algebraic-foundation) · [NucleusDB](#nucleusdb) · [Architecture](#architecture) · [Contributing](CONTRIBUTING.md)
+[The Problem](#the-problem) · [Quick Start](#quick-start) · [Web Dashboard](#web-dashboard) · [Orchestrator](#orchestrator) · [Sovereign Identity](#sovereign-identity) · [The Algebraic Foundation](#the-algebraic-foundation) · [NucleusDB](#nucleusdb) · [Architecture](#architecture) · [Contributing](CONTRIBUTING.md)
 
 ---
 
@@ -98,10 +98,10 @@ Every event is stored in `~/.agenthalo/traces.ndb` — a content-addressed blob 
 
 The four layers of the H.A.L.O. model map directly to what gets recorded:
 
-- **H** (Hardware) — The host PUF fingerprint anchors the trace to the physical machine that produced it. Traces can't be transplanted between hosts.
+- **H** (Human-AI) — The trust boundary between human and AI. PUF fingerprints anchor traces to the physical machine. Sovereign observation without third-party custody.
 - **A** (Agent) — The agent's wallet identity and session metadata. Which agent, which model, which credentials — cryptographically bound to the trace.
-- **L** (Logic) — Every reasoning step, tool call, file edit, and shell command. The full causal lightcone of the agent's decisions.
-- **O** (Orbit) — The tamper-evident boundary. The Merkle root, the seal chain, the monotone extension proofs. Everything outside the orbit is the verifiable record; everything inside is the agent's private state.
+- **L** (Lifecycle) — Every reasoning step, tool call, file edit, and shell command. The full causal history from launch to completion, with token counts and cost attribution.
+- **O** (Orchestrator) — Multi-agent coordination. Budget enforcement, mesh networking, task DAGs, and container management. The conductor that keeps agents accountable.
 
 ### What It Captures
 
@@ -130,10 +130,10 @@ Every event includes token counts (input/output/cache-read) parsed from the agen
 ## Quick Start
 
 ```bash
-# One-line install (Linux/macOS)
+# One-line install (clones and builds from source; requires Rust toolchain + repo access)
 curl -fsSL https://raw.githubusercontent.com/Abraxas1010/agenthalo/master/install.sh | bash
 
-# Or build from source
+# Or clone and build manually
 git clone https://github.com/Abraxas1010/agenthalo.git && cd agenthalo
 cargo install --path . --bin agenthalo
 
@@ -163,7 +163,7 @@ agenthalo unwrap --all       # removes them cleanly
 agenthalo dashboard          # opens http://localhost:3100
 ```
 
-No external dependencies, no cloud service, no account required. The entire system — CLI, web dashboard, embedded assets — compiles to a single 9.5MB binary.
+No external dependencies, no cloud service, no account required. The entire system — CLI, web dashboard, embedded assets — compiles to a single statically-linked binary.
 
 ### Identity Category (CLI + MCP)
 
@@ -205,10 +205,104 @@ A real-time observability dashboard embedded in the binary — no npm, no CDN, n
 | **Configuration** | Toggle agent wrapping and x402 payments from the browser |
 | **Trust** | Attestation list, one-click verify, create attestations |
 | **NucleusDB** | Browse the verifiable store, execute SQL, view commit history |
+| **Cockpit** | Launch and manage agent sessions in browser-based xterm.js terminals |
+| **Deploy** | Agent catalog cards, preflight checks, one-click agent deployment |
 
 Dark/light theme toggle. SSE live updates. Chart.js analytics. Responsive layout.
 
+### Cockpit — Browser Terminal Orchestration
+
+The Cockpit transforms the dashboard into a full agent orchestration terminal. Launch Claude, Codex, Gemini, OpenClaw, or Shell sessions directly in the browser — each in its own xterm.js panel with CRT terminal aesthetics.
+
+- **PTY bridge** — real pseudo-terminal sessions via WebSocket, not simulated output
+- **Multi-panel layout** — run multiple agents side-by-side with tab management
+- **Deploy page** — agent catalog with preflight checks (CLI detection, auth status, vault keys)
+- **Mesh sidebar** — live P2P peer topology with online/offline status and latency
+
 > Full API reference: **[Docs/AGENTHALO.md](Docs/AGENTHALO.md#web-dashboard)**
+
+---
+
+## Orchestrator
+
+H.A.L.O. manages multiple AI agents as a unified fleet. The orchestrator provides lifecycle control, budget enforcement, and task coordination — all exposed via MCP tools that any controlling agent can call.
+
+```bash
+# Launch agents
+agenthalo orchestrate launch --agent claude --name reviewer --timeout 120
+agenthalo orchestrate launch --agent shell --name builder
+
+# Submit tasks
+agenthalo orchestrate send-task --agent-id orch-abc --task "review auth.rs for vulnerabilities"
+agenthalo orchestrate send-task --agent-id orch-def --task "cargo test --release"
+
+# Pipe outputs between agents (task DAG)
+agenthalo orchestrate pipe --from task-123 --to agent-id orch-ghi --task "summarize the review"
+```
+
+### Multi-Agent Budget Control
+
+Per-instance resource limits prevent runaway agent spawning:
+
+| Constraint | Default | Description |
+|------------|---------|-------------|
+| `max_agents` | 64 | Total managed agents across all kinds |
+| `max_concurrent_busy` | 10 | Maximum agents executing tasks simultaneously |
+| `allowed_kinds` | all | Restrict to specific agent types |
+
+Budget enforcement is atomic — check-and-insert under a single lock with no TOCTOU window.
+
+### Agent Kinds
+
+| Kind | CLI | Use Case |
+|------|-----|----------|
+| `claude` | `claude --print --output-format json` | Code review, analysis, generation |
+| `codex` | `codex exec --full-auto --json` | Autonomous coding tasks |
+| `gemini` | `gemini --yolo` | Large-context analysis |
+| `openclaw` | `openclaw run --non-interactive` | Decentralized agent workflows |
+| `shell` | `sh -c` | Build scripts, system commands |
+
+### P2P Mesh Networking
+
+Agents discover each other via a peer registry and exchange status over a libp2p mesh. The cockpit renders live peer topology — which agents are online, their latency, and reachability.
+
+### MCP Orchestration Tools
+
+9 tools available to any MCP-capable controlling agent: `orchestrator_launch`, `orchestrator_send_task`, `orchestrator_get_result`, `orchestrator_pipe`, `orchestrator_list`, `orchestrator_tasks`, `orchestrator_graph`, `orchestrator_mesh_status`, `orchestrator_stop`.
+
+---
+
+## Sovereign Identity
+
+Every H.A.L.O. agent derives a DID (Decentralized Identifier) from a genesis seed ceremony. The DID document carries both classical and post-quantum key pairs — side by side.
+
+```bash
+# Generate sovereign identity
+agenthalo keygen
+
+# Inspect identity state
+agenthalo identity status --json
+```
+
+### Post-Quantum Cryptography
+
+All agent-controlled cryptographic surfaces are PQ-hardened:
+
+| Surface | Classical | Post-Quantum | Combined |
+|---------|-----------|-------------|----------|
+| DIDComm encryption | X25519 ECDH | ML-KEM-768 (FIPS 203) | Hybrid KEM |
+| Identity signatures | Ed25519 | ML-DSA-65 (FIPS 204) | Dual-signed |
+| EVM transaction signing | secp256k1 | PQ-gated (Ed25519 + ML-DSA-65) | Two-cryptosystem barrier |
+| Key derivation | — | HKDF-SHA-512 | 256-bit PQ security |
+| Integrity chains | — | SHA-512 | 256-bit PQ collision resistance |
+
+### DIDComm v2 Messaging
+
+Agents exchange encrypted messages using hybrid KEM (X25519 + ML-KEM-768). Messages are routed over the libp2p P2P mesh or through the Nym mixnet for network-layer anonymity.
+
+### EVM Wallet
+
+Each agent holds a BIP-32 derived secp256k1 wallet for on-chain operations. Transaction signing requires dual-signature authorization (Ed25519 + ML-DSA-65) — an attacker must break both the EVM key AND the agent's post-quantum DID identity.
 
 ---
 
@@ -235,7 +329,7 @@ A cloud dashboard can show you what it claims happened. It cannot prove the log 
 | **Works offline** | No | Yes |
 | **Agent support** | Framework-specific SDKs | Wraps any CLI agent directly |
 | **MCP native** | No | Yes — 18 native + proxied tools over HTTP, 11 tools over stdio |
-| **Formal verification** | No | 63 Lean 4 modules with sheaf-theoretic proofs |
+| **Formal verification** | No | 131 Lean 4 modules with sheaf-theoretic proofs |
 
 H.A.L.O. doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.
 
@@ -387,7 +481,7 @@ Every x402 payment flows through H.A.L.O.'s trace, giving you a complete audit t
 
 Most databases describe their correctness properties in English. NucleusDB proves them in Lean 4 using the mathematics of sheaf theory — the same framework algebraic geometers use to describe how local observations compose into global structure.
 
-This is not a marketing claim. It is 63 Lean 4 modules, type-checked by the Lean kernel, that formally prove the properties NucleusDB relies on. We are not aware of any other database — verifiable or otherwise — that provides this level of mathematical foundation.
+This is not a marketing claim. It is 131 Lean 4 modules, type-checked by the Lean kernel, that formally prove the properties NucleusDB relies on. We are not aware of any other database — verifiable or otherwise — that provides this level of mathematical foundation.
 
 ### Why Sheaves
 
@@ -422,7 +516,7 @@ H.A.L.O. asks you to trust the Lean 4 kernel — a small, independently auditabl
 lake build NucleusDB
 ```
 
-The 63 modules cover:
+The 131 modules cover:
 
 | Domain | Modules | What's Proved |
 |--------|---------|---------------|
@@ -433,6 +527,10 @@ The 63 modules cover:
 | **Transparency** | CT6962, Consistency, LogModel | RFC 6962 append-only tree, consistency proofs |
 | **Adversarial** | ForkEvidence, Witness | Fork detection, witness validity |
 | **Trust Layer** | Presheaf, GluingCondition, GlobalCab, SheafBridge | Multi-chain compliance, composite attestation |
+| **Identity** | Genesis, DID, KeyPair, Ceremony | Agent identity lifecycle, key derivation |
+| **Comms** | DIDComm, HybridKEM, P2P, ZK | Encrypted messaging, hybrid post-quantum KEM |
+| **Crypto** | MLDSA, MLKEM, HashChain | Post-quantum signature/KEM correctness |
+| **Contracts** | PaymentChannels, EVM | On-chain payment channel state transitions |
 
 ---
 
@@ -503,6 +601,13 @@ Three backends are available, each with different tradeoff profiles:
 | CHECKPOINT | `CHECKPOINT;` |
 
 UPDATE and DELETE are permanently disabled after `SET MODE APPEND_ONLY`.
+
+### Vector Search
+
+NucleusDB includes built-in kNN vector search — store embeddings alongside structured data and query by similarity:
+
+- **Distance metrics**: cosine, L2 (Euclidean), inner product
+- **Use case**: semantic memory recall for agents — store conversation embeddings, retrieve relevant context by meaning rather than keyword
 
 ### MCP Server (AI Agents)
 
@@ -612,39 +717,42 @@ Phase 5 scripts:
                           Agent H.A.L.O. + NucleusDB
   ┌─────────────────────────────────────────────────────────────┐
   │                                                             │
-  │   H.A.L.O. Layers               NucleusDB Core             │
-  │                                                             │
-  │   O ─ Orbit (traces) ──┐       ┌─ protocol.rs              │
-  │   L ─ Logic (adapters)  │       ├─ immutable.rs             │
-  │     Claude ─────────────┤       ├─ sql/executor             │
-  │     Codex ──────────────┼─ O ─▶├─ keymap.rs                │
-  │     Gemini ─────────────┤       ├─ witness.rs (ML-DSA-65)   │
-  │     Generic ────────────┘       ├─ ct6962.rs (RFC 6962)     │
-  │   A ─ Agent (identity)          ├─ security.rs              │
-  │     Wallet / PUF ──────────────▶├─ audit.rs                 │
-  │   H ─ Host (hardware)           ├─ license.rs (Groth16)     │
-  │     PUF fingerprint ───────────▶└─ persistence (redb WAL)   │
-  │                                                             │
-  │   Client Surfaces            Commitment Backends            │
-  │     CLI / REPL ─────┐         vc/binary_merkle.rs           │
-  │     Web Dashboard ──┤         vc/ipa.rs                     │
-  │     Terminal UI ────┤         vc/kzg.rs                     │
-  │     MCP Server ─────┤                                       │
-  │     HTTP API ───────┘                                       │
-  │                                                             │
-  ├─────────────────────────────────────────────────────────────┤
-  │                                                             │
-  │   On-Chain Trust (Base L2)      Formal Spec (Lean 4)        │
-  │     TrustVerifier.sol            63 modules                 │
-  │     TrustVerifierMultiChain.sol  Sheaf coherence,           │
-  │     Groth16VerifierAdapter.sol   Chain transport/gluing,    │
-  │     circuits/ (circom)           Fork evidence,             │
-  │                                  Materialization functors   │
-  │                                                             │
-  └─────────────────────────────────────────────────────────────┘
+  │   H ─ Human-AI (trust boundary)   NucleusDB Core           │
+  │     PUF fingerprint ──────────────▶ protocol.rs             │
+  │     Hardware entropy ──────────────▶ immutable.rs            │
+  │                                     sql/executor             │
+  │   A ─ Agent (identity)              keymap.rs                │
+  │     DID / Genesis seed ────────────▶ witness.rs (ML-DSA-65)  │
+  │     EVM wallet (secp256k1) ────────▶ ct6962.rs (RFC 6962)   │
+  │     Hybrid KEM (X25519+ML-KEM) ───▶ security.rs             │
+  │                                     persistence (redb WAL)   │
+  │   L ─ Lifecycle (traces)                                     │
+  │     Claude ─────────────┐        Commitment Backends         │
+  │     Codex ──────────────┤          vc/binary_merkle.rs       │
+  │     Gemini ─────────────┼─ L ──▶   vc/ipa.rs                │
+  │     OpenClaw ───────────┤          vc/kzg.rs                 │
+  │     Shell ──────────────┘                                    │
+  │                                                              │
+  │   O ─ Orchestrator (coordination)                            │
+  │     Agent pool ─────────┐        Client Surfaces             │
+  │     Task DAG ───────────┤          CLI / REPL                │
+  │     Budget enforcement ─┤          Web Dashboard + Cockpit   │
+  │     Mesh networking ────┤          Terminal UI                │
+  │     DIDComm v2 ─────────┘          MCP Server (stdio + HTTP) │
+  │                                                              │
+  ├──────────────────────────────────────────────────────────────┤
+  │                                                              │
+  │   On-Chain Trust (Base L2)       Formal Spec (Lean 4)        │
+  │     TrustVerifier.sol              131 modules               │
+  │     TrustVerifierMultiChain.sol    Sheaf coherence,          │
+  │     Groth16VerifierAdapter.sol     Chain transport/gluing,   │
+  │     circuits/ (circom)             Fork evidence, Identity,  │
+  │                                    Comms, PaymentChannels    │
+  │                                                              │
+  └──────────────────────────────────────────────────────────────┘
 ```
 
-**100+ Rust source files** | **20,000+ lines** | **2,500+ lines of tests** | **20 Solidity contracts** | **63 Lean 4 modules**
+**179 Rust source files** | **77,000+ lines** | **7,500+ lines of tests** | **20 Solidity contracts** | **131 Lean 4 modules**
 
 ## Security
 
@@ -653,10 +761,15 @@ Phase 5 scripts:
 | Layer | Primitive | Security Level |
 |-------|-----------|---------------|
 | State commitments | SHA-256 Merkle tree | 128-bit classical, post-quantum safe |
-| Witness signatures | ML-DSA-65 (FIPS 204) | Post-quantum (NIST Level 3) |
+| Witness signatures | ML-DSA-65 (FIPS 204) | NIST PQ Level 3 |
+| DIDComm encryption | X25519 + ML-KEM-768 (FIPS 203) | Hybrid classical + PQ |
+| Identity signatures | Ed25519 + ML-DSA-65 | Dual classical + PQ |
+| Key derivation | HKDF-SHA-512 | 256-bit PQ security |
+| Integrity chains | SHA-512 | 256-bit PQ collision resistance |
 | Monotone seals | SHA-256 hash chain | 128-bit preimage resistance |
 | Transparency proofs | RFC 6962 (SHA-256) | 128-bit collision resistance |
-| License verification | Groth16 over BN254 | 128-bit (classical pairing security) |
+| License verification | Groth16 over BN254 | 128-bit classical pairing security |
+| EVM signing | secp256k1 (PQ-gated) | Two-cryptosystem barrier |
 
 ### Immutable Mode Guarantees
 
@@ -670,18 +783,18 @@ When `APPEND_ONLY` is active:
 
 ## Testing
 
-262 tests passing (2026-02-24 snapshot), 0 failures, 0 warnings:
+875 tests passing (2026-03-06 snapshot), 0 failures, 0 warnings:
 
 ```bash
-cargo test                        # 223 Rust tests
+cargo test                        # 836 Rust tests
 cd contracts && forge test        # 39 Solidity tests
 ```
 
 | Suite | Tests |
 |-------|-------|
-| Rust (unit + integration + binary tests) | 223 |
+| Rust (unit + integration + binary tests) | 836 |
 | Solidity (Foundry) | 39 |
-| **Total** | **262** |
+| **Total** | **875** |
 
 ## Known Limitations
 

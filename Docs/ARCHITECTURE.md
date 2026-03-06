@@ -1,13 +1,13 @@
 # Agent H.A.L.O. / NucleusDB — Architecture Reference
 
 **Last updated:** 2026-03-04
-**Test count:** 731+ passing
+**Test count:** 875+ passing
 
 ---
 
 ## 1. Project Identity
 
-Agent H.A.L.O. (Human-Agent Lattice Orchestration) is a sovereign agent platform
+Agent H.A.L.O. (Human-AI Agent Lifecycle Orchestrator) is a sovereign agent platform
 providing post-quantum cryptographic identity, DIDComm-based communication, and
 tamper-proof observability for AI agents. It wraps any agent CLI (Claude, Codex,
 Gemini, OpenClaw) and records every event into a local, cryptographically sealed

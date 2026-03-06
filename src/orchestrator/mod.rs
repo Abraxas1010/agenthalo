@@ -866,9 +866,19 @@ mod tests {
             })
             .await
             .expect("submit task");
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // Poll until the background handle is cleaned up (up to 5s under load)
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let handle_count = orchestrator.inner.background_runs.lock().await.len();
+            if handle_count == 0 {
+                break;
+            }
+        }
         let handle_count = orchestrator.inner.background_runs.lock().await.len();
-        assert_eq!(handle_count, 0);
+        assert_eq!(
+            handle_count, 0,
+            "background handle not cleaned up within 5s"
+        );
         let task = orchestrator
             .get_task(&submitted.task_id)
             .await

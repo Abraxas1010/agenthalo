@@ -16,10 +16,10 @@ Thank you for your interest in contributing. NucleusDB prioritizes correctness, 
 # Build everything
 cargo build
 
-# Run all Rust tests (212 tests)
+# Run all Rust tests (~836 tests)
 cargo test
 
-# Run Solidity tests (34 tests, requires Foundry)
+# Run Solidity tests (39 tests, requires Foundry)
 cd contracts && forge test
 
 # Build formal specs (requires Lean 4)

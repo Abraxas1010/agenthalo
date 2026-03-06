@@ -6,11 +6,11 @@
 
 ## What It Is
 
-**Agent H.A.L.O.** (Hosted Agent Logic Orbit) is an open-source system that gives AI agents — Claude, Codex, Gemini, or any custom agent — a tamper-proof audit trail. It wraps agent sessions transparently, records every event into a local cryptographic store, and produces Merkle proofs that make post-hoc tampering mathematically detectable. No data ever leaves the user's machine.
+**Agent H.A.L.O.** (Human-AI Agent Lifecycle Orchestrator) is an open-source system that gives AI agents — Claude, Codex, Gemini, or any custom agent — a tamper-proof audit trail. It wraps agent sessions transparently, records every event into a local cryptographic store, and produces Merkle proofs that make post-hoc tampering mathematically detectable. No data ever leaves the user's machine.
 
 **NucleusDB** is the verifiable database engine underneath. It is also a standalone product: a content-addressed key-value store where every write is a cryptographic commitment, every query can come with a proof, and immutability — once activated — is enforced by mathematics, not access control.
 
-Both are built by **Apoth3osis** and ship from a single Rust codebase: ~28,000 lines of Rust, 63 Lean 4 formal proof modules, 10 Solidity smart contracts, and 202 tests. The entire system — CLI, web dashboard, embedded assets — compiles to a single 9.5MB binary with zero runtime dependencies.
+Both are built by **Apoth3osis** and ship from a single Rust codebase: ~77,000 lines of Rust, 131 Lean 4 formal proof modules, 20 Solidity smart contracts, and 875 tests. The entire system — CLI, web dashboard, embedded assets — compiles to a single statically-linked binary with zero runtime dependencies.
 
 ---
 

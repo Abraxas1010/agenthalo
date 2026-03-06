@@ -1,6 +1,6 @@
 # Agent H.A.L.O. — Agent Instructions
 
-> **H**uman-**A**gent **L**attice **O**rchestration
+> **H**uman-AI **A**gent **L**ifecycle **O**rchestrator
 > Tamper-proof observability for AI agents, built on NucleusDB.
 
 **Repo:** `Abraxas1010/agenthalo` | **Language:** Rust + vanilla JS | **Dashboard:** `localhost:3100`
@@ -33,7 +33,7 @@ Read these at session start for alignment context:
 # Build
 cargo build --release
 
-# Test (all 58 tests, ~2s)
+# Test (all ~580 tests)
 cargo test
 
 # Dashboard-only tests (29 tests)

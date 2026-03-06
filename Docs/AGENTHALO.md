@@ -5,7 +5,7 @@
 <h1 align="center">Agent H.A.L.O. Reference Guide</h1>
 
 <p align="center">
-  <strong>H</strong>osted <strong>A</strong>gent <strong>L</strong>ogic <strong>O</strong>rbit<br>
+  <strong>H</strong>uman-AI <strong>A</strong>gent <strong>L</strong>ifecycle <strong>O</strong>rchestrator<br>
   <em>Local-first observability for AI coding agents. Tamper-proof session recording backed by NucleusDB.</em>
 </p>
 
