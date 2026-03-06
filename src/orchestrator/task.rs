@@ -23,6 +23,8 @@ pub struct Task {
     pub agent_id: String,
     pub prompt: String,
     pub status: TaskStatus,
+    #[serde(default)]
+    pub answer: Option<String>,
     pub result: Option<String>,
     pub error: Option<String>,
     pub exit_code: Option<i32>,
@@ -39,6 +41,7 @@ impl Task {
             agent_id,
             prompt,
             status: TaskStatus::Pending,
+            answer: None,
             result: None,
             error: None,
             exit_code: None,

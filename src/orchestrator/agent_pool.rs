@@ -23,6 +23,7 @@ pub struct ManagedAgent {
     pub status: AgentStatus,
     pub launched_at: u64,
     pub timeout_secs: u64,
+    pub model: Option<String>,
     pub working_dir: Option<String>,
     pub tasks_completed: u32,
     pub total_cost_usd: f64,
@@ -33,6 +34,8 @@ pub struct ManagedAgent {
     pub static_args: Vec<String>,
     #[serde(skip)]
     pub env: Vec<(String, String)>,
+    #[serde(skip)]
+    pub env_remove: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +45,7 @@ pub struct LaunchSpec {
     pub working_dir: Option<String>,
     pub env: BTreeMap<String, String>,
     pub timeout_secs: u64,
+    pub model: Option<String>,
     pub trace: bool,
     pub capabilities: Vec<String>,
 }
@@ -96,7 +100,17 @@ impl AgentPool {
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         );
         let env = resolve_env_vars(&spec.env, self.vault.as_ref())?;
-        let (command, static_args) = command_for_kind(&kind);
+        let (command, mut static_args, mut env_remove) = command_for_kind(&kind);
+        if let Some(model) = spec
+            .model
+            .as_ref()
+            .map(|m| m.trim())
+            .filter(|m| !m.is_empty())
+        {
+            static_args.extend(model_args_for_kind(&kind, model));
+        }
+        let explicit_env_keys = BTreeSet::from_iter(env.iter().map(|(k, _)| k.as_str()));
+        env_remove.retain(|key| !explicit_env_keys.contains(key.as_str()));
         let managed = ManagedAgent {
             agent_id: agent_id.clone(),
             agent_name: if spec.agent_name.trim().is_empty() {
@@ -110,6 +124,7 @@ impl AgentPool {
             status: AgentStatus::Idle,
             launched_at: crate::pod::now_unix(),
             timeout_secs: spec.timeout_secs.max(5),
+            model: spec.model.filter(|m| !m.trim().is_empty()),
             working_dir: spec.working_dir.filter(|v| !v.trim().is_empty()),
             tasks_completed: 0,
             total_cost_usd: 0.0,
@@ -117,6 +132,7 @@ impl AgentPool {
             command,
             static_args,
             env,
+            env_remove,
         };
         let mut agents = self.agents.lock().await;
         agents.insert(agent_id, managed.clone());
@@ -187,7 +203,17 @@ impl AgentPool {
         }
         let mut args = agent.static_args.clone();
         match agent.agent_type.as_str() {
+            // Shell: prompt is the command string after `sh -lc`
             "shell" => args.push(prompt.to_string()),
+            // Claude CLI: prompt is a positional argument (not a flag)
+            // Codex CLI: prompt is a positional argument (not a flag)
+            "claude" | "codex" => args.push(prompt.to_string()),
+            // Gemini CLI uses -p/--prompt flag
+            "gemini" => {
+                args.push("--prompt".to_string());
+                args.push(prompt.to_string());
+            }
+            // Default: assume --prompt flag
             _ => {
                 args.push("--prompt".to_string());
                 args.push(prompt.to_string());
@@ -195,10 +221,11 @@ impl AgentPool {
         }
         let session_id = self
             .pty_manager
-            .create_session(
+            .create_session_with_env_control(
                 &agent.command,
                 &args,
                 agent.env.clone(),
+                &agent.env_remove,
                 agent.working_dir.as_deref(),
                 120,
                 24,
@@ -273,7 +300,7 @@ fn normalize_agent_kind(raw: &str) -> Result<String, String> {
     }
 }
 
-fn command_for_kind(kind: &str) -> (String, Vec<String>) {
+fn command_for_kind(kind: &str) -> (String, Vec<String>, Vec<String>) {
     match kind {
         "claude" => (
             "claude".to_string(),
@@ -286,6 +313,7 @@ fn command_for_kind(kind: &str) -> (String, Vec<String>) {
                 // Keep this explicit because it materially elevates tool authority.
                 "--dangerously-skip-permissions".to_string(),
             ],
+            vec!["CLAUDECODE".to_string()],
         ),
         "codex" => (
             "codex".to_string(),
@@ -294,13 +322,22 @@ fn command_for_kind(kind: &str) -> (String, Vec<String>) {
                 "--approval-mode".to_string(),
                 "full-auto".to_string(),
             ],
+            vec!["CODEX_CLI".to_string()],
         ),
-        "gemini" => ("gemini".to_string(), vec!["--non-interactive".to_string()]),
+        "gemini" => ("gemini".to_string(), vec!["--yolo".to_string()], Vec::new()),
         "openclaw" => (
             "openclaw".to_string(),
             vec!["run".to_string(), "--non-interactive".to_string()],
+            Vec::new(),
         ),
-        _ => ("sh".to_string(), vec!["-lc".to_string()]),
+        _ => ("sh".to_string(), vec!["-lc".to_string()], Vec::new()),
+    }
+}
+
+fn model_args_for_kind(kind: &str, model: &str) -> Vec<String> {
+    match kind {
+        "claude" | "codex" => vec!["--model".to_string(), model.to_string()],
+        _ => Vec::new(),
     }
 }
 
@@ -404,6 +441,26 @@ mod tests {
     }
 
     #[test]
+    fn command_for_kind_defines_env_removals_for_nested_clis() {
+        let (_, _, claude_remove) = command_for_kind("claude");
+        assert!(claude_remove.contains(&"CLAUDECODE".to_string()));
+        let (_, _, codex_remove) = command_for_kind("codex");
+        assert!(codex_remove.contains(&"CODEX_CLI".to_string()));
+    }
+
+    #[test]
+    fn model_args_only_emitted_for_supported_clis() {
+        assert_eq!(
+            model_args_for_kind("claude", "claude-3-7"),
+            vec!["--model".to_string(), "claude-3-7".to_string()]
+        );
+        assert_eq!(
+            model_args_for_kind("shell", "irrelevant"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn resolve_env_vars_rejects_vault_provider_without_vault() {
         let mut env = BTreeMap::new();
         env.insert("OPENAI_API_KEY".to_string(), "vault:openai".to_string());
@@ -450,6 +507,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: 10,
+                model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
             })
@@ -463,6 +521,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: 10,
+                model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
             })

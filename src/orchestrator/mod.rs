@@ -22,6 +22,8 @@ pub struct LaunchAgentRequest {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     pub timeout_secs: u64,
+    #[serde(default)]
+    pub model: Option<String>,
     pub trace: bool,
     #[serde(default)]
     pub capabilities: Vec<String>,
@@ -101,6 +103,7 @@ impl Orchestrator {
                 working_dir: req.working_dir,
                 env: req.env,
                 timeout_secs: req.timeout_secs.clamp(5, MAX_TASK_TIMEOUT_SECS),
+                model: req.model,
                 trace: req.trace,
                 capabilities: req.capabilities,
             })
@@ -284,12 +287,14 @@ impl Orchestrator {
                         },
                         outcome.trace_session_id.clone(),
                     );
+                    updated.answer = outcome.answer.clone();
                 } else {
                     updated.mark_failed(
                         format!("task exited with code {}", outcome.exit_code),
                         Some(outcome.exit_code),
                     );
                     updated.result = Some(outcome.output.clone());
+                    updated.answer = outcome.answer.clone();
                 }
                 {
                     let mut tasks = self.inner.tasks.lock().await;
@@ -351,13 +356,14 @@ impl Orchestrator {
             return Vec::new();
         }
         let result = task.result.clone().unwrap_or_default();
+        let answer = task.answer.as_deref();
         let edges = {
             let graph = self.inner.graph.lock().await;
             graph.outgoing_for(&task.task_id)
         };
         let mut out = Vec::new();
         for edge in edges {
-            let transformed = edge.transform.apply(&result);
+            let transformed = edge.transform.apply_with_answer(&result, answer);
             out.push((
                 task.task_id.clone(),
                 edge.target_agent_id.clone(),
@@ -385,7 +391,10 @@ impl Orchestrator {
         }
 
         if source.status == TaskStatus::Complete {
-            let input = transform.apply(source.result.as_deref().unwrap_or_default());
+            let input = transform.apply_with_answer(
+                source.result.as_deref().unwrap_or_default(),
+                source.answer.as_deref(),
+            );
             let submitted = self.create_task(req.target_agent_id.clone(), input).await;
             let task_id = submitted.task_id.clone();
             let _ = self.run_task(task_id, None).await;
@@ -566,6 +575,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: 30,
+                model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
             })
@@ -586,6 +596,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: 30,
+                model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
             })
@@ -617,6 +628,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: 30,
+                model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
             })
@@ -660,6 +672,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: 30,
+                model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
             })

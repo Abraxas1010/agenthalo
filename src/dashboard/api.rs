@@ -703,6 +703,7 @@ struct OrchestratorLaunchApiRequest {
     #[serde(default)]
     env: std::collections::BTreeMap<String, String>,
     timeout_secs: Option<u64>,
+    model: Option<String>,
     trace: Option<bool>,
     #[serde(default)]
     capabilities: Vec<String>,
@@ -3983,6 +3984,7 @@ async fn api_orch_launch(
                 "working_dir": req.working_dir,
                 "env": req.env,
                 "timeout_secs": req.timeout_secs.unwrap_or(600),
+                "model": req.model,
                 "trace": req.trace.unwrap_or(true),
                 "capabilities": req.capabilities,
             }),
@@ -3998,6 +4000,7 @@ async fn api_orch_launch(
             working_dir: req.working_dir,
             env: req.env,
             timeout_secs: req.timeout_secs.unwrap_or(600),
+            model: req.model,
             trace: req.trace.unwrap_or(true),
             capabilities: req.capabilities,
         })
@@ -4009,6 +4012,7 @@ async fn api_orch_launch(
         "agent_name": launched.agent_name,
         "agent_type": launched.agent_type,
         "capabilities": launched.capabilities,
+        "model": launched.model,
     })))
 }
 
@@ -4265,6 +4269,7 @@ fn proxy_ws_status_payload(tasks_payload: &Value, agent_id: &str) -> Value {
             "agent_id": agent_id,
             "task_id": task.get("task_id"),
             "status": task.get("status").cloned().unwrap_or(json!("running")),
+            "answer": task.get("answer").cloned().unwrap_or(Value::Null),
             "result": task.get("result").cloned().unwrap_or(Value::Null),
             "error": task.get("error").cloned().unwrap_or(Value::Null),
             "exit_code": task.get("exit_code").cloned().unwrap_or(Value::Null),

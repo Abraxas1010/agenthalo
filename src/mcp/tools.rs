@@ -172,6 +172,8 @@ pub struct OrchestratorLaunchRequest {
     pub env: BTreeMap<String, String>,
     /// Per-task timeout for this agent.
     pub timeout_secs: Option<u64>,
+    /// Optional model selector for supported CLIs (for example `claude` / `codex`).
+    pub model: Option<String>,
     /// Enable HALO trace capture for this agent's tasks.
     pub trace: Option<bool>,
     /// Capability set granted to this agent.
@@ -187,6 +189,7 @@ pub struct OrchestratorLaunchResponse {
     pub agent: String,
     pub agent_name: String,
     pub capabilities: Vec<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -204,6 +207,7 @@ pub struct OrchestratorTaskResponse {
     pub task_id: String,
     pub agent_id: String,
     pub status: String,
+    pub answer: Option<String>,
     pub result: Option<String>,
     pub error: Option<String>,
     pub exit_code: Option<i32>,
@@ -211,6 +215,16 @@ pub struct OrchestratorTaskResponse {
     pub output_tokens: Option<u64>,
     pub cost_usd: Option<f64>,
     pub trace_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorTasksResponse {
+    pub tasks: Vec<OrchestratorTaskResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorGraphResponse {
+    pub graph: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -3814,6 +3828,7 @@ impl NucleusDbMcpService {
                 working_dir: req.working_dir,
                 env: req.env,
                 timeout_secs: req.timeout_secs.unwrap_or(600),
+                model: req.model,
                 trace: req.trace.unwrap_or(true),
                 capabilities: req.capabilities,
             })
@@ -3826,6 +3841,7 @@ impl NucleusDbMcpService {
             agent: launched.agent_type,
             agent_name: launched.agent_name,
             capabilities: launched.capabilities,
+            model: launched.model,
         }))
     }
 
@@ -3936,7 +3952,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "orchestrator_pipe",
-        description = "Create task-graph pipe from source task output to target agent input. Example: {\"source_task_id\":\"task-a\",\"target_agent_id\":\"orch-b\",\"transform\":\"json_extract:.suggestions\"}"
+        description = "Create task-graph pipe from source task output to target agent input. Example: {\"source_task_id\":\"task-a\",\"target_agent_id\":\"orch-b\",\"transform\":\"claude_answer\"}"
     )]
     pub async fn orchestrator_pipe(
         &self,
@@ -4027,6 +4043,56 @@ impl NucleusDbMcpService {
             })
             .collect();
         Ok(Json(OrchestratorListResponse { agents: views }))
+    }
+
+    #[tool(
+        name = "orchestrator_tasks",
+        description = "List orchestrator tasks and current status."
+    )]
+    pub async fn orchestrator_tasks(&self) -> Result<Json<OrchestratorTasksResponse>, McpError> {
+        if orchestrator_proxy_enabled() {
+            let proxied =
+                call_orchestrator_proxy_tool("orchestrator_tasks", serde_json::json!({})).await?;
+            let parsed: OrchestratorTasksResponse =
+                serde_json::from_value(proxied).map_err(|e| {
+                    McpError::internal_error(
+                        format!("decode orchestrator tasks proxy response: {e}"),
+                        None,
+                    )
+                })?;
+            return Ok(Json(parsed));
+        }
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        let tasks = orchestrator.list_tasks().await;
+        Ok(Json(OrchestratorTasksResponse {
+            tasks: tasks.into_iter().map(task_to_response).collect(),
+        }))
+    }
+
+    #[tool(
+        name = "orchestrator_graph",
+        description = "Get current orchestrator task graph snapshot."
+    )]
+    pub async fn orchestrator_graph(&self) -> Result<Json<OrchestratorGraphResponse>, McpError> {
+        if orchestrator_proxy_enabled() {
+            let proxied =
+                call_orchestrator_proxy_tool("orchestrator_graph", serde_json::json!({})).await?;
+            let parsed: OrchestratorGraphResponse =
+                serde_json::from_value(proxied).map_err(|e| {
+                    McpError::internal_error(
+                        format!("decode orchestrator graph proxy response: {e}"),
+                        None,
+                    )
+                })?;
+            return Ok(Json(parsed));
+        }
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        let graph = orchestrator.graph_snapshot().await;
+        Ok(Json(OrchestratorGraphResponse {
+            graph: serde_json::to_value(graph).map_err(|e| {
+                McpError::internal_error(format!("serialize orchestrator graph: {e}"), None)
+            })?,
+        }))
     }
 
     #[tool(
@@ -4283,6 +4349,7 @@ fn task_to_response(task: crate::orchestrator::task::Task) -> OrchestratorTaskRe
             crate::orchestrator::task::TaskStatus::Failed => "failed".to_string(),
             crate::orchestrator::task::TaskStatus::Timeout => "timeout".to_string(),
         },
+        answer: task.answer,
         result: task.result,
         error: task.error,
         exit_code: task.exit_code,
@@ -4755,6 +4822,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: Some(30),
+                model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string(), "memory_write".to_string()],
             }))
@@ -4797,6 +4865,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: Some(30),
+                model: None,
                 trace: Some(false),
                 capabilities: vec!["bogus_capability".to_string()],
             }))
@@ -4826,6 +4895,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: Some(30),
+                model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string()],
             }))
@@ -4838,6 +4908,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: Some(30),
+                model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string()],
             }))
@@ -4889,6 +4960,7 @@ mod tests {
                 working_dir: None,
                 env: BTreeMap::new(),
                 timeout_secs: Some(1),
+                model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string()],
             }))
@@ -4951,6 +5023,7 @@ mod tests {
             agent_id: "orch-abc".to_string(),
             prompt: "noop".to_string(),
             status: crate::orchestrator::task::TaskStatus::Complete,
+            answer: Some("ok".to_string()),
             result: Some("ok".to_string()),
             error: None,
             exit_code: Some(0),

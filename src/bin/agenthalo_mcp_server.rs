@@ -1769,6 +1769,7 @@ fn orchestrator_tool_defs_for_listing() -> Vec<Value> {
                     "working_dir": {"type":"string"},
                     "env": {"type":"object"},
                     "timeout_secs": {"type":"integer", "default": 600},
+                    "model": {"type":"string"},
                     "trace": {"type":"boolean", "default": true},
                     "capabilities": {"type":"array", "items": {"type":"string"}}
                 },
@@ -1805,7 +1806,7 @@ fn orchestrator_tool_defs_for_listing() -> Vec<Value> {
         }),
         json!({
             "name": "orchestrator_pipe",
-            "description": "Create task-graph pipe from source task output to target agent input.",
+            "description": "Create task-graph pipe from source task output to target agent input (supports transform=claude_answer).",
             "inputSchema": {
                 "type":"object",
                 "properties": {
@@ -6576,6 +6577,7 @@ fn orchestrator_task_to_json(task: nucleusdb::orchestrator::task::Task) -> Value
             nucleusdb::orchestrator::task::TaskStatus::Failed => "failed",
             nucleusdb::orchestrator::task::TaskStatus::Timeout => "timeout",
         },
+        "answer": task.answer,
         "result": task.result,
         "error": task.error,
         "exit_code": task.exit_code,
@@ -6597,6 +6599,7 @@ fn tool_orchestrator_launch(arguments: Value) -> Result<Value, String> {
                 working_dir: req.working_dir,
                 env: req.env,
                 timeout_secs: req.timeout_secs.unwrap_or(600),
+                model: req.model,
                 trace: req.trace.unwrap_or(true),
                 capabilities: req.capabilities,
             })
@@ -6608,6 +6611,7 @@ fn tool_orchestrator_launch(arguments: Value) -> Result<Value, String> {
             "agent": launched.agent_type,
             "agent_name": launched.agent_name,
             "capabilities": launched.capabilities,
+            "model": launched.model,
         }))
     })
 }

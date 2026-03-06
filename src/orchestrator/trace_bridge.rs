@@ -14,6 +14,7 @@ use tokio::sync::broadcast;
 
 pub struct TaskRunOutcome {
     pub output: String,
+    pub answer: Option<String>,
     pub exit_code: i32,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -190,9 +191,12 @@ pub async fn collect_task_output(
         HaloSessionStatus::Failed
     };
     bridge.finalize(final_status)?;
+    let output = strip_ansi_sequences(&bridge.output_text());
+    let answer = extract_answer(agent_type, &output);
     let telemetry = session.telemetry_snapshot();
     Ok(TaskRunOutcome {
-        output: bridge.output_text(),
+        output,
+        answer,
         exit_code,
         input_tokens: telemetry.estimated_input_tokens,
         output_tokens: telemetry.estimated_output_tokens,
@@ -203,4 +207,190 @@ pub async fn collect_task_output(
             None
         },
     })
+}
+
+fn strip_ansi_sequences(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            i += 1;
+            if i >= bytes.len() {
+                break;
+            }
+            match bytes[i] {
+                b'[' => {
+                    i += 1;
+                    while i < bytes.len() {
+                        let b = bytes[i];
+                        i += 1;
+                        if (0x40..=0x7e).contains(&b) {
+                            break;
+                        }
+                    }
+                }
+                b']' => {
+                    i += 1;
+                    while i < bytes.len() {
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn extract_answer(agent_type: &str, output: &str) -> Option<String> {
+    let parsed = match agent_type {
+        "claude" => extract_claude_answer(output),
+        _ => None,
+    };
+    parsed.or_else(|| {
+        output
+            .lines()
+            .map(str::trim)
+            .rev()
+            .find(|line| !line.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn extract_claude_answer(output: &str) -> Option<String> {
+    let mut last = None;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if let Some(text) = extract_claude_text_from_value(&value) {
+            let clean = text.trim();
+            if !clean.is_empty() {
+                last = Some(clean.to_string());
+            }
+        }
+    }
+    last
+}
+
+fn extract_claude_text_from_value(value: &serde_json::Value) -> Option<String> {
+    if value
+        .get("type")
+        .and_then(|v| v.as_str())
+        .is_some_and(|t| t == "stream_event")
+    {
+        return value.get("event").and_then(extract_claude_text_from_value);
+    }
+
+    if let Some(result) = value.get("result").and_then(as_non_empty_str) {
+        return Some(result.to_string());
+    }
+
+    if let Some(message) = value.get("message") {
+        let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role == "assistant" {
+            if let Some(content) = message.get("content") {
+                if let Some(text) = extract_text_from_content(content) {
+                    return Some(text);
+                }
+            }
+            if let Some(text) = message.get("text").and_then(as_non_empty_str) {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    let t = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if t == "assistant" || t == "message" || t == "result" {
+        if let Some(content) = value.get("content") {
+            if let Some(text) = extract_text_from_content(content) {
+                return Some(text);
+            }
+        }
+        if let Some(text) = value.get("text").and_then(as_non_empty_str) {
+            return Some(text.to_string());
+        }
+    }
+    None
+}
+
+fn extract_text_from_content(content: &serde_json::Value) -> Option<String> {
+    match content {
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        serde_json::Value::Array(items) => {
+            let mut parts = Vec::new();
+            for item in items {
+                if let Some(text) = item.get("text").and_then(as_non_empty_str) {
+                    parts.push(text.to_string());
+                    continue;
+                }
+                if let Some(nested) = item.get("content") {
+                    if let Some(text) = extract_text_from_content(nested) {
+                        parts.push(text);
+                    }
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn as_non_empty_str(value: &serde_json::Value) -> Option<&str> {
+    let s = value.as_str()?;
+    if s.trim().is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_ansi_sequences_removes_control_codes() {
+        let raw = "\u{1b}[31mred\u{1b}[0m plain";
+        assert_eq!(strip_ansi_sequences(raw), "red plain");
+    }
+
+    #[test]
+    fn extract_claude_answer_prefers_final_assistant_message() {
+        let output = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"final answer"}]}}"#;
+        assert_eq!(
+            extract_answer("claude", output).as_deref(),
+            Some("final answer")
+        );
+    }
 }

@@ -216,6 +216,30 @@ impl PtyManager {
         rows: u16,
         agent_type: Option<String>,
     ) -> Result<String, String> {
+        self.create_session_with_env_control(
+            command,
+            args,
+            env,
+            &[],
+            working_dir,
+            cols,
+            rows,
+            agent_type,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_session_with_env_control(
+        &self,
+        command: &str,
+        args: &[String],
+        env: Vec<(String, String)>,
+        env_remove: &[String],
+        working_dir: Option<&str>,
+        cols: u16,
+        rows: u16,
+        agent_type: Option<String>,
+    ) -> Result<String, String> {
         let mut sessions = self
             .sessions
             .lock()
@@ -240,6 +264,9 @@ impl PtyManager {
         }
         for (k, v) in env {
             cmd.env(k, v);
+        }
+        for key in env_remove {
+            cmd.env_remove(key);
         }
         if let Some(dir) = working_dir.filter(|d| !d.trim().is_empty()) {
             cmd.cwd(dir);

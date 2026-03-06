@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(rename_all = "snake_case")]
 pub enum PipeTransform {
     Identity,
+    ClaudeAnswer,
     JsonExtract(String),
     Prefix(String),
     Suffix(String),
@@ -17,7 +18,11 @@ impl PipeTransform {
         let mut transforms = Vec::new();
         let base = raw.unwrap_or("identity").trim();
         if !base.is_empty() && !base.eq_ignore_ascii_case("identity") {
-            if let Some(path) = base.strip_prefix("json_extract:") {
+            if base.eq_ignore_ascii_case("claude_answer")
+                || base.eq_ignore_ascii_case("assistant_answer")
+            {
+                transforms.push(Self::ClaudeAnswer);
+            } else if let Some(path) = base.strip_prefix("json_extract:") {
                 transforms.push(Self::JsonExtract(path.trim().to_string()));
             } else if let Some(prefix) = base.strip_prefix("prefix:") {
                 transforms.push(Self::Prefix(prefix.to_string()));
@@ -40,16 +45,25 @@ impl PipeTransform {
     }
 
     pub fn apply(&self, input: &str) -> String {
+        self.apply_with_answer(input, None)
+    }
+
+    pub fn apply_with_answer(&self, input: &str, answer: Option<&str>) -> String {
         match self {
             Self::Identity => input.to_string(),
+            Self::ClaudeAnswer => answer
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(input)
+                .to_string(),
             Self::JsonExtract(path) => {
                 json_extract(input, path).unwrap_or_else(|| input.to_string())
             }
             Self::Prefix(prefix) => format!("{prefix}{input}"),
             Self::Suffix(suffix) => format!("{input}{suffix}"),
-            Self::Chain(chain) => chain
-                .iter()
-                .fold(input.to_string(), |acc, transform| transform.apply(&acc)),
+            Self::Chain(chain) => chain.iter().fold(input.to_string(), |acc, transform| {
+                transform.apply_with_answer(&acc, answer)
+            }),
         }
     }
 }
@@ -247,5 +261,12 @@ mod tests {
     fn parse_transform_rejects_unknown() {
         let err = PipeTransform::parse(Some("regex:s/foo/bar/"), None).expect_err("must reject");
         assert!(err.contains("unknown pipe transform"));
+    }
+
+    #[test]
+    fn claude_answer_transform_prefers_parsed_answer() {
+        let t = PipeTransform::parse(Some("claude_answer"), None).expect("parse transform");
+        let out = t.apply_with_answer("{\"raw\":\"json\"}", Some("final answer"));
+        assert_eq!(out, "final answer");
     }
 }
