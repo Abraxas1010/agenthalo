@@ -27,7 +27,7 @@ Definitive reference for how each agent kind is launched, what CLI flags are inj
 | `claude` | Positional arg after static args | `claude --print ... "your prompt"` |
 | `codex` | Positional arg after static args | `codex exec --full-auto --json ... "your prompt"` |
 | `gemini` | `--prompt` flag | `gemini --yolo --prompt "your prompt"` |
-| `openclaw` | `--prompt` flag | `openclaw run --non-interactive --prompt "your prompt"` |
+| `openclaw` | `--message` flag | `openclaw run --non-interactive --message "your prompt"` |
 | `shell` | Arg to `sh -c` | `sh -c "your prompt"` |
 
 ### Model Selection

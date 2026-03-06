@@ -206,18 +206,20 @@ impl AgentPool {
             // Shell: prompt is the command string after `sh -c`
             "shell" => args.push(prompt.to_string()),
             // Claude CLI: prompt is a positional argument (not a flag)
-            // Codex CLI: prompt is a positional argument (not a flag)
+            // Codex CLI: prompt is a positional argument after `exec`
             "claude" | "codex" => args.push(prompt.to_string()),
             // Gemini CLI uses -p/--prompt flag
             "gemini" => {
                 args.push("--prompt".to_string());
                 args.push(prompt.to_string());
             }
-            // Default: assume --prompt flag
-            _ => {
-                args.push("--prompt".to_string());
+            // OpenClaw uses --message flag (per `openclaw agent --message`)
+            "openclaw" => {
+                args.push("--message".to_string());
                 args.push(prompt.to_string());
             }
+            // Unknown kinds: positional arg as safest default
+            _ => args.push(prompt.to_string()),
         }
         let session_id = self
             .pty_manager
@@ -464,6 +466,7 @@ mod tests {
         assert!(args.iter().any(|a| a == "exec"));
         assert!(args.iter().any(|a| a == "--full-auto"));
         assert!(args.iter().any(|a| a == "--json"));
+        assert!(args.iter().any(|a| a == "--skip-git-repo-check"));
     }
 
     #[test]
