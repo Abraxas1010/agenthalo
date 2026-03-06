@@ -318,9 +318,10 @@ fn command_for_kind(kind: &str) -> (String, Vec<String>, Vec<String>) {
         "codex" => (
             "codex".to_string(),
             vec![
-                "--quiet".to_string(),
-                "--approval-mode".to_string(),
-                "full-auto".to_string(),
+                "exec".to_string(),
+                "--full-auto".to_string(),
+                "--json".to_string(),
+                "--skip-git-repo-check".to_string(),
             ],
             vec!["CODEX_CLI".to_string()],
         ),
@@ -454,6 +455,15 @@ mod tests {
         assert!(claude_remove.contains(&"CLAUDECODE".to_string()));
         let (_, _, codex_remove) = command_for_kind("codex");
         assert!(codex_remove.contains(&"CODEX_CLI".to_string()));
+    }
+
+    #[test]
+    fn codex_command_uses_exec_noninteractive_mode() {
+        let (cmd, args, _) = command_for_kind("codex");
+        assert_eq!(cmd, "codex");
+        assert!(args.iter().any(|a| a == "exec"));
+        assert!(args.iter().any(|a| a == "--full-auto"));
+        assert!(args.iter().any(|a| a == "--json"));
     }
 
     #[test]
