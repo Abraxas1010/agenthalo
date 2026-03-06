@@ -192,7 +192,7 @@ pub async fn collect_task_output(
     };
     bridge.finalize(final_status)?;
     let output = strip_ansi_sequences(&bridge.output_text());
-    let answer = extract_answer(agent_type, &output);
+    let answer = extract_answer(agent_type, &output, exit_code);
     let telemetry = session.telemetry_snapshot();
     Ok(TaskRunOutcome {
         output,
@@ -256,19 +256,23 @@ fn strip_ansi_sequences(input: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-fn extract_answer(agent_type: &str, output: &str) -> Option<String> {
+fn extract_answer(agent_type: &str, output: &str, exit_code: i32) -> Option<String> {
     let parsed = match agent_type {
         "claude" => extract_claude_answer(output),
         _ => None,
     };
-    parsed.or_else(|| {
-        output
-            .lines()
-            .map(str::trim)
-            .rev()
-            .find(|line| !line.is_empty())
-            .map(str::to_string)
-    })
+    if parsed.is_some() {
+        return parsed;
+    }
+    if exit_code != 0 {
+        return None;
+    }
+    output
+        .lines()
+        .map(str::trim)
+        .rev()
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
 }
 
 fn extract_claude_answer(output: &str) -> Option<String> {
@@ -300,8 +304,11 @@ fn extract_claude_text_from_value(value: &serde_json::Value) -> Option<String> {
         return value.get("event").and_then(extract_claude_text_from_value);
     }
 
-    if let Some(result) = value.get("result").and_then(as_non_empty_str) {
-        return Some(result.to_string());
+    let t = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if t == "result" {
+        if let Some(result) = value.get("result").and_then(as_non_empty_str) {
+            return Some(result.to_string());
+        }
     }
 
     if let Some(message) = value.get("message") {
@@ -318,7 +325,6 @@ fn extract_claude_text_from_value(value: &serde_json::Value) -> Option<String> {
         }
     }
 
-    let t = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
     if t == "assistant" || t == "message" || t == "result" {
         if let Some(content) = value.get("content") {
             if let Some(text) = extract_text_from_content(content) {
@@ -385,12 +391,36 @@ mod tests {
     }
 
     #[test]
+    fn strip_ansi_sequences_removes_osc_sequences() {
+        let raw = "a\u{1b}]0;title\u{7}b";
+        assert_eq!(strip_ansi_sequences(raw), "ab");
+    }
+
+    #[test]
     fn extract_claude_answer_prefers_final_assistant_message() {
         let output = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first"}]}}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"final answer"}]}}"#;
         assert_eq!(
-            extract_answer("claude", output).as_deref(),
+            extract_answer("claude", output, 0).as_deref(),
             Some("final answer")
+        );
+    }
+
+    #[test]
+    fn extract_claude_answer_ignores_non_result_result_fields() {
+        let output = r#"{"type":"result","result":"real answer"}
+{"type":"system","result":"initialized"}"#;
+        assert_eq!(
+            extract_answer("claude", output, 0).as_deref(),
+            Some("real answer")
+        );
+    }
+
+    #[test]
+    fn extract_answer_does_not_fallback_for_failed_tasks() {
+        assert_eq!(
+            extract_answer("shell", "error: command not found", 127),
+            None
         );
     }
 }

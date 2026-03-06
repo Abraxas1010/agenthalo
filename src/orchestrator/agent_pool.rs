@@ -336,7 +336,7 @@ fn command_for_kind(kind: &str) -> (String, Vec<String>, Vec<String>) {
 
 fn model_args_for_kind(kind: &str, model: &str) -> Vec<String> {
     match kind {
-        "claude" | "codex" => vec!["--model".to_string(), model.to_string()],
+        "claude" | "codex" | "gemini" => vec!["--model".to_string(), model.to_string()],
         _ => Vec::new(),
     }
 }
@@ -453,6 +453,10 @@ mod tests {
         assert_eq!(
             model_args_for_kind("claude", "claude-3-7"),
             vec!["--model".to_string(), "claude-3-7".to_string()]
+        );
+        assert_eq!(
+            model_args_for_kind("gemini", "gemini-2.5-pro"),
+            vec!["--model".to_string(), "gemini-2.5-pro".to_string()]
         );
         assert_eq!(
             model_args_for_kind("shell", "irrelevant"),

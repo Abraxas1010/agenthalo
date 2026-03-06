@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(rename_all = "snake_case")]
 pub enum PipeTransform {
     Identity,
+    #[serde(alias = "assistant_answer")]
     ClaudeAnswer,
     JsonExtract(String),
     Prefix(String),
@@ -268,5 +269,12 @@ mod tests {
         let t = PipeTransform::parse(Some("claude_answer"), None).expect("parse transform");
         let out = t.apply_with_answer("{\"raw\":\"json\"}", Some("final answer"));
         assert_eq!(out, "final answer");
+    }
+
+    #[test]
+    fn serde_accepts_assistant_answer_alias() {
+        let t: PipeTransform =
+            serde_json::from_str("\"assistant_answer\"").expect("deserialize alias");
+        assert!(matches!(t, PipeTransform::ClaudeAnswer));
     }
 }
