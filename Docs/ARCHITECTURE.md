@@ -275,6 +275,26 @@ Proxy-mode env vars (shared aliases; both dashboard and NucleusDB MCP honor both
 When proxy mode is enabled, orchestrator websocket output is provided via MCP task-status polling
 rather than direct PTY stream subscription.
 
+### 5.5.1 Trace Persistence and Visibility Semantics
+
+Orchestrator trace writes are append-only and durable, but there are two distinct views:
+
+1. **Runtime in-memory DB view** (service-local):
+   - The running service keeps an in-memory `NucleusDb` instance for MCP/SQL reads.
+   - This view is not automatically refreshed from disk after out-of-band writes.
+2. **Persisted trace store view** (`traces.ndb` / configured trace path):
+   - `TraceWriter` commits events and persists snapshot/WAL to disk.
+   - Trace integrity and post-run audits should read from this persisted store.
+
+Operational implication:
+- A task can expose `trace_session_id` immediately after completion while SQL queries
+  against a long-lived in-memory DB handle do not yet reflect those new rows.
+- For authoritative trace verification, query the persisted trace DB (or reload state)
+  instead of assuming live in-memory SQL visibility.
+
+Reference:
+- `Docs/ops/orchestrator_debugging_playbook.md`
+
 ## 6. Dashboard (`src/dashboard/` + `dashboard/`)
 
 ### 6.1 Server Side

@@ -534,6 +534,39 @@ nucleusdb-mcp --transport http --port 3000
 nucleusdb-mcp --transport http --host 0.0.0.0 --port 8443 --auth --jwt-secret $SECRET
 ```
 
+**Streamable HTTP requirements (important):**
+- Client `Accept` header must include **both** `application/json` and `text/event-stream`
+- Client must persist and replay `mcp-session-id` from `initialize` on subsequent calls
+- Typical flow: `initialize` -> `tools/list` / `tools/call` (same session id)
+
+For automation and audits, use the built-in helper:
+
+```bash
+# 1) Initialize session and persist mcp-session-id
+python3 scripts/mcp_streamable_http.py \
+  --endpoint http://127.0.0.1:3000/mcp \
+  init --session-file /tmp/mcp.session
+
+# 2) List tools using the same session
+python3 scripts/mcp_streamable_http.py \
+  --endpoint http://127.0.0.1:3000/mcp \
+  tools-list --session-file /tmp/mcp.session
+
+# 3) Call a tool
+python3 scripts/mcp_streamable_http.py \
+  --endpoint http://127.0.0.1:3000/mcp \
+  tools-call --session-file /tmp/mcp.session \
+  --tool status
+```
+
+For a full orchestrator smoke run over real MCP HTTP:
+
+```bash
+scripts/orchestrator_mcp_smoke.sh
+```
+
+More details: `Docs/ops/mcp_streamable_http.md` and `Docs/ops/orchestrator_debugging_playbook.md`.
+
 **Dual authentication** (CAB + OAuth 2.1):
 - **CAB-as-bearer-token**: Hardware-anchored agent identity verified on-chain
 - **OAuth 2.1 JWT**: Standard bearer tokens for non-attested agents
