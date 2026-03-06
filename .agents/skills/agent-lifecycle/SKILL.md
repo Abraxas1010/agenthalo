@@ -123,6 +123,19 @@ Each task execution creates a new PTY session via `portable-pty`:
 - **PTY limit:** 10 concurrent PTY sessions (`PtyManager` default)
 - In practice, PTY limit is the binding constraint — only 10 tasks can run simultaneously
 
+### Container Budget
+
+A `ContainerBudget` can restrict launches per orchestrator instance:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `max_agents` | 64 | Total managed agents across all kinds |
+| `max_concurrent_busy` | 10 | Maximum agents in `Busy` state simultaneously |
+| `allowed_kinds` | (all) | Restrict launch to specific kinds (`shell`, `claude`, etc.) |
+
+When set, `orchestrator_launch` rejects launches that exceed `max_agents` or violate
+`allowed_kinds`, and task starts are rejected when `max_concurrent_busy` is reached.
+
 ### Working Directory
 
 Pass `working_dir` to control where the agent executes:
@@ -184,6 +197,21 @@ Always stop agents when done. Leaked agents consume PTY slots:
 
 // Stop each one
 {"agent_id": "orch-...", "force": false}
+```
+
+---
+
+## Mesh Network Status
+
+When mesh networking is enabled (`NUCLEUSDB_MESH_AGENT_ID` is set):
+- `orchestrator_mesh_status` returns peer topology, reachability, and latency
+- Cockpit renders a read-only mesh sidebar with peer online/offline state
+- Peers are read from the shared peer registry (`/data/mesh/peers.json` by default)
+
+When mesh is disabled, `orchestrator_mesh_status` returns:
+
+```json
+{"enabled": false, "self_agent_id": null, "peers": [], "network_name": null}
 ```
 
 ---

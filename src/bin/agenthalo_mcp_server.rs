@@ -1834,6 +1834,11 @@ fn orchestrator_tool_defs_for_listing() -> Vec<Value> {
             "inputSchema": {"type":"object","properties":{}}
         }),
         json!({
+            "name": "orchestrator_mesh_status",
+            "description": "Query orchestrator mesh peer topology, reachability, and latency.",
+            "inputSchema": {"type":"object","properties":{}}
+        }),
+        json!({
             "name": "orchestrator_stop",
             "description": "Stop a launched orchestrator agent and finalize session state.",
             "inputSchema": {
@@ -2056,6 +2061,7 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "orchestrator_list" => tool_orchestrator_list(arguments),
         "orchestrator_tasks" => tool_orchestrator_tasks(arguments),
         "orchestrator_graph" => tool_orchestrator_graph(arguments),
+        "orchestrator_mesh_status" => tool_orchestrator_mesh_status(arguments),
         "orchestrator_stop" => tool_orchestrator_stop(arguments),
         "nucleusdb_help" => tool_nucleusdb_help(arguments),
         "nucleusdb_status" => tool_nucleusdb_status(arguments),
@@ -6738,6 +6744,13 @@ fn tool_orchestrator_graph(_arguments: Value) -> Result<Value, String> {
             "edge_count": edge_count,
             "nodes_shape": "object_map",
         }))
+    })
+}
+
+fn tool_orchestrator_mesh_status(_arguments: Value) -> Result<Value, String> {
+    run_orchestrator_call(|orchestrator| async move {
+        serde_json::to_value(orchestrator.mesh_status())
+            .map_err(|e| format!("serialize orchestrator mesh status: {e}"))
     })
 }
 

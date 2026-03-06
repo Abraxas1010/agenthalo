@@ -11,6 +11,20 @@
   background: rgba(8, 12, 5, 0.7);
 }
 
+.cockpit-main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.cockpit-stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .cockpit-toolbar {
   display: flex;
   gap: 8px;
@@ -95,6 +109,130 @@
   overflow: hidden;
   padding: 4px;
   background: rgba(3, 6, 2, 0.82);
+}
+
+.cockpit-mesh-sidebar {
+  width: 240px;
+  min-width: 240px;
+  border-left: 1px solid var(--border);
+  background: rgba(8, 12, 5, 0.94);
+  display: flex;
+  flex-direction: column;
+  transition: width 0.2s ease, min-width 0.2s ease;
+}
+
+.cockpit-mesh-sidebar.collapsed {
+  width: 36px;
+  min-width: 36px;
+}
+
+.cockpit-mesh-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cockpit-mesh-title {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.cockpit-mesh-toggle {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.cockpit-mesh-sidebar.collapsed .cockpit-mesh-title {
+  display: none;
+}
+
+.cockpit-mesh-sidebar.collapsed .cockpit-mesh-body {
+  display: none;
+}
+
+.cockpit-mesh-sidebar.collapsed .cockpit-mesh-toggle {
+  transform: rotate(180deg);
+  margin-inline: auto;
+}
+
+.cockpit-mesh-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.cockpit-mesh-self {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border-dim);
+}
+
+.cockpit-mesh-peers {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.mesh-self-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mesh-self-id {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mesh-peer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border-dim);
+}
+
+.mesh-peer-info {
+  min-width: 0;
+}
+
+.mesh-peer-name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-peer-detail {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.mesh-indicator {
+  font-size: 10px;
+}
+
+.mesh-online {
+  color: var(--green);
+}
+
+.mesh-offline {
+  color: var(--red);
+}
+
+.mesh-disabled,
+.mesh-empty {
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
 .cockpit-panel {
@@ -304,6 +442,32 @@ body:not(.no-crt) .cockpit-panel-body::before {
   .cockpit-container {
     height: calc(100vh - 50px);
     min-height: 460px;
+  }
+
+  .cockpit-main {
+    flex-direction: column;
+  }
+
+  .cockpit-mesh-sidebar {
+    width: 100%;
+    min-width: 100%;
+    max-height: 180px;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .cockpit-mesh-sidebar.collapsed {
+    width: 100%;
+    min-width: 100%;
+    max-height: 38px;
+  }
+
+  .cockpit-mesh-sidebar.collapsed .cockpit-mesh-title {
+    display: inline;
+  }
+
+  .cockpit-mesh-sidebar.collapsed .cockpit-mesh-toggle {
+    margin-inline: 0;
   }
 
   .cockpit-toolbar .layout-btn {

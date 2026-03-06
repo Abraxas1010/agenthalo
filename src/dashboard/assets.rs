@@ -1,4 +1,5 @@
 //! Embedded static file serving via rust-embed.
+//! Asset sync marker: 2026-03-05 mesh sidebar refresh.
 
 use axum::extract::Request;
 use axum::http::{header, StatusCode};

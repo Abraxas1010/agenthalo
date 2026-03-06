@@ -239,6 +239,9 @@ pub struct OrchestratorGraphResponse {
     pub nodes_shape: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct OrchestratorMeshStatusRequest {}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OrchestratorGetResultRequest {
     pub task_id: String,
@@ -4113,6 +4116,31 @@ impl NucleusDbMcpService {
     }
 
     #[tool(
+        name = "orchestrator_mesh_status",
+        description = "Query orchestrator mesh peer topology, reachability, and latency."
+    )]
+    pub async fn orchestrator_mesh_status(
+        &self,
+        Parameters(_req): Parameters<OrchestratorMeshStatusRequest>,
+    ) -> Result<Json<crate::orchestrator::MeshStatusResponse>, McpError> {
+        if orchestrator_proxy_enabled() {
+            let proxied =
+                call_orchestrator_proxy_tool("orchestrator_mesh_status", serde_json::json!({}))
+                    .await?;
+            let parsed: crate::orchestrator::MeshStatusResponse = serde_json::from_value(proxied)
+                .map_err(|e| {
+                McpError::internal_error(
+                    format!("decode orchestrator mesh status proxy response: {e}"),
+                    None,
+                )
+            })?;
+            return Ok(Json(parsed));
+        }
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        Ok(Json(orchestrator.mesh_status()))
+    }
+
+    #[tool(
         name = "orchestrator_stop",
         description = "Stop a launched orchestrator agent and finalize its session state."
     )]
@@ -4471,6 +4499,12 @@ mod tests {
         fn set(key: &'static str, value: &str) -> Self {
             let prev = std::env::var(key).ok();
             std::env::set_var(key, value);
+            Self { key, prev }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::remove_var(key);
             Self { key, prev }
         }
     }
@@ -5152,6 +5186,26 @@ mod tests {
                 .map(|a| a.len())
                 .unwrap_or(0)
         );
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn orchestrator_mesh_status_returns_disabled_when_not_configured() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _proxy = EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
+        let _mesh_id = EnvVarRestore::unset("NUCLEUSDB_MESH_AGENT_ID");
+        let _mesh_registry = EnvVarRestore::unset("NUCLEUSDB_MESH_REGISTRY");
+
+        let db_path = temp_db_path("orchestrator_mesh_status_disabled");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let Json(status) = service
+            .orchestrator_mesh_status(Parameters(OrchestratorMeshStatusRequest::default()))
+            .await
+            .expect("mesh status");
+        assert!(!status.enabled);
+        assert!(status.peers.is_empty());
 
         cleanup_db_files(&db_path);
     }

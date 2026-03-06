@@ -3370,7 +3370,7 @@ async fn api_orchestrator_routes_return_json() {
     assert_eq!(s_tasks, StatusCode::OK, "tasks route failed: {v_tasks}");
     assert!(v_tasks["tasks"].is_array());
 
-    let (s_graph, v_graph) = api_get(state, "/orchestrator/graph").await;
+    let (s_graph, v_graph) = api_get(state.clone(), "/orchestrator/graph").await;
     assert_eq!(s_graph, StatusCode::OK, "graph route failed: {v_graph}");
     assert!(v_graph["graph"].is_object());
     assert!(v_graph["graph"]["nodes"].is_object());
@@ -3378,6 +3378,11 @@ async fn api_orchestrator_routes_return_json() {
     assert_eq!(v_graph["nodes_shape"], "object_map");
     assert!(v_graph["node_count"].is_number());
     assert!(v_graph["edge_count"].is_number());
+
+    let (s_mesh, v_mesh) = api_get(state, "/orchestrator/mesh").await;
+    assert_eq!(s_mesh, StatusCode::OK, "mesh route failed: {v_mesh}");
+    assert!(v_mesh["enabled"].is_boolean());
+    assert!(v_mesh["peers"].is_array());
 
     let _ = std::fs::remove_file(&db_path);
 }

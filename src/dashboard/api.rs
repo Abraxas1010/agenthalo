@@ -104,6 +104,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/orchestrator/agents", get(api_orch_agents))
         .route("/orchestrator/tasks", get(api_orch_tasks))
         .route("/orchestrator/graph", get(api_orch_graph))
+        .route("/orchestrator/mesh", get(api_orch_mesh))
         .route("/orchestrator/launch", post(api_orch_launch))
         .route("/orchestrator/task", post(api_orch_task))
         .route("/orchestrator/pipe", post(api_orch_pipe))
@@ -3970,6 +3971,28 @@ async fn api_orch_graph(AxumState(state): AxumState<DashboardState>) -> ApiResul
     Ok(Json(enrich_orchestrator_graph_payload(
         json!({ "graph": graph }),
     )))
+}
+
+async fn api_orch_mesh(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if orchestrator_mcp_proxy_enabled() {
+        let payload = call_orchestrator_tool_via_mcp("orchestrator_mesh_status", json!({}))
+            .await
+            .unwrap_or_else(|_| {
+                json!({
+                    "enabled": false,
+                    "self_agent_id": Value::Null,
+                    "peers": [],
+                    "network_name": Value::Null
+                })
+            });
+        return Ok(Json(payload));
+    }
+    let orchestrator = local_orchestrator(&state)?;
+    Ok(Json(
+        serde_json::to_value(orchestrator.mesh_status())
+            .map_err(|e| internal_err(format!("serialize mesh status: {e}")))?,
+    ))
 }
 
 async fn api_orch_launch(

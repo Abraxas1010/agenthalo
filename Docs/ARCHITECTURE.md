@@ -254,17 +254,25 @@ Orchestrator MCP tools (`src/mcp/tools.rs`):
 - `orchestrator_list`
 - `orchestrator_tasks`
 - `orchestrator_graph`
+- `orchestrator_mesh_status`
 - `orchestrator_stop`
 
 Dashboard routes (`src/dashboard/api.rs`):
 - `GET /api/orchestrator/agents`
 - `GET /api/orchestrator/tasks`
 - `GET /api/orchestrator/graph`
+- `GET /api/orchestrator/mesh`
 - `POST /api/orchestrator/launch`
 - `POST /api/orchestrator/task`
 - `POST /api/orchestrator/pipe`
 - `POST /api/orchestrator/stop`
 - `GET /api/orchestrator/agents/{id}/ws`
+
+Container budget (`src/orchestrator/agent_pool.rs`):
+- `ContainerBudget.max_agents` (default `64`) limits total managed agents
+- `ContainerBudget.max_concurrent_busy` (default `10`) limits simultaneous `Busy` agents
+- `ContainerBudget.allowed_kinds` restricts launchable kinds per orchestrator instance
+- `Orchestrator::new` uses default budget; `Orchestrator::with_budget` enables custom per-instance limits
 
 Proxy-mode env vars (shared aliases; both dashboard and NucleusDB MCP honor both):
 - `AGENTHALO_ORCHESTRATOR_PROXY_VIA_MCP`

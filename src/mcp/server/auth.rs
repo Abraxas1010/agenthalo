@@ -126,7 +126,8 @@ impl ToolScope {
             "orchestrator_list"
             | "orchestrator_get_result"
             | "orchestrator_tasks"
-            | "orchestrator_graph" => Self::Read,
+            | "orchestrator_graph"
+            | "orchestrator_mesh_status" => Self::Read,
             "orchestrator_launch"
             | "orchestrator_send_task"
             | "orchestrator_pipe"
@@ -625,6 +626,7 @@ mod tests {
             "orchestrator_get_result",
             "orchestrator_tasks",
             "orchestrator_graph",
+            "orchestrator_mesh_status",
         ];
         for t in &db_tools {
             assert_eq!(ToolScope::for_tool(t), ToolScope::Read, "tool {t}");

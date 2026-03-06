@@ -6,9 +6,10 @@ pub mod trace_bridge;
 
 use crate::cockpit::pty_manager::PtyManager;
 use crate::halo::vault::Vault;
-use crate::orchestrator::agent_pool::{AgentPool, LaunchSpec, ManagedAgent};
+use crate::orchestrator::agent_pool::{AgentPool, ContainerBudget, LaunchSpec, ManagedAgent};
 use crate::orchestrator::task::{Task, TaskStatus, TaskUsage};
 use crate::orchestrator::task_graph::{PipeTransform, TaskEdge, TaskGraph};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -59,6 +60,35 @@ pub struct StopResult {
     pub attestation_ready: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshPeerStatus {
+    pub agent_id: String,
+    pub container_name: String,
+    pub did_uri: Option<String>,
+    pub mcp_endpoint: String,
+    pub reachable: bool,
+    pub latency_ms: Option<u64>,
+    pub last_seen: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MeshStatusResponse {
+    pub enabled: bool,
+    pub self_agent_id: Option<String>,
+    pub peers: Vec<MeshPeerStatus>,
+    pub network_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestratorStatus {
+    pub agents: Vec<ManagedAgent>,
+    pub budget: ContainerBudget,
+    pub agents_total: usize,
+    pub agents_busy: usize,
+    pub agents_idle: usize,
+    pub agents_stopped: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct Orchestrator {
     inner: Arc<OrchestratorInner>,
@@ -83,9 +113,23 @@ impl Orchestrator {
         vault: Option<Arc<Vault>>,
         trace_db_path: PathBuf,
     ) -> Self {
+        Self::with_budget(
+            pty_manager,
+            vault,
+            trace_db_path,
+            ContainerBudget::default(),
+        )
+    }
+
+    pub fn with_budget(
+        pty_manager: Arc<PtyManager>,
+        vault: Option<Arc<Vault>>,
+        trace_db_path: PathBuf,
+        budget: ContainerBudget,
+    ) -> Self {
         Self {
             inner: Arc::new(OrchestratorInner {
-                pool: AgentPool::new(pty_manager, vault),
+                pool: AgentPool::with_budget(pty_manager, vault, budget),
                 tasks: tokio::sync::Mutex::new(BTreeMap::new()),
                 graph: tokio::sync::Mutex::new(TaskGraph::default()),
                 trace_db_path,
@@ -416,6 +460,90 @@ impl Orchestrator {
         self.inner.pool.list().await
     }
 
+    pub async fn status(&self) -> OrchestratorStatus {
+        let agents = self.inner.pool.list().await;
+        let agents_busy = agents
+            .iter()
+            .filter(|agent| {
+                matches!(
+                    agent.status,
+                    crate::orchestrator::agent_pool::AgentStatus::Busy { .. }
+                )
+            })
+            .count();
+        let agents_idle = agents
+            .iter()
+            .filter(|agent| {
+                matches!(
+                    agent.status,
+                    crate::orchestrator::agent_pool::AgentStatus::Idle
+                )
+            })
+            .count();
+        let agents_stopped = agents
+            .iter()
+            .filter(|agent| {
+                matches!(
+                    agent.status,
+                    crate::orchestrator::agent_pool::AgentStatus::Stopped { .. }
+                )
+            })
+            .count();
+        OrchestratorStatus {
+            agents_total: agents.len(),
+            agents_busy,
+            agents_idle,
+            agents_stopped,
+            budget: self.inner.pool.budget().clone(),
+            agents,
+        }
+    }
+
+    /// Query mesh peer status. Returns an empty disabled response when mesh
+    /// is not configured.
+    pub fn mesh_status(&self) -> MeshStatusResponse {
+        if !crate::container::mesh_enabled() {
+            return MeshStatusResponse {
+                enabled: false,
+                self_agent_id: None,
+                peers: Vec::new(),
+                network_name: None,
+            };
+        }
+
+        let self_agent_id = std::env::var("NUCLEUSDB_MESH_AGENT_ID")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let self_id = self_agent_id.as_deref().unwrap_or_default();
+        let registry =
+            crate::container::PeerRegistry::load(crate::container::mesh_registry_path().as_path())
+                .unwrap_or_default();
+        let peers = registry
+            .peers_except(self_id)
+            .into_iter()
+            .map(|peer| {
+                let (reachable, latency_ms) = crate::container::ping_peer_with_latency(peer);
+                MeshPeerStatus {
+                    agent_id: peer.agent_id.clone(),
+                    container_name: peer.container_name.clone(),
+                    did_uri: peer.did_uri.clone(),
+                    mcp_endpoint: peer.mcp_endpoint.clone(),
+                    reachable,
+                    latency_ms: reachable.then_some(latency_ms),
+                    last_seen: peer.last_seen,
+                }
+            })
+            .collect();
+
+        MeshStatusResponse {
+            enabled: true,
+            self_agent_id,
+            peers,
+            network_name: Some(crate::container::MESH_NETWORK_NAME.to_string()),
+        }
+    }
+
     pub async fn get_task(&self, task_id: &str) -> Option<Task> {
         let tasks = self.inner.tasks.lock().await;
         tasks.get(task_id).cloned()
@@ -558,7 +686,44 @@ fn load_local_identity_for_a2a() -> Result<crate::halo::did::DIDIdentity, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::container::{PeerInfo, PeerRegistry};
+    use crate::test_support::env_lock;
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let prev = std::env::var(key).ok();
+            match value {
+                Some(v) => {
+                    // SAFETY: serialized by env_lock in every test here.
+                    unsafe { std::env::set_var(key, v) };
+                }
+                None => {
+                    // SAFETY: serialized by env_lock in every test here.
+                    unsafe { std::env::remove_var(key) };
+                }
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(v) = self.prev.take() {
+                // SAFETY: serialized by env_lock in every test here.
+                unsafe { std::env::set_var(self.key, v) };
+            } else {
+                // SAFETY: serialized by env_lock in every test here.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
 
     fn test_orchestrator() -> Orchestrator {
         let pty = Arc::new(PtyManager::new(8));
@@ -695,5 +860,149 @@ mod tests {
             .await
             .expect("task exists");
         assert!(matches!(task.status, TaskStatus::Complete));
+    }
+
+    #[test]
+    fn mesh_status_returns_empty_when_not_enabled() {
+        let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _agent_id = EnvVarGuard::set("NUCLEUSDB_MESH_AGENT_ID", None);
+        let _mesh_path = EnvVarGuard::set("NUCLEUSDB_MESH_REGISTRY", None);
+        let orchestrator = test_orchestrator();
+        let status = orchestrator.mesh_status();
+        assert!(!status.enabled);
+        assert!(status.peers.is_empty());
+        assert!(status.network_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn mesh_status_reads_registry_when_enabled() {
+        let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry_path = dir.path().join("mesh-peers.json");
+        let _agent_id = EnvVarGuard::set("NUCLEUSDB_MESH_AGENT_ID", Some("agent-self"));
+        let _mesh_path = EnvVarGuard::set(
+            "NUCLEUSDB_MESH_REGISTRY",
+            Some(registry_path.to_string_lossy().as_ref()),
+        );
+
+        let mut registry = PeerRegistry::new();
+        registry.register(PeerInfo {
+            agent_id: "agent-peer".to_string(),
+            container_name: "peer-node".to_string(),
+            did_uri: Some("did:key:z6MkPeer".to_string()),
+            mcp_endpoint: "http://127.0.0.1:1/mcp".to_string(),
+            discovery_endpoint: "http://127.0.0.1:1/pod/.well-known/nucleus-pod".to_string(),
+            registered_at: crate::pod::now_unix(),
+            last_seen: crate::pod::now_unix(),
+        });
+        registry
+            .save(registry_path.as_path())
+            .expect("save registry");
+
+        let orchestrator = test_orchestrator();
+        let status = orchestrator.mesh_status();
+        assert!(status.enabled);
+        assert_eq!(status.self_agent_id.as_deref(), Some("agent-self"));
+        assert_eq!(
+            status.network_name.as_deref(),
+            Some(crate::container::MESH_NETWORK_NAME)
+        );
+        assert_eq!(status.peers.len(), 1);
+        assert_eq!(status.peers[0].agent_id, "agent-peer");
+        assert!(!status.peers[0].reachable);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_with_budget_propagates_to_pool() {
+        let budget = ContainerBudget {
+            max_agents: 3,
+            max_concurrent_busy: 2,
+            allowed_kinds: vec!["shell".to_string(), "codex".to_string()],
+        };
+        let orchestrator = Orchestrator::with_budget(
+            Arc::new(PtyManager::new(8)),
+            None,
+            PathBuf::from("/tmp/orch_budget_status.ndb"),
+            budget.clone(),
+        );
+        let status = orchestrator.status().await;
+        assert_eq!(status.budget, budget);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_status_includes_counts() {
+        let orchestrator = test_orchestrator();
+        let busy_agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "busy".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect("launch busy");
+        let idle_agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "idle".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect("launch idle");
+        let stopped_agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "stopped".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect("launch stopped");
+
+        let _ = orchestrator
+            .inner
+            .pool
+            .start_task(&busy_agent.agent_id, "task-busy", "sleep 5", Some(30))
+            .await
+            .expect("start busy task");
+        let _ = orchestrator
+            .stop_agent(StopRequest {
+                agent_id: stopped_agent.agent_id.clone(),
+                force: true,
+            })
+            .await
+            .expect("stop one agent");
+
+        let status = orchestrator.status().await;
+        assert_eq!(status.agents_total, 3);
+        assert!(status.agents_busy >= 1);
+        assert!(status.agents_idle >= 1);
+        assert!(status.agents_stopped >= 1);
+
+        let _ = orchestrator
+            .stop_agent(StopRequest {
+                agent_id: busy_agent.agent_id,
+                force: true,
+            })
+            .await;
+        let _ = orchestrator
+            .stop_agent(StopRequest {
+                agent_id: idle_agent.agent_id,
+                force: true,
+            })
+            .await;
     }
 }

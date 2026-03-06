@@ -60,10 +60,32 @@ pub struct TaskExecution {
     pub trace_enabled: bool,
 }
 
+/// Per-instance budget controlling how many agents can be managed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerBudget {
+    /// Maximum total agents (across all kinds).
+    pub max_agents: usize,
+    /// Maximum agents in Busy state simultaneously.
+    pub max_concurrent_busy: usize,
+    /// Allowed agent kinds. Empty = all kinds allowed.
+    pub allowed_kinds: Vec<String>,
+}
+
+impl Default for ContainerBudget {
+    fn default() -> Self {
+        Self {
+            max_agents: MAX_MANAGED_AGENTS,
+            max_concurrent_busy: 10,
+            allowed_kinds: Vec::new(),
+        }
+    }
+}
+
 pub struct AgentPool {
     pty_manager: Arc<PtyManager>,
     vault: Option<Arc<Vault>>,
     agents: tokio::sync::Mutex<BTreeMap<String, ManagedAgent>>,
+    budget: ContainerBudget,
 }
 
 const MAX_MANAGED_AGENTS: usize = 64;
@@ -76,21 +98,48 @@ impl std::fmt::Debug for AgentPool {
 
 impl AgentPool {
     pub fn new(pty_manager: Arc<PtyManager>, vault: Option<Arc<Vault>>) -> Self {
+        Self::with_budget(pty_manager, vault, ContainerBudget::default())
+    }
+
+    pub fn with_budget(
+        pty_manager: Arc<PtyManager>,
+        vault: Option<Arc<Vault>>,
+        budget: ContainerBudget,
+    ) -> Self {
         Self {
             pty_manager,
             vault,
             agents: tokio::sync::Mutex::new(BTreeMap::new()),
+            budget,
         }
+    }
+
+    pub fn budget(&self) -> &ContainerBudget {
+        &self.budget
     }
 
     pub async fn launch(&self, spec: LaunchSpec) -> Result<ManagedAgent, String> {
         let kind = normalize_agent_kind(&spec.agent)?;
         validate_capabilities(&spec.capabilities)?;
+        if !self.budget.allowed_kinds.is_empty()
+            && !self
+                .budget
+                .allowed_kinds
+                .iter()
+                .any(|allowed| allowed == &kind)
+        {
+            return Err(format!(
+                "agent kind '{}' not allowed by container budget (allowed: {:?})",
+                kind, self.budget.allowed_kinds
+            ));
+        }
         {
             let agents = self.agents.lock().await;
-            if agents.len() >= MAX_MANAGED_AGENTS {
+            let max_agents = self.budget.max_agents.min(MAX_MANAGED_AGENTS);
+            if agents.len() >= max_agents {
                 return Err(format!(
-                    "maximum managed agents reached ({MAX_MANAGED_AGENTS})"
+                    "container budget exceeded: max {} agents",
+                    max_agents
                 ));
             }
         }
@@ -192,9 +241,22 @@ impl AgentPool {
         timeout_secs: Option<u64>,
     ) -> Result<TaskExecution, String> {
         let mut agents = self.agents.lock().await;
+        if !agents.contains_key(agent_id) {
+            return Err(format!("unknown agent_id {agent_id}"));
+        }
+        let busy_count = agents
+            .values()
+            .filter(|agent| matches!(agent.status, AgentStatus::Busy { .. }))
+            .count();
+        if busy_count >= self.budget.max_concurrent_busy {
+            return Err(format!(
+                "concurrent busy limit reached ({}/{})",
+                busy_count, self.budget.max_concurrent_busy
+            ));
+        }
         let agent = agents
             .get_mut(agent_id)
-            .ok_or_else(|| format!("unknown agent_id {agent_id}"))?;
+            .expect("checked contains_key above");
         if matches!(agent.status, AgentStatus::Stopped { .. }) {
             return Err(format!("agent {agent_id} is stopped"));
         }
@@ -561,6 +623,139 @@ mod tests {
             })
             .await
             .expect_err("must reject overflow");
-        assert!(err.contains("maximum managed agents"));
+        assert!(err.contains("container budget exceeded"));
+    }
+
+    #[tokio::test]
+    async fn launch_respects_budget_max_agents() {
+        let pool = AgentPool::with_budget(
+            Arc::new(PtyManager::new(8)),
+            None,
+            ContainerBudget {
+                max_agents: 1,
+                max_concurrent_busy: 4,
+                allowed_kinds: Vec::new(),
+            },
+        );
+        pool.launch(LaunchSpec {
+            agent: "shell".to_string(),
+            agent_name: "first".to_string(),
+            working_dir: None,
+            env: BTreeMap::new(),
+            timeout_secs: 10,
+            model: None,
+            trace: false,
+            capabilities: vec!["memory_read".to_string()],
+        })
+        .await
+        .expect("first launch");
+
+        let err = pool
+            .launch(LaunchSpec {
+                agent: "shell".to_string(),
+                agent_name: "second".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 10,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect_err("second launch must exceed budget");
+        assert!(err.contains("container budget exceeded"));
+    }
+
+    #[tokio::test]
+    async fn launch_rejects_disallowed_kind() {
+        let pool = AgentPool::with_budget(
+            Arc::new(PtyManager::new(8)),
+            None,
+            ContainerBudget {
+                max_agents: 4,
+                max_concurrent_busy: 2,
+                allowed_kinds: vec!["shell".to_string()],
+            },
+        );
+        let err = pool
+            .launch(LaunchSpec {
+                agent: "claude".to_string(),
+                agent_name: "not-allowed".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 10,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect_err("disallowed agent kind must fail");
+        assert!(err.contains("not allowed by container budget"));
+    }
+
+    #[tokio::test]
+    async fn start_task_rejects_when_concurrent_busy_limit_reached() {
+        let pool = AgentPool::with_budget(
+            Arc::new(PtyManager::new(8)),
+            None,
+            ContainerBudget {
+                max_agents: 4,
+                max_concurrent_busy: 1,
+                allowed_kinds: Vec::new(),
+            },
+        );
+        let first = pool
+            .launch(LaunchSpec {
+                agent: "shell".to_string(),
+                agent_name: "first".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 10,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect("launch first");
+        let second = pool
+            .launch(LaunchSpec {
+                agent: "shell".to_string(),
+                agent_name: "second".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 10,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect("launch second");
+
+        let _first_task = pool
+            .start_task(&first.agent_id, "task-1", "sleep 2", Some(10))
+            .await
+            .expect("first task starts");
+
+        let err = pool
+            .start_task(&second.agent_id, "task-2", "printf hi", Some(10))
+            .await
+            .expect_err("second task must hit busy budget");
+        assert!(err.contains("concurrent busy limit reached"));
+
+        let _ = pool.stop(&first.agent_id, true).await;
+        let _ = pool.stop(&second.agent_id, true).await;
+    }
+
+    #[test]
+    fn default_budget_preserves_existing_behavior() {
+        let pool = AgentPool::new(Arc::new(PtyManager::new(8)), None);
+        assert_eq!(
+            pool.budget(),
+            &ContainerBudget {
+                max_agents: MAX_MANAGED_AGENTS,
+                max_concurrent_busy: 10,
+                allowed_kinds: Vec::new(),
+            }
+        );
     }
 }

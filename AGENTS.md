@@ -148,7 +148,18 @@ The orchestrator manages multi-agent workflows via MCP tools. **For detailed usa
 | `orchestrator_list` | List orchestrated agents | `orchestrator-quickstart` |
 | `orchestrator_tasks` | List all tasks and status | `orchestrator-quickstart` |
 | `orchestrator_graph` | Task graph snapshot (`nodes` is object map, `edges` is array) | `orchestrator-pipes` |
+| `orchestrator_mesh_status` | Query mesh peer topology, reachability, and latency | `agent-lifecycle` |
 | `orchestrator_stop` | Stop a managed agent session and finalize trace metadata | `agent-lifecycle` |
+
+### Container Budget
+
+The orchestrator supports per-instance agent budgets via `ContainerBudget`:
+- `max_agents` — maximum total managed agents (default: `64`)
+- `max_concurrent_busy` — maximum agents in `Busy` state simultaneously (default: `10`)
+- `allowed_kinds` — allowed agent kinds (`[]` means all kinds allowed)
+
+Set at construction with `Orchestrator::with_budget(...)`. `Orchestrator::new(...)`
+uses `ContainerBudget::default()` to preserve existing behavior.
 
 ### Critical Response Schema Notes
 

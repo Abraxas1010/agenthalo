@@ -26,11 +26,14 @@
 | PTY Session Per Task | Pattern | Each task creates fresh PTY — no state leaks |
 | Task Retention | Concept | 24h retention, max 2000 tasks, oldest-first pruning |
 | Graceful Stop | Pattern | SIGINT → wait 1s → force terminate |
+| Container Budget | Pattern | `max_agents` + `max_concurrent_busy` + `allowed_kinds` enforcement |
+| Mesh Status | Pattern | Read-only peer topology from mesh registry |
 
 ### Tools
 | Entity | Type | Integration |
 |--------|------|-------------|
 | orchestrator_launch | MCP | Creates agent with kind, capabilities, timeout |
+| orchestrator_mesh_status | MCP | Returns peer topology, reachability, and latency |
 | orchestrator_stop | MCP | Graceful or force stop |
 
 ## Relationships
@@ -42,6 +45,8 @@
 - shell kind USES `sh -c` NOT `sh -lc` (prevents login shell stalls)
 - Graceful Stop SENDS SIGINT first, THEN force after 1s
 - Task Retention LIMITS storage to 24h / 2000 tasks
+- Container Budget LIMITS agent launches and concurrent busy execution
+- Mesh Status EXPOSES peer topology for cockpit visualization
 
 ## Cross-References
 - Related skills: orchestrator-quickstart, orchestrator-pipes, halo-trace-inspection

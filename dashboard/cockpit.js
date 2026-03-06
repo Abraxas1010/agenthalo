@@ -359,6 +359,11 @@
       this.layoutOrder = ['1', '2h', '2v', '4', '3L', '3T', '6'];
       this.statsTimer = null;
       this.lastSessionSnapshot = [];
+      this.meshTimer = null;
+      this.meshSidebarEl = null;
+      this.meshBodyEl = null;
+      this.meshSelfEl = null;
+      this.meshPeerListEl = null;
     }
 
     mount(hostEl) {
@@ -366,11 +371,17 @@
       hostEl.innerHTML = this.renderSkeleton();
       this.tabsEl = hostEl.querySelector('#cockpit-tabs');
       this.gridEl = hostEl.querySelector('#cockpit-grid');
+      this.meshSidebarEl = hostEl.querySelector('#cockpit-mesh-sidebar');
+      this.meshBodyEl = hostEl.querySelector('#cockpit-mesh-body');
+      this.meshSelfEl = hostEl.querySelector('#cockpit-mesh-self');
+      this.meshPeerListEl = hostEl.querySelector('#cockpit-mesh-peers');
       this.bindUi(hostEl);
       this.restoreSessions();
       this.consumePendingLaunch();
       this.bindShortcuts();
       this.startStatusPoll();
+      this.stopMeshPoll();
+      this.startMeshPoll();
     }
 
     renderSkeleton() {
@@ -380,8 +391,22 @@
             ${this.layoutOrder.map(k => `<button type="button" class="layout-btn ${this.layout === k ? 'active' : ''}" data-layout="${k}">${k}</button>`).join('')}
             <button type="button" class="btn btn-sm cockpit-new-btn" id="cockpit-new">+ New</button>
           </div>
-          <div class="cockpit-tabs" id="cockpit-tabs"></div>
-          <div class="cockpit-grid" id="cockpit-grid"></div>
+          <div class="cockpit-main">
+            <div class="cockpit-stage">
+              <div class="cockpit-tabs" id="cockpit-tabs"></div>
+              <div class="cockpit-grid" id="cockpit-grid"></div>
+            </div>
+            <aside class="cockpit-mesh-sidebar" id="cockpit-mesh-sidebar">
+              <div class="cockpit-mesh-header">
+                <span class="cockpit-mesh-title">⬡ Mesh Network</span>
+                <button type="button" class="cockpit-mesh-toggle" id="cockpit-mesh-toggle" title="Collapse mesh sidebar">◀</button>
+              </div>
+              <div class="cockpit-mesh-body" id="cockpit-mesh-body">
+                <div class="cockpit-mesh-self" id="cockpit-mesh-self"></div>
+                <div class="cockpit-mesh-peers" id="cockpit-mesh-peers"></div>
+              </div>
+            </aside>
+          </div>
         </div>`;
     }
 
@@ -390,6 +415,9 @@
         btn.addEventListener('click', () => this.setLayout(btn.dataset.layout));
       });
       hostEl.querySelector('#cockpit-new').addEventListener('click', (ev) => this.toggleNewDropdown(ev.currentTarget));
+      hostEl.querySelector('#cockpit-mesh-toggle')?.addEventListener('click', () => {
+        this.meshSidebarEl?.classList.toggle('collapsed');
+      });
       document.addEventListener('click', () => this.hideDropdown());
     }
 
@@ -450,6 +478,74 @@
           entry.panel.updateMetrics(rows);
         }
       });
+    }
+
+    startMeshPoll() {
+      if (this.meshTimer) return;
+      this.refreshMeshStatus().catch(() => {});
+      this.meshTimer = setInterval(() => {
+        this.refreshMeshStatus().catch(() => {});
+      }, 10000);
+    }
+
+    stopMeshPoll() {
+      if (this.meshTimer) {
+        clearInterval(this.meshTimer);
+        this.meshTimer = null;
+      }
+    }
+
+    async refreshMeshStatus() {
+      if (!this.meshSidebarEl || !this.meshSelfEl || !this.meshPeerListEl) return;
+      let payload = null;
+      try {
+        const res = await fetch('/api/orchestrator/mesh');
+        if (res.ok) {
+          payload = await res.json();
+        }
+      } catch (_e) {
+        payload = null;
+      }
+      this.renderMeshStatus(payload);
+    }
+
+    renderMeshStatus(payload) {
+      if (!this.meshSelfEl || !this.meshPeerListEl) return;
+      if (!payload || payload.enabled !== true) {
+        this.meshSelfEl.innerHTML = '<div class="mesh-disabled">Mesh not configured</div>';
+        this.meshPeerListEl.innerHTML = '';
+        return;
+      }
+
+      const selfId = payload.self_agent_id || 'this node';
+      this.meshSelfEl.innerHTML = `
+        <div class="mesh-self-row">
+          <span class="mesh-indicator mesh-online">●</span>
+          <span class="mesh-self-id">${escapeHtml(selfId)}</span>
+        </div>
+      `;
+      const peers = Array.isArray(payload.peers) ? payload.peers : [];
+      if (peers.length === 0) {
+        this.meshPeerListEl.innerHTML = '<div class="mesh-empty">No remote peers detected</div>';
+        return;
+      }
+      this.meshPeerListEl.innerHTML = peers.map((peer) => {
+        const online = peer && peer.reachable === true;
+        const name = peer && peer.agent_id ? peer.agent_id : 'unknown';
+        const latency = online && Number.isFinite(Number(peer.latency_ms))
+          ? `${Number(peer.latency_ms)}ms`
+          : 'unreachable';
+        const did = peer && peer.did_uri ? ' · DID' : '';
+        return `
+          <div class="mesh-peer ${online ? 'mesh-peer-online' : 'mesh-peer-offline'}">
+            <span class="mesh-indicator ${online ? 'mesh-online' : 'mesh-offline'}">${online ? '●' : '○'}</span>
+            <div class="mesh-peer-info">
+              <div class="mesh-peer-name">${escapeHtml(name)}</div>
+              <div class="mesh-peer-detail">${escapeHtml(latency)}${did}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
     }
 
     toggleNewDropdown(anchor) {
