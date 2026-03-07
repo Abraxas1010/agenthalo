@@ -122,7 +122,7 @@ RUN mkdir -p "${NOMIC_MODEL_DIR}" && \
     curl -fL "${NOMIC_MODEL_TOKENIZER_URL}" -o "${NOMIC_MODEL_DIR}/tokenizer.json"
 
 RUN chmod +x /usr/local/bin/agenthalo-entrypoint.sh /usr/local/bin/agenthalo-healthcheck.sh /usr/local/bin/nym-discover-provider.sh && \
-    mkdir -p /data /data/logs /data/nym && \
+    mkdir -p /data /data/logs /data/nym /data/npm-global && \
     chown -R 10001:10001 /data /opt/wdk-sidecar /opt/models && \
     chmod 700 /data
 
@@ -135,6 +135,8 @@ ENV AGENTHALO_MCP_PORT=8390
 ENV WDK_PORT=7321
 ENV WDK_SIDECAR_DIR=/opt/wdk-sidecar
 ENV NOMIC_MODEL_DIR=/opt/models/nomic-embed-text
+ENV NPM_CONFIG_PREFIX=/data/npm-global
+ENV PATH="/data/npm-global/bin:${PATH}"
 
 ENV SOCKS5_PROXY=socks5h://127.0.0.1:1080
 ENV ALL_PROXY=socks5h://127.0.0.1:1080

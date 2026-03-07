@@ -7796,10 +7796,9 @@ pub async fn sse_handler(
 // CLI agent install, detect & auth
 // ---------------------------------------------------------------------------
 
-/// Per-CLI metadata used by the install/auth endpoints.
+/// Per-CLI metadata used by the detect/install/auth endpoints.
 struct CliAgentMeta {
-    install_cmd: &'static str,
-    install_args: &'static [&'static str],
+    npm_package: &'static str,
     auth_cmd: &'static str,
     auth_args: &'static [&'static str],
     detect_cmd: &'static str,
@@ -7808,22 +7807,19 @@ struct CliAgentMeta {
 fn cli_agent_meta(agent: &str) -> Option<CliAgentMeta> {
     match agent {
         "claude" => Some(CliAgentMeta {
-            install_cmd: "npm",
-            install_args: &["install", "-g", "@anthropic-ai/claude-code"],
+            npm_package: "@anthropic-ai/claude-code",
             auth_cmd: "claude",
             auth_args: &["auth", "login"],
             detect_cmd: "claude",
         }),
         "codex" => Some(CliAgentMeta {
-            install_cmd: "npm",
-            install_args: &["install", "-g", "@openai/codex"],
+            npm_package: "@openai/codex",
             auth_cmd: "codex",
             auth_args: &["login"],
             detect_cmd: "codex",
         }),
         "gemini" => Some(CliAgentMeta {
-            install_cmd: "npm",
-            install_args: &["install", "-g", "@google/gemini-cli"],
+            npm_package: "@google/gemini-cli",
             // Gemini uses interactive first-run auth; launching it opens the
             // auth prompt in the PTY where the user can select "Login with Google".
             auth_cmd: "gemini",
@@ -7831,8 +7827,7 @@ fn cli_agent_meta(agent: &str) -> Option<CliAgentMeta> {
             detect_cmd: "gemini",
         }),
         "openclaw" => Some(CliAgentMeta {
-            install_cmd: "npm",
-            install_args: &["install", "-g", "openclaw@latest"],
+            npm_package: "openclaw@latest",
             // Onboard wizard handles auth, gateway setup, and daemon install.
             auth_cmd: "openclaw",
             auth_args: &["onboard", "--install-daemon"],
@@ -7886,7 +7881,9 @@ async fn api_cli_detect(Path(agent): Path<String>) -> ApiResult {
     })))
 }
 
-/// POST /api/cli/install/{agent} — install a CLI agent via npm.
+/// POST /api/cli/install/{agent} — install a CLI agent via npm to the writable
+/// /data/npm-global prefix. CLIs are also background-installed at boot; this
+/// endpoint lets the frontend trigger or retry on demand.
 async fn api_cli_install(
     AxumState(state): AxumState<DashboardState>,
     Path(agent): Path<String>,
@@ -7898,11 +7895,36 @@ async fn api_cli_install(
             &format!("unknown CLI agent `{agent}`"),
         )
     })?;
-    let cmd = meta.install_cmd.to_string();
-    let args: Vec<String> = meta.install_args.iter().map(|s| s.to_string()).collect();
+    // Check if already installed
+    let detect = meta.detect_cmd.to_string();
+    let already = tokio::task::spawn_blocking({
+        let d = detect.clone();
+        move || {
+            std::process::Command::new("which")
+                .arg(&d)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+    })
+    .await
+    .unwrap_or(false);
+    if already {
+        return Ok(Json(json!({
+            "agent": agent,
+            "success": true,
+            "installed": true,
+            "stdout": format!("{agent} already installed"),
+            "stderr": "",
+        })));
+    }
+    // Install to writable npm prefix
+    let pkg = meta.npm_package.to_string();
+    let _ = std::fs::create_dir_all("/data/npm-global");
     let result = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(&cmd)
-            .args(&args)
+        std::process::Command::new("npm")
+            .args(["install", "-g", &pkg])
+            .env("NPM_CONFIG_PREFIX", "/data/npm-global")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .output()
@@ -7927,7 +7949,7 @@ async fn api_cli_install(
     Ok(Json(json!({
         "agent": agent,
         "success": success,
-        "exit_code": result.status.code(),
+        "installed": success,
         "stdout": stdout,
         "stderr": stderr,
     })))

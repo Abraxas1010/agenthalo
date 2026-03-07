@@ -2600,8 +2600,8 @@ async function renderSetup() {
       <div class="card-header">
         <div class="card-icon">&#9000;</div>
         <div>
-          <div class="card-title">Install Agent CLIs</div>
-          <div class="card-desc">Install and authenticate coding agent CLIs &mdash; each opens a browser for secure OAuth login</div>
+          <div class="card-title">Agent CLIs</div>
+          <div class="card-desc">Agent CLIs install in the background at startup &mdash; authenticate each via browser OAuth</div>
         </div>
       </div>
       <div class="cli-agents-grid" id="cli-agents-grid">
@@ -2610,10 +2610,9 @@ async function renderSetup() {
             <div class="cli-agent-name">Claude Code</div>
             <div class="cli-agent-provider">Anthropic</div>
           </div>
-          <div class="cli-agent-status" id="cli-status-claude">Checking...</div>
+          <div class="cli-agent-status" id="cli-status-claude">Installing...</div>
           <div class="cli-agent-actions">
-            <button class="btn btn-sm btn-primary cli-install-btn" data-cli="claude">Install</button>
-            <button class="btn btn-sm cli-auth-btn" data-cli="claude" disabled>Authenticate</button>
+            <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="claude" disabled>Authenticate</button>
           </div>
         </div>
         <div class="cli-agent-row" data-cli="codex">
@@ -2621,10 +2620,9 @@ async function renderSetup() {
             <div class="cli-agent-name">Codex</div>
             <div class="cli-agent-provider">OpenAI</div>
           </div>
-          <div class="cli-agent-status" id="cli-status-codex">Checking...</div>
+          <div class="cli-agent-status" id="cli-status-codex">Installing...</div>
           <div class="cli-agent-actions">
-            <button class="btn btn-sm btn-primary cli-install-btn" data-cli="codex">Install</button>
-            <button class="btn btn-sm cli-auth-btn" data-cli="codex" disabled>Authenticate</button>
+            <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="codex" disabled>Authenticate</button>
           </div>
         </div>
         <div class="cli-agent-row" data-cli="gemini">
@@ -2632,10 +2630,9 @@ async function renderSetup() {
             <div class="cli-agent-name">Gemini CLI</div>
             <div class="cli-agent-provider">Google</div>
           </div>
-          <div class="cli-agent-status" id="cli-status-gemini">Checking...</div>
+          <div class="cli-agent-status" id="cli-status-gemini">Installing...</div>
           <div class="cli-agent-actions">
-            <button class="btn btn-sm btn-primary cli-install-btn" data-cli="gemini">Install</button>
-            <button class="btn btn-sm cli-auth-btn" data-cli="gemini" disabled>Authenticate</button>
+            <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="gemini" disabled>Authenticate</button>
           </div>
         </div>
       </div>
@@ -2729,20 +2726,19 @@ async function renderSetup() {
         <div class="card-icon" style="font-size:24px">&#129438;</div>
         <div>
           <div class="card-title">OpenClaw Harness <span style="font-size:11px;font-weight:400;color:var(--text-dim);margin-left:6px">(Optional)</span></div>
-          <div class="card-desc">Install OpenClaw, launch the gateway daemon, and wire MCP tools for full agent orchestration</div>
+          <div class="card-desc">Configure OpenClaw gateway daemon and wire MCP tools for full agent orchestration</div>
         </div>
       </div>
 
       <div class="harness-steps">
-        <!-- Step 1: Install -->
+        <!-- Step 1: CLI Status -->
         <div class="harness-step" id="harness-step-install">
           <div class="harness-step-num">1</div>
           <div class="harness-step-body">
-            <div class="harness-step-title">Install OpenClaw CLI</div>
-            <div class="harness-step-desc">Installs the OpenClaw CLI globally via npm. Requires Node &ge; 22.</div>
+            <div class="harness-step-title">OpenClaw CLI</div>
+            <div class="harness-step-desc">Pre-installed in the container image.</div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
               <span class="harness-status" id="harness-install-status">Checking...</span>
-              <button class="btn btn-sm btn-primary" id="harness-install-btn">Install</button>
             </div>
           </div>
         </div>
@@ -2915,55 +2911,33 @@ async function renderSetup() {
   // --- CLI Agent Install & Auth ---
   (async () => {
     const cliAgents = ['claude', 'codex', 'gemini'];
-    // Detect installed CLIs
-    for (const cli of cliAgents) {
-      const statusEl = document.getElementById('cli-status-' + cli);
-      const row = document.querySelector('.cli-agent-row[data-cli="' + cli + '"]');
-      if (!row) continue;
-      const installBtn = row.querySelector('.cli-install-btn');
-      const authBtn = row.querySelector('.cli-auth-btn');
-      try {
-        const resp = await api('/cli/detect/' + cli);
-        if (resp.installed) {
-          if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span>';
-          if (installBtn) { installBtn.textContent = 'Reinstall'; installBtn.classList.remove('btn-primary'); }
-          if (authBtn) authBtn.disabled = false;
-        } else {
-          if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Not installed</span>';
-          if (authBtn) authBtn.disabled = true;
-        }
-      } catch (_e) {
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Unknown</span>';
-      }
-    }
-    // Install button handlers
-    for (const btn of $$('.cli-install-btn')) {
-      btn.addEventListener('click', async () => {
-        const cli = btn.dataset.cli;
+    // Poll for CLI install completion (background install runs at boot)
+    const cliInstalled = {};
+    async function pollCliDetect() {
+      for (const cli of cliAgents) {
+        if (cliInstalled[cli]) continue;
         const statusEl = document.getElementById('cli-status-' + cli);
-        btn.disabled = true;
-        btn.textContent = 'Installing...';
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--yellow)">Installing via npm...</span>';
+        const row = document.querySelector('.cli-agent-row[data-cli="' + cli + '"]');
+        const authBtn = row && row.querySelector('.cli-auth-btn');
         try {
-          const resp = await apiPost('/cli/install/' + cli, {});
-          if (resp.success) {
+          const resp = await api('/cli/detect/' + cli);
+          if (resp.installed) {
+            cliInstalled[cli] = true;
             if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span>';
-            btn.textContent = 'Reinstall';
-            btn.classList.remove('btn-primary');
-            const row = btn.closest('.cli-agent-row');
-            const authBtn = row && row.querySelector('.cli-auth-btn');
             if (authBtn) authBtn.disabled = false;
           } else {
-            const errMsg = (resp.stderr || '').slice(0, 200);
-            if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Install failed: ' + esc(errMsg) + '</span>';
+            if (statusEl) statusEl.innerHTML = '<span style="color:var(--yellow)">&#8987; Installing...</span>';
           }
-        } catch (e) {
-          if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Error: ' + esc(String(e.message || e)) + '</span>';
+        } catch (_e) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Checking...</span>';
         }
-        btn.disabled = false;
-        if (btn.textContent === 'Installing...') btn.textContent = 'Install';
-      });
+      }
+      // Keep polling until all are installed
+      if (cliAgents.some(c => !cliInstalled[c])) {
+        setTimeout(pollCliDetect, 4000);
+      }
     }
+    pollCliDetect();
     // Auth button handlers — open a PTY terminal for OAuth flow
     let _cliAuthTerm = null;
     let _cliAuthFitAddon = null;
@@ -2999,11 +2973,25 @@ async function renderSetup() {
             const wsUrl = proto + '//' + location.host + '/api/cockpit/sessions/' + resp.session_id + '/ws';
             _cliAuthWs = new WebSocket(wsUrl);
             _cliAuthWs.binaryType = 'arraybuffer';
+            let _cliAuthOpened = false;
             _cliAuthWs.onmessage = (ev) => {
+              let text = '';
               if (ev.data instanceof ArrayBuffer) {
-                _cliAuthTerm.write(new Uint8Array(ev.data));
+                const bytes = new Uint8Array(ev.data);
+                _cliAuthTerm.write(bytes);
+                text = new TextDecoder().decode(bytes);
               } else {
                 _cliAuthTerm.write(ev.data);
+                text = ev.data;
+              }
+              // Auto-open OAuth URLs in a popup window
+              if (!_cliAuthOpened) {
+                const m = text.match(/https:\/\/[^\s\x1b\x07]+/);
+                if (m) {
+                  _cliAuthOpened = true;
+                  const authUrl = m[0].replace(/[\x00-\x1f]/g, '');
+                  window.open(authUrl, '_blank', 'width=600,height=700,scrollbars=yes');
+                }
               }
             };
             _cliAuthWs.onclose = () => {
@@ -3047,59 +3035,37 @@ async function renderSetup() {
     const installStatus = document.getElementById('harness-install-status');
     const gatewayStatus = document.getElementById('harness-gateway-status');
     const mcpStatus = document.getElementById('harness-mcp-status');
-    const installBtn = document.getElementById('harness-install-btn');
     const onboardBtn = document.getElementById('harness-onboard-btn');
     const wireMcpBtn = document.getElementById('harness-wire-mcp-btn');
 
     // Auto-detect openclaw on page load
-    try {
-      const detect = await api('/cli/detect/openclaw');
-      if (detect.installed) {
-        if (installStatus) installStatus.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span>' + (detect.path ? ' <span style="color:var(--text-dim);font-size:11px">(' + esc(detect.path) + ')</span>' : '');
-        if (installBtn) { installBtn.textContent = 'Reinstall'; }
-        if (onboardBtn) onboardBtn.disabled = false;
-        if (wireMcpBtn) wireMcpBtn.disabled = false;
-        // Check gateway status
-        try {
-          const gw = await api('/openclaw/gateway-status');
-          if (gw.gateway_running) {
-            if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--green)">&#10003; Gateway running</span>';
-          } else {
-            if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--yellow)">&#9888; Gateway not running</span>';
+    async function pollOpenClawDetect() {
+      try {
+        const detect = await api('/cli/detect/openclaw');
+        if (detect.installed) {
+          if (installStatus) installStatus.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span>' + (detect.path ? ' <span style="color:var(--text-dim);font-size:11px">(' + esc(detect.path) + ')</span>' : '');
+          if (onboardBtn) onboardBtn.disabled = false;
+          if (wireMcpBtn) wireMcpBtn.disabled = false;
+          try {
+            const gw = await api('/openclaw/gateway-status');
+            if (gw.gateway_running) {
+              if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--green)">&#10003; Gateway running</span>';
+            } else {
+              if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--yellow)">&#9888; Gateway not running</span>';
+            }
+          } catch (_e) {
+            if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--text-dim)">Could not check gateway</span>';
           }
-        } catch (_e) {
-          if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--text-dim)">Could not check gateway</span>';
+        } else {
+          if (installStatus) installStatus.innerHTML = '<span style="color:var(--yellow)">&#8987; Installing...</span>';
+          setTimeout(pollOpenClawDetect, 4000);
         }
-      } else {
-        if (installStatus) installStatus.innerHTML = '<span style="color:var(--text-dim)">Not installed</span>';
+      } catch (_e) {
+        if (installStatus) installStatus.innerHTML = '<span style="color:var(--text-dim)">Checking...</span>';
+        setTimeout(pollOpenClawDetect, 4000);
       }
-    } catch (_e) {
-      if (installStatus) installStatus.innerHTML = '<span style="color:var(--text-dim)">Detection error</span>';
     }
-
-    // Install button
-    if (installBtn) {
-      installBtn.addEventListener('click', async () => {
-        installBtn.disabled = true;
-        installBtn.textContent = 'Installing...';
-        if (installStatus) installStatus.innerHTML = '<span style="color:var(--text-dim)">Installing via npm...</span>';
-        try {
-          const resp = await apiPost('/cli/install/openclaw', {});
-          if (resp.success) {
-            if (installStatus) installStatus.innerHTML = '<span style="color:var(--green)">&#10003; Installed successfully</span>';
-            installBtn.textContent = 'Reinstall';
-            if (onboardBtn) onboardBtn.disabled = false;
-            if (wireMcpBtn) wireMcpBtn.disabled = false;
-          } else {
-            if (installStatus) installStatus.innerHTML = '<span style="color:var(--red)">Install failed (exit ' + resp.exit_code + '): ' + esc(resp.stderr || '') + '</span>';
-          }
-        } catch (e) {
-          if (installStatus) installStatus.innerHTML = '<span style="color:var(--red)">Install error: ' + esc(String(e.message || e)) + '</span>';
-        }
-        installBtn.disabled = false;
-        if (installBtn.textContent === 'Installing...') installBtn.textContent = 'Install';
-      });
-    }
+    pollOpenClawDetect();
 
     // Onboard wizard button — launches PTY
     if (onboardBtn) {
@@ -3129,11 +3095,24 @@ async function renderSetup() {
             const wsUrl = proto + '//' + location.host + '/api/cockpit/sessions/' + resp.session_id + '/ws';
             _harnessWs = new WebSocket(wsUrl);
             _harnessWs.binaryType = 'arraybuffer';
+            let _harnessAuthOpened = false;
             _harnessWs.onmessage = (ev) => {
+              let text = '';
               if (ev.data instanceof ArrayBuffer) {
-                _harnessTerm.write(new Uint8Array(ev.data));
+                const bytes = new Uint8Array(ev.data);
+                _harnessTerm.write(bytes);
+                text = new TextDecoder().decode(bytes);
               } else {
                 _harnessTerm.write(ev.data);
+                text = ev.data;
+              }
+              if (!_harnessAuthOpened) {
+                const m = text.match(/https:\/\/[^\s\x1b\x07]+/);
+                if (m) {
+                  _harnessAuthOpened = true;
+                  const authUrl = m[0].replace(/[\x00-\x1f]/g, '');
+                  window.open(authUrl, '_blank', 'width=600,height=700,scrollbars=yes');
+                }
               }
             };
             _harnessWs.onclose = () => {

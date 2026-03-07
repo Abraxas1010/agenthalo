@@ -289,12 +289,44 @@ log " WDK:        127.0.0.1:${WDK_PORT} (internal)"
 log " Nym:        127.0.0.1:${NYM_PORT} (internal)"
 log "============================================"
 
+# -- Background CLI agent install (lazy, non-blocking) --
+# Install to /data/npm-global (writable volume) so the read-only rootfs is fine.
+# Dashboard is already serving; user can start setup while CLIs install.
+# CLI downloads go DIRECT (no Nym proxy) — no privacy need for public npm registry.
+CLI_LOG="${LOG_DIR}/cli_install.log"
+(
+  unset HTTP_PROXY HTTPS_PROXY ALL_PROXY SOCKS5_PROXY http_proxy https_proxy all_proxy socks5_proxy 2>/dev/null || true
+  export NO_PROXY="*"
+  export no_proxy="*"
+  export NPM_CONFIG_PREFIX=/data/npm-global
+  mkdir -p /data/npm-global
+  for pkg in "@anthropic-ai/claude-code" "@openai/codex" "@google/gemini-cli" "openclaw@latest"; do
+    if ! command -v "$(basename "${pkg%%@*}" | tr -d '@')" >/dev/null 2>&1; then
+      log "Installing CLI: ${pkg} ..."
+      if npm install -g "${pkg}" >>"${CLI_LOG}" 2>&1; then
+        log "CLI installed: ${pkg}"
+      else
+        log "WARN: CLI install failed: ${pkg} (see ${CLI_LOG})"
+      fi
+    else
+      log "CLI already installed: ${pkg}"
+    fi
+  done
+  log "Background CLI install complete."
+) &
+CLI_INSTALL_PID=$!
+
 while true; do
   EXITED_PID=""
   if wait -n -p EXITED_PID; then
     EXIT_CODE=0
   else
     EXIT_CODE=$?
+  fi
+
+  # Ignore the background CLI install subshell — it's not a critical service
+  if [[ "$EXITED_PID" == "$CLI_INSTALL_PID" ]]; then
+    continue
   fi
 
   EXITED_NAME="unknown"
