@@ -8038,10 +8038,12 @@ async fn api_cli_detect(Path(agent): Path<String>) -> ApiResult {
     } else {
         None
     };
+    let authenticated = deploy::cli_authenticated(&agent);
     Ok(Json(json!({
         "agent": agent,
         "installed": installed,
         "path": path,
+        "authenticated": authenticated,
     })))
 }
 

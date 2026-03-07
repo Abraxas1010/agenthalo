@@ -2923,8 +2923,17 @@ async function renderSetup() {
           const resp = await api('/cli/detect/' + cli);
           if (resp.installed) {
             cliInstalled[cli] = true;
-            if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span>';
-            if (authBtn) authBtn.disabled = false;
+            if (resp.authenticated) {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
+              if (authBtn) {
+                authBtn.disabled = false;
+                authBtn.textContent = 'Re-authenticate';
+                authBtn.classList.remove('btn-primary');
+              }
+            } else {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span> <span style="color:var(--yellow)">(not authenticated)</span>';
+              if (authBtn) authBtn.disabled = false;
+            }
           } else {
             if (statusEl) statusEl.innerHTML = '<span style="color:var(--yellow)">&#8987; Installing...</span>';
           }
@@ -2994,12 +3003,26 @@ async function renderSetup() {
                 }
               }
             };
-            _cliAuthWs.onclose = () => {
+            _cliAuthWs.onclose = async () => {
               _cliAuthTerm.write('\r\n\x1b[90m--- session ended ---\x1b[0m\r\n');
-              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
-              btn.textContent = 'Re-authenticate';
-              btn.classList.remove('btn-primary');
               btn.disabled = false;
+              // Re-poll detect to verify actual auth status from token files
+              try {
+                const detect = await api('/cli/detect/' + cli);
+                if (detect.authenticated) {
+                  if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
+                  btn.textContent = 'Re-authenticate';
+                  btn.classList.remove('btn-primary');
+                } else {
+                  if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span> <span style="color:var(--red)">(auth failed)</span>';
+                  btn.textContent = 'Authenticate';
+                }
+              } catch (_e) {
+                // Fallback: show as authenticated (session completed)
+                if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
+                btn.textContent = 'Re-authenticate';
+                btn.classList.remove('btn-primary');
+              }
             };
             _cliAuthTerm.onData((data) => {
               if (_cliAuthWs && _cliAuthWs.readyState === WebSocket.OPEN) {

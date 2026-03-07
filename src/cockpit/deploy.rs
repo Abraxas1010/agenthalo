@@ -130,6 +130,28 @@ pub struct PanelInfo {
     pub iframe_url: Option<String>,
 }
 
+/// Check whether a CLI agent has native OAuth credentials on disk.
+///
+/// Returns `true` if the agent's auth token file exists and is non-trivial
+/// (> 2 bytes). This covers agents that authenticate via their own OAuth flow
+/// rather than requiring an API key in the HALO vault.
+pub fn cli_authenticated(agent_id: &str) -> bool {
+    let home = match std::env::var("HOME") {
+        Ok(h) => std::path::PathBuf::from(h),
+        Err(_) => return false,
+    };
+    let auth_path = match agent_id {
+        "claude" => home.join(".claude/.credentials.json"),
+        "codex" => home.join(".codex/auth.json"),
+        "gemini" => home.join(".gemini/oauth_creds.json"),
+        _ => return false,
+    };
+    auth_path.exists()
+        && std::fs::metadata(&auth_path)
+            .map(|m| m.len() > 2)
+            .unwrap_or(false)
+}
+
 pub fn preflight(agent_id: &str, vault: Option<&Vault>) -> Result<PreflightResult, String> {
     let catalog = agent_catalog();
     let agent = catalog
@@ -150,14 +172,22 @@ pub fn preflight(agent_id: &str, vault: Option<&Vault>) -> Result<PreflightResul
             missing_keys.push((*provider).to_string());
         }
     }
-    let keys_configured = missing_keys.is_empty();
+    let vault_keys_ok = missing_keys.is_empty();
+    let native_auth = cli_authenticated(agent_id);
+    // Agent is considered key-ready if vault keys are present OR it has native
+    // OAuth credentials (Claude/Codex/Gemini authenticate via their own CLIs).
+    let keys_configured = vault_keys_ok || native_auth;
     let docker_available = which_command("docker").is_some();
 
     Ok(PreflightResult {
         cli_installed,
         cli_path,
         keys_configured,
-        missing_keys,
+        missing_keys: if native_auth {
+            Vec::new()
+        } else {
+            missing_keys
+        },
         docker_available,
         ready: cli_installed && keys_configured,
         install_hint: agent.install_hint.map(|s| s.to_string()),
@@ -190,8 +220,13 @@ pub fn launch(
 
     let mut env_vars: Vec<(String, String)> = Vec::new();
     if !agent.required_keys.is_empty() {
-        let v = vault.ok_or_else(|| "vault is not available".to_string())?;
-        env_vars.extend(v.env_vars_for_providers(agent.required_keys)?);
+        // Inject vault keys if available; agents with native OAuth (Claude/
+        // Codex/Gemini) can launch without vault keys, so this is best-effort.
+        if let Some(v) = vault {
+            if let Ok(vars) = v.env_vars_for_providers(agent.required_keys) {
+                env_vars.extend(vars);
+            }
+        }
     }
 
     let mut command = if agent.id == "shell" {

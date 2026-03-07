@@ -454,10 +454,35 @@ fn load_or_create_wallet_wrap_key(wallet_path: &Path) -> Result<[u8; 32], String
         out.copy_from_slice(&raw);
         return Ok(out);
     }
-    // Fail-closed after v2 migration: if a crypto header exists, the wrap key
-    // was intentionally erased during migration. Creating a new random key
-    // would silently produce wrong-key decryption failures (E1 bug).
-    if crate::halo::encrypted_file::header_exists() {
+    // Fail-closed after v2 migration: if a crypto header exists in the wallet's
+    // own directory, the wrap key was intentionally erased during migration.
+    // Creating a new random key would silently produce wrong-key decryption
+    // failures (E1 bug).
+    //
+    // We check BOTH the wallet-local directory and the global halo directory.
+    // The wallet-local check covers test scenarios where the wallet is in a temp
+    // directory (no global state contamination). The global check preserves the
+    // fail-closed behavior for production wallets in the default location.
+    let wallet_dir_header = wallet_path
+        .parent()
+        .map(|p| p.join("crypto_header.json"))
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    let global_header = crate::halo::encrypted_file::header_exists();
+    let wallet_is_in_halo_dir = wallet_path
+        .parent()
+        .and_then(|p| {
+            crate::halo::config::halo_dir()
+                .canonicalize()
+                .ok()
+                .map(|h| (p, h))
+        })
+        .and_then(|(p, h)| p.canonicalize().ok().map(|pc| pc == h))
+        .unwrap_or(false);
+    // Only apply the global header check if the wallet lives in the default
+    // halo directory. Wallets in other paths (e.g. test temp dirs) should only
+    // be gated by a header in their own directory.
+    if wallet_dir_header || (global_header && wallet_is_in_halo_dir) {
         return Err(
             "v2 migration completed; wrap key was erased; use v2 decryption path".to_string(),
         );
