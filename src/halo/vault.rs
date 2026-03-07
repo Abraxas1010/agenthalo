@@ -53,6 +53,25 @@ impl Vault {
         })
     }
 
+    /// Create a vault from a pre-derived scope key (v2 crypto path).
+    /// Used when the v1 wallet is unavailable but the user has unlocked
+    /// the v2 password-based crypto system.
+    pub fn from_scope_key(scope_key: &[u8; 32], vault_path: &Path) -> Vault {
+        let hk = Hkdf::<Sha256>::new(Some(b"agenthalo-vault-v1"), scope_key);
+        let mut master_key = [0u8; 32];
+        // unwrap safe: 32 bytes is within HMAC output size
+        hk.expand(b"aes-master", &mut master_key).unwrap();
+        let key_id = format!(
+            "scope-{:02x}{:02x}{:02x}{:02x}",
+            scope_key[0], scope_key[1], scope_key[2], scope_key[3]
+        );
+        Vault {
+            path: vault_path.to_path_buf(),
+            master_key,
+            key_id,
+        }
+    }
+
     pub fn set_key(&self, provider: &str, env_var: &str, raw_key: &str) -> Result<(), String> {
         let provider = normalize_provider(provider);
         if raw_key.trim().is_empty() {

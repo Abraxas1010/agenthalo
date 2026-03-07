@@ -1383,12 +1383,25 @@ fn persist_grants_to_disk(
 fn configured_vault(
     state: &DashboardState,
 ) -> Result<std::sync::Arc<vault::Vault>, (StatusCode, Json<Value>)> {
-    state.vault.clone().ok_or_else(|| {
-        api_err(
-            StatusCode::BAD_REQUEST,
-            "vault unavailable: PQ wallet not initialized",
-        )
-    })
+    // v1 path: static vault initialized at startup from pq_wallet.json
+    if let Some(v) = state.vault.as_ref() {
+        return Ok(v.clone());
+    }
+    // v2 path: derive vault from scope key if crypto is unlocked
+    if encrypted_file::header_exists() {
+        let mut crypto = lock_crypto_state(state)?;
+        if let Ok(sk) = crypto.session.get_scope_key(CryptoScope::Vault) {
+            let v = vault::Vault::from_scope_key(
+                sk.key_bytes(),
+                &crate::halo::config::vault_path(),
+            );
+            return Ok(std::sync::Arc::new(v));
+        }
+    }
+    Err(api_err(
+        StatusCode::BAD_REQUEST,
+        "vault unavailable — unlock crypto first",
+    ))
 }
 
 fn require_sensitive_access(state: &DashboardState) -> Result<(), (StatusCode, Json<Value>)> {
@@ -4508,6 +4521,12 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         .and_then(|v| v.get_key("openrouter").ok())
         .map(|k| !k.trim().is_empty())
         .unwrap_or(false)
+        // v2 fallback: try scope-key-derived vault when crypto is unlocked
+        || configured_vault(&state)
+            .ok()
+            .and_then(|v| v.get_key("openrouter").ok())
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false)
         || std::env::var("OPENROUTER_API_KEY")
             .ok()
             .filter(|v| !v.trim().is_empty())

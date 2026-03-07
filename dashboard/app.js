@@ -2194,7 +2194,7 @@ async function renderSetup() {
       </div>
 
       <div class="identity-safety-intent-label" id="safety-intent-label"
-           style="${hideSafetyUI ? 'display:none' : ''}">I Want To Be</div>
+           style="${hideSafetyUI ? 'display:none' : ''}">Select One Option</div>
       <div class="identity-security-tier-shell ${showLowSafetyTierOption ? '' : 'two-options'}" id="safety-tier-shell" aria-label="Identity safety tier"
            style="${hideSafetyUI ? 'display:none' : ''}">
         <button type="button" class="security-tier-btn tier-safe ${initialSecurityTier === 'max-safe' ? 'is-selected' : ''}" data-tier="max-safe">
@@ -2728,7 +2728,7 @@ async function renderSetup() {
       <div class="card-header">
         <div class="card-icon" style="font-size:24px">&#129438;</div>
         <div>
-          <div class="card-title">OpenClaw Harness</div>
+          <div class="card-title">OpenClaw Harness <span style="font-size:11px;font-weight:400;color:var(--text-dim);margin-left:6px">(Optional)</span></div>
           <div class="card-desc">Install OpenClaw, launch the gateway daemon, and wire MCP tools for full agent orchestration</div>
         </div>
       </div>
@@ -3008,7 +3008,10 @@ async function renderSetup() {
             };
             _cliAuthWs.onclose = () => {
               _cliAuthTerm.write('\r\n\x1b[90m--- session ended ---\x1b[0m\r\n');
-              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Auth complete</span>';
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
+              btn.textContent = 'Re-authenticate';
+              btn.classList.remove('btn-primary');
+              btn.disabled = false;
             };
             _cliAuthTerm.onData((data) => {
               if (_cliAuthWs && _cliAuthWs.readyState === WebSocket.OPEN) {
