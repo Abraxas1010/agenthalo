@@ -22,6 +22,55 @@ pub struct TrustScoreResult {
     pub timestamp: u64,
 }
 
+/// Nucleus-grounded epistemic trust calculus on [0,1].
+/// N(x) = max(x, floor), fusion(x,y)=x*y, ihom(y,z)=z/y.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct EpistemicTrust {
+    floor: f64,
+}
+
+impl EpistemicTrust {
+    pub fn new(floor: f64) -> Self {
+        Self {
+            floor: floor.clamp(0.0, 1.0),
+        }
+    }
+
+    pub fn floor(&self) -> f64 {
+        self.floor
+    }
+
+    /// Nucleus operator N(x)=max(x,floor).
+    pub fn nucleus(&self, x: f64) -> f64 {
+        x.clamp(0.0, 1.0).max(self.floor)
+    }
+
+    pub fn is_fixed_point(&self, x: f64) -> bool {
+        x >= self.floor
+    }
+
+    /// Certainty-factor style fusion.
+    pub fn fuse(&self, x: f64, y: f64) -> f64 {
+        (x.clamp(0.0, 1.0) * y.clamp(0.0, 1.0)).clamp(0.0, 1.0)
+    }
+
+    /// Internal hom (residuated implication).
+    pub fn ihom(&self, y: f64, z: f64) -> f64 {
+        if y <= 0.0 {
+            return 1.0;
+        }
+        (z.clamp(0.0, 1.0) / y.clamp(0.0, 1.0)).clamp(0.0, 1.0)
+    }
+
+    /// Iterated fusion followed by nucleus clamp.
+    pub fn combine(&self, trust_values: &[f64]) -> f64 {
+        let raw = trust_values
+            .iter()
+            .fold(1.0, |acc, value| self.fuse(acc, *value));
+        self.nucleus(raw)
+    }
+}
+
 pub fn query_trust_score(
     db_path: &Path,
     session_id: Option<&str>,
@@ -228,5 +277,48 @@ mod tests {
         assert!(out.score >= 0.5);
         assert_eq!(out.attestation_count, 1);
         assert_eq!(out.session_id.as_deref(), Some("sess-trust-ok"));
+    }
+
+    #[test]
+    fn nucleus_extensive() {
+        let et = EpistemicTrust::new(0.3);
+        for x in [0.0, 0.1, 0.3, 0.5, 0.9, 1.0] {
+            assert!(x <= et.nucleus(x));
+        }
+    }
+
+    #[test]
+    fn nucleus_idempotent() {
+        let et = EpistemicTrust::new(0.3);
+        for x in [0.0, 0.1, 0.3, 0.5, 0.9, 1.0] {
+            assert!((et.nucleus(et.nucleus(x)) - et.nucleus(x)).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn nucleus_meet_preserving() {
+        let et = EpistemicTrust::new(0.3);
+        for x in [0.0_f64, 0.2, 0.5, 0.8] {
+            for y in [0.0_f64, 0.2, 0.5, 0.8] {
+                let lhs = et.nucleus(x.min(y));
+                let rhs = et.nucleus(x).min(et.nucleus(y));
+                assert!((lhs - rhs).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn fusion_unit() {
+        let et = EpistemicTrust::new(0.3);
+        assert!((et.fuse(0.7, 1.0) - 0.7).abs() < 1e-10);
+    }
+
+    #[test]
+    fn adjunction() {
+        let et = EpistemicTrust::new(0.0);
+        let (x, y, z) = (0.3, 0.5, 0.2);
+        let fused = et.fuse(x, y);
+        let hom = et.ihom(y, z);
+        assert_eq!(fused <= z, x <= hom);
     }
 }

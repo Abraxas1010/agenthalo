@@ -83,7 +83,9 @@ impl ToolScope {
             | "access_evaluate"
             | "proof_gate_status"
             | "proof_gate_verify"
-            | "proof_gate_requirements" => Self::Read,
+            | "proof_gate_requirements"
+            | "agenthalo_evidence_combine"
+            | "agenthalo_uncertainty_translate" => Self::Read,
             // Trust verification (read-only chain queries)
             "nucleusdb_verify_agent"
             | "verify_agent_multichain"
@@ -622,6 +624,8 @@ mod tests {
             "proof_gate_status",
             "proof_gate_verify",
             "proof_gate_requirements",
+            "agenthalo_evidence_combine",
+            "agenthalo_uncertainty_translate",
             "orchestrator_list",
             "orchestrator_get_result",
             "orchestrator_tasks",

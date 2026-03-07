@@ -21,6 +21,38 @@ use nucleusdb::halo::trace::{
 use nucleusdb::halo::trust::query_trust_score;
 use nucleusdb::halo::wrap::{unwrap_agent, wrap_agent};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: Option<&str>) -> Self {
+        let previous = std::env::var(key).ok();
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(v) = &self.previous {
+            std::env::set_var(self.key, v);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
 
 fn temp_db_path(tag: &str) -> PathBuf {
     let stamp = format!("{}-{}-{}", tag, std::process::id(), now_unix_secs());
@@ -360,13 +392,20 @@ fn halo_trust_query_reports_score() {
 
 #[test]
 fn halo_pq_keygen_and_sign_detached_roundtrip() {
+    let _guard = env_lock().lock().expect("lock env");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let root = std::env::temp_dir().join(format!(
-        "agenthalo_pq_integration_{}_{}",
+        "agenthalo_pq_integration_{}_{}_{}",
         std::process::id(),
-        now_unix_secs()
+        now_unix_secs(),
+        nonce
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("create temp root");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(root.to_str().expect("utf8 root")));
     let paths = PqStoragePaths {
         wallet_path: root.join("pq_wallet.json"),
         signatures_dir: root.join("signatures"),
@@ -489,6 +528,7 @@ fn halo_groth16_proof_is_deterministic() {
 
 #[test]
 fn halo_onchain_config_management() {
+    let _guard = env_lock().lock().expect("lock env");
     let root = std::env::temp_dir().join(format!(
         "agenthalo_onchain_cfg_test_{}_{}",
         std::process::id(),
@@ -505,9 +545,8 @@ fn halo_onchain_config_management() {
     let loaded = load_onchain_config(&path).expect("load");
     assert_eq!(loaded.contract_address, cfg.contract_address);
 
-    std::env::set_var("AGENTHALO_ONCHAIN_SIMULATION", "1");
+    let _simulation_guard = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
     let status = query_attestation(&loaded, &"00".repeat(32)).expect("query");
     assert!(status.is_some());
-    std::env::remove_var("AGENTHALO_ONCHAIN_SIMULATION");
     let _ = std::fs::remove_dir_all(&root);
 }

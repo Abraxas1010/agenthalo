@@ -128,6 +128,45 @@ fn seed_session(db_path: &std::path::Path, session_id: &str) {
     writer.end_session(SessionStatus::Completed).expect("end");
 }
 
+fn seed_tool_session(db_path: &std::path::Path, session_id: &str) {
+    let mut writer = TraceWriter::new(db_path).expect("writer");
+    writer
+        .start_session(SessionMetadata {
+            session_id: session_id.to_string(),
+            agent: "codex".to_string(),
+            model: Some("gpt-5-codex".to_string()),
+            started_at: now_unix_secs(),
+            ended_at: None,
+            prompt: Some("tool test".to_string()),
+            status: SessionStatus::Running,
+            user_id: None,
+            machine_id: None,
+            puf_digest: None,
+        })
+        .expect("start");
+
+    for (seq, tool) in [(1_u64, "search"), (2_u64, "prove"), (3_u64, "search")] {
+        writer
+            .write_event(TraceEvent {
+                seq: 0,
+                timestamp: now_unix_secs(),
+                event_type: EventType::ToolCall,
+                content: json!({"tool_name": tool}),
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_tokens: None,
+                tool_name: Some(tool.to_string()),
+                tool_input: None,
+                tool_output: None,
+                file_path: None,
+                content_hash: format!("seed-{seq}"),
+            })
+            .expect("tool event");
+    }
+
+    writer.end_session(SessionStatus::Completed).expect("end");
+}
+
 async fn api_get(state: DashboardState, path: &str) -> (StatusCode, Value) {
     let app = api_router(state.clone()).with_state(state);
     let req = Request::builder().uri(path).body(Body::empty()).unwrap();
@@ -307,6 +346,36 @@ async fn api_alias_and_summary_routes_return_json() {
         assert_eq!(val["status"], "ok");
         assert_eq!(val["endpoint"], format!("/api{route}"));
     }
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_metrics_diversity_returns_score_and_distribution() {
+    let (state, db_path) = test_state("api_metrics_diversity");
+    seed_tool_session(&db_path, "sess-metric-div");
+    let (status, val) = api_get(state, "/metrics/diversity?window_seconds=3600").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(val["score"].is_number());
+    assert!(val["raw_tsallis"].is_number());
+    assert!(val["tool_distribution"].is_object());
+    assert!(val["tool_counts"].is_object());
+    assert_eq!(val["window_seconds"], 3600);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_metrics_trace_topology_returns_entries_shape() {
+    let (state, db_path) = test_state("api_metrics_topology");
+    seed_tool_session(&db_path, "sess-metric-top");
+    let (status, val) = api_get(
+        state,
+        "/metrics/trace-topology?window_seconds=3600&max_chain_degree=2&max_entries=10",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(val["entries"].is_array());
+    assert!(val["tools"].is_array());
+    assert!(val["entry_count"].is_number());
     let _ = std::fs::remove_file(&db_path);
 }
 
@@ -3383,6 +3452,47 @@ async fn api_orchestrator_routes_return_json() {
     assert_eq!(s_mesh, StatusCode::OK, "mesh route failed: {v_mesh}");
     assert!(v_mesh["enabled"].is_boolean());
     assert!(v_mesh["peers"].is_array());
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_orchestrator_agents_reports_non_fixed_base_when_floor_raises_trust() {
+    let _guard = env_lock().lock().expect("lock env");
+    let _floor_guard = EnvVarGuard::set("AGENTHALO_EPISTEMIC_TRUST_FLOOR", Some("0.95"));
+    let (state, db_path) = test_state("api_orchestrator_trust_fixed_point");
+
+    let (s_launch, v_launch) = api_post(
+        state.clone(),
+        "/orchestrator/launch",
+        json!({
+            "agent":"shell",
+            "agent_name":"trust-shell",
+            "timeout_secs":30,
+            "trace":false
+        }),
+    )
+    .await;
+    assert_eq!(s_launch, StatusCode::OK, "launch failed: {v_launch}");
+    let agent_id = v_launch["agent_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(!agent_id.is_empty());
+
+    let (s_agents, v_agents) = api_get(state, "/orchestrator/agents").await;
+    assert_eq!(s_agents, StatusCode::OK, "agents route failed: {v_agents}");
+    let agents = v_agents["agents"]
+        .as_array()
+        .expect("agents array in orchestrator response");
+    let agent = agents
+        .iter()
+        .find(|a| a.get("agent_id").and_then(|v| v.as_str()) == Some(agent_id.as_str()))
+        .expect("launched agent exists in listing");
+
+    assert_eq!(agent["trust_floor"], json!(0.95));
+    assert_eq!(agent["epistemic_trust"], json!(0.95));
+    assert_eq!(agent["trust_fixed_point"], json!(false));
 
     let _ = std::fs::remove_file(&db_path);
 }

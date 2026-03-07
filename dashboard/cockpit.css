@@ -182,6 +182,50 @@
   min-height: 0;
 }
 
+.cockpit-diversity-card,
+.cockpit-topology-card {
+  border-top: 1px solid var(--border-dim);
+  padding: 10px 8px;
+}
+
+.mesh-section-title {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.cockpit-diversity-score {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--green);
+  margin-bottom: 6px;
+}
+
+.cockpit-diversity-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.3;
+}
+
+#cockpit-diversity-chart {
+  width: 100%;
+  height: 110px !important;
+}
+
+#cockpit-topology-chart {
+  width: 100%;
+  height: 180px !important;
+}
+
+.cockpit-topology-empty {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 .mesh-self-row {
   display: flex;
   align-items: center;

@@ -26,6 +26,7 @@ use crate::halo::config;
 use crate::halo::crypto_scope::CryptoScope;
 use crate::halo::encrypted_file;
 use crate::halo::http_client;
+use crate::halo::metrics::diversity::{build_snapshot, extract_tool_counts};
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::p2pclaw;
 use crate::halo::pq::has_wallet;
@@ -37,7 +38,8 @@ use crate::halo::trace::{
     paid_cost_buckets, record_paid_operation_for_halo, session_events, session_summary,
     TraceWriter,
 };
-use crate::halo::trust::query_trust_score;
+use crate::halo::trace_topology::{map_halo_trace_events, trace_persistence, ToolMetric};
+use crate::halo::trust::{query_trust_score, EpistemicTrust};
 use crate::halo::viewer::export_session_json;
 use crate::halo::wrap;
 use crate::halo::x402;
@@ -101,6 +103,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/costs/by-model", get(api_costs_by_model))
         .route("/costs/paid", get(api_costs_paid))
         .route("/networking/available", get(api_networking_available))
+        .route("/metrics/diversity", get(api_metrics_diversity))
+        .route("/metrics/trace-topology", get(api_metrics_trace_topology))
         .route("/orchestrator/agents", get(api_orch_agents))
         .route("/orchestrator/tasks", get(api_orch_tasks))
         .route("/orchestrator/graph", get(api_orch_graph))
@@ -339,6 +343,18 @@ pub struct SessionsQuery {
 #[derive(Deserialize, Default)]
 pub struct CostsQuery {
     monthly: Option<bool>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct DiversityQuery {
+    window_seconds: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct TraceTopologyQuery {
+    window_seconds: Option<u64>,
+    max_chain_degree: Option<usize>,
+    max_entries: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1391,10 +1407,8 @@ fn configured_vault(
     if encrypted_file::header_exists() {
         let mut crypto = lock_crypto_state(state)?;
         if let Ok(sk) = crypto.session.get_scope_key(CryptoScope::Vault) {
-            let v = vault::Vault::from_scope_key(
-                sk.key_bytes(),
-                &crate::halo::config::vault_path(),
-            );
+            let v =
+                vault::Vault::from_scope_key(sk.key_bytes(), &crate::halo::config::vault_path());
             return Ok(std::sync::Arc::new(v));
         }
     }
@@ -2571,6 +2585,106 @@ async fn api_costs_paid(AxumState(state): AxumState<DashboardState>) -> ApiResul
     Ok(Json(json!({
         "buckets": bucket_items,
         "by_type": type_items,
+    })))
+}
+
+fn collect_recent_trace_events(
+    db_path: &std::path::Path,
+    window_seconds: u64,
+) -> Result<Vec<TraceEvent>, String> {
+    let cutoff = now_unix_secs().saturating_sub(window_seconds);
+    let sessions = list_sessions(db_path)?;
+    let mut out = Vec::new();
+    for session in sessions {
+        let events = session_events(db_path, &session.session_id)?;
+        out.extend(events.into_iter().filter(|ev| ev.timestamp >= cutoff));
+    }
+    Ok(out)
+}
+
+async fn api_metrics_diversity(
+    AxumState(state): AxumState<DashboardState>,
+    Query(params): Query<DiversityQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let window_seconds = params.window_seconds.unwrap_or(300).clamp(10, 86_400);
+    let _guard = state.db_lock.lock().await;
+    let events =
+        collect_recent_trace_events(&state.db_path, window_seconds).map_err(internal_err)?;
+    let counts = extract_tool_counts(&events);
+    let snapshot = build_snapshot(&counts);
+
+    Ok(Json(json!({
+        "score": snapshot.score,
+        "raw_tsallis": snapshot.raw_tsallis,
+        "max_tsallis": snapshot.max_tsallis,
+        "total_calls": snapshot.total_calls,
+        "tool_distribution": snapshot.distribution,
+        "tool_counts": snapshot.tools,
+        "window_seconds": window_seconds,
+    })))
+}
+
+async fn api_metrics_trace_topology(
+    AxumState(state): AxumState<DashboardState>,
+    Query(params): Query<TraceTopologyQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let window_seconds = params.window_seconds.unwrap_or(300).clamp(10, 86_400);
+    let max_chain_degree = params.max_chain_degree.unwrap_or(2).clamp(1, 4);
+    let max_entries = params.max_entries.unwrap_or(24).clamp(1, 64);
+
+    let _guard = state.db_lock.lock().await;
+    let raw_events =
+        collect_recent_trace_events(&state.db_path, window_seconds).map_err(internal_err)?;
+    let topology_events = map_halo_trace_events(&raw_events);
+    let mut tool_names = topology_events
+        .iter()
+        .map(|event| event.tool_name.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    tool_names.sort();
+
+    if tool_names.is_empty() {
+        return Ok(Json(json!({
+            "window_seconds": window_seconds,
+            "max_chain_degree": max_chain_degree,
+            "entry_count": 0,
+            "tools": [],
+            "entries": [],
+        })));
+    }
+
+    // First-pass H0 topology with uniform dissimilarity weights.
+    // max_chain_degree controls how many k-step chain endpoint edges contribute.
+    let metric = ToolMetric::from_uniform(tool_names.clone(), 1);
+    let mut entries = trace_persistence(&topology_events, &metric, max_chain_degree);
+    entries.truncate(max_entries);
+
+    let payload = entries
+        .into_iter()
+        .map(|entry| {
+            let persistence = if entry.death == u32::MAX {
+                serde_json::Value::Null
+            } else {
+                json!(entry.death.saturating_sub(entry.birth))
+            };
+            json!({
+                "birth": entry.birth,
+                "death": if entry.death == u32::MAX { serde_json::Value::Null } else { json!(entry.death) },
+                "persistence": persistence,
+                "representative": entry.representative,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(json!({
+        "window_seconds": window_seconds,
+        "max_chain_degree": max_chain_degree,
+        "entry_count": payload.len(),
+        "tools": tool_names,
+        "entries": payload,
     })))
 }
 
@@ -3953,17 +4067,64 @@ async fn api_networking_available(AxumState(_state): AxumState<DashboardState>) 
     })))
 }
 
+fn epistemic_trust_floor() -> f64 {
+    std::env::var("AGENTHALO_EPISTEMIC_TRUST_FLOOR")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .unwrap_or(0.1)
+        .clamp(0.0, 1.0)
+}
+
+fn base_agent_trust(agent_type: &str) -> f64 {
+    match agent_type.trim().to_ascii_lowercase().as_str() {
+        "claude" | "codex" | "gemini" => 0.9,
+        "openclaw" => 0.8,
+        "shell" => 0.6,
+        _ => 0.5,
+    }
+}
+
+fn enrich_orchestrator_agents_payload(mut payload: Value) -> Value {
+    let floor = epistemic_trust_floor();
+    let model = EpistemicTrust::new(floor);
+    if let Some(agents) = payload
+        .get_mut("agents")
+        .and_then(|value| value.as_array_mut())
+    {
+        for agent in agents {
+            let agent_type = agent
+                .get("agent_type")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let base = base_agent_trust(agent_type);
+            let trust = model.nucleus(base);
+            if let Some(obj) = agent.as_object_mut() {
+                obj.insert("epistemic_trust".to_string(), json!(trust));
+                obj.insert(
+                    "trust_fixed_point".to_string(),
+                    json!(model.is_fixed_point(base)),
+                );
+                obj.insert("trust_floor".to_string(), json!(model.floor()));
+            }
+        }
+    }
+    payload
+}
+
 async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
     if orchestrator_mcp_proxy_enabled() {
         let payload = call_orchestrator_tool_via_mcp("orchestrator_list", json!({})).await?;
-        return Ok(Json(payload));
+        return Ok(Json(enrich_orchestrator_agents_payload(payload)));
     }
 
     let orchestrator = local_orchestrator(&state)?;
+    let trust_model = EpistemicTrust::new(epistemic_trust_floor());
     let agents = orchestrator.list_agents().await;
     Ok(Json(json!({
         "agents": agents.into_iter().map(|a| {
+            let base_trust = base_agent_trust(&a.agent_type);
+            let trust = trust_model.nucleus(base_trust);
             json!({
                 "agent_id": a.agent_id,
                 "agent_name": a.agent_name,
@@ -3977,6 +4138,9 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
                 "total_cost_usd": a.total_cost_usd,
                 "capabilities": a.capabilities,
                 "launched_at": a.launched_at,
+                "epistemic_trust": trust,
+                "trust_fixed_point": trust_model.is_fixed_point(base_trust),
+                "trust_floor": trust_model.floor(),
             })
         }).collect::<Vec<_>>()
     })))

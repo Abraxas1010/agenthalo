@@ -160,6 +160,41 @@ pub struct MemoryIngestResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EvidenceCombineRequest {
+    /// Optional prior probability P(H). If omitted, use prior_odds_false_over_true.
+    pub prior_probability_true: Option<f64>,
+    /// Optional prior odds P(¬H)/P(H). Used when prior_probability_true is omitted.
+    pub prior_odds_false_over_true: Option<f64>,
+    /// Tool evidence sequence in update order.
+    pub evidence: Vec<crate::halo::evidence::ToolEvidence>,
+    /// Optional output uncertainty framework for the combined confidence.
+    pub output_kind: Option<crate::halo::uncertainty::UncertaintyKind>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EvidenceCombineResponse {
+    pub posterior_probability_true: f64,
+    pub posterior_odds_false_over_true: f64,
+    pub translated_confidence: Option<f64>,
+    pub output_kind: Option<crate::halo::uncertainty::UncertaintyKind>,
+    pub steps: Vec<crate::halo::evidence::EvidenceStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UncertaintyTranslateRequest {
+    pub from: crate::halo::uncertainty::UncertaintyKind,
+    pub to: crate::halo::uncertainty::UncertaintyKind,
+    pub value: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UncertaintyTranslateResponse {
+    pub value: f64,
+    pub from_balanced: bool,
+    pub to_balanced: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OrchestratorLaunchRequest {
     /// Agent kind: claude | codex | gemini | openclaw | shell
     pub agent: String,
@@ -1972,6 +2007,69 @@ impl NucleusDbMcpService {
             McpError::internal_error(format!("memory_ingest task join failed: {e}"), None)
         })??;
         Ok(Json(response))
+    }
+
+    #[tool(
+        name = "agenthalo_evidence_combine",
+        description = "Combine multiple tool evidence records using Heyting-style vUpdate Bayesian odds with optional uncertainty translation."
+    )]
+    pub async fn evidence_combine(
+        &self,
+        Parameters(req): Parameters<EvidenceCombineRequest>,
+    ) -> Result<Json<EvidenceCombineResponse>, McpError> {
+        let prior_odds = if let Some(prior_probability_true) = req.prior_probability_true {
+            if !prior_probability_true.is_finite() {
+                return Err(McpError::invalid_params(
+                    "prior_probability_true must be finite",
+                    None,
+                ));
+            }
+            crate::halo::evidence::probability_true_to_odds_false_true(prior_probability_true)
+        } else {
+            req.prior_odds_false_over_true.unwrap_or(1.0)
+        };
+
+        if !prior_odds.is_finite() || prior_odds < 0.0 {
+            return Err(McpError::invalid_params(
+                "prior odds must be finite and non-negative",
+                None,
+            ));
+        }
+
+        let combined = crate::halo::evidence::combine_evidence(prior_odds, &req.evidence);
+        let translated_confidence = req.output_kind.map(|kind| {
+            crate::halo::uncertainty::translate_uncertainty(
+                crate::halo::uncertainty::UncertaintyKind::Probability,
+                kind,
+                combined.posterior_probability_true,
+            )
+        });
+
+        Ok(Json(EvidenceCombineResponse {
+            posterior_probability_true: combined.posterior_probability_true,
+            posterior_odds_false_over_true: combined.posterior_odds_false_over_true,
+            translated_confidence,
+            output_kind: req.output_kind,
+            steps: combined.steps,
+        }))
+    }
+
+    #[tool(
+        name = "agenthalo_uncertainty_translate",
+        description = "Translate confidence values across uncertainty frameworks (probability, certainty_factor, possibility, binary)."
+    )]
+    pub async fn uncertainty_translate(
+        &self,
+        Parameters(req): Parameters<UncertaintyTranslateRequest>,
+    ) -> Result<Json<UncertaintyTranslateResponse>, McpError> {
+        use crate::halo::uncertainty::UncertaintyTranslator;
+
+        let value = crate::halo::uncertainty::translate_uncertainty(req.from, req.to, req.value);
+        Ok(Json(UncertaintyTranslateResponse {
+            value,
+            from_balanced: req.from.is_balanced(),
+            to_balanced: req.to.is_balanced(),
+        }))
     }
 
     #[tool(
@@ -5206,6 +5304,91 @@ mod tests {
             .expect("mesh status");
         assert!(!status.enabled);
         assert!(status.peers.is_empty());
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn evidence_combine_matches_lean_witness() {
+        let db_path = temp_db_path("evidence_combine");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let Json(response) = service
+            .evidence_combine(Parameters(EvidenceCombineRequest {
+                prior_probability_true: None,
+                prior_odds_false_over_true: Some(2.0),
+                evidence: vec![crate::halo::evidence::ToolEvidence {
+                    tool_name: "witness".to_string(),
+                    result: serde_json::json!(null),
+                    prior_reliability: 1.0,
+                    likelihood_given_true: 2.0,
+                    likelihood_given_false: 1.0,
+                    confidence_value: None,
+                    confidence_kind: None,
+                }],
+                output_kind: Some(crate::halo::uncertainty::UncertaintyKind::Probability),
+            }))
+            .await
+            .expect("combine");
+
+        assert!((response.posterior_odds_false_over_true - 1.0).abs() < 1e-10);
+        assert!((response.posterior_probability_true - 0.5).abs() < 1e-10);
+        assert_eq!(response.steps.len(), 1);
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn evidence_combine_asymmetric_case_prefers_true_hypothesis() {
+        let db_path = temp_db_path("evidence_combine_asymmetric");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let Json(response) = service
+            .evidence_combine(Parameters(EvidenceCombineRequest {
+                prior_probability_true: None,
+                prior_odds_false_over_true: Some(1.0),
+                evidence: vec![crate::halo::evidence::ToolEvidence {
+                    tool_name: "likelihood".to_string(),
+                    result: serde_json::json!(null),
+                    prior_reliability: 1.0,
+                    likelihood_given_true: 0.9,
+                    likelihood_given_false: 0.1,
+                    confidence_value: None,
+                    confidence_kind: None,
+                }],
+                output_kind: Some(crate::halo::uncertainty::UncertaintyKind::Probability),
+            }))
+            .await
+            .expect("combine");
+
+        assert!((response.posterior_odds_false_over_true - (1.0 / 9.0)).abs() < 1e-10);
+        assert!((response.posterior_probability_true - 0.9).abs() < 1e-10);
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn uncertainty_translate_roundtrip_probability_cf() {
+        let db_path = temp_db_path("uncertainty_translate");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(to_cf) = service
+            .uncertainty_translate(Parameters(UncertaintyTranslateRequest {
+                from: crate::halo::uncertainty::UncertaintyKind::Probability,
+                to: crate::halo::uncertainty::UncertaintyKind::CertaintyFactor,
+                value: 0.75,
+            }))
+            .await
+            .expect("to cf");
+
+        let Json(back) = service
+            .uncertainty_translate(Parameters(UncertaintyTranslateRequest {
+                from: crate::halo::uncertainty::UncertaintyKind::CertaintyFactor,
+                to: crate::halo::uncertainty::UncertaintyKind::Probability,
+                value: to_cf.value,
+            }))
+            .await
+            .expect("to probability");
+
+        assert!((back.value - 0.75).abs() < 1e-10);
 
         cleanup_db_files(&db_path);
     }

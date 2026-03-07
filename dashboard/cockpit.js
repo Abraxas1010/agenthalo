@@ -351,7 +351,9 @@
       this.layout = localStorage.getItem('cockpit_layout') || '1';
       this.meshCollapsed = localStorage.getItem('cockpit_mesh_collapsed') === '1';
       const cfgPollMs = Number(window.__cockpitConfig?.meshPollMs);
+      const cfgMetricsPollMs = Number(window.__cockpitConfig?.metricsPollMs);
       this.meshPollMs = Number.isFinite(cfgPollMs) && cfgPollMs >= 1000 ? cfgPollMs : 10000;
+      this.metricsPollMs = Number.isFinite(cfgMetricsPollMs) && cfgMetricsPollMs >= 1000 ? cfgMetricsPollMs : 5000;
       this.sessions = new Map();
       this.activeTab = null;
       this.root = null;
@@ -363,10 +365,18 @@
       this.statsTimer = null;
       this.lastSessionSnapshot = [];
       this.meshTimer = null;
+      this.metricsTimer = null;
       this.meshSidebarEl = null;
       this.meshBodyEl = null;
       this.meshSelfEl = null;
       this.meshPeerListEl = null;
+      this.diversityScoreEl = null;
+      this.diversityMetaEl = null;
+      this.diversityCanvasEl = null;
+      this.diversityChart = null;
+      this.topologyCanvasEl = null;
+      this.topologyEmptyEl = null;
+      this.topologyChart = null;
     }
 
     mount(hostEl) {
@@ -378,6 +388,11 @@
       this.meshBodyEl = hostEl.querySelector('#cockpit-mesh-body');
       this.meshSelfEl = hostEl.querySelector('#cockpit-mesh-self');
       this.meshPeerListEl = hostEl.querySelector('#cockpit-mesh-peers');
+      this.diversityScoreEl = hostEl.querySelector('#cockpit-diversity-score');
+      this.diversityMetaEl = hostEl.querySelector('#cockpit-diversity-meta');
+      this.diversityCanvasEl = hostEl.querySelector('#cockpit-diversity-chart');
+      this.topologyCanvasEl = hostEl.querySelector('#cockpit-topology-chart');
+      this.topologyEmptyEl = hostEl.querySelector('#cockpit-topology-empty');
       this.setMeshCollapsed(this.meshCollapsed);
       this.bindUi(hostEl);
       this.restoreSessions();
@@ -386,6 +401,8 @@
       this.startStatusPoll();
       this.stopMeshPoll();
       this.startMeshPoll();
+      this.stopMetricsPoll();
+      this.startMetricsPoll();
     }
 
     renderSkeleton() {
@@ -408,6 +425,17 @@
               <div class="cockpit-mesh-body" id="cockpit-mesh-body">
                 <div class="cockpit-mesh-self" id="cockpit-mesh-self"></div>
                 <div class="cockpit-mesh-peers" id="cockpit-mesh-peers"></div>
+                <div class="cockpit-diversity-card">
+                  <div class="mesh-section-title">Strategy Diversity</div>
+                  <div class="cockpit-diversity-score" id="cockpit-diversity-score">--</div>
+                  <canvas id="cockpit-diversity-chart" height="110"></canvas>
+                  <div class="cockpit-diversity-meta" id="cockpit-diversity-meta">Waiting for data...</div>
+                </div>
+                <div class="cockpit-topology-card">
+                  <div class="mesh-section-title">Trace Topology (H₀)</div>
+                  <canvas id="cockpit-topology-chart" height="180"></canvas>
+                  <div class="cockpit-topology-empty" id="cockpit-topology-empty">No persistent patterns yet</div>
+                </div>
               </div>
             </aside>
           </div>
@@ -507,6 +535,23 @@
       }
     }
 
+    startMetricsPoll() {
+      if (this.metricsTimer) return;
+      this.refreshDiversityStatus().catch(() => {});
+      this.refreshTraceTopology().catch(() => {});
+      this.metricsTimer = setInterval(() => {
+        this.refreshDiversityStatus().catch(() => {});
+        this.refreshTraceTopology().catch(() => {});
+      }, this.metricsPollMs);
+    }
+
+    stopMetricsPoll() {
+      if (this.metricsTimer) {
+        clearInterval(this.metricsTimer);
+        this.metricsTimer = null;
+      }
+    }
+
     async refreshMeshStatus() {
       if (!this.meshSidebarEl || !this.meshSelfEl || !this.meshPeerListEl) return;
       let payload = null;
@@ -558,6 +603,150 @@
           </div>
         `;
       }).join('');
+    }
+
+    async refreshDiversityStatus() {
+      if (!this.diversityScoreEl) return;
+      try {
+        const res = await fetch('/api/metrics/diversity?window_seconds=300');
+        if (!res.ok) {
+          this.renderDiversityStatus(null);
+          return;
+        }
+        const payload = await res.json();
+        this.renderDiversityStatus(payload);
+      } catch (_e) {
+        this.renderDiversityStatus(null);
+      }
+    }
+
+    renderDiversityStatus(payload) {
+      if (!this.diversityScoreEl || !this.diversityMetaEl) return;
+      if (!payload || !Number.isFinite(Number(payload.score))) {
+        this.diversityScoreEl.textContent = '--';
+        this.diversityMetaEl.textContent = 'No diversity data available';
+        this.updateDiversityChart(0);
+        return;
+      }
+
+      const score = clamp(Number(payload.score), 0, 100);
+      this.diversityScoreEl.textContent = `${score.toFixed(1)} / 100`;
+      const totalCalls = Number(payload.total_calls || 0);
+      const toolCount = payload.tool_counts && typeof payload.tool_counts === 'object'
+        ? Object.keys(payload.tool_counts).length
+        : 0;
+      const label = score < 30
+        ? 'Mode collapse risk'
+        : score < 70
+          ? 'Normal exploration'
+          : 'Healthy exploration';
+      this.diversityMetaEl.textContent = `${label} · ${toolCount} tools · ${totalCalls} calls`;
+      this.updateDiversityChart(score);
+    }
+
+    updateDiversityChart(score) {
+      if (!this.diversityCanvasEl || typeof Chart === 'undefined') return;
+      const color = score < 30 ? '#ff3030' : (score < 70 ? '#ffb830' : '#00ff41');
+      const data = [score, Math.max(0, 100 - score)];
+      if (!this.diversityChart) {
+        this.diversityChart = new Chart(this.diversityCanvasEl, {
+          type: 'doughnut',
+          data: {
+            labels: ['Diversity', 'Remaining'],
+            datasets: [{
+              data,
+              backgroundColor: [color, 'rgba(23, 40, 20, 0.65)'],
+              borderColor: ['rgba(255, 255, 255, 0.1)', 'rgba(255, 255, 255, 0.08)'],
+              borderWidth: 1,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: { enabled: false },
+            },
+            cutout: '70%',
+          },
+        });
+        return;
+      }
+      this.diversityChart.data.datasets[0].data = data;
+      this.diversityChart.data.datasets[0].backgroundColor = [color, 'rgba(23, 40, 20, 0.65)'];
+      this.diversityChart.update('none');
+    }
+
+    async refreshTraceTopology() {
+      if (!this.topologyCanvasEl) return;
+      try {
+        const res = await fetch('/api/metrics/trace-topology?window_seconds=300&max_chain_degree=2&max_entries=8');
+        if (!res.ok) {
+          this.renderTraceTopology(null);
+          return;
+        }
+        const payload = await res.json();
+        this.renderTraceTopology(payload);
+      } catch (_e) {
+        this.renderTraceTopology(null);
+      }
+    }
+
+    renderTraceTopology(payload) {
+      if (!this.topologyCanvasEl || typeof Chart === 'undefined') return;
+      const entries = Array.isArray(payload && payload.entries) ? payload.entries : [];
+      if (!entries.length) {
+        if (this.topologyEmptyEl) this.topologyEmptyEl.style.display = 'block';
+        this.updateTopologyChart([], []);
+        return;
+      }
+
+      if (this.topologyEmptyEl) this.topologyEmptyEl.style.display = 'none';
+      const labels = [];
+      const values = [];
+      entries.forEach((entry, idx) => {
+        const rep = Array.isArray(entry.representative) ? entry.representative : [];
+        const title = rep.length ? rep.join(' → ') : `feature-${idx + 1}`;
+        const persistence = Number.isFinite(Number(entry.persistence))
+          ? Number(entry.persistence)
+          : Number(payload.window_seconds || 300);
+        labels.push(title);
+        values.push(Math.max(0, persistence));
+      });
+      this.updateTopologyChart(labels, values);
+    }
+
+    updateTopologyChart(labels, values) {
+      if (!this.topologyCanvasEl || typeof Chart === 'undefined') return;
+      if (!this.topologyChart) {
+        this.topologyChart = new Chart(this.topologyCanvasEl, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [{
+              label: 'Persistence',
+              data: values,
+              backgroundColor: 'rgba(0, 255, 65, 0.35)',
+              borderColor: '#00ff41',
+              borderWidth: 1,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            indexAxis: 'y',
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { beginAtZero: true, ticks: { color: '#7bb07b' }, grid: { color: 'rgba(45, 66, 40, 0.5)' } },
+              y: { ticks: { color: '#8ecf8e', font: { size: 10 } }, grid: { display: false } },
+            },
+          },
+        });
+        return;
+      }
+      this.topologyChart.data.labels = labels;
+      this.topologyChart.data.datasets[0].data = values;
+      this.topologyChart.update('none');
     }
 
     toggleNewDropdown(anchor) {
