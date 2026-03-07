@@ -210,6 +210,13 @@ The Cockpit transforms the dashboard into an agent orchestration terminal — la
 | GET | `/api/openclaw/gateway-status` | No | Check if OpenClaw gateway daemon is running |
 | POST | `/api/openclaw/wire-mcp` | Yes | Inject NucleusDB + HALO MCP servers into `~/.openclaw/openclaw.json` |
 
+### Epistemic MCP tools
+
+| Tool | Purpose |
+|------|---------|
+| `agenthalo_evidence_combine` | Bayesian odds-update evidence combiner — prior odds + tool likelihood ratios → posterior probability |
+| `agenthalo_uncertainty_translate` | Cross-framework uncertainty translation (Probability, CertaintyFactor, Possibility, Binary) |
+
 ### CLI MCP tools
 
 | Tool | Purpose |
@@ -230,6 +237,7 @@ The Cockpit transforms the dashboard into an agent orchestration terminal — la
 5. **PTY sessions.** Max 10 concurrent. One reader thread per session, broadcast to N WebSocket subscribers.
 6. **Proxy.** Synchronous `ureq` calls wrapped in `spawn_blocking`. Streaming returns 501 (not yet implemented).
 7. **Error sanitization.** `sanitize_upstream_error()` and `sanitize_proxy_error()` redact API keys from error messages.
+8. **Epistemic calculi.** Five modules (`metrics/diversity`, `trust` EpistemicTrust, `evidence`, `uncertainty`, `trace_topology`) implement formally grounded reasoning from the Heyting project. Dashboard endpoints: `/api/metrics/diversity`, `/api/metrics/trace-topology`. Orchestrator agents payload includes `epistemic_trust`, `trust_fixed_point`, `trust_floor`.
 
 ## Test Files
 

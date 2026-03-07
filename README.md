@@ -127,6 +127,20 @@ Every event includes token counts (input/output/cache-read) parsed from the agen
 
 > For the complete reference (configuration, environment variables, adapter details, cloud sync roadmap), see **[Docs/AGENTHALO.md](Docs/AGENTHALO.md)**.
 
+### Epistemic Calculi — Formal Reasoning About Agent Trust
+
+H.A.L.O. integrates five epistemic calculi from the [Heyting formal mathematics project](https://github.com/Abraxas1010/heyting), providing mathematically grounded reasoning about agent behavior, trust, and uncertainty:
+
+| Calculus | Module | What It Does |
+|----------|--------|-------------|
+| **Tsallis Diversity** | `halo::metrics::diversity` | Measures tool-usage diversity via Tsallis 2-entropy (Gini impurity). A high diversity score indicates the agent explores a broad tool repertoire rather than hammering one tool repeatedly. Exposed as a real-time gauge in the Cockpit. |
+| **Epistemic Trust Nucleus** | `halo::trust` | Models trust as a Heyting algebra nucleus: `N(x) = max(x, floor)`. The nucleus is extensive, idempotent, and meet-preserving — guaranteeing a well-defined trust floor below which no agent can fall. Fuses multiple trust signals via product, with residuated implication for "if Y then Z" reasoning. |
+| **Bayesian Evidence Combiner** | `halo::evidence` | Iterative Bayesian odds-update: each tool observation shifts the posterior via `P(E\|H)` / `P(E\|~H)` likelihood ratios. Correctly oriented as false-over-true odds for stable iterative composition. Available as an MCP tool (`agenthalo_evidence_combine`). |
+| **Uncertainty Translation** | `halo::uncertainty` | Hub-and-spoke conversion between four uncertainty frameworks: Probability, Certainty Factor, Possibility, and Binary. Tools can report confidence in their native framework; H.A.L.O. translates to a common probabilistic scale. Available as an MCP tool (`agenthalo_uncertainty_translate`). |
+| **Trace Topology (H0 Persistence)** | `halo::trace_topology` | Computes H0 persistence (connected components over time) from agent tool-transition graphs via Vietoris-Rips filtration with union-find. Reveals whether an agent's behavior is episodic (many disconnected clusters) or coherent (one persistent connected component). |
+
+These are not heuristics — they are implementations of formally specified mathematical structures whose core properties (nucleus laws, Bayesian consistency, translation roundtrips) are verified by the Lean 4 kernel in the companion Heyting repository.
+
 ## Quick Start
 
 ```bash
@@ -199,13 +213,13 @@ A real-time observability dashboard embedded in the binary — no npm, no CDN, n
 
 | Page | What It Shows |
 |------|---------------|
-| **Overview** | Live KPIs (sessions, tokens, cost, active agents), recent sessions |
+| **Overview** | Live KPIs (sessions, tokens, cost, active agents), recent sessions, epistemic trust status |
 | **Sessions** | Filterable list, drill-down to full event timeline, export, attest |
 | **Costs** | Daily cost chart, agent distribution, model comparison, paid operations |
 | **Configuration** | Toggle agent wrapping and x402 payments from the browser |
 | **Trust** | Attestation list, one-click verify, create attestations |
 | **NucleusDB** | Browse the verifiable store, execute SQL, view commit history |
-| **Cockpit** | Launch and manage agent sessions in browser-based xterm.js terminals |
+| **Cockpit** | Launch and manage agent sessions in browser-based xterm.js terminals, diversity gauge, trace topology |
 | **Deploy** | Agent catalog cards, preflight checks, one-click agent deployment |
 
 Dark/light theme toggle. SSE live updates. Chart.js analytics. Responsive layout.
@@ -218,6 +232,8 @@ The Cockpit transforms the dashboard into a full agent orchestration terminal. L
 - **Multi-panel layout** — run multiple agents side-by-side with tab management
 - **Deploy page** — agent catalog with preflight checks (CLI detection, auth status, vault keys)
 - **Mesh sidebar** — live P2P peer topology with online/offline status and latency
+- **Diversity gauge** — real-time Tsallis 2-entropy tool diversity score with doughnut chart
+- **Trace topology** — H0 persistence visualization showing behavioral coherence over time
 
 > Full API reference: **[Docs/AGENTHALO.md](Docs/AGENTHALO.md#web-dashboard)**
 
@@ -328,7 +344,7 @@ A cloud dashboard can show you what it claims happened. It cannot prove the log 
 | **Cryptographic seals** | None | Hash chain — each commit binds to all prior commits |
 | **Works offline** | No | Yes |
 | **Agent support** | Framework-specific SDKs | Wraps any CLI agent directly |
-| **MCP native** | No | Yes — 18 native + proxied tools over HTTP, 11 tools over stdio |
+| **MCP native** | No | Yes — 20 native + proxied tools over HTTP, 11 tools over stdio |
 | **Formal verification** | No | 131 Lean 4 modules with sheaf-theoretic proofs |
 
 H.A.L.O. doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.
@@ -530,6 +546,7 @@ The 131 modules cover:
 | **Identity** | Genesis, DID, KeyPair, Ceremony | Agent identity lifecycle, key derivation |
 | **Comms** | DIDComm, HybridKEM, P2P, ZK | Encrypted messaging, hybrid post-quantum KEM |
 | **Crypto** | MLDSA, MLKEM, HashChain | Post-quantum signature/KEM correctness |
+| **Epistemic** | TsallisEntropy, BayesianUpdate, UncertaintyTranslation | Diversity gauges, odds-update correctness, cross-calculus functor laws |
 | **Contracts** | PaymentChannels, EVM | On-chain payment channel state transitions |
 
 ---
@@ -676,11 +693,11 @@ More details: `Docs/ops/mcp_streamable_http.md` and `Docs/ops/orchestrator_debug
 - **CAB-as-bearer-token**: Hardware-anchored agent identity verified on-chain
 - **OAuth 2.1 JWT**: Standard bearer tokens for non-attested agents
 
-**Per-tool scope enforcement** — 25 tools across 5 security tiers:
+**Per-tool scope enforcement** — 27 tools across 5 security tiers:
 
 | Scope | Tools | Auth Required |
 |-------|-------|---------------|
-| `read` | help, status, query, verify, export, history | Basic token |
+| `read` | help, status, query, verify, export, history, evidence_combine, uncertainty_translate | Basic token |
 | `trust:verify` | verify_agent, verify_agent_multichain, list_chains | Basic token |
 | `write` | execute_sql, create_database, checkpoint, channels | CAB tier 3+ or JWT |
 | `trust:attest` | agent_register, register_chain, submit_attestation | CAB tier 4 or JWT |
@@ -740,6 +757,13 @@ Phase 5 scripts:
   │     Mesh networking ────┤          Terminal UI                │
   │     DIDComm v2 ─────────┘          MCP Server (stdio + HTTP) │
   │                                                              │
+  │   Epistemic Calculi                                          │
+  │     Tsallis diversity ──────────▶ metrics/diversity.rs       │
+  │     Trust nucleus ──────────────▶ trust.rs (EpistemicTrust)  │
+  │     Bayesian evidence ──────────▶ evidence.rs (vUpdate)      │
+  │     Uncertainty translation ────▶ uncertainty.rs             │
+  │     Trace topology (H0) ────────▶ trace_topology.rs          │
+  │                                                              │
   ├──────────────────────────────────────────────────────────────┤
   │                                                              │
   │   On-Chain Trust (Base L2)       Formal Spec (Lean 4)        │
@@ -752,7 +776,7 @@ Phase 5 scripts:
   └──────────────────────────────────────────────────────────────┘
 ```
 
-**179 Rust source files** | **77,000+ lines** | **7,500+ lines of tests** | **20 Solidity contracts** | **131 Lean 4 modules**
+**184 Rust source files** | **79,000+ lines** | **7,500+ lines of tests** | **20 Solidity contracts** | **131 Lean 4 modules**
 
 ## Security
 

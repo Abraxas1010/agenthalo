@@ -1,6 +1,6 @@
 # Agent H.A.L.O. / NucleusDB — Architecture Reference
 
-**Last updated:** 2026-03-04
+**Last updated:** 2026-03-07
 **Test count:** 875+ passing
 
 ---
@@ -120,13 +120,35 @@ The HALO subsystem provides sovereign agent identity, PQ-hardened communication,
 | Module | File | Purpose |
 |--------|------|---------|
 | `attest` | `attest.rs` | Session attestation (Merkle root SHA-512, anonymous membership proofs) |
-| `trust` | `trust.rs` | Trust score computation (SHA-512 digest) |
+| `trust` | `trust.rs` | Trust score computation (SHA-512 digest) + epistemic trust nucleus (Heyting algebra) |
 | `circuit` | `circuit.rs` | Groth16 proving/verifying (BN254, arkworks) |
 | `circuit_policy` | `circuit_policy.rs` | Dev vs production circuit key policy |
 | `public_input_schema` | `public_input_schema.rs` | Groth16 public input layout versioning |
 | `audit` | `audit.rs` | Solidity static analysis engine |
 | `zk_compute` | `zk_compute.rs` | ZK compute receipts |
 | `zk_credential` | `zk_credential.rs` | ZK credential proofs and anonymous membership |
+
+### 4.0c+ Epistemic Calculi (Heyting Integration)
+
+Five formally grounded epistemic reasoning modules, implementing mathematical structures
+whose core properties are verified by the Lean 4 kernel in the companion Heyting repository.
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `metrics::diversity` | `metrics/diversity.rs` | Tsallis 2-entropy (Gini impurity) strategy diversity gauge; normalized score in [0,100]; enriched similarity between tool distributions |
+| `trust` (EpistemicTrust) | `trust.rs` | Nucleus operator `N(x)=max(x,floor)` on [0,1] Heyting algebra; fusion `x*y`, residuated implication `z/y`, iterated combine with nucleus clamp |
+| `evidence` | `evidence.rs` | Bayesian odds-update combiner: `posterior_ft = prior_ft * P(E\|~H)/P(E\|H)`; iterative multi-tool evidence chain; MCP tool `agenthalo_evidence_combine` |
+| `uncertainty` | `uncertainty.rs` | Hub-and-spoke translation: Probability, CertaintyFactor, Possibility, Binary; lossless roundtrip (Probability <-> CF); MCP tool `agenthalo_uncertainty_translate` |
+| `trace_topology` | `trace_topology.rs` | H0 persistence via Vietoris-Rips filtration on tool-transition graphs; union-find with path compression; connected component birth/death tracking |
+
+Dashboard endpoints:
+- `GET /api/metrics/diversity` — real-time tool diversity snapshot (score, distribution, raw Tsallis)
+- `GET /api/metrics/trace-topology` — H0 persistence entries with birth/death thresholds
+- `GET /api/orchestrator/agents` — includes `epistemic_trust`, `trust_fixed_point`, `trust_floor` per agent
+
+MCP tools:
+- `agenthalo_evidence_combine` — Bayesian evidence combination with prior odds + likelihood ratios
+- `agenthalo_uncertainty_translate` — cross-framework uncertainty translation
 
 ### 4.0d Auth, Config & Integrations
 
@@ -328,8 +350,9 @@ Reference:
 | `index.html` | ~200 | Shell: sidebar nav, content div, script/link tags |
 | `app.js` | ~850 | SPA router, all page renderers (Overview, Sessions, Costs, Config, Trust, NucleusDB, Cockpit, Deploy) |
 | `style.css` | ~800 | Fallout terminal theme (green-on-black, CRT effects) |
-| `cockpit.js` | 631 | `CockpitPanel` + `CockpitManager` classes (IIFE) |
-| `cockpit.css` | 239 | Cockpit layout, tabs, panels, CRT terminal effects |
+| `cockpit.js` | 750+ | `CockpitPanel` + `CockpitManager` classes (IIFE), diversity gauge, trace topology chart |
+| `cockpit.css` | 250+ | Cockpit layout, tabs, panels, CRT terminal effects, diversity/topology cards |
+| `orchestrator.js` | 260 | Orchestrator page: agent/task tables, graph topology (IIFE) |
 | `deploy.js` | 159 | Deploy page: agent cards, preflight, launch (IIFE) |
 | `deploy.css` | 82 | Deploy grid and card styles |
 | `chart.min.js` | - | Chart.js (vendored) |
@@ -344,14 +367,14 @@ globals when routing to the corresponding page. HTML escaping is shared via `win
 
 | Route | Function | Description |
 |-------|----------|-------------|
-| `#/overview` | `renderOverview()` | Status, recent sessions, cost summary |
+| `#/overview` | `renderOverview()` | Status, recent sessions, cost summary, epistemic trust status |
 | `#/sessions` | `renderSessions()` | Session list with filters |
 | `#/sessions/:id` | Detail view | Events, cost breakdown, attestation |
 | `#/costs` | `renderCosts()` | Cost charts (daily, by-agent, by-model) |
 | `#/config` | `renderConfig()` | Wrap config, x402, API keys (vault UI) |
 | `#/trust` | `renderTrust()` | Attestations, trust scores |
 | `#/nucleusdb` | `renderNucleusDB()` | Database browser, SQL console, vector search |
-| `#/cockpit` | `renderCockpit()` | Terminal orchestration (delegates to cockpit.js) |
+| `#/cockpit` | `renderCockpit()` | Terminal orchestration, diversity gauge, trace topology (delegates to cockpit.js) |
 | `#/deploy` | `renderDeploy()` | Agent catalog and launch (delegates to deploy.js) |
 
 ## 7. API Endpoint Summary
@@ -397,6 +420,8 @@ POST   /api/attestations/verify
 GET    /api/capabilities
 GET    /api/x402/summary
 GET    /api/x402/balance
+GET    /api/metrics/diversity     (epistemic: Tsallis diversity snapshot)
+GET    /api/metrics/trace-topology (epistemic: H0 persistence entries)
 GET    /events                    (SSE stream)
 ```
 
