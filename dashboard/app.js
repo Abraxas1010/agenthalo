@@ -55,6 +55,26 @@ const PROVIDER_INFO = {
   },
 };
 
+// --- OpenRouter OAuth PKCE helpers ---
+function base64urlEncode(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function generateCodeVerifier() {
+  const arr = new Uint8Array(48);
+  crypto.getRandomValues(arr);
+  return base64urlEncode(arr);
+}
+
+async function generateCodeChallenge(verifier) {
+  const data = new TextEncoder().encode(verifier);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return base64urlEncode(hash);
+}
+
 // -- Routing ------------------------------------------------------------------
 const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
@@ -2657,25 +2677,42 @@ async function renderSetup() {
           </button>
         </div>
       ` : `
-        ${requiredProviders.map(p => {
-          const info = PROVIDER_INFO[p] || { name: p, envVar: providerDefaultEnv(p), keyUrl: '#', description: '' };
-          const s = providerStatus(p);
-          return `
-            <div class="setup-provider-card">
-              <div class="provider-info">
-                <div class="provider-name">${esc(info.name)}</div>
-                <div class="provider-env">${esc(info.envVar)}</div>
-                ${info.description ? '<div class="provider-desc">' + esc(info.description) + '</div>' : ''}
-              </div>
-              <div class="provider-actions">
-                ${statusBadgeHtml(p)}
-                ${info.keyUrl && info.keyUrl !== '#' ? '<a class="btn btn-sm" href="' + esc(info.keyUrl) + '" target="_blank" rel="noopener noreferrer">Get Key</a>' : ''}
-                <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(p)}">Set Key</button>
-                ${s.configured ? '<button class="btn btn-sm setup-provider-test-btn" data-provider="' + esc(p) + '">Test</button>' : ''}
-              </div>
-            </div>
-          `;
-        }).join('')}
+        <div style="text-align:center;padding:16px 0">
+          <button class="btn btn-primary" id="openrouter-oauth-connect-btn"
+                  style="border-radius:8px;padding:12px 28px;font-size:14px">
+            Connect with OpenRouter
+          </button>
+          <div style="margin-top:10px;font-size:11px;color:var(--text-dim)">
+            Sign up or log in &mdash; no API key copy-paste needed
+          </div>
+          <div id="openrouter-oauth-status" style="margin-top:8px;font-size:12px"></div>
+        </div>
+        <details style="margin-top:12px">
+          <summary style="font-size:11px;color:var(--text-dim);cursor:pointer">
+            Or paste an API key manually
+          </summary>
+          <div style="margin-top:8px">
+            ${requiredProviders.map(p => {
+              const info = PROVIDER_INFO[p] || { name: p, envVar: providerDefaultEnv(p), keyUrl: '#', description: '' };
+              const s = providerStatus(p);
+              return `
+                <div class="setup-provider-card">
+                  <div class="provider-info">
+                    <div class="provider-name">${esc(info.name)}</div>
+                    <div class="provider-env">${esc(info.envVar)}</div>
+                    ${info.description ? '<div class="provider-desc">' + esc(info.description) + '</div>' : ''}
+                  </div>
+                  <div class="provider-actions">
+                    ${statusBadgeHtml(p)}
+                    ${info.keyUrl && info.keyUrl !== '#' ? '<a class="btn btn-sm" href="' + esc(info.keyUrl) + '" target="_blank" rel="noopener noreferrer">Get Key</a>' : ''}
+                    <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(p)}">Set Key</button>
+                    ${s.configured ? '<button class="btn btn-sm setup-provider-test-btn" data-provider="' + esc(p) + '">Test</button>' : ''}
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </details>
 
         ${step1Done ? `
           <div class="setup-info-box" style="margin-top:14px">
@@ -4156,6 +4193,103 @@ async function renderSetup() {
       window.vaultRemoveKey(btn.dataset.provider || '');
     });
   });
+
+  // OpenRouter OAuth PKCE connect flow
+  const oauthConnectBtn = content.querySelector('#openrouter-oauth-connect-btn');
+  const oauthStatusEl = content.querySelector('#openrouter-oauth-status');
+  if (oauthConnectBtn) {
+    oauthConnectBtn.addEventListener('click', async () => {
+      oauthConnectBtn.disabled = true;
+      oauthConnectBtn.textContent = 'Connecting...';
+      if (oauthStatusEl) {
+        oauthStatusEl.innerHTML = '<span style="color:var(--text-dim)">Opening OpenRouter...</span>';
+      }
+
+      try {
+        const codeVerifier = generateCodeVerifier();
+        const codeChallenge = await generateCodeChallenge(codeVerifier);
+        sessionStorage.setItem('halo_or_code_verifier', codeVerifier);
+
+        const callbackUrl = encodeURIComponent(`${window.location.origin}/api/openrouter/oauth/callback`);
+        const authUrl = `https://openrouter.ai/auth?callback_url=${callbackUrl}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
+        const popup = window.open(authUrl, 'openrouter_oauth', 'width=600,height=700,scrollbars=yes');
+        if (!popup) {
+          throw new Error('Popup blocked. Please allow popups for this page.');
+        }
+
+        let settled = false;
+        let pollClosed = null;
+        const resetButton = () => {
+          oauthConnectBtn.disabled = false;
+          oauthConnectBtn.textContent = 'Connect with OpenRouter';
+        };
+        const clearVerifier = () => sessionStorage.removeItem('halo_or_code_verifier');
+
+        const handler = async (event) => {
+          if (event.origin !== window.location.origin) return;
+          if (!event.data || event.data.type !== 'agenthalo-openrouter-oauth') return;
+          settled = true;
+          window.removeEventListener('message', handler);
+          if (pollClosed) clearInterval(pollClosed);
+
+          if (event.data.status === 'ok' && event.data.code) {
+            if (oauthStatusEl) {
+              oauthStatusEl.innerHTML = '<span style="color:var(--text-dim)">Exchanging token...</span>';
+            }
+            try {
+              const verifier = sessionStorage.getItem('halo_or_code_verifier') || '';
+              clearVerifier();
+              const resp = await apiPost('/openrouter/oauth/exchange', {
+                code: event.data.code,
+                code_verifier: verifier,
+              });
+              if (resp && resp.ok) {
+                if (oauthStatusEl) {
+                  oauthStatusEl.innerHTML = '<span style="color:var(--green)">&#10003; Connected!</span>';
+                }
+                window._invalidateSetupState();
+                await fetchSetupState(true);
+                await renderSetup();
+                updateNavLockState();
+              } else {
+                throw new Error(resp.error || 'OpenRouter exchange failed');
+              }
+            } catch (e) {
+              if (oauthStatusEl) {
+                oauthStatusEl.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
+              }
+              resetButton();
+            }
+            return;
+          }
+
+          clearVerifier();
+          if (oauthStatusEl) {
+            oauthStatusEl.innerHTML = `<span style="color:var(--red)">${esc(event.data.message || 'Authorization failed')}</span>`;
+          }
+          resetButton();
+        };
+        window.addEventListener('message', handler);
+
+        pollClosed = setInterval(() => {
+          if (!popup || !popup.closed || settled) return;
+          settled = true;
+          window.removeEventListener('message', handler);
+          clearInterval(pollClosed);
+          clearVerifier();
+          resetButton();
+          if (oauthStatusEl) oauthStatusEl.innerHTML = '';
+        }, 500);
+      } catch (e) {
+        sessionStorage.removeItem('halo_or_code_verifier');
+        if (oauthStatusEl) {
+          oauthStatusEl.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
+        }
+        oauthConnectBtn.disabled = false;
+        oauthConnectBtn.textContent = 'Connect with OpenRouter';
+      }
+    });
+  }
 
   // Auto-open provider modal if redirected from config
   const autoOpenProvider = localStorage.getItem('halo_setup_open_provider');

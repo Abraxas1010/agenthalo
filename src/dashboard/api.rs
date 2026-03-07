@@ -120,6 +120,14 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/config/x402", post(api_config_x402))
         .route("/auth/oauth/start/{provider}", get(api_auth_oauth_start))
         .route("/auth/oauth/callback", get(api_auth_oauth_callback))
+        .route(
+            "/openrouter/oauth/callback",
+            get(api_openrouter_oauth_callback),
+        )
+        .route(
+            "/openrouter/oauth/exchange",
+            post(api_openrouter_oauth_exchange),
+        )
         .route("/profile", get(api_get_profile).post(api_save_profile))
         .route(
             "/identity/device",
@@ -656,6 +664,18 @@ pub struct AuthOauthCallbackQuery {
     user_id: Option<String>,
     #[serde(default)]
     sub: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct OpenRouterOauthCallbackQuery {
+    #[serde(default)]
+    code: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct OpenRouterExchangeRequest {
+    code: String,
+    code_verifier: String,
 }
 
 #[derive(Deserialize)]
@@ -5512,6 +5532,125 @@ async fn api_auth_oauth_callback(
     )))
 }
 
+async fn api_openrouter_oauth_callback(
+    Query(query): Query<OpenRouterOauthCallbackQuery>,
+) -> Html<String> {
+    let Some(code) = query.code.as_deref().filter(|c| !c.trim().is_empty()) else {
+        return Html(
+            "<!doctype html><html><head><meta charset=\"utf-8\">\
+            <title>AgentHALO</title></head>\
+            <body style=\"font-family:ui-monospace,monospace;background:#070a05;\
+            color:#ff6b6b;padding:20px\">\
+            <h2>AgentHALO</h2><p>OpenRouter authorization failed — no code received.</p>\
+            <script>(function(){try{if(window.opener)window.opener.postMessage(\
+            {type:'agenthalo-openrouter-oauth',status:'error',\
+            message:'No authorization code received'},window.location.origin);}catch(_e){}\
+            setTimeout(function(){window.close();},1800);})();</script>\
+            </body></html>"
+                .to_string(),
+        );
+    };
+
+    let safe_code = serde_json::to_string(code.trim())
+        .unwrap_or_else(|_| "\"\"".to_string())
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026");
+
+    Html(format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\">\
+        <title>AgentHALO</title></head>\
+        <body style=\"font-family:ui-monospace,monospace;background:#070a05;\
+        color:#7cff85;padding:20px\">\
+        <h2>AgentHALO</h2><p>Authorization received. Exchanging token...</p>\
+        <script>(function(){{try{{if(window.opener)window.opener.postMessage(\
+        {{type:'agenthalo-openrouter-oauth',status:'ok',code:{safe_code}}},window.location.origin);}}catch(_e){{}}\
+        setTimeout(function(){{window.close();}},1500);}})();</script>\
+        </body></html>"
+    ))
+}
+
+fn normalize_openrouter_exchange_inputs(
+    req: &OpenRouterExchangeRequest,
+) -> Result<(String, String), (StatusCode, Json<Value>)> {
+    let code = req.code.trim();
+    let code_verifier = req.code_verifier.trim();
+    if code.is_empty() || code_verifier.is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "missing code or code_verifier",
+        ));
+    }
+    Ok((code.to_string(), code_verifier.to_string()))
+}
+
+async fn api_openrouter_oauth_exchange(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<OpenRouterExchangeRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    require_scope(&state, CryptoScope::Vault)?;
+
+    let (code, code_verifier) = normalize_openrouter_exchange_inputs(&req)?;
+
+    let exchange_body = json!({
+        "code": code,
+        "code_verifier": code_verifier,
+        "code_challenge_method": "S256",
+    });
+
+    let resp = http_client::post("https://openrouter.ai/api/v1/auth/keys")
+        .map_err(internal_err)?
+        .send_json(exchange_body)
+        .map_err(|e| {
+            api_err(
+                StatusCode::BAD_GATEWAY,
+                &format!("OpenRouter key exchange failed: {e}"),
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(api_err(
+            StatusCode::BAD_GATEWAY,
+            &format!("OpenRouter returned HTTP {}", resp.status().as_u16()),
+        ));
+    }
+
+    let body: Value = resp.into_body().read_json().map_err(|e| {
+        api_err(
+            StatusCode::BAD_GATEWAY,
+            &format!("Failed to parse OpenRouter response: {e}"),
+        )
+    })?;
+
+    let key = body
+        .get("key")
+        .and_then(Value::as_str)
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| {
+            api_err(
+                StatusCode::BAD_GATEWAY,
+                "OpenRouter response missing 'key' field",
+            )
+        })?
+        .trim()
+        .to_string();
+
+    let vault = configured_vault(&state)?;
+    vault
+        .set_key("openrouter", "OPENROUTER_API_KEY", &key)
+        .map_err(internal_err)?;
+
+    let verified = provider_test_request("openrouter", &key).is_ok();
+    let _ = vault.set_test_result("openrouter", verified);
+
+    Ok(Json(json!({
+        "ok": true,
+        "provider": "openrouter",
+        "verified": verified,
+    })))
+}
+
 /// Allowed agent names for shell wrapping — prevents shell RC injection.
 const ALLOWED_WRAP_AGENTS: &[&str] = &["claude", "codex", "gemini"];
 
@@ -7984,6 +8123,7 @@ fn resolve_binary(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::Query;
 
     #[test]
     fn stream_trace_response_includes_billing_and_stream_metadata() {
@@ -8045,5 +8185,67 @@ mod tests {
         assert_eq!(body["usage"]["prompt_tokens"], 2);
         assert_eq!(body["usage"]["completion_tokens"], 1);
         assert_eq!(body["x_agenthalo_stream"]["completed"], false);
+    }
+
+    #[tokio::test]
+    async fn openrouter_oauth_callback_reports_missing_code() {
+        let html =
+            api_openrouter_oauth_callback(Query(OpenRouterOauthCallbackQuery { code: None }))
+                .await
+                .0;
+        assert!(html.contains("no code received"));
+        assert!(html.contains("agenthalo-openrouter-oauth"));
+        assert!(html.contains("status:'error'"));
+        assert!(html.contains("window.location.origin"));
+    }
+
+    #[tokio::test]
+    async fn openrouter_oauth_callback_rejects_empty_string_code() {
+        let html = api_openrouter_oauth_callback(Query(OpenRouterOauthCallbackQuery {
+            code: Some("   ".to_string()),
+        }))
+        .await
+        .0;
+        assert!(html.contains("status:'error'"));
+        assert!(html.contains("no code received"));
+    }
+
+    #[tokio::test]
+    async fn openrouter_oauth_callback_escapes_script_breakout_payload() {
+        let payload = "</script><img src=x onerror=alert(1)>\n";
+        let html = api_openrouter_oauth_callback(Query(OpenRouterOauthCallbackQuery {
+            code: Some(payload.to_string()),
+        }))
+        .await
+        .0;
+
+        assert!(html.contains("status:'ok'"));
+        assert!(html.contains("window.location.origin"));
+        assert!(!html.contains(payload));
+        assert!(!html.contains("</script><img"));
+        assert!(html.contains("\\u003c"));
+        assert!(html.contains("\\u003e"));
+    }
+
+    #[test]
+    fn normalize_openrouter_exchange_inputs_rejects_empty_verifier() {
+        let req = OpenRouterExchangeRequest {
+            code: "abc".to_string(),
+            code_verifier: " ".to_string(),
+        };
+        let err = normalize_openrouter_exchange_inputs(&req).err();
+        assert!(err.is_some());
+    }
+
+    #[test]
+    fn normalize_openrouter_exchange_inputs_trims_values() {
+        let req = OpenRouterExchangeRequest {
+            code: "  code-123  ".to_string(),
+            code_verifier: "\tverifier-xyz\n".to_string(),
+        };
+        let (code, verifier) =
+            normalize_openrouter_exchange_inputs(&req).expect("expected trimmed values");
+        assert_eq!(code, "code-123");
+        assert_eq!(verifier, "verifier-xyz");
     }
 }
