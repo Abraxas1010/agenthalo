@@ -20,6 +20,10 @@ pub fn credentials_path() -> PathBuf {
     halo_dir().join("credentials.json")
 }
 
+pub fn cab_nonce_store_path() -> PathBuf {
+    halo_dir().join("cab_nonces.json")
+}
+
 pub fn pricing_path() -> PathBuf {
     halo_dir().join("pricing.json")
 }

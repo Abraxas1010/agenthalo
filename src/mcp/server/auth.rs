@@ -22,6 +22,7 @@ use base64::Engine;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::sync::{Arc, Mutex, OnceLock};
 
 const INTERNAL_AUTH_HEADER: &str = "x-nucleusdb-internal-auth";
@@ -223,20 +224,60 @@ fn cab_nonce_store() -> &'static Mutex<HashMap<String, u64>> {
     NONCES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn reserve_cab_nonce(agent_address: &str, nonce: &str, now: u64, expires_at: u64) -> bool {
+fn load_cab_nonce_store_from_disk() -> Result<HashMap<String, u64>, String> {
+    let path = crate::halo::config::cab_nonce_store_path();
+    match fs::read(&path) {
+        Ok(raw) => serde_json::from_slice(&raw)
+            .map_err(|e| format!("parse CAB nonce store at {}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(e) => Err(format!("read CAB nonce store at {}: {e}", path.display())),
+    }
+}
+
+fn persist_cab_nonce_store_to_disk(store: &HashMap<String, u64>) -> Result<(), String> {
+    crate::halo::config::ensure_halo_dir()?;
+    let path = crate::halo::config::cab_nonce_store_path();
+    let tmp_path = path.with_extension("json.tmp");
+    let raw =
+        serde_json::to_vec(store).map_err(|e| format!("serialize CAB nonce store: {e}"))?;
+    fs::write(&tmp_path, raw)
+        .map_err(|e| format!("write CAB nonce store temp file {}: {e}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &path)
+        .map_err(|e| format!("persist CAB nonce store to {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn reserve_cab_nonce(
+    agent_address: &str,
+    nonce: &str,
+    now: u64,
+    expires_at: u64,
+) -> Result<bool, String> {
     let mutex = cab_nonce_store();
     let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = load_cab_nonce_store_from_disk()?;
     guard.retain(|_, until| *until > now);
     let key = format!("{}:{}", normalize_evm_address(agent_address), nonce.trim());
     if guard.contains_key(&key) {
-        return false;
+        persist_cab_nonce_store_to_disk(&guard)?;
+        return Ok(false);
     }
     guard.insert(key, expires_at.max(now.saturating_add(1)));
-    true
+    persist_cab_nonce_store_to_disk(&guard)?;
+    Ok(true)
 }
 
 #[cfg(test)]
 fn clear_cab_nonce_reservations_for_tests() {
+    let mutex = cab_nonce_store();
+    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.clear();
+    let _ = fs::remove_file(crate::halo::config::cab_nonce_store_path());
+    mutex.clear_poison();
+}
+
+#[cfg(test)]
+fn clear_cab_nonce_memory_cache_for_tests() {
     let mutex = cab_nonce_store();
     let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.clear();
@@ -491,7 +532,14 @@ where
     let nonce_expires_at = timestamp
         .saturating_add(config.cab_max_age_secs)
         .saturating_add(60);
-    if !reserve_cab_nonce(&agent_address, nonce, now, nonce_expires_at) {
+    let nonce_reserved = reserve_cab_nonce(&agent_address, nonce, now, nonce_expires_at)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to persist CAB replay state: {e}"),
+            )
+        })?;
+    if !nonce_reserved {
         return Err((
             StatusCode::UNAUTHORIZED,
             format!("cab token replay detected for agent {}", agent_address),
@@ -683,6 +731,41 @@ fn has_internal_auth_bypass(headers: &HeaderMap) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::lock_env;
+    use tempfile::TempDir;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = std::env::var(key).ok();
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.previous {
+                std::env::set_var(self.key, v);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn cab_test_home(tag: &str) -> (std::sync::MutexGuard<'static, ()>, TempDir, EnvVarGuard) {
+        let guard = lock_env();
+        let temp_home = TempDir::new().unwrap_or_else(|e| panic!("temp halo home for {tag}: {e}"));
+        let home_guard = EnvVarGuard::set("AGENTHALO_HOME", temp_home.path().to_str());
+        (guard, temp_home, home_guard)
+    }
     use crate::test_support::env_lock;
 
     fn mk_onchain_status(verified: bool, tier: u8) -> crate::trust::onchain::AgentOnchainStatus {
@@ -869,6 +952,7 @@ mod tests {
 
     #[test]
     fn cab_auth_rejects_forged_signature() {
+        let (_guard, _home, _home_guard) = cab_test_home("cab_forged_signature");
         clear_cab_nonce_reservations_for_tests();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -886,6 +970,7 @@ mod tests {
 
     #[test]
     fn cab_auth_rejects_replay_of_same_nonce() {
+        let (_guard, _home, _home_guard) = cab_test_home("cab_replay");
         clear_cab_nonce_reservations_for_tests();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -908,6 +993,7 @@ mod tests {
 
     #[test]
     fn cab_auth_accepts_valid_signed_token() {
+        let (_guard, _home, _home_guard) = cab_test_home("cab_valid");
         clear_cab_nonce_reservations_for_tests();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -923,6 +1009,28 @@ mod tests {
         assert_eq!(identity.method, AuthMethod::Cab);
         assert!(identity.has_scope(ToolScope::TrustAttest));
         assert!(identity.has_scope(ToolScope::Container));
+    }
+
+    #[test]
+    fn cab_auth_rejects_replay_after_memory_cache_reset() {
+        let (_guard, _home, _home_guard) = cab_test_home("cab_persisted_replay");
+        clear_cab_nonce_reservations_for_tests();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let cab = mk_signed_cab("cab-persisted-replay", now);
+        let cfg = AuthConfig::default();
+
+        authenticate_cab_payload(cab.clone(), &cfg, |_, _, _| Ok(mk_onchain_status(true, 3)))
+            .expect("first auth should pass");
+        clear_cab_nonce_memory_cache_for_tests();
+
+        let err = authenticate_cab_payload(cab, &cfg, |_, _, _| Ok(mk_onchain_status(true, 3)))
+            .expect_err("persisted replay must fail");
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        assert!(err.1.contains("replay detected"));
     }
 
     #[test]
