@@ -6,6 +6,12 @@ use std::collections::{HashMap, HashSet};
 
 const TASK_GROUP_DOMAIN: &str = "agenthalo.capability.task_group.v1";
 
+#[derive(Serialize)]
+struct FormationCanonical<'a> {
+    task_id: &'a str,
+    assignments: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CapabilitySlot {
     pub slot_id: String,
@@ -154,39 +160,44 @@ impl TaskManifold {
                     now,
                     attestation_max_age_secs,
                 );
-                let left_score = left_spec
+                let left_attestations = left_spec
+                    .map(|spec| spec.verified_attestation_count(now, attestation_max_age_secs))
+                    .unwrap_or(0);
+                let right_attestations = right_spec
+                    .map(|spec| spec.verified_attestation_count(now, attestation_max_age_secs))
+                    .unwrap_or(0);
+                let left_success = left_spec
                     .map(|spec| {
-                        (
+                        crate::halo::capability_spec::normalized_success_rate(
                             spec.metrics.success_rate,
-                            spec.verified_attestation_count(now, attestation_max_age_secs),
-                            std::cmp::Reverse(spec.metrics.latency_p99_ms),
-                            std::cmp::Reverse(spec.metrics.cost_microdollars),
                         )
                     })
-                    .unwrap_or((
-                        0.0,
-                        0,
-                        std::cmp::Reverse(u64::MAX),
-                        std::cmp::Reverse(u64::MAX),
-                    ));
-                let right_score = right_spec
+                    .unwrap_or(0.0);
+                let right_success = right_spec
                     .map(|spec| {
-                        (
+                        crate::halo::capability_spec::normalized_success_rate(
                             spec.metrics.success_rate,
-                            spec.verified_attestation_count(now, attestation_max_age_secs),
-                            std::cmp::Reverse(spec.metrics.latency_p99_ms),
-                            std::cmp::Reverse(spec.metrics.cost_microdollars),
                         )
                     })
-                    .unwrap_or((
-                        0.0,
-                        0,
-                        std::cmp::Reverse(u64::MAX),
-                        std::cmp::Reverse(u64::MAX),
-                    ));
-                right_score
-                    .partial_cmp(&left_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .unwrap_or(0.0);
+                let left_latency = left_spec
+                    .map(|spec| spec.metrics.latency_p99_ms)
+                    .unwrap_or(u64::MAX);
+                let right_latency = right_spec
+                    .map(|spec| spec.metrics.latency_p99_ms)
+                    .unwrap_or(u64::MAX);
+                let left_cost = left_spec
+                    .map(|spec| spec.metrics.cost_microdollars)
+                    .unwrap_or(u64::MAX);
+                let right_cost = right_spec
+                    .map(|spec| spec.metrics.cost_microdollars)
+                    .unwrap_or(u64::MAX);
+                right_attestations
+                    .cmp(&left_attestations)
+                    .then_with(|| right_success.total_cmp(&left_success))
+                    .then_with(|| left_latency.cmp(&right_latency))
+                    .then_with(|| left_cost.cmp(&right_cost))
+                    .then_with(|| left.did.cmp(&right.did))
             });
 
             let needed = slot.redundancy.max(1) as usize;
@@ -279,22 +290,21 @@ impl TaskManifold {
             ));
         }
 
-        let mut canonical = HashMap::new();
-        canonical.insert("task_id", self.task_id.clone());
-        canonical.insert(
-            "assignments",
-            assignments
-                .iter()
-                .map(|assignment| {
-                    format!(
-                        "{}:{}:{}",
-                        assignment.slot_id, assignment.assigned_did, assignment.capability_id
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("|"),
-        );
-        let raw = serde_json::to_vec(&canonical).unwrap_or_default();
+        let mut canonical_assignments = assignments
+            .iter()
+            .map(|assignment| {
+                format!(
+                    "{}:{}:{}",
+                    assignment.slot_id, assignment.assigned_did, assignment.capability_id
+                )
+            })
+            .collect::<Vec<_>>();
+        canonical_assignments.sort();
+        let raw = serde_json::to_vec(&FormationCanonical {
+            task_id: &self.task_id,
+            assignments: canonical_assignments,
+        })
+        .unwrap_or_default();
         let group_id = hex_encode(&digest_bytes(TASK_GROUP_DOMAIN, &raw));
 
         Ok(TaskFormation {
@@ -600,5 +610,37 @@ mod tests {
             .expect("best provider selected");
         assert_eq!(formation.assignments.len(), 1);
         assert_eq!(formation.assignments[0].assigned_did, "did:key:a");
+    }
+
+    #[test]
+    fn task_formation_group_id_is_deterministic() {
+        let mut discovery = AgentDiscovery::new();
+        discovery.upsert_verified(announcement(
+            "did:key:a",
+            spec("prove/lean/algebra", "did:key:a", 0.95, 10, 5),
+        ));
+        let manifold = TaskManifold {
+            task_id: "task-deterministic".to_string(),
+            description: "deterministic group id".to_string(),
+            slots: vec![CapabilitySlot {
+                slot_id: "prove".to_string(),
+                query: base_query("prove/lean"),
+                redundancy: 1,
+                optional: false,
+            }],
+            edges: vec![],
+            constraints: ManifoldConstraints::default(),
+            originator_did: "did:key:origin".to_string(),
+            created_at: 100,
+            formation_timeout_ms: 250,
+            expires_at: 200,
+        };
+        let first = manifold
+            .assemble_atomic(&discovery, 150, 3600)
+            .expect("first formation");
+        let second = manifold
+            .assemble_atomic(&discovery, 150, 3600)
+            .expect("second formation");
+        assert_eq!(first.group_id, second.group_id);
     }
 }

@@ -3,6 +3,7 @@ use crate::halo::capability_spec::{
 };
 use crate::halo::did::{dual_sign, dual_verify, DIDDocument, DIDIdentity};
 use crate::halo::util::{digest_bytes, hex_encode};
+use deunicode::deunicode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -10,6 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(not(test))]
 use std::fs;
 use std::sync::{Mutex, OnceLock};
+use url::Url;
 
 const CHALLENGE_HASH_DOMAIN: &str = "agenthalo.capability.challenge.v1";
 const ZERO_SORRY_PAYLOAD_HASH_DOMAIN: &str = "agenthalo.capability.zero_sorry.payload.v1";
@@ -170,6 +172,19 @@ fn challenge_rate_key(target_scope: &str, capability_id: &str) -> String {
     format!("{target_scope}:{capability_id}")
 }
 
+fn prune_challenge_rate_store(store: &mut HashMap<String, VecDeque<u64>>, now: u64) {
+    store.retain(|_, entries| {
+        while let Some(front) = entries.front().copied() {
+            if now.saturating_sub(front) > CHALLENGE_RATE_LIMIT_WINDOW_SECS {
+                let _ = entries.pop_front();
+            } else {
+                break;
+            }
+        }
+        !entries.is_empty()
+    });
+}
+
 fn enforce_challenge_rate_limit(
     target_scope: &str,
     capability_id: &str,
@@ -181,16 +196,9 @@ fn enforce_challenge_rate_limit(
     if !cfg!(test) {
         *guard = load_challenge_rate_store_from_disk()?;
     }
-    let entries = guard
-        .entry(challenge_rate_key(target_scope, capability_id))
-        .or_default();
-    while let Some(front) = entries.front().copied() {
-        if now.saturating_sub(front) > CHALLENGE_RATE_LIMIT_WINDOW_SECS {
-            let _ = entries.pop_front();
-        } else {
-            break;
-        }
-    }
+    prune_challenge_rate_store(&mut guard, now);
+    let key = challenge_rate_key(target_scope, capability_id);
+    let entries = guard.entry(key).or_default();
     if entries.len() >= CHALLENGE_RATE_LIMIT_PER_MIN {
         persist_challenge_rate_store_to_disk(&guard)?;
         return Err(format!(
@@ -348,8 +356,11 @@ fn constraint_violation(
                 != Some("true")
             {
                 Some("ZeroSorry requires kernel-level zero_sorry_verified=true".to_string())
-            } else if proof_ref.is_empty() {
-                Some("ZeroSorry requires a non-empty zero_sorry_proof_ref".to_string())
+            } else if !valid_zero_sorry_proof_ref(proof_ref) {
+                Some(
+                "ZeroSorry requires a structured zero_sorry_proof_ref (proof://, cab://, or did:)"
+                    .to_string(),
+            )
             } else if response
                 .metadata
                 .get("zero_sorry_payload_hash")
@@ -411,10 +422,19 @@ fn zero_sorry_payload_hash(payload: &Value) -> String {
 fn normalized_payload_text(payload: &Value) -> String {
     let mut text = String::new();
     collect_payload_text(payload, &mut text);
-    text.chars()
+    let stripped = text
+        .chars()
         .filter(|ch| !matches!(*ch, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
-        .collect::<String>()
-        .to_ascii_lowercase()
+        .collect::<String>();
+    deunicode(&stripped).to_ascii_lowercase()
+}
+
+fn valid_zero_sorry_proof_ref(proof_ref: &str) -> bool {
+    let Ok(parsed) = Url::parse(proof_ref) else {
+        return false;
+    };
+    matches!(parsed.scheme(), "proof" | "cab" | "did")
+        && (!parsed.host_str().unwrap_or_default().is_empty() || !parsed.path().is_empty())
 }
 
 fn collect_payload_text(payload: &Value, out: &mut String) {
@@ -528,8 +548,8 @@ pub fn attestation_decay_weight(
     if !attestation.passed || half_life_secs == 0 {
         return 0.0;
     }
-    let age = now.saturating_sub(attestation.verified_at) as f64;
-    0.5_f64.powf(age / half_life_secs as f64)
+    let steps = now.saturating_sub(attestation.verified_at) / half_life_secs;
+    0.5_f64.powi(steps.min(i32::MAX as u64) as i32)
 }
 
 pub fn transitive_trust(
@@ -845,6 +865,95 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("ZeroSorry")));
+    }
+
+    #[test]
+    fn zero_sorry_rejects_confusable_sorry_spellings() {
+        let spec = sample_spec();
+        let challenge =
+            issue_challenge(&spec, ChallengeKind::DeterministicText, 100, 60).expect("challenge");
+        let payload = Value::String("exact \u{0441}orry".to_string());
+        let result = verify_challenge_response(
+            &spec,
+            &challenge,
+            &ChallengeResponse {
+                output_type: TypeSpec::Text {
+                    language: Some("lean".to_string()),
+                },
+                payload: payload.clone(),
+                metadata: HashMap::from([
+                    ("kernel".to_string(), "lean4".to_string()),
+                    ("zero_sorry_verified".to_string(), "true".to_string()),
+                    (
+                        "zero_sorry_proof_ref".to_string(),
+                        "proof://lean/zero-sorry".to_string(),
+                    ),
+                    (
+                        "zero_sorry_payload_hash".to_string(),
+                        zero_sorry_payload_hash(&payload),
+                    ),
+                ]),
+                completed_at: 100,
+            },
+        );
+        assert!(!result.passed);
+        assert!(result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("ZeroSorry")));
+    }
+
+    #[test]
+    fn zero_sorry_requires_structured_proof_ref() {
+        let spec = sample_spec();
+        let challenge =
+            issue_challenge(&spec, ChallengeKind::DeterministicText, 100, 60).expect("challenge");
+        let payload = challenge.expected_output.clone();
+        let result = verify_challenge_response(
+            &spec,
+            &challenge,
+            &ChallengeResponse {
+                output_type: TypeSpec::Text {
+                    language: Some("lean".to_string()),
+                },
+                payload: payload.clone(),
+                metadata: HashMap::from([
+                    ("kernel".to_string(), "lean4".to_string()),
+                    ("zero_sorry_verified".to_string(), "true".to_string()),
+                    ("zero_sorry_proof_ref".to_string(), "x".to_string()),
+                    (
+                        "zero_sorry_payload_hash".to_string(),
+                        zero_sorry_payload_hash(&payload),
+                    ),
+                ]),
+                completed_at: 100,
+            },
+        );
+        assert!(!result.passed);
+        assert!(result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("structured zero_sorry_proof_ref")));
+    }
+
+    #[test]
+    fn challenge_rate_store_prunes_expired_keys() {
+        reset_challenge_rate_state_for_tests();
+        let bank = DomainChallengeBank::default();
+        let spec = sample_spec();
+        bank.issue_for_spec(&spec, "did:key:old-prune-test", 100, 60)
+            .expect("old key created");
+        bank.issue_for_spec(&spec, "did:key:new-prune-test", 1000, 60)
+            .expect("new key created");
+        let guard = challenge_rate_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(guard
+            .keys()
+            .any(|key| key.starts_with("did:key:new-prune-test:")));
+        assert!(!guard
+            .keys()
+            .any(|key| key.starts_with("did:key:old-prune-test:")));
     }
 
     #[test]

@@ -11,7 +11,7 @@ structure CapabilityDomain where
 
 /-- Capability query is prefix-based: `prove/lean` matches `prove/lean/algebra`. -/
 def domainMatchesPrefix (domain : CapabilityDomain) (pfx : String) : Prop :=
-  ∃ suffix, domain.path = pfx ++ suffix
+  domain.path = pfx ∨ ∃ suffix, domain.path = pfx ++ "/" ++ suffix
 
 /-- Minimal attestation witness for formal freshness checks. -/
 structure CapabilityAttestationSpec where
@@ -48,8 +48,7 @@ def specSatisfiesQuery (spec : CapabilitySpec) (q : CapabilityQuery) : Prop :=
 /-- Prefix soundness: exact domain path always matches itself. -/
 theorem domain_prefix_reflexive (domain : CapabilityDomain) :
     domainMatchesPrefix domain domain.path := by
-  refine ⟨"", ?_⟩
-  simp
+  exact Or.inl rfl
 
 /-- Fresh attestations were verified no more than `maxAge` time units ago. -/
 theorem fresh_attestation_bounded_age

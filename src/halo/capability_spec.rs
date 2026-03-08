@@ -1,4 +1,5 @@
-use crate::halo::did::{dual_verify, DIDDocument};
+use crate::halo::capability_verification::verify_capability_attestation;
+use crate::halo::did::DIDDocument;
 use crate::halo::util::{digest_bytes, hex_encode};
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +68,31 @@ pub struct LiveMetrics {
     pub last_active: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub onchain_reputation: Option<f64>,
+}
+
+pub fn normalized_success_rate(rate: f64) -> f64 {
+    if rate.is_finite() {
+        rate.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+pub fn normalized_onchain_reputation(score: Option<f64>) -> Option<f64> {
+    score.and_then(|value| {
+        if value.is_finite() {
+            Some(value.max(0.0))
+        } else {
+            None
+        }
+    })
+}
+
+impl LiveMetrics {
+    pub fn sanitize(&mut self) {
+        self.success_rate = normalized_success_rate(self.success_rate);
+        self.onchain_reputation = normalized_onchain_reputation(self.onchain_reputation);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -168,7 +194,7 @@ impl CapabilitySpec {
             return false;
         }
         if let Some(min_success_rate) = query.min_success_rate {
-            if self.metrics.success_rate < min_success_rate {
+            if normalized_success_rate(self.metrics.success_rate) < min_success_rate {
                 return false;
             }
         }
@@ -188,7 +214,9 @@ impl CapabilitySpec {
             }
         }
         if let Some(min_onchain_reputation) = query.min_onchain_reputation {
-            if self.metrics.onchain_reputation.unwrap_or(0.0) < min_onchain_reputation {
+            if normalized_onchain_reputation(self.metrics.onchain_reputation).unwrap_or(0.0)
+                < min_onchain_reputation
+            {
                 return false;
             }
         }
@@ -281,26 +309,13 @@ pub fn capability_attestation_matches_document(
     attestation: &CapabilityAttestation,
     did_document: &DIDDocument,
 ) -> Result<bool, String> {
-    let payload = serde_json::to_vec(&serde_json::json!({
-        "attester_did": attestation.attester_did,
-        "subject_did": attestation.subject_did,
-        "capability_id": attestation.capability_id,
-        "challenge_hash": attestation.challenge_hash,
-        "passed": attestation.passed,
-        "verified_at": attestation.verified_at,
-    }))
-    .map_err(|e| format!("serialize capability attestation payload: {e}"))?;
-    dual_verify(
-        did_document,
-        &payload,
-        &attestation.ed25519_signature,
-        &attestation.mldsa65_signature,
-    )
+    verify_capability_attestation(attestation, did_document)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::halo::capability_verification::attest_capability;
 
     fn sample_spec() -> CapabilitySpec {
         CapabilitySpec::new(
@@ -408,5 +423,23 @@ mod tests {
             "segment/".repeat(20)
         )));
         assert!(!is_dynamic_capability_topic("general"));
+    }
+
+    #[test]
+    fn capability_attestation_matches_document_roundtrip() {
+        let attester = crate::halo::did::did_from_genesis_seed(&[0x41; 64]).expect("attester");
+        let attestation = attest_capability(
+            &attester,
+            "did:key:subject",
+            "capability-1",
+            "challenge-hash",
+            true,
+            123,
+        )
+        .expect("attestation");
+        assert!(
+            capability_attestation_matches_document(&attestation, &attester.did_document)
+                .expect("verify")
+        );
     }
 }
