@@ -491,11 +491,7 @@ impl AgentDiscovery {
         deferred: Vec<crate::halo::capability_spec::CapabilityAttestation>,
     ) {
         let now = now_unix();
-        let mut pending = self
-            .pending_attestations
-            .get(subject_did)
-            .cloned()
-            .unwrap_or_default();
+        let mut pending = self.take_pending_attestations(subject_did);
         pending.extend(deferred.into_iter().filter(|attestation| {
             now.saturating_sub(attestation.verified_at) <= MAX_PENDING_ATTESTATION_AGE_SECS
         }));
@@ -510,6 +506,24 @@ impl AgentDiscovery {
         }
         self.replace_pending_attestations(subject_did, pending);
         self.enforce_pending_attestation_limit();
+    }
+
+    fn take_pending_attestations(
+        &mut self,
+        subject_did: &str,
+    ) -> Vec<crate::halo::capability_spec::CapabilityAttestation> {
+        let previous_len = self
+            .pending_attestations
+            .get(subject_did)
+            .map_or(0, Vec::len);
+        self.clear_pending_subject_index(subject_did);
+        let removed = self
+            .pending_attestations
+            .remove(subject_did)
+            .unwrap_or_default();
+        self.pending_attestation_count =
+            self.pending_attestation_count.saturating_sub(previous_len);
+        removed
     }
 
     fn clear_pending_subject_index(&mut self, subject_did: &str) {
@@ -531,20 +545,12 @@ impl AgentDiscovery {
         subject_did: &str,
         attestations: Vec<crate::halo::capability_spec::CapabilityAttestation>,
     ) {
-        let previous_len = self
-            .pending_attestations
-            .get(subject_did)
-            .map_or(0, Vec::len);
-        self.clear_pending_subject_index(subject_did);
+        self.take_pending_attestations(subject_did);
         if attestations.is_empty() {
-            self.pending_attestations.remove(subject_did);
-            self.pending_attestation_count =
-                self.pending_attestation_count.saturating_sub(previous_len);
             return;
         }
         self.pending_attestation_count = self
             .pending_attestation_count
-            .saturating_sub(previous_len)
             .saturating_add(attestations.len());
         self.pending_attestations
             .insert(subject_did.to_string(), attestations);
@@ -583,14 +589,15 @@ impl AgentDiscovery {
             else {
                 break;
             };
-            let mut retained = self
-                .pending_attestations
-                .get(&subject_did)
-                .cloned()
-                .unwrap_or_default();
-            if !retained.is_empty() {
-                retained.remove(0);
+            let mut retained = self.take_pending_attestations(&subject_did);
+            let overflow = self
+                .pending_attestation_count
+                .saturating_add(retained.len())
+                .saturating_sub(MAX_TOTAL_PENDING_ATTESTATIONS);
+            if overflow >= retained.len() {
+                continue;
             }
+            retained.drain(0..overflow);
             self.replace_pending_attestations(&subject_did, retained);
         }
     }
@@ -608,9 +615,10 @@ impl AgentDiscovery {
         };
         let now = now_unix();
         for subject_did in subjects {
-            let Some(mut attestations) = self.pending_attestations.remove(&subject_did) else {
+            let mut attestations = self.take_pending_attestations(&subject_did);
+            if attestations.is_empty() {
                 continue;
-            };
+            }
             attestations.retain(|attestation| {
                 now.saturating_sub(attestation.verified_at) <= MAX_PENDING_ATTESTATION_AGE_SECS
             });
@@ -1842,6 +1850,100 @@ mod tests {
             .and_then(|announcement| announcement.capability_specs.first())
             .expect("subject announcement");
         assert_eq!(recovered.attestations.len(), 1);
+    }
+
+    #[test]
+    fn replay_pending_attestations_keeps_count_and_reverse_index_consistent() {
+        let attester_one =
+            crate::halo::did::did_from_genesis_seed(&seed(0x85)).expect("attester one");
+        let attester_two =
+            crate::halo::did::did_from_genesis_seed(&seed(0x86)).expect("attester two");
+        let subject = crate::halo::did::did_from_genesis_seed(&seed(0x87)).expect("subject");
+        let mut subject_announcement =
+            announcement_for_identity(&subject, PeerId::random(), vec![], vec![]);
+        let mut spec = CapabilitySpec::new(
+            CapabilityDomain::new("prove/lean/algebra", 1),
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![],
+        );
+        spec.attestations = vec![
+            crate::halo::capability_verification::attest_capability(
+                &attester_one,
+                &subject.did,
+                &spec.capability_id,
+                "challenge-one",
+                true,
+                now_unix(),
+            )
+            .expect("attestation one"),
+            crate::halo::capability_verification::attest_capability(
+                &attester_two,
+                &subject.did,
+                &spec.capability_id,
+                "challenge-two",
+                true,
+                now_unix(),
+            )
+            .expect("attestation two"),
+        ];
+        subject_announcement.capability_specs = vec![spec];
+        sign_announcement(&subject, &mut subject_announcement).expect("sign subject");
+        let subject_payload = serde_json::to_vec(&subject_announcement).expect("serialize");
+
+        let mut discovery = AgentDiscovery::new();
+        discovery
+            .handle_gossipsub_message(&subject_payload, |_did| None)
+            .expect("ingest subject before attesters");
+        assert_eq!(discovery.pending_attestation_count, 2);
+        assert_eq!(
+            discovery
+                .pending_attestations
+                .get(&subject.did)
+                .map(Vec::len),
+            Some(2)
+        );
+
+        let mut attester_one_announcement =
+            announcement_for_identity(&attester_one, PeerId::random(), vec![], vec![]);
+        sign_announcement(&attester_one, &mut attester_one_announcement).expect("sign attester 1");
+        let attester_one_payload =
+            serde_json::to_vec(&attester_one_announcement).expect("serialize attester 1");
+        discovery
+            .handle_gossipsub_message(&attester_one_payload, |_did| None)
+            .expect("ingest attester one");
+        assert_eq!(discovery.pending_attestation_count, 1);
+        assert_eq!(
+            discovery
+                .pending_attestations
+                .get(&subject.did)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            discovery.pending_subject_attesters.get(&subject.did),
+            Some(&HashSet::from([attester_two.did.clone()]))
+        );
+
+        let mut attester_two_announcement =
+            announcement_for_identity(&attester_two, PeerId::random(), vec![], vec![]);
+        sign_announcement(&attester_two, &mut attester_two_announcement).expect("sign attester 2");
+        let attester_two_payload =
+            serde_json::to_vec(&attester_two_announcement).expect("serialize attester 2");
+        discovery
+            .handle_gossipsub_message(&attester_two_payload, |_did| None)
+            .expect("ingest attester two");
+        assert_eq!(discovery.pending_attestation_count, 0);
+        assert!(!discovery.pending_attestations.contains_key(&subject.did));
+        assert!(!discovery
+            .pending_subject_attesters
+            .contains_key(&subject.did));
+        assert!(!discovery
+            .pending_attester_index
+            .contains_key(&attester_one.did));
+        assert!(!discovery
+            .pending_attester_index
+            .contains_key(&attester_two.did));
     }
 
     #[test]
