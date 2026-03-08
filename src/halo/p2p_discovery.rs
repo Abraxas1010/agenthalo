@@ -668,6 +668,18 @@ impl AgentDiscovery {
         if self.pending_attestations.contains_key(did) {
             self.replace_pending_attestations(did, Vec::new());
         }
+        let Some(subjects) = self.pending_attester_index.remove(did) else {
+            return;
+        };
+        for subject_did in subjects {
+            let mut retained = self.take_pending_attestations(&subject_did);
+            if retained.is_empty() {
+                continue;
+            }
+            retained.retain(|attestation| attestation.attester_did != did);
+            retained.sort_by_key(|attestation| attestation.verified_at);
+            self.replace_pending_attestations(&subject_did, retained);
+        }
     }
 
     fn enforce_known_agent_limit(&mut self) {
@@ -1163,11 +1175,7 @@ impl AgentDiscovery {
                 self.replace_pending_attestations(&subject_did, Vec::new());
                 continue;
             }
-            let mut retained = self
-                .pending_attestations
-                .get(&subject_did)
-                .cloned()
-                .unwrap_or_default();
+            let mut retained = self.take_pending_attestations(&subject_did);
             retained.retain(|attestation| {
                 now.saturating_sub(attestation.verified_at) <= MAX_PENDING_ATTESTATION_AGE_SECS
             });
@@ -1944,6 +1952,73 @@ mod tests {
         assert!(!discovery
             .pending_attester_index
             .contains_key(&attester_two.did));
+    }
+
+    #[test]
+    fn remove_known_agent_cleans_pending_attester_entries_for_other_subjects() {
+        let attester = crate::halo::did::did_from_genesis_seed(&seed(0x88)).expect("attester");
+        let subject = crate::halo::did::did_from_genesis_seed(&seed(0x89)).expect("subject");
+        let other_attester =
+            crate::halo::did::did_from_genesis_seed(&seed(0x8A)).expect("other attester");
+        let now = now_unix();
+
+        let mut discovery = AgentDiscovery::new();
+        discovery.upsert_trusted_announcement(announcement_for_identity(
+            &attester,
+            PeerId::random(),
+            vec![],
+            vec![],
+        ));
+        discovery.upsert_trusted_announcement(announcement_for_identity(
+            &subject,
+            PeerId::random(),
+            vec![],
+            vec![],
+        ));
+        discovery.store_pending_attestations(
+            &subject.did,
+            vec![
+                crate::halo::capability_verification::attest_capability(
+                    &attester,
+                    &subject.did,
+                    "cap-a",
+                    "challenge-a",
+                    true,
+                    now,
+                )
+                .expect("attestation from removed attester"),
+                crate::halo::capability_verification::attest_capability(
+                    &other_attester,
+                    &subject.did,
+                    "cap-b",
+                    "challenge-b",
+                    true,
+                    now.saturating_add(1),
+                )
+                .expect("attestation from retained attester"),
+            ],
+        );
+        assert_eq!(discovery.pending_attestation_count, 2);
+
+        discovery.remove_known_agent(&attester.did);
+
+        assert_eq!(discovery.pending_attestation_count, 1);
+        assert_eq!(
+            discovery
+                .pending_attestations
+                .get(&subject.did)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            discovery.pending_subject_attesters.get(&subject.did),
+            Some(&HashSet::from([other_attester.did.clone()]))
+        );
+        assert!(!discovery.pending_attester_index.contains_key(&attester.did));
+        assert!(discovery
+            .pending_attester_index
+            .get(&other_attester.did)
+            .is_some_and(|subjects| subjects.contains(&subject.did)));
     }
 
     #[test]
