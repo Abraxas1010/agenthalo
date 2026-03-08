@@ -2,6 +2,7 @@ use crate::halo::capability_spec::{
     dynamic_topic_for_domain, is_dynamic_capability_topic, CapabilityDomain, CapabilityQuery,
     CapabilitySpec,
 };
+use crate::halo::capability_verification::verify_capability_attestation;
 use crate::halo::did::{dual_sign, dual_verify, DIDDocument, DIDIdentity};
 use crate::halo::util::{digest_bytes, hex_encode};
 use crate::halo::zk_credential;
@@ -11,6 +12,7 @@ use libp2p::{gossipsub, PeerId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 pub const TOPIC_PREFIX: &str = "/agenthalo/capabilities/";
 // T23: topic isolation model in lean/NucleusDB/Comms/Protocol/TopicIsolationSpec.lean
@@ -18,6 +20,7 @@ const DID_KEY_PREFIX: &str = "did:key:";
 const TYPE_ED25519: &str = "Ed25519VerificationKey2020";
 const MULTICODEC_ED25519_PUB: &[u8] = &[0xed, 0x01];
 const ZK_CREDENTIAL_DID_HASH_DOMAIN: &str = "agenthalo.zk_credential.did_hash.v1";
+const MAX_DYNAMIC_SUBSCRIPTIONS: usize = 64;
 
 pub fn topic_general() -> String {
     dynamic_topic_for_domain(&CapabilityDomain::new("general", 1))
@@ -82,22 +85,33 @@ impl From<CapabilitySpec> for AgentCapability {
 
 impl AgentCapability {
     pub fn to_capability_spec(&self) -> CapabilitySpec {
+        let domain_path = if self.name.trim().is_empty() {
+            self.id.clone()
+        } else {
+            self.name.clone()
+        };
         CapabilitySpec::new(
-            CapabilityDomain::new(self.id.clone(), 1),
+            CapabilityDomain::new(domain_path, 1),
             self.input_types
                 .iter()
-                .map(|ty| crate::halo::capability_spec::TypeSpec::Text {
-                    language: Some(ty.clone()),
-                })
+                .map(|ty| parse_legacy_type_spec(ty))
                 .collect(),
             self.output_types
                 .iter()
-                .map(|ty| crate::halo::capability_spec::TypeSpec::Text {
-                    language: Some(ty.clone()),
-                })
+                .map(|ty| parse_legacy_type_spec(ty))
                 .collect(),
             vec![],
         )
+    }
+}
+
+fn parse_legacy_type_spec(raw: &str) -> crate::halo::capability_spec::TypeSpec {
+    match raw {
+        "LeanTerm" => crate::halo::capability_spec::TypeSpec::LeanTerm,
+        "CoqTerm" => crate::halo::capability_spec::TypeSpec::CoqTerm,
+        other => crate::halo::capability_spec::TypeSpec::Text {
+            language: Some(other.to_string()),
+        },
     }
 }
 
@@ -311,6 +325,10 @@ fn did_hash_for_zk_membership(did: &str) -> String {
     hex_encode(digest_bytes(ZK_CREDENTIAL_DID_HASH_DOMAIN, did.as_bytes()).as_slice())
 }
 
+fn dht_record_expiry(ttl_secs: u64) -> Option<Instant> {
+    Some(Instant::now() + Duration::from_secs(ttl_secs.max(30)))
+}
+
 fn verify_optional_anonymous_membership(announcement: &AgentAnnouncement) -> Result<(), String> {
     let Some(bundle) = announcement.anonymous_membership_proof.as_ref() else {
         return Ok(());
@@ -376,6 +394,18 @@ impl AgentDiscovery {
         topic: &str,
         gossipsub_behaviour: &mut gossipsub::Behaviour,
     ) -> Result<(), String> {
+        if !is_allowed_capability_topic(topic) {
+            return Err(format!(
+                "refusing subscription to invalid capability topic `{topic}`"
+            ));
+        }
+        if !self.subscribed_topics.contains(topic)
+            && self.subscribed_topics.len() >= MAX_DYNAMIC_SUBSCRIPTIONS
+        {
+            return Err(format!(
+                "refusing to subscribe beyond {MAX_DYNAMIC_SUBSCRIPTIONS} capability topics"
+            ));
+        }
         let ident = IdentTopic::new(topic.to_string());
         gossipsub_behaviour
             .subscribe(&ident)
@@ -408,11 +438,12 @@ impl AgentDiscovery {
         kademlia: &mut Kademlia<MemoryStore>,
     ) -> Result<(), String> {
         let value = self.serialize_dht_announcement(announcement)?;
+        let expiry = dht_record_expiry(announcement.ttl);
         let record = Record {
             key: announcement_kad_key(&announcement.did),
             value: value.clone(),
             publisher: None,
-            expires: None,
+            expires: expiry,
         };
         kademlia
             .put_record(record, Quorum::One)
@@ -426,7 +457,7 @@ impl AgentDiscovery {
                     key: agent_capability_key(&announcement.did),
                     value: capability_index,
                     publisher: None,
-                    expires: None,
+                    expires: expiry,
                 },
                 Quorum::One,
             )
@@ -436,9 +467,9 @@ impl AgentDiscovery {
                 key: capability_kad_key(&capability_id, &announcement.did),
                 value: value.clone(),
                 publisher: None,
-                expires: None,
+                expires: expiry,
             };
-            kademlia.put_record(record, Quorum::One).map_err(|e| {
+            kademlia.put_record(record, Quorum::Majority).map_err(|e| {
                 format!("DHT put_record for capability `{capability_id}` failed: {e}")
             })?;
         }
@@ -450,9 +481,9 @@ impl AgentDiscovery {
                             key,
                             value: value.clone(),
                             publisher: None,
-                            expires: None,
+                            expires: expiry,
                         },
-                        Quorum::One,
+                        Quorum::Majority,
                     )
                     .map_err(|e| {
                         format!(
@@ -539,9 +570,41 @@ impl AgentDiscovery {
         self.verify_and_upsert(announcement, resolve_document)
     }
 
+    fn sanitize_attestations<F>(&self, announcement: &mut AgentAnnouncement, resolve_document: &F)
+    where
+        F: Fn(&str) -> Option<DIDDocument>,
+    {
+        let subject_did = announcement.did.clone();
+        for spec in &mut announcement.capability_specs {
+            let capability_id = spec.capability_id.clone();
+            spec.attestations.retain(|attestation| {
+                if !attestation.passed
+                    || attestation.capability_id != capability_id
+                    || attestation.challenge_hash.is_empty()
+                    || attestation.attester_did == attestation.subject_did
+                    || attestation.ed25519_signature.is_empty()
+                    || attestation.mldsa65_signature.is_empty()
+                    || attestation.subject_did != subject_did
+                    || attestation.capability_id != capability_id
+                {
+                    return false;
+                }
+                let attester_document = self
+                    .known_agents
+                    .get(&attestation.attester_did)
+                    .and_then(|known| known.did_document.clone())
+                    .or_else(|| resolve_document(&attestation.attester_did));
+                let Some(attester_document) = attester_document else {
+                    return false;
+                };
+                verify_capability_attestation(attestation, &attester_document).unwrap_or(false)
+            });
+        }
+    }
+
     fn verify_and_upsert<F>(
         &mut self,
-        announcement: AgentAnnouncement,
+        mut announcement: AgentAnnouncement,
         resolve_document: F,
     ) -> Result<AgentAnnouncement, String>
     where
@@ -566,11 +629,13 @@ impl AgentDiscovery {
             ));
         }
         verify_optional_anonymous_membership(&announcement)?;
+        self.sanitize_attestations(&mut announcement, &resolve_document);
         self.upsert_verified(announcement.clone());
         Ok(announcement)
     }
 
-    pub fn upsert_verified(&mut self, announcement: AgentAnnouncement) {
+    pub fn upsert_verified(&mut self, mut announcement: AgentAnnouncement) {
+        self.sanitize_attestations(&mut announcement, &|_| None);
         self.known_agents
             .insert(announcement.did.clone(), announcement);
     }
@@ -638,24 +703,43 @@ impl AgentDiscovery {
             let left_spec = self.best_capability_match(left, query, now, attestation_max_age_secs);
             let right_spec =
                 self.best_capability_match(right, query, now, attestation_max_age_secs);
-            let left_success = left_spec
-                .map(|spec| spec.metrics.success_rate)
-                .unwrap_or(0.0);
-            let right_success = right_spec
-                .map(|spec| spec.metrics.success_rate)
-                .unwrap_or(0.0);
-            right_success
-                .partial_cmp(&left_success)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    let left_attestations = left_spec
-                        .map(|spec| spec.verified_attestation_count(now, attestation_max_age_secs))
-                        .unwrap_or(0);
-                    let right_attestations = right_spec
-                        .map(|spec| spec.verified_attestation_count(now, attestation_max_age_secs))
-                        .unwrap_or(0);
-                    right_attestations.cmp(&left_attestations)
+            let left_score = left_spec
+                .map(|spec| {
+                    (
+                        spec.metrics.success_rate,
+                        std::cmp::Reverse(
+                            spec.verified_attestation_count(now, attestation_max_age_secs),
+                        ),
+                        std::cmp::Reverse(u64::MAX - spec.metrics.latency_p99_ms),
+                        std::cmp::Reverse(u64::MAX - spec.metrics.cost_microdollars),
+                    )
                 })
+                .unwrap_or((
+                    0.0,
+                    std::cmp::Reverse(0),
+                    std::cmp::Reverse(0),
+                    std::cmp::Reverse(0),
+                ));
+            let right_score = right_spec
+                .map(|spec| {
+                    (
+                        spec.metrics.success_rate,
+                        std::cmp::Reverse(
+                            spec.verified_attestation_count(now, attestation_max_age_secs),
+                        ),
+                        std::cmp::Reverse(u64::MAX - spec.metrics.latency_p99_ms),
+                        std::cmp::Reverse(u64::MAX - spec.metrics.cost_microdollars),
+                    )
+                })
+                .unwrap_or((
+                    0.0,
+                    std::cmp::Reverse(0),
+                    std::cmp::Reverse(0),
+                    std::cmp::Reverse(0),
+                ));
+            right_score
+                .partial_cmp(&left_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         if matches.len() >= query.count as usize {
@@ -817,7 +901,26 @@ mod tests {
         assert!(!is_allowed_capability_topic(
             "/agenthalo/capabilities/prove//lean"
         ));
+        assert!(!is_allowed_capability_topic(&format!(
+            "/agenthalo/capabilities/{}",
+            ["deep"; 9].join("/")
+        )));
         assert!(!is_allowed_capability_topic("general"));
+    }
+
+    #[test]
+    fn legacy_agent_capability_roundtrip_preserves_domain_path() {
+        let spec = CapabilitySpec::new(
+            CapabilityDomain::new("prove/lean/algebra", 1),
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![crate::halo::capability_spec::TypeSpec::CoqTerm],
+            vec![],
+        );
+        let legacy = AgentCapability::from(spec.clone());
+        let roundtrip = legacy.to_capability_spec();
+        assert_eq!(roundtrip.domain.path, spec.domain.path);
+        assert_eq!(roundtrip.input_types, spec.input_types);
+        assert_eq!(roundtrip.output_types, spec.output_types);
     }
 
     #[test]
@@ -1170,6 +1273,82 @@ mod tests {
 
         assert_eq!(dht_only_ann.multiaddrs, announcement.multiaddrs);
         assert_eq!(full_ann.multiaddrs, announcement.multiaddrs);
+    }
+
+    #[test]
+    fn discovery_strips_forged_capability_attestations_on_ingest() {
+        let subject = crate::halo::did::did_from_genesis_seed(&seed(0x76)).expect("subject");
+        let mut announcement =
+            announcement_for_identity(&subject, PeerId::random(), vec![], vec![]);
+        let mut spec = CapabilitySpec::new(
+            CapabilityDomain::new("prove/lean/algebra", 1),
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![],
+        );
+        spec.attestations
+            .push(crate::halo::capability_spec::CapabilityAttestation {
+                attester_did: "did:key:mallory".to_string(),
+                subject_did: subject.did.clone(),
+                capability_id: spec.capability_id.clone(),
+                challenge_hash: "forged".to_string(),
+                passed: true,
+                verified_at: now_unix(),
+                ed25519_signature: vec![0u8; 64],
+                mldsa65_signature: vec![0u8; 128],
+            });
+        announcement.capability_specs = vec![spec];
+        sign_announcement(&subject, &mut announcement).expect("sign");
+        let payload = serde_json::to_vec(&announcement).expect("serialize");
+
+        let mut discovery = AgentDiscovery::new();
+        let accepted = discovery
+            .handle_gossipsub_message(&payload, |_did| None)
+            .expect("signed announcement");
+        assert!(accepted.capability_specs[0].attestations.is_empty());
+    }
+
+    #[test]
+    fn discovery_keeps_valid_capability_attestations_on_ingest() {
+        let attester = crate::halo::did::did_from_genesis_seed(&seed(0x77)).expect("attester");
+        let subject = crate::halo::did::did_from_genesis_seed(&seed(0x78)).expect("subject");
+
+        let mut attester_announcement =
+            announcement_for_identity(&attester, PeerId::random(), vec![], vec![]);
+        sign_announcement(&attester, &mut attester_announcement).expect("sign attester");
+        let attester_payload = serde_json::to_vec(&attester_announcement).expect("serialize");
+
+        let mut discovery = AgentDiscovery::new();
+        discovery
+            .handle_gossipsub_message(&attester_payload, |_did| None)
+            .expect("ingest attester");
+
+        let mut subject_announcement =
+            announcement_for_identity(&subject, PeerId::random(), vec![], vec![]);
+        let mut spec = CapabilitySpec::new(
+            CapabilityDomain::new("prove/lean/algebra", 1),
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![],
+        );
+        let attestation = crate::halo::capability_verification::attest_capability(
+            &attester,
+            &subject.did,
+            &spec.capability_id,
+            "challenge-ok",
+            true,
+            now_unix(),
+        )
+        .expect("attest capability");
+        spec.attestations.push(attestation);
+        subject_announcement.capability_specs = vec![spec];
+        sign_announcement(&subject, &mut subject_announcement).expect("sign subject");
+        let subject_payload = serde_json::to_vec(&subject_announcement).expect("serialize");
+
+        let accepted = discovery
+            .handle_gossipsub_message(&subject_payload, |_did| None)
+            .expect("ingest subject");
+        assert_eq!(accepted.capability_specs[0].attestations.len(), 1);
     }
 
     #[test]

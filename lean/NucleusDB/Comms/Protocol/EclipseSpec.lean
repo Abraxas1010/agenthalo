@@ -10,31 +10,35 @@ inductive BootstrapConfidence
   | unverifiable
   deriving DecidableEq, Repr
 
+def overlapCount (peerProvided independent : List String) : Nat :=
+  (peerProvided.filter fun peer => decide (peer ∈ independent)).length
+
 def verifyTopology (peerProvided independent : List String) : BootstrapConfidence :=
   if independent = [] then
     BootstrapConfidence.unverifiable
-  else if peerProvided.any (fun p => decide (p ∈ independent)) then
-    BootstrapConfidence.moderate
   else
-    BootstrapConfidence.suspicious
+    let overlap := overlapCount peerProvided independent
+    if overlap = 0 then
+      BootstrapConfidence.suspicious
+    else if overlap * 2 ≥ independent.length then
+      BootstrapConfidence.high
+    else
+      BootstrapConfidence.moderate
 
-theorem eclipse_detected_on_zero_overlap
+theorem zero_overlap_is_suspicious
     (peerProvided independent : List String)
     (hNonempty : independent ≠ [])
-    (hDisjoint : ∀ p, p ∈ peerProvided → p ∉ independent) :
+    (hOverlap : overlapCount peerProvided independent = 0) :
     verifyTopology peerProvided independent = BootstrapConfidence.suspicious := by
-  unfold verifyTopology
-  rw [if_neg hNonempty]
-  have hAnyFalse : List.any peerProvided (fun p => decide (p ∈ independent)) = false := by
-    induction peerProvided with
-    | nil => rfl
-    | cons hd tl ih =>
-      have hHd : hd ∉ independent := hDisjoint hd (by simp)
-      have hTl : ∀ p, p ∈ tl → p ∉ independent := by
-        intro p hp
-        exact hDisjoint p (List.mem_cons_of_mem _ hp)
-      simp [hHd, ih hTl]
-  simp [hAnyFalse]
+  simp [verifyTopology, hNonempty, hOverlap]
+
+theorem majority_overlap_is_high
+    (peerProvided independent : List String)
+    (hNonempty : independent ≠ [])
+    (hOverlap : overlapCount peerProvided independent ≠ 0)
+    (hMajority : overlapCount peerProvided independent * 2 ≥ independent.length) :
+    verifyTopology peerProvided independent = BootstrapConfidence.high := by
+  simp [verifyTopology, hNonempty, hOverlap, hMajority]
 
 end Protocol
 end Comms

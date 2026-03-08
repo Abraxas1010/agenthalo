@@ -1,9 +1,12 @@
+use crate::halo::did::{dual_verify, DIDDocument};
 use crate::halo::util::{digest_bytes, hex_encode};
 use serde::{Deserialize, Serialize};
 
 const CAPABILITY_ID_DOMAIN: &str = "agenthalo.capability.id.v1";
 const CAPABILITY_QUERY_HASH_DOMAIN: &str = "agenthalo.capability.query.v1";
 pub const CAPABILITY_TOPIC_PREFIX: &str = "/agenthalo/capabilities/";
+const MAX_CAPABILITY_TOPIC_LEN: usize = 160;
+const MAX_CAPABILITY_TOPIC_SEGMENTS: usize = 8;
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CapabilityDomain {
@@ -25,10 +28,8 @@ impl CapabilityDomain {
             return true;
         }
         self.path == normalized_prefix
-            || self
-                .path
-                .strip_prefix(&(normalized_prefix.clone() + "/"))
-                .is_some()
+            || (self.path.starts_with(&normalized_prefix)
+                && self.path.as_bytes().get(normalized_prefix.len()).copied() == Some(b'/'))
     }
 
     pub fn topic(&self) -> String {
@@ -117,11 +118,16 @@ impl CapabilitySpec {
         output_types: &[TypeSpec],
         constraints: &[CapabilityConstraint],
     ) -> String {
+        let mut canonical_constraints = constraints
+            .iter()
+            .map(|constraint| serde_json::to_string(constraint).unwrap_or_default())
+            .collect::<Vec<_>>();
+        canonical_constraints.sort();
         let canonical = serde_json::json!({
             "domain": domain,
             "input_types": input_types,
             "output_types": output_types,
-            "constraints": constraints,
+            "constraints": canonical_constraints,
         });
         let raw = serde_json::to_vec(&canonical).unwrap_or_default();
         hex_encode(&digest_bytes(CAPABILITY_ID_DOMAIN, &raw))
@@ -192,10 +198,18 @@ impl CapabilitySpec {
     pub fn verified_attestation_count(&self, now: u64, max_age_secs: u64) -> usize {
         self.attestations
             .iter()
-            .filter(|attestation| {
-                attestation.passed && now.saturating_sub(attestation.verified_at) <= max_age_secs
-            })
+            .filter(|attestation| self.attestation_is_structurally_valid(attestation))
+            .filter(|attestation| now.saturating_sub(attestation.verified_at) <= max_age_secs)
             .count()
+    }
+
+    pub fn attestation_is_structurally_valid(&self, attestation: &CapabilityAttestation) -> bool {
+        attestation.passed
+            && attestation.capability_id == self.capability_id
+            && !attestation.challenge_hash.is_empty()
+            && attestation.attester_did != attestation.subject_did
+            && !attestation.ed25519_signature.is_empty()
+            && !attestation.mldsa65_signature.is_empty()
     }
 
     pub fn topic(&self) -> String {
@@ -249,7 +263,10 @@ pub fn is_dynamic_capability_topic(topic: &str) -> bool {
     let Some(rest) = topic.strip_prefix(CAPABILITY_TOPIC_PREFIX) else {
         return false;
     };
+    let segment_count = rest.split('/').count();
     !rest.is_empty()
+        && rest.len() <= MAX_CAPABILITY_TOPIC_LEN
+        && segment_count <= MAX_CAPABILITY_TOPIC_SEGMENTS
         && !rest.starts_with('/')
         && !rest.ends_with('/')
         && rest.split('/').all(|segment| {
@@ -258,6 +275,27 @@ pub fn is_dynamic_capability_topic(topic: &str) -> bool {
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
         })
+}
+
+pub fn capability_attestation_matches_document(
+    attestation: &CapabilityAttestation,
+    did_document: &DIDDocument,
+) -> Result<bool, String> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "attester_did": attestation.attester_did,
+        "subject_did": attestation.subject_did,
+        "capability_id": attestation.capability_id,
+        "challenge_hash": attestation.challenge_hash,
+        "passed": attestation.passed,
+        "verified_at": attestation.verified_at,
+    }))
+    .map_err(|e| format!("serialize capability attestation payload: {e}"))?;
+    dual_verify(
+        did_document,
+        &payload,
+        &attestation.ed25519_signature,
+        &attestation.mldsa65_signature,
+    )
 }
 
 #[cfg(test)]
@@ -288,6 +326,29 @@ mod tests {
             &spec.constraints,
         );
         assert_eq!(spec.capability_id, id_again);
+    }
+
+    #[test]
+    fn capability_id_is_stable_across_constraint_orderings() {
+        let domain = CapabilityDomain::new("prove/lean/algebra", 1);
+        let input_types = vec![TypeSpec::LeanTerm];
+        let output_types = vec![TypeSpec::LeanTerm];
+        let constraints_a = vec![
+            CapabilityConstraint::ZeroSorry,
+            CapabilityConstraint::KernelFaithful {
+                kernel: "lean4".to_string(),
+            },
+        ];
+        let constraints_b = vec![
+            CapabilityConstraint::KernelFaithful {
+                kernel: "lean4".to_string(),
+            },
+            CapabilityConstraint::ZeroSorry,
+        ];
+        assert_eq!(
+            CapabilitySpec::compute_id(&domain, &input_types, &output_types, &constraints_a),
+            CapabilitySpec::compute_id(&domain, &input_types, &output_types, &constraints_b),
+        );
     }
 
     #[test]
@@ -342,6 +403,10 @@ mod tests {
         ));
         assert!(!is_dynamic_capability_topic("/agenthalo/capabilities//bad"));
         assert!(!is_dynamic_capability_topic("/agenthalo/capabilities/Bad"));
+        assert!(!is_dynamic_capability_topic(&format!(
+            "/agenthalo/capabilities/{}",
+            "segment/".repeat(20)
+        )));
         assert!(!is_dynamic_capability_topic("general"));
     }
 }

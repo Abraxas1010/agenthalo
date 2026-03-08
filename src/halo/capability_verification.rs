@@ -6,9 +6,11 @@ use crate::halo::util::{digest_bytes, hex_encode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Mutex, OnceLock};
 
 const CHALLENGE_HASH_DOMAIN: &str = "agenthalo.capability.challenge.v1";
-const ATTESTATION_HASH_DOMAIN: &str = "agenthalo.capability.attestation.v1";
+const CHALLENGE_RATE_LIMIT_PER_MIN: usize = 10;
+const CHALLENGE_RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ChallengeKind {
@@ -63,7 +65,7 @@ impl DomainChallengeBank {
         let mut bank = Self::default();
         bank.register("prove/lean", vec![ChallengeKind::DeterministicText]);
         bank.register("translate", vec![ChallengeKind::DeterministicJson]);
-        bank.register("analyze", vec![ChallengeKind::TypeOnly]);
+        bank.register("analyze", vec![ChallengeKind::DeterministicJson]);
         bank
     }
 
@@ -76,7 +78,8 @@ impl DomainChallengeBank {
         spec: &CapabilitySpec,
         now: u64,
         ttl_secs: u64,
-    ) -> CapabilityChallenge {
+    ) -> Result<CapabilityChallenge, String> {
+        enforce_challenge_rate_limit(&spec.capability_id, now)?;
         let kind = self
             .templates
             .iter()
@@ -93,13 +96,40 @@ fn default_kind_for_spec(spec: &CapabilitySpec) -> ChallengeKind {
         Some(TypeSpec::Text { .. }) | Some(TypeSpec::LeanTerm) | Some(TypeSpec::CoqTerm) => {
             ChallengeKind::DeterministicText
         }
-        _ => ChallengeKind::TypeOnly,
+        _ => ChallengeKind::DeterministicJson,
     }
 }
 
-fn challenge_nonce(spec: &CapabilitySpec, now: u64) -> String {
-    let raw = format!("{}:{now}:{}", spec.capability_id, spec.domain.path);
-    hex_encode(&digest_bytes(CHALLENGE_HASH_DOMAIN, raw.as_bytes()))
+fn challenge_rate_state() -> &'static Mutex<HashMap<String, VecDeque<u64>>> {
+    static RATE_STATE: OnceLock<Mutex<HashMap<String, VecDeque<u64>>>> = OnceLock::new();
+    RATE_STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn enforce_challenge_rate_limit(capability_id: &str, now: u64) -> Result<(), String> {
+    let mut guard = challenge_rate_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entries = guard.entry(capability_id.to_string()).or_default();
+    while let Some(front) = entries.front().copied() {
+        if now.saturating_sub(front) > CHALLENGE_RATE_LIMIT_WINDOW_SECS {
+            let _ = entries.pop_front();
+        } else {
+            break;
+        }
+    }
+    if entries.len() >= CHALLENGE_RATE_LIMIT_PER_MIN {
+        return Err(format!(
+            "challenge issuance for `{capability_id}` exceeded {CHALLENGE_RATE_LIMIT_PER_MIN}/minute"
+        ));
+    }
+    entries.push_back(now);
+    Ok(())
+}
+
+fn challenge_nonce() -> Result<String, String> {
+    let mut random = [0u8; 32];
+    getrandom::getrandom(&mut random).map_err(|e| format!("challenge nonce rng: {e}"))?;
+    Ok(hex_encode(&random))
 }
 
 pub fn issue_challenge(
@@ -107,8 +137,8 @@ pub fn issue_challenge(
     kind: ChallengeKind,
     now: u64,
     ttl_secs: u64,
-) -> CapabilityChallenge {
-    let nonce = challenge_nonce(spec, now);
+) -> Result<CapabilityChallenge, String> {
+    let nonce = challenge_nonce()?;
     let expected_output = match kind {
         ChallengeKind::DeterministicText => {
             Value::String(format!("capability:{}:{}", spec.capability_id, nonce))
@@ -141,7 +171,7 @@ pub fn issue_challenge(
         required_constraints: spec.constraints.clone(),
     };
     challenge.challenge_id = challenge_hash(&challenge);
-    challenge
+    Ok(challenge)
 }
 
 pub fn challenge_hash(challenge: &CapabilityChallenge) -> String {
@@ -191,9 +221,9 @@ pub fn verify_challenge_response(
             }
         }
         ChallengeKind::TypeOnly => {
-            if !payload_matches_type(&response.payload, &response.output_type) {
-                reasons.push("response payload does not match declared output type".to_string());
-            }
+            reasons.push(
+                "TypeOnly challenges are informational only and cannot build trust".to_string(),
+            );
         }
     }
 
@@ -207,19 +237,6 @@ pub fn verify_challenge_response(
         passed: reasons.is_empty(),
         challenge_hash: challenge_hash(challenge),
         reasons,
-    }
-}
-
-fn payload_matches_type(payload: &Value, ty: &TypeSpec) -> bool {
-    match ty {
-        TypeSpec::Bytes { .. } => payload.as_str().is_some(),
-        TypeSpec::JsonSchema { .. } => payload.is_object() || payload.is_array(),
-        TypeSpec::LeanTerm | TypeSpec::CoqTerm => payload.as_str().is_some(),
-        TypeSpec::Text { .. } => payload.as_str().is_some(),
-        TypeSpec::Vector { dimensions } => payload
-            .as_array()
-            .map(|items| items.len() == *dimensions as usize && items.iter().all(|v| v.is_number()))
-            .unwrap_or(false),
     }
 }
 
@@ -242,12 +259,16 @@ fn constraint_violation(
             }
         }
         CapabilityConstraint::ZeroSorry => {
-            let text = response
-                .payload
-                .as_str()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if text.contains("sorry") || text.contains("admit") {
+            if response
+                .metadata
+                .get("zero_sorry_verified")
+                .map(String::as_str)
+                != Some("true")
+            {
+                Some("ZeroSorry requires kernel-level zero_sorry_verified=true".to_string())
+            } else if normalized_payload_text(&response.payload).contains("sorry")
+                || normalized_payload_text(&response.payload).contains("admit")
+            {
                 Some("response violated ZeroSorry constraint".to_string())
             } else {
                 None
@@ -255,9 +276,10 @@ fn constraint_violation(
         }
         CapabilityConstraint::MaxLatencyMs(max_ms) => {
             let elapsed_ms = response
-                .completed_at
-                .saturating_sub(challenge.issued_at)
-                .saturating_mul(1000);
+                .metadata
+                .get("elapsed_ms")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_else(|| response.completed_at.saturating_sub(challenge.issued_at));
             if elapsed_ms <= *max_ms {
                 None
             } else {
@@ -285,6 +307,16 @@ fn constraint_violation(
             }
         }
     }
+}
+
+fn normalized_payload_text(payload: &Value) -> String {
+    payload
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .filter(|ch| !matches!(*ch, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -324,6 +356,9 @@ pub fn attest_capability(
     passed: bool,
     verified_at: u64,
 ) -> Result<CapabilityAttestation, String> {
+    if attester_identity.did == subject_did {
+        return Err("self-attestation is not allowed".to_string());
+    }
     let payload = attestation_payload_bytes(
         &attester_identity.did,
         subject_did,
@@ -332,7 +367,6 @@ pub fn attest_capability(
         passed,
         verified_at,
     )?;
-    let _payload_hash = hex_encode(&digest_bytes(ATTESTATION_HASH_DOMAIN, &payload));
     let (ed25519_signature, mldsa65_signature) = dual_sign(attester_identity, &payload)?;
     Ok(CapabilityAttestation {
         attester_did: attester_identity.did.clone(),
@@ -424,13 +458,26 @@ pub fn transitive_trust(
         }
     }
 
-    best_by_attester.values().sum::<f64>().min(1.0)
+    best_by_attester
+        .values()
+        .copied()
+        .fold(0.0_f64, f64::max)
+        .min(1.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::halo::capability_spec::{CapabilityDomain, CapabilitySpec};
+
+    fn reset_challenge_rate_state_for_tests() {
+        let mutex = challenge_rate_state();
+        let mut guard = mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.clear();
+        mutex.clear_poison();
+    }
 
     fn sample_spec() -> CapabilitySpec {
         CapabilitySpec::new(
@@ -450,8 +497,10 @@ mod tests {
 
     #[test]
     fn challenge_response_respects_constraints() {
+        reset_challenge_rate_state_for_tests();
         let spec = sample_spec();
-        let challenge = issue_challenge(&spec, ChallengeKind::DeterministicText, 100, 60);
+        let challenge =
+            issue_challenge(&spec, ChallengeKind::DeterministicText, 100, 60).expect("challenge");
         let ok = verify_challenge_response(
             &spec,
             &challenge,
@@ -462,6 +511,7 @@ mod tests {
                 payload: challenge.expected_output.clone(),
                 metadata: HashMap::from([
                     ("kernel".to_string(), "lean4".to_string()),
+                    ("zero_sorry_verified".to_string(), "true".to_string()),
                     ("indexes".to_string(), "mathlib,lean_index".to_string()),
                 ]),
                 completed_at: 100,
@@ -477,7 +527,10 @@ mod tests {
                     language: Some("lean".to_string()),
                 },
                 payload: Value::String("sorry".to_string()),
-                metadata: HashMap::from([("kernel".to_string(), "lean4".to_string())]),
+                metadata: HashMap::from([
+                    ("kernel".to_string(), "lean4".to_string()),
+                    ("zero_sorry_verified".to_string(), "true".to_string()),
+                ]),
                 completed_at: 100,
             },
         );
@@ -507,9 +560,10 @@ mod tests {
 
     #[test]
     fn challenge_bank_selects_registered_domain_template() {
+        reset_challenge_rate_state_for_tests();
         let spec = sample_spec();
         let bank = DomainChallengeBank::with_defaults();
-        let challenge = bank.issue_for_spec(&spec, 100, 60);
+        let challenge = bank.issue_for_spec(&spec, 100, 60).expect("challenge");
         assert_eq!(challenge.kind, ChallengeKind::DeterministicText);
         assert_eq!(challenge.challenge_id, challenge_hash(&challenge));
     }
@@ -544,7 +598,78 @@ mod tests {
         ]);
 
         let score = transitive_trust("did:key:c", &attestations, &trust_graph, 0.7, 3);
-        assert!(score > 0.8, "score={score}");
+        assert!(score > 0.4, "score={score}");
+        assert!(score < 0.8, "score={score}");
         assert!(score <= 1.0);
+    }
+
+    #[test]
+    fn challenge_nonce_is_unique_within_same_second() {
+        reset_challenge_rate_state_for_tests();
+        let spec = sample_spec();
+        let first = issue_challenge(&spec, ChallengeKind::DeterministicText, 100, 60)
+            .expect("first challenge");
+        let second = issue_challenge(&spec, ChallengeKind::DeterministicText, 100, 60)
+            .expect("second challenge");
+        assert_ne!(first.nonce, second.nonce);
+        assert_ne!(first.challenge_id, second.challenge_id);
+        assert_ne!(first.expected_output, second.expected_output);
+    }
+
+    #[test]
+    fn type_only_challenges_do_not_build_trust() {
+        let spec = CapabilitySpec::new(
+            CapabilityDomain::new("analyze/general", 1),
+            vec![TypeSpec::Text { language: None }],
+            vec![TypeSpec::Text { language: None }],
+            vec![],
+        );
+        let challenge =
+            issue_challenge(&spec, ChallengeKind::TypeOnly, 100, 60).expect("type only challenge");
+        let result = verify_challenge_response(
+            &spec,
+            &challenge,
+            &ChallengeResponse {
+                output_type: TypeSpec::Text { language: None },
+                payload: Value::String("anything".to_string()),
+                metadata: HashMap::new(),
+                completed_at: 100,
+            },
+        );
+        assert!(!result.passed);
+        assert!(result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("informational only")));
+    }
+
+    #[test]
+    fn challenge_rate_limit_enforced_per_capability() {
+        reset_challenge_rate_state_for_tests();
+        let spec = sample_spec();
+        let bank = DomainChallengeBank::default();
+        for now in 100..110 {
+            bank.issue_for_spec(&spec, now, 60)
+                .expect("within rate limit");
+        }
+        let err = bank
+            .issue_for_spec(&spec, 110, 60)
+            .expect_err("11th challenge in a minute must fail");
+        assert!(err.contains("exceeded 10/minute"));
+    }
+
+    #[test]
+    fn self_attestation_is_rejected() {
+        let identity = crate::halo::did::did_from_genesis_seed(&[0x52; 64]).expect("identity");
+        let err = attest_capability(
+            &identity,
+            &identity.did,
+            "capability-1",
+            "challenge-hash",
+            true,
+            500,
+        )
+        .expect_err("self-attestation must fail");
+        assert!(err.contains("self-attestation"));
     }
 }

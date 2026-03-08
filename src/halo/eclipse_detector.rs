@@ -27,7 +27,7 @@ pub fn verify_topology(
     peer_provided: &[String],
     independent_sources: &[DiscoveryCandidate],
 ) -> BootstrapConfidence {
-    let independent_ids: HashSet<&str> = independent_sources
+    let strong_ids: HashSet<&str> = independent_sources
         .iter()
         .filter(|candidate| {
             candidate.channels.iter().any(|channel| {
@@ -39,6 +39,21 @@ pub fn verify_topology(
         })
         .map(|candidate| candidate.peer_id.as_str())
         .collect();
+    let cached_fallback_ids: HashSet<&str> = independent_sources
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .channels
+                .iter()
+                .any(|channel| !matches!(channel, DiscoveryChannel::PeerGossip { .. }))
+        })
+        .map(|candidate| candidate.peer_id.as_str())
+        .collect();
+    let independent_ids = if strong_ids.is_empty() {
+        cached_fallback_ids
+    } else {
+        strong_ids
+    };
 
     if independent_ids.is_empty() {
         return BootstrapConfidence::Unverifiable;
@@ -106,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_topology_excludes_cached_and_peer_gossip_from_independent_set() {
+    fn verify_topology_uses_cached_peers_only_as_last_resort() {
         let confidence = verify_topology(
             &["peer-a".to_string()],
             &[candidate(
@@ -119,6 +134,18 @@ mod tests {
                 ],
             )],
         );
-        assert_eq!(confidence, BootstrapConfidence::Unverifiable);
+        assert_eq!(confidence, BootstrapConfidence::High);
+    }
+
+    #[test]
+    fn verify_topology_still_prefers_strong_channels_over_cached_overlap() {
+        let confidence = verify_topology(
+            &["peer-a".to_string()],
+            &[
+                candidate("peer-a", vec![DiscoveryChannel::Cached]),
+                candidate("peer-b", vec![DiscoveryChannel::EnvVar]),
+            ],
+        );
+        assert_eq!(confidence, BootstrapConfidence::Suspicious);
     }
 }

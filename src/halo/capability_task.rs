@@ -88,6 +88,8 @@ fn group_topic(task_id: &str) -> String {
 fn mutual_attestation_satisfied(
     assignments: &[TaskAssignment],
     specs: &HashMap<String, CapabilitySpec>,
+    now: u64,
+    attestation_max_age_secs: u64,
 ) -> bool {
     for left in assignments {
         for right in assignments {
@@ -102,13 +104,17 @@ fn mutual_attestation_satisfied(
             };
             let left_trusts_right = left_spec.attestations.iter().any(|attestation| {
                 attestation.passed
+                    && attestation.attester_did != attestation.subject_did
                     && attestation.subject_did == right.assigned_did
                     && attestation.attester_did == left.assigned_did
+                    && now.saturating_sub(attestation.verified_at) <= attestation_max_age_secs
             });
             let right_trusts_left = right_spec.attestations.iter().any(|attestation| {
                 attestation.passed
+                    && attestation.attester_did != attestation.subject_did
                     && attestation.subject_did == left.assigned_did
                     && attestation.attester_did == right.assigned_did
+                    && now.saturating_sub(attestation.verified_at) <= attestation_max_age_secs
             });
             if !(left_trusts_right && right_trusts_left) {
                 return false;
@@ -155,7 +161,7 @@ impl TaskManifold {
                             std::cmp::Reverse(
                                 spec.verified_attestation_count(now, attestation_max_age_secs),
                             ),
-                            std::cmp::Reverse(u64::MAX - spec.metrics.latency_p50_ms),
+                            std::cmp::Reverse(u64::MAX - spec.metrics.latency_p99_ms),
                             std::cmp::Reverse(u64::MAX - spec.metrics.cost_microdollars),
                         )
                     })
@@ -172,7 +178,7 @@ impl TaskManifold {
                             std::cmp::Reverse(
                                 spec.verified_attestation_count(now, attestation_max_age_secs),
                             ),
-                            std::cmp::Reverse(u64::MAX - spec.metrics.latency_p50_ms),
+                            std::cmp::Reverse(u64::MAX - spec.metrics.latency_p99_ms),
                             std::cmp::Reverse(u64::MAX - spec.metrics.cost_microdollars),
                         )
                     })
@@ -212,7 +218,7 @@ impl TaskManifold {
                     assigned_did: announcement.did.clone(),
                     capability_id: spec.capability_id.clone(),
                     group_topic: group_topic.clone(),
-                    estimated_latency_ms: spec.metrics.latency_p50_ms,
+                    estimated_latency_ms: spec.metrics.latency_p99_ms,
                     cost_microdollars: spec.metrics.cost_microdollars,
                 });
             }
@@ -264,7 +270,12 @@ impl TaskManifold {
             }
         }
         if self.constraints.require_mutual_attestation
-            && !mutual_attestation_satisfied(&assignments, &selected_specs)
+            && !mutual_attestation_satisfied(
+                &assignments,
+                &selected_specs,
+                now,
+                attestation_max_age_secs,
+            )
         {
             return Err(format!(
                 "task manifold `{}` requires mutual attestation between assigned agents",
@@ -516,5 +527,41 @@ mod tests {
         let mut group = EphemeralTaskGroup::from_formation(formation);
         group.dissolve(199);
         assert_eq!(group.dissolved_at, Some(199));
+    }
+
+    #[test]
+    fn self_attestations_do_not_satisfy_mutual_attestation_constraint() {
+        let left = spec("prove/lean/algebra", "did:key:a", 0.95, 20, 5);
+        let right = spec("translate/coq/to-lean", "did:key:b", 0.94, 25, 6);
+        let assignments = vec![
+            TaskAssignment {
+                task_id: "task-4".to_string(),
+                slot_id: "prove".to_string(),
+                assigned_did: "did:key:a".to_string(),
+                capability_id: left.capability_id.clone(),
+                group_topic: "/agenthalo/tasks/task-4/group".to_string(),
+                estimated_latency_ms: 40,
+                cost_microdollars: 5,
+            },
+            TaskAssignment {
+                task_id: "task-4".to_string(),
+                slot_id: "translate".to_string(),
+                assigned_did: "did:key:b".to_string(),
+                capability_id: right.capability_id.clone(),
+                group_topic: "/agenthalo/tasks/task-4/group".to_string(),
+                estimated_latency_ms: 50,
+                cost_microdollars: 6,
+            },
+        ];
+        let specs = HashMap::from([
+            (left.capability_id.clone(), left),
+            (right.capability_id.clone(), right),
+        ]);
+        assert!(!mutual_attestation_satisfied(
+            &assignments,
+            &specs,
+            150,
+            3600
+        ));
     }
 }
