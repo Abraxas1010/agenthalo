@@ -371,8 +371,17 @@ impl P2pNode {
                     announcement.ttl = reannounce_ttl_secs;
                     sign_announcement(identity, &mut announcement)?;
                     discovery.upsert_verified(announcement.clone());
-                    if let Err(error) = discovery.announce(&topic_general(), &announcement, self.gossipsub_mut()) {
-                        eprintln!("[AgentHalo/P2P] periodic gossip announce failed: {error}");
+                    for topic in announcement.topics() {
+                        if !discovery.is_subscribed(&topic) {
+                            let _ = discovery.subscribe(&topic, self.gossipsub_mut());
+                        }
+                        if let Err(error) =
+                            discovery.announce(&topic, &announcement, self.gossipsub_mut())
+                        {
+                            eprintln!(
+                                "[AgentHalo/P2P] periodic gossip announce failed on `{topic}`: {error}"
+                            );
+                        }
                     }
                     if let Err(error) = discovery.publish_to_dht(&announcement, self.kademlia_mut()) {
                         eprintln!("[AgentHalo/P2P] periodic DHT announce failed: {error}");
@@ -544,7 +553,9 @@ mod tests {
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         let mutex = env_lock();
-        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         mutex.clear_poison();
         guard
     }

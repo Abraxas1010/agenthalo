@@ -5,5 +5,10 @@ import NucleusDB.Comms.Protocol.EnrichmentSpec
 import NucleusDB.Comms.Protocol.HandlerSpec
 import NucleusDB.Comms.Protocol.A2ABridgeSpec
 import NucleusDB.Comms.Protocol.DiscoverySpec
+import NucleusDB.Comms.Protocol.CapabilitySpec
+import NucleusDB.Comms.Protocol.ChallengeSpec
+import NucleusDB.Comms.Protocol.TrustSpec
+import NucleusDB.Comms.Protocol.EclipseSpec
+import NucleusDB.Comms.Protocol.BeaconSpec
 import NucleusDB.Comms.Protocol.TopicIsolationSpec
 import NucleusDB.Comms.Protocol.ZKBindingSpec

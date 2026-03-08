@@ -1,3 +1,7 @@
+use crate::halo::capability_spec::{
+    dynamic_topic_for_domain, is_dynamic_capability_topic, CapabilityDomain, CapabilityQuery,
+    CapabilitySpec,
+};
 use crate::halo::did::{dual_sign, dual_verify, DIDDocument, DIDIdentity};
 use crate::halo::util::{digest_bytes, hex_encode};
 use crate::halo::zk_credential;
@@ -16,36 +20,31 @@ const MULTICODEC_ED25519_PUB: &[u8] = &[0xed, 0x01];
 const ZK_CREDENTIAL_DID_HASH_DOMAIN: &str = "agenthalo.zk_credential.did_hash.v1";
 
 pub fn topic_general() -> String {
-    format!("{TOPIC_PREFIX}general")
+    dynamic_topic_for_domain(&CapabilityDomain::new("general", 1))
 }
 
 pub fn topic_coding() -> String {
-    format!("{TOPIC_PREFIX}coding")
+    dynamic_topic_for_domain(&CapabilityDomain::new("code/generate", 1))
 }
 
 pub fn topic_research() -> String {
-    format!("{TOPIC_PREFIX}research")
+    dynamic_topic_for_domain(&CapabilityDomain::new("research/general", 1))
 }
 
 pub fn topic_financial() -> String {
-    format!("{TOPIC_PREFIX}financial")
+    dynamic_topic_for_domain(&CapabilityDomain::new("finance/analyze", 1))
 }
 
 pub fn topic_blockchain() -> String {
-    format!("{TOPIC_PREFIX}blockchain")
+    dynamic_topic_for_domain(&CapabilityDomain::new("blockchain/evm", 1))
 }
 
 pub fn topic_privacy() -> String {
-    format!("{TOPIC_PREFIX}privacy")
+    dynamic_topic_for_domain(&CapabilityDomain::new("privacy/preserve", 1))
 }
 
 pub fn is_allowed_capability_topic(topic: &str) -> bool {
-    topic == topic_general()
-        || topic == topic_coding()
-        || topic == topic_research()
-        || topic == topic_financial()
-        || topic == topic_blockchain()
-        || topic == topic_privacy()
+    is_dynamic_capability_topic(topic)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +58,49 @@ pub struct AgentCapability {
     pub output_types: Vec<String>,
 }
 
+impl From<CapabilitySpec> for AgentCapability {
+    fn from(value: CapabilitySpec) -> Self {
+        let input_types = value
+            .input_types
+            .iter()
+            .map(|ty| format!("{ty:?}"))
+            .collect::<Vec<_>>();
+        let output_types = value
+            .output_types
+            .iter()
+            .map(|ty| format!("{ty:?}"))
+            .collect::<Vec<_>>();
+        Self {
+            id: value.capability_id.clone(),
+            name: value.domain.path.clone(),
+            description: format!("Capability domain {}", value.domain.path),
+            input_types,
+            output_types,
+        }
+    }
+}
+
+impl AgentCapability {
+    pub fn to_capability_spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new(
+            CapabilityDomain::new(self.id.clone(), 1),
+            self.input_types
+                .iter()
+                .map(|ty| crate::halo::capability_spec::TypeSpec::Text {
+                    language: Some(ty.clone()),
+                })
+                .collect(),
+            self.output_types
+                .iter()
+                .map(|ty| crate::halo::capability_spec::TypeSpec::Text {
+                    language: Some(ty.clone()),
+                })
+                .collect(),
+            vec![],
+        )
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentAnnouncement {
     pub peer_id: String,
@@ -66,6 +108,8 @@ pub struct AgentAnnouncement {
     pub name: String,
     pub description: String,
     pub capabilities: Vec<AgentCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_specs: Vec<CapabilitySpec>,
     #[serde(default)]
     pub multiaddrs: Vec<String>,
     #[serde(default)]
@@ -96,6 +140,7 @@ struct AgentAnnouncementPayload {
     name: String,
     description: String,
     capabilities: Vec<AgentCapability>,
+    capability_specs: Vec<CapabilitySpec>,
     multiaddrs: Vec<String>,
     protocols: Vec<String>,
     version: String,
@@ -116,6 +161,7 @@ impl From<&AgentAnnouncement> for AgentAnnouncementPayload {
             name: value.name.clone(),
             description: value.description.clone(),
             capabilities: value.capabilities.clone(),
+            capability_specs: value.capability_specs.clone(),
             multiaddrs: value.multiaddrs.clone(),
             protocols: value.protocols.clone(),
             version: value.version.clone(),
@@ -223,6 +269,29 @@ fn now_unix() -> u64 {
 
 fn announcement_kad_key(did: &str) -> RecordKey {
     RecordKey::new(&format!("/agenthalo/agent/{did}"))
+}
+
+pub fn capability_routing_key(domain: &CapabilityDomain) -> RecordKey {
+    RecordKey::new(&format!(
+        "/agenthalo/cap/{}/{}",
+        domain.path, domain.schema_version
+    ))
+}
+
+fn capability_routing_keys(domain: &CapabilityDomain) -> Vec<RecordKey> {
+    let segments = domain.path.split('/').collect::<Vec<_>>();
+    (1..=segments.len())
+        .map(|idx| CapabilityDomain::new(segments[..idx].join("/"), domain.schema_version))
+        .map(|prefix| capability_routing_key(&prefix))
+        .collect()
+}
+
+fn agent_capability_key(did: &str) -> RecordKey {
+    RecordKey::new(&format!("/agenthalo/agent-caps/{did}"))
+}
+
+fn capability_kad_key(capability_id: &str, did: &str) -> RecordKey {
+    RecordKey::new(&format!("/agenthalo/capability/{capability_id}/{did}"))
 }
 
 static CREDENTIAL_KEYS: OnceLock<zk_credential::CredentialKeypair> = OnceLock::new();
@@ -341,18 +410,84 @@ impl AgentDiscovery {
         let value = self.serialize_dht_announcement(announcement)?;
         let record = Record {
             key: announcement_kad_key(&announcement.did),
-            value,
+            value: value.clone(),
             publisher: None,
             expires: None,
         };
         kademlia
             .put_record(record, Quorum::One)
             .map_err(|e| format!("DHT put_record failed: {e}"))?;
+        let capability_ids = announcement.capability_ids();
+        let capability_index = serde_json::to_vec(&capability_ids)
+            .map_err(|e| format!("serialize agent capability index: {e}"))?;
+        kademlia
+            .put_record(
+                Record {
+                    key: agent_capability_key(&announcement.did),
+                    value: capability_index,
+                    publisher: None,
+                    expires: None,
+                },
+                Quorum::One,
+            )
+            .map_err(|e| format!("DHT put_record for agent capability index failed: {e}"))?;
+        for capability_id in announcement.capability_ids() {
+            let record = Record {
+                key: capability_kad_key(&capability_id, &announcement.did),
+                value: value.clone(),
+                publisher: None,
+                expires: None,
+            };
+            kademlia.put_record(record, Quorum::One).map_err(|e| {
+                format!("DHT put_record for capability `{capability_id}` failed: {e}")
+            })?;
+        }
+        for spec in &announcement.capability_specs {
+            for key in capability_routing_keys(&spec.domain) {
+                kademlia
+                    .put_record(
+                        Record {
+                            key,
+                            value: value.clone(),
+                            publisher: None,
+                            expires: None,
+                        },
+                        Quorum::One,
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "DHT put_record for capability domain `{}` failed: {e}",
+                            spec.domain.path
+                        )
+                    })?;
+            }
+        }
         Ok(())
     }
 
     pub fn lookup_by_did(&self, did: &str, kademlia: &mut Kademlia<MemoryStore>) {
         kademlia.get_record(announcement_kad_key(did));
+    }
+
+    pub fn lookup_capability_provider(
+        &self,
+        capability_id: &str,
+        did: &str,
+        kademlia: &mut Kademlia<MemoryStore>,
+    ) {
+        kademlia.get_record(capability_kad_key(capability_id, did));
+    }
+
+    pub fn lookup_domain_prefix(
+        &self,
+        domain_prefix: &str,
+        schema_version: u32,
+        kademlia: &mut Kademlia<MemoryStore>,
+    ) {
+        kademlia.get_record(capability_routing_key(&CapabilityDomain::new(
+            domain_prefix,
+            schema_version,
+        )));
     }
 
     fn prepare_gossip_announcement(&self, announcement: &AgentAnnouncement) -> AgentAnnouncement {
@@ -448,9 +583,97 @@ impl AgentDiscovery {
                     .capabilities
                     .iter()
                     .any(|capability| capability.id == capability_id)
+                    || announcement
+                        .capability_specs
+                        .iter()
+                        .any(|capability| capability.capability_id == capability_id)
             })
             .cloned()
             .collect()
+    }
+
+    pub fn best_capability_match<'a>(
+        &self,
+        announcement: &'a AgentAnnouncement,
+        query: &CapabilityQuery,
+        now: u64,
+        attestation_max_age_secs: u64,
+    ) -> Option<&'a CapabilitySpec> {
+        announcement
+            .capability_specs
+            .iter()
+            .find(|spec| spec.satisfies_at(query, now, attestation_max_age_secs))
+    }
+
+    pub fn find_by_query(
+        &self,
+        query: &CapabilityQuery,
+        now: u64,
+        attestation_max_age_secs: u64,
+    ) -> Vec<AgentAnnouncement> {
+        self.known_agents
+            .values()
+            .filter(|announcement| {
+                self.best_capability_match(announcement, query, now, attestation_max_age_secs)
+                    .is_some()
+                    || announcement.capabilities.iter().any(|capability| {
+                        capability.id == query.domain_prefix
+                            || capability.name.starts_with(&query.domain_prefix)
+                    })
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn query_capabilities(
+        &mut self,
+        query: &CapabilityQuery,
+        now: u64,
+        attestation_max_age_secs: u64,
+        kademlia: &mut Kademlia<MemoryStore>,
+        gossipsub: &mut gossipsub::Behaviour,
+    ) -> Vec<AgentAnnouncement> {
+        let mut matches = self.find_by_query(query, now, attestation_max_age_secs);
+        matches.sort_by(|left, right| {
+            let left_spec = self.best_capability_match(left, query, now, attestation_max_age_secs);
+            let right_spec =
+                self.best_capability_match(right, query, now, attestation_max_age_secs);
+            let left_success = left_spec
+                .map(|spec| spec.metrics.success_rate)
+                .unwrap_or(0.0);
+            let right_success = right_spec
+                .map(|spec| spec.metrics.success_rate)
+                .unwrap_or(0.0);
+            right_success
+                .partial_cmp(&left_success)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    let left_attestations = left_spec
+                        .map(|spec| spec.verified_attestation_count(now, attestation_max_age_secs))
+                        .unwrap_or(0);
+                    let right_attestations = right_spec
+                        .map(|spec| spec.verified_attestation_count(now, attestation_max_age_secs))
+                        .unwrap_or(0);
+                    right_attestations.cmp(&left_attestations)
+                })
+        });
+
+        if matches.len() >= query.count as usize {
+            matches.truncate(query.count as usize);
+            return matches;
+        }
+
+        self.lookup_domain_prefix(&query.domain_prefix, 1, kademlia);
+
+        let domain_topic =
+            dynamic_topic_for_domain(&CapabilityDomain::new(&query.domain_prefix, 1));
+        if !self.is_subscribed(&domain_topic) {
+            let _ = self.subscribe(&domain_topic, gossipsub);
+        }
+        let query_payload = serde_json::to_vec(query).unwrap_or_default();
+        let _ = gossipsub.publish(IdentTopic::new(query.topic()), query_payload);
+
+        matches
     }
 
     pub fn prune_expired(&mut self) {
@@ -465,18 +688,50 @@ pub fn hash_did_for_membership(did: &str) -> String {
     did_hash_for_zk_membership(did)
 }
 
+impl AgentAnnouncement {
+    pub fn capability_ids(&self) -> Vec<String> {
+        let mut ids = self
+            .capability_specs
+            .iter()
+            .map(|capability| capability.capability_id.clone())
+            .collect::<Vec<_>>();
+        for capability in &self.capabilities {
+            if !ids.iter().any(|id| id == &capability.id) {
+                ids.push(capability.id.clone());
+            }
+        }
+        ids
+    }
+
+    pub fn topics(&self) -> Vec<String> {
+        let mut topics = vec![topic_general()];
+        for spec in &self.capability_specs {
+            let topic = spec.topic();
+            if !topics.iter().any(|existing| existing == &topic) {
+                topics.push(topic);
+            }
+        }
+        topics
+    }
+}
+
 pub fn announcement_for_identity(
     identity: &DIDIdentity,
     peer_id: PeerId,
     capabilities: Vec<AgentCapability>,
     multiaddrs: Vec<String>,
 ) -> AgentAnnouncement {
+    let capability_specs = capabilities
+        .iter()
+        .map(AgentCapability::to_capability_spec)
+        .collect::<Vec<_>>();
     AgentAnnouncement {
         peer_id: peer_id.to_string(),
         did: identity.did.clone(),
         name: "AgentHalo".to_string(),
         description: "Sovereign privacy-preserving agent".to_string(),
         capabilities,
+        capability_specs,
         multiaddrs,
         protocols: vec![
             "/agenthalo/didcomm/1.0.0".to_string(),
@@ -550,12 +805,17 @@ mod tests {
         assert!(is_allowed_capability_topic(&topic_financial()));
         assert!(is_allowed_capability_topic(&topic_blockchain()));
         assert!(is_allowed_capability_topic(&topic_privacy()));
-
-        assert!(!is_allowed_capability_topic(
-            "/agenthalo/capabilities/unknown"
+        assert!(is_allowed_capability_topic(
+            "/agenthalo/capabilities/prove/lean/algebra"
         ));
         assert!(!is_allowed_capability_topic(
             "/agenthalo/credentials/general"
+        ));
+        assert!(!is_allowed_capability_topic(
+            "/agenthalo/capabilities/prove/lean/Bad"
+        ));
+        assert!(!is_allowed_capability_topic(
+            "/agenthalo/capabilities/prove//lean"
         ));
         assert!(!is_allowed_capability_topic("general"));
     }
@@ -575,6 +835,12 @@ mod tests {
                 input_types: vec![],
                 output_types: vec![],
             }],
+            capability_specs: vec![CapabilitySpec::new(
+                CapabilityDomain::new("code/generate", 1),
+                vec![],
+                vec![],
+                vec![],
+            )],
             multiaddrs: vec![],
             protocols: vec![],
             version: "1".to_string(),
@@ -599,6 +865,12 @@ mod tests {
                 input_types: vec![],
                 output_types: vec![],
             }],
+            capability_specs: vec![CapabilitySpec::new(
+                CapabilityDomain::new("research/general", 1),
+                vec![],
+                vec![],
+                vec![],
+            )],
             multiaddrs: vec![],
             protocols: vec![],
             version: "1".to_string(),
@@ -615,6 +887,55 @@ mod tests {
         let coding = discovery.find_by_capability("coding");
         assert_eq!(coding.len(), 1);
         assert_eq!(coding[0].peer_id, "peer-1");
+    }
+
+    #[test]
+    fn find_by_query_matches_typed_capability_specs() {
+        let mut discovery = AgentDiscovery::new();
+        discovery.upsert_verified(AgentAnnouncement {
+            peer_id: "peer-typed".to_string(),
+            did: "did:key:z6Typed".to_string(),
+            name: "typed".to_string(),
+            description: "typed".to_string(),
+            capabilities: vec![],
+            capability_specs: vec![CapabilitySpec::new(
+                CapabilityDomain::new("prove/lean/algebra", 1),
+                vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+                vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+                vec![],
+            )],
+            multiaddrs: vec![],
+            protocols: vec![],
+            version: "1".to_string(),
+            timestamp: now_unix(),
+            ttl: 60,
+            did_document: None,
+            evm_address: None,
+            binding_proof_hash: None,
+            anonymous_membership_proof: None,
+            ed25519_signature: None,
+            mldsa65_signature: None,
+        });
+
+        let matches = discovery.find_by_query(
+            &CapabilityQuery {
+                domain_prefix: "prove/lean".to_string(),
+                required_inputs: vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+                required_outputs: vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+                required_constraints: vec![],
+                min_success_rate: None,
+                max_latency_p99_ms: None,
+                max_cost_microdollars: None,
+                min_attestations: None,
+                min_onchain_reputation: None,
+                count: 1,
+                query_timeout_ms: 200,
+            },
+            now_unix(),
+            3600,
+        );
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].peer_id, "peer-typed");
     }
 
     #[test]
@@ -849,5 +1170,168 @@ mod tests {
 
         assert_eq!(dht_only_ann.multiaddrs, announcement.multiaddrs);
         assert_eq!(full_ann.multiaddrs, announcement.multiaddrs);
+    }
+
+    #[test]
+    fn capability_ids_include_typed_and_legacy_forms_without_duplicates() {
+        let announcement = AgentAnnouncement {
+            peer_id: "peer".to_string(),
+            did: "did:key:z6cap".to_string(),
+            name: "cap".to_string(),
+            description: "cap".to_string(),
+            capabilities: vec![AgentCapability {
+                id: "legacy-cap".to_string(),
+                name: "legacy".to_string(),
+                description: "legacy".to_string(),
+                input_types: vec![],
+                output_types: vec![],
+            }],
+            capability_specs: vec![CapabilitySpec::new(
+                CapabilityDomain::new("prove/lean/algebra", 1),
+                vec![],
+                vec![],
+                vec![],
+            )],
+            multiaddrs: vec![],
+            protocols: vec![],
+            version: "1".to_string(),
+            timestamp: now_unix(),
+            ttl: 60,
+            did_document: None,
+            evm_address: None,
+            binding_proof_hash: None,
+            anonymous_membership_proof: None,
+            ed25519_signature: None,
+            mldsa65_signature: None,
+        };
+        let ids = announcement.capability_ids();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.iter().any(|id| id == "legacy-cap"));
+        assert!(ids.iter().any(|id| id != "legacy-cap"));
+    }
+
+    #[test]
+    fn announcement_topics_include_general_and_capability_domains() {
+        let announcement = AgentAnnouncement {
+            peer_id: "peer".to_string(),
+            did: "did:key:z6topics".to_string(),
+            name: "topics".to_string(),
+            description: "topics".to_string(),
+            capabilities: vec![],
+            capability_specs: vec![CapabilitySpec::new(
+                CapabilityDomain::new("prove/lean/algebra", 1),
+                vec![],
+                vec![],
+                vec![],
+            )],
+            multiaddrs: vec![],
+            protocols: vec![],
+            version: "1".to_string(),
+            timestamp: now_unix(),
+            ttl: 60,
+            did_document: None,
+            evm_address: None,
+            binding_proof_hash: None,
+            anonymous_membership_proof: None,
+            ed25519_signature: None,
+            mldsa65_signature: None,
+        };
+        let topics = announcement.topics();
+        assert!(topics.iter().any(|topic| topic == &topic_general()));
+        assert!(topics
+            .iter()
+            .any(|topic| topic == "/agenthalo/capabilities/prove/lean/algebra"));
+    }
+
+    #[test]
+    fn query_capabilities_returns_best_local_matches_first() {
+        let mut discovery = AgentDiscovery::new();
+        let mut fast = CapabilitySpec::new(
+            CapabilityDomain::new("prove/lean/algebra", 1),
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![],
+        );
+        fast.metrics.success_rate = 0.99;
+        let mut slow = fast.clone();
+        slow.capability_id = CapabilitySpec::compute_id(
+            &CapabilityDomain::new("prove/lean/analysis", 1),
+            &slow.input_types,
+            &slow.output_types,
+            &slow.constraints,
+        );
+        slow.domain = CapabilityDomain::new("prove/lean/analysis", 1);
+        slow.metrics.success_rate = 0.50;
+        discovery.upsert_verified(AgentAnnouncement {
+            peer_id: "peer-fast".to_string(),
+            did: "did:key:fast".to_string(),
+            name: "fast".to_string(),
+            description: "fast".to_string(),
+            capabilities: vec![],
+            capability_specs: vec![fast],
+            multiaddrs: vec![],
+            protocols: vec![],
+            version: "1".to_string(),
+            timestamp: now_unix(),
+            ttl: 60,
+            did_document: None,
+            evm_address: None,
+            binding_proof_hash: None,
+            anonymous_membership_proof: None,
+            ed25519_signature: None,
+            mldsa65_signature: None,
+        });
+        discovery.upsert_verified(AgentAnnouncement {
+            peer_id: "peer-slow".to_string(),
+            did: "did:key:slow".to_string(),
+            name: "slow".to_string(),
+            description: "slow".to_string(),
+            capabilities: vec![],
+            capability_specs: vec![slow],
+            multiaddrs: vec![],
+            protocols: vec![],
+            version: "1".to_string(),
+            timestamp: now_unix(),
+            ttl: 60,
+            did_document: None,
+            evm_address: None,
+            binding_proof_hash: None,
+            anonymous_membership_proof: None,
+            ed25519_signature: None,
+            mldsa65_signature: None,
+        });
+
+        let local_key = libp2p::identity::Keypair::generate_ed25519();
+        let config = gossipsub::ConfigBuilder::default()
+            .validation_mode(gossipsub::ValidationMode::Strict)
+            .build()
+            .expect("config");
+        let mut gossipsub =
+            gossipsub::Behaviour::new(gossipsub::MessageAuthenticity::Signed(local_key), config)
+                .expect("gossipsub");
+        let local_peer = PeerId::random();
+        let mut kademlia = Kademlia::new(local_peer, MemoryStore::new(local_peer));
+
+        let matches = discovery.query_capabilities(
+            &CapabilityQuery {
+                domain_prefix: "prove/lean".to_string(),
+                required_inputs: vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+                required_outputs: vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+                required_constraints: vec![],
+                min_success_rate: None,
+                max_latency_p99_ms: None,
+                max_cost_microdollars: None,
+                min_attestations: None,
+                min_onchain_reputation: None,
+                count: 1,
+                query_timeout_ms: 200,
+            },
+            now_unix(),
+            3600,
+            &mut kademlia,
+            &mut gossipsub,
+        );
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].peer_id, "peer-fast");
     }
 }

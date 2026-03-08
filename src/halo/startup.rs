@@ -182,9 +182,16 @@ pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, 
                 .map(|addr| addr.to_string())
                 .collect(),
         );
+        for topic in announcement.topics() {
+            if !agent_discovery.is_subscribed(&topic) {
+                let _ = agent_discovery.subscribe(&topic, node.gossipsub_mut());
+            }
+        }
         sign_announcement(&identity, &mut announcement)?;
         agent_discovery.upsert_verified(announcement.clone());
-        let _ = agent_discovery.announce(&topic_general(), &announcement, node.gossipsub_mut());
+        for topic in announcement.topics() {
+            let _ = agent_discovery.announce(&topic, &announcement, node.gossipsub_mut());
+        }
         let _ = agent_discovery.publish_to_dht(&announcement, node.kademlia_mut());
         eprintln!("[AgentHalo/Startup][5/5] discovery bootstrapped");
 

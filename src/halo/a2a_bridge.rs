@@ -205,8 +205,13 @@ pub fn generate_agent_card(
                 id: capability.id.clone(),
                 name: capability.name.clone(),
                 description: capability.description.clone(),
-                tags: Vec::new(),
-                examples: Vec::new(),
+                tags: capability
+                    .input_types
+                    .iter()
+                    .chain(capability.output_types.iter())
+                    .cloned()
+                    .collect(),
+                examples: vec![format!("capability://{}", capability.id)],
             })
             .collect(),
         security_schemes: HashMap::from([(
@@ -635,7 +640,9 @@ mod tests {
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         let mutex = env_lock();
-        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         mutex.clear_poison();
         guard
     }
