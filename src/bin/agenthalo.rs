@@ -18,6 +18,7 @@ use nucleusdb::halo::config;
 use nucleusdb::halo::detect::AgentType;
 use nucleusdb::halo::did;
 use nucleusdb::halo::genesis_seed;
+use nucleusdb::halo::governor::{GovernorConfig, GovernorState};
 use nucleusdb::halo::http_client;
 use nucleusdb::halo::nym;
 use nucleusdb::halo::onchain::{
@@ -102,6 +103,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "harness" => cmd_harness(&args[2..]),
         "dashboard" => cmd_dashboard(&args[2..]),
         "doctor" => cmd_doctor(&args[2..]),
+        "governor" => cmd_governor(&args[2..]),
         "version" | "--version" | "-V" => {
             println!("agenthalo 0.3.0");
             Ok(())
@@ -499,6 +501,135 @@ fn cmd_status(_args: &[String]) -> Result<(), String> {
         viewer::print_status(&db_path, false)?;
     }
     Ok(())
+}
+
+fn cmd_governor(args: &[String]) -> Result<(), String> {
+    match args.first().map(|s| s.as_str()).unwrap_or("validate") {
+        "validate" => {
+            let mut instance_id = "gov-cli".to_string();
+            let mut alpha = 0.01;
+            let mut beta = 0.05;
+            let mut dt = 1.0;
+            let mut eps_min = 1.0;
+            let mut eps_max = 50.0;
+            let mut target = 2.0;
+            let mut json_mode = false;
+            let mut idx = 1usize;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--instance-id" => {
+                        idx += 1;
+                        instance_id = args
+                            .get(idx)
+                            .ok_or("--instance-id requires value")?
+                            .clone();
+                    }
+                    "--alpha" => {
+                        idx += 1;
+                        alpha = args
+                            .get(idx)
+                            .ok_or("--alpha requires value")?
+                            .parse()
+                            .map_err(|_| "--alpha must be a float")?;
+                    }
+                    "--beta" => {
+                        idx += 1;
+                        beta = args
+                            .get(idx)
+                            .ok_or("--beta requires value")?
+                            .parse()
+                            .map_err(|_| "--beta must be a float")?;
+                    }
+                    "--dt" => {
+                        idx += 1;
+                        dt = args
+                            .get(idx)
+                            .ok_or("--dt requires value")?
+                            .parse()
+                            .map_err(|_| "--dt must be a float")?;
+                    }
+                    "--eps-min" => {
+                        idx += 1;
+                        eps_min = args
+                            .get(idx)
+                            .ok_or("--eps-min requires value")?
+                            .parse()
+                            .map_err(|_| "--eps-min must be a float")?;
+                    }
+                    "--eps-max" => {
+                        idx += 1;
+                        eps_max = args
+                            .get(idx)
+                            .ok_or("--eps-max requires value")?
+                            .parse()
+                            .map_err(|_| "--eps-max must be a float")?;
+                    }
+                    "--target" => {
+                        idx += 1;
+                        target = args
+                            .get(idx)
+                            .ok_or("--target requires value")?
+                            .parse()
+                            .map_err(|_| "--target must be a float")?;
+                    }
+                    "--json" => json_mode = true,
+                    other => {
+                        return Err(format!(
+                            "unknown flag for governor validate: {other}\nusage: agenthalo governor validate --alpha <f64> --beta <f64> --dt <f64> --eps-min <f64> --eps-max <f64> --target <f64> [--instance-id ID] [--json]"
+                        ));
+                    }
+                }
+                idx += 1;
+            }
+
+            let state = GovernorState::new(GovernorConfig {
+                instance_id,
+                alpha,
+                beta,
+                dt,
+                eps_min,
+                eps_max,
+                target,
+                formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime"
+                    .to_string(),
+            });
+            let gamma = state.config.alpha + state.config.beta / state.config.dt;
+            match state.validate_params() {
+                Ok(report) => {
+                    let payload = serde_json::json!({
+                        "ok": true,
+                        "instance_id": state.config.instance_id,
+                        "gamma": gamma,
+                        "contraction_bound": report.contraction_bound,
+                        "regime": report.regime,
+                        "formal_basis": state.config.formal_basis,
+                    });
+                    if json_mode {
+                        print_json(&payload)?;
+                    } else {
+                        println!("Governor parameters valid");
+                        println!(
+                            "  instance: {}",
+                            payload["instance_id"].as_str().unwrap_or("gov-cli")
+                        );
+                        println!("  gamma: {:.6}", gamma);
+                        println!(
+                            "  contraction_bound: {:.6}",
+                            report.contraction_bound
+                        );
+                        println!("  regime: {}", report.regime);
+                        println!("  basis: {}", state.config.formal_basis);
+                    }
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }
+        _ => Err(
+            "usage: agenthalo governor validate --alpha <f64> --beta <f64> --dt <f64> --eps-min <f64> --eps-max <f64> --target <f64> [--instance-id ID] [--json]"
+                .to_string(),
+        ),
+    }
 }
 
 fn cmd_export(args: &[String]) -> Result<(), String> {
@@ -4916,7 +5047,7 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install|wire-mcp|gateway-status]\n                             Agent CLI management and OpenClaw MCP wiring\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install|wire-mcp|gateway-status]\n                             Agent CLI management and OpenClaw MCP wiring\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nControl:\n  governor validate --alpha A --beta B --dt DT --eps-min LO --eps-max HI --target T\n                             Validate the AETHER gain condition and formal regime\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
   NYM_FAIL_CLOSED=0           Legacy equivalent of NYM_FAIL_OPEN=1"
     );
 }

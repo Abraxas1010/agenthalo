@@ -52,6 +52,10 @@ pub struct DashboardState {
     pub memory_db_cache: Arc<StdMutex<MemoryDbCache>>,
     /// Local fallback orchestrator when MCP-proxy mode is disabled.
     pub orchestrator: Option<Arc<crate::orchestrator::Orchestrator>>,
+    /// Shared AETHER governor registry across proxy/comms/compute/pty lanes.
+    pub governor_registry: Arc<crate::halo::governor_registry::GovernorRegistry>,
+    /// Live proxy admission/runtime telemetry wrapper.
+    pub proxy_governor: Arc<crate::halo::proxy::ProxyGovernorRuntime>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,8 +149,18 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
     ));
     let proxy_config = crate::halo::pricing::load_proxy_config();
     let pricing_table = crate::halo::pricing::default_pricing();
+    let governor_registry = build_governor_registry();
+    crate::halo::governor_registry::install_global_registry(governor_registry.clone());
+    let proxy_governor = Arc::new(crate::halo::proxy::ProxyGovernorRuntime::new(
+        governor_registry.clone(),
+    ));
 
-    let pty_manager = Arc::new(crate::cockpit::pty_manager::PtyManager::new(10));
+    let pty_manager = Arc::new(
+        crate::cockpit::pty_manager::PtyManager::with_governor_registry(
+            10,
+            Some(governor_registry.clone()),
+        ),
+    );
     let orchestrator = if crate::halo::orchestrator_proxy::orchestrator_proxy_enabled() {
         None
     } else {
@@ -176,6 +190,8 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         memory_store: Arc::new(crate::memory::MemoryStore::default()),
         memory_db_cache: Arc::new(StdMutex::new(MemoryDbCache::default())),
         orchestrator,
+        governor_registry,
+        proxy_governor,
     }
 }
 
@@ -199,6 +215,7 @@ pub async fn serve(port: u16, open_browser: bool) -> Result<(), String> {
 
     // Reap expired scoped keys in the background.
     let reaper_state = state.crypto_state.clone();
+    let maintenance_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         loop {
@@ -206,6 +223,16 @@ pub async fn serve(port: u16, open_browser: bool) -> Result<(), String> {
             if let Ok(mut guard) = reaper_state.lock() {
                 guard.session.reap_expired();
             }
+            maintenance_state
+                .pty_manager
+                .soft_reset_quiescent_governors();
+            if let Err(error) = maintenance_state
+                .proxy_governor
+                .soft_reset_if_quiescent(Duration::from_secs(30))
+            {
+                eprintln!("warning: proxy governor quiescent reset failed: {error}");
+            }
+            crate::halo::governor_telemetry::soft_reset_comms_if_quiescent(Duration::from_secs(30));
         }
     });
 
@@ -251,4 +278,76 @@ pub async fn serve(port: u16, open_browser: bool) -> Result<(), String> {
         crate::container::deregister_self_from_mesh();
     }
     serve_result
+}
+
+fn build_governor_registry() -> Arc<crate::halo::governor_registry::GovernorRegistry> {
+    use crate::halo::governor::GovernorConfig;
+
+    let registry = Arc::new(crate::halo::governor_registry::GovernorRegistry::new());
+    let configs = [
+        GovernorConfig {
+            instance_id: "gov-proxy".to_string(),
+            alpha: 0.01,
+            beta: 0.05,
+            dt: 1.0,
+            eps_min: 1.0,
+            eps_max: 50.0,
+            target: 2.0,
+            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.lyapunov_descent".to_string(),
+        },
+        GovernorConfig {
+            instance_id: "gov-comms".to_string(),
+            alpha: 0.01,
+            beta: 0.05,
+            dt: 1.0,
+            eps_min: 1.0,
+            eps_max: 32.0,
+            target: 10.0,
+            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+        },
+        GovernorConfig {
+            instance_id: "gov-compute".to_string(),
+            alpha: 0.01,
+            beta: 0.05,
+            dt: 1.0,
+            eps_min: 1.0,
+            eps_max: 10.0,
+            target: 8.0,
+            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+        },
+        GovernorConfig {
+            instance_id: "gov-cost".to_string(),
+            alpha: 0.01,
+            beta: 0.05,
+            dt: 1.0,
+            eps_min: 0.01,
+            eps_max: 10.0,
+            target: 1.0,
+            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+        },
+        GovernorConfig {
+            instance_id: "gov-pty".to_string(),
+            alpha: 0.01,
+            beta: 0.05,
+            dt: 1.0,
+            eps_min: 30.0,
+            eps_max: 900.0,
+            target: 120.0,
+            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+        },
+    ];
+
+    for config in configs {
+        if let Err(error) = registry.register(config) {
+            eprintln!("warning: failed to register governor: {error}");
+        }
+    }
+
+    for (instance_id, result) in registry.validate_all() {
+        if let Err(error) = result {
+            eprintln!("warning: governor `{instance_id}` outside formal regime: {error}");
+        }
+    }
+
+    registry
 }

@@ -77,6 +77,14 @@
     const keyDot = preflight.keys_configured ? 'green' : 'red';
     const dockerDot = preflight.docker_available ? 'green' : 'grey';
     const missing = (preflight.missing_keys || []).join(', ');
+    const topo = preflight.binary_topology || null;
+    const topoBanner = topo
+      ? `<div class="deploy-banner" style="margin-top:8px">
+          SHA-256: ${escapeHtml(String(topo.binary_sha256 || '').slice(0, 16))}...
+          | Betti β̂₁=${Number(topo.signature?.betti1_heuristic || 0)}
+          ${topo.structural_change_flagged ? '| structure changed beyond formal bound' : topo.hash_changed ? '| hash changed within loose bound' : '| topology stable'}
+        </div>`
+      : '';
 
     return `
       <div class="deploy-card" data-agent="${escapeHtml(agent.id)}">
@@ -94,6 +102,8 @@
           <button class="btn btn-primary" data-launch="1" data-agent="${escapeHtml(agent.id)}" data-mode="terminal">Launch Terminal</button>
           <button class="btn" data-launch="1" data-agent="${escapeHtml(agent.id)}" data-mode="cockpit">Open in Cockpit</button>
         </div>
+        ${topoBanner}
+        ${topo?.warning ? `<div class="deploy-banner" style="color:var(--amber)">${escapeHtml(topo.warning)}</div>` : ''}
         ${preflight.install_hint ? `<div class="deploy-banner">${escapeHtml(preflight.install_hint)}</div>` : ''}
       </div>`;
   }

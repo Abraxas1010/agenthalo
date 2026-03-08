@@ -216,6 +216,12 @@ impl NucleusDb {
         load_snapshot(path.as_ref(), witness_cfg)
     }
 
+    pub fn aether_maintenance_tick(&mut self, now_unix: u64) -> bool {
+        let vector_changed = self.vector_index.maintenance_tick(now_unix);
+        let blob_changed = self.blob_store.maintenance_tick(now_unix);
+        vector_changed || blob_changed
+    }
+
     /// Get the current write mode.
     pub fn write_mode(&self) -> &WriteMode {
         &self.write_mode
@@ -554,6 +560,15 @@ impl NucleusDb {
         let cell = self.state.values.get(idx).copied().unwrap_or(0);
         let tag = self.type_map.get(key);
         let blob = self.blob_store.get(key);
+        TypedValue::decode(tag, cell, blob).ok()
+    }
+
+    /// Engineering-layer variant that records blob liveness before decoding.
+    pub fn get_typed_touching(&mut self, key: &str) -> Option<TypedValue> {
+        let idx = self.keymap.get(key)?;
+        let cell = self.state.values.get(idx).copied().unwrap_or(0);
+        let tag = self.type_map.get(key);
+        let blob = self.blob_store.get_with_access(key);
         TypedValue::decode(tag, cell, blob).ok()
     }
 }

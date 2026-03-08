@@ -69,11 +69,13 @@ async fn handle_socket(
             outbound = out_rx.recv() => {
                 match outbound {
                     Ok(SessionEvent::Output(bytes)) => {
+                        crate::halo::governor_telemetry::record_comms_batch(1);
                         if ws_tx.send(Message::Binary(bytes.into())).await.is_err() {
                             break;
                         }
                     }
                     Ok(SessionEvent::Status(status)) => {
+                        crate::halo::governor_telemetry::record_comms_batch(1);
                         if ws_tx.send(Message::Text(status_message_json(&status, Some(&session.id)).to_string().into())).await.is_err() {
                             break;
                         }
@@ -85,6 +87,7 @@ async fn handle_socket(
             incoming = ws_rx.next() => {
                 match incoming {
                     Some(Ok(Message::Binary(bytes))) => {
+                        crate::halo::governor_telemetry::record_comms_batch(1);
                         if let Err(e) = session.write_input(bytes.as_ref()) {
                             let _ = ws_tx.send(Message::Text(status_message_json(
                                 &SessionStatus::Error { message: e },
@@ -94,6 +97,7 @@ async fn handle_socket(
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
+                        crate::halo::governor_telemetry::record_comms_batch(1);
                         if let Err(e) = handle_text_frame(&session, &text, &mut ws_tx).await {
                             let _ = ws_tx.send(Message::Text(status_message_json(
                                 &SessionStatus::Error { message: e },

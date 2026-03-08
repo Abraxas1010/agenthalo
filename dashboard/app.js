@@ -1021,6 +1021,64 @@ async function apiDelete(path) {
   return res.json();
 }
 
+function governorStatusBadge(item) {
+  if (!item) return '<span class="badge badge-muted">Unknown</span>';
+  if (item.gain_violated) return '<span class="badge badge-warn">Gain Violated</span>';
+  if (item.oscillating) return '<span class="badge badge-info">Oscillating</span>';
+  if (item.stable) return '<span class="badge badge-ok">Stable</span>';
+  return '<span class="badge badge-muted">Monitoring</span>';
+}
+
+function governorSparkline(points, width = 140, height = 28) {
+  const vals = Array.isArray(points) ? points.filter(v => Number.isFinite(Number(v))).map(Number) : [];
+  if (!vals.length) {
+    return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"></svg>`;
+  }
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const span = Math.max(max - min, 1e-9);
+  const step = vals.length > 1 ? width / (vals.length - 1) : width;
+  const path = vals.map((value, index) => {
+    const x = index * step;
+    const y = height - (((value - min) / span) * (height - 4) + 2);
+    return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(' ');
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>`;
+}
+
+function renderGovernorCards(governorData) {
+  const instances = []
+    .concat(Array.isArray(governorData?.instances) ? governorData.instances : [])
+    .concat(governorData?.memory ? [governorData.memory] : []);
+  if (!instances.length) return '';
+  return `
+    <div class="section-header">AETHER Governors</div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-label">Formal Limitation</div>
+      <div class="card-sub">Multi-step convergence is empirically observed, not formally proved. The verified regime is single-step, from-rest, no-clamp only.</div>
+    </div>
+    <div class="card-grid">
+      ${instances.map(item => {
+        const proxyExtra = item.instance_id === 'gov-proxy' && governorData?.proxy
+          ? `<div class="card-sub">in-flight=${Number(governorData.proxy.in_flight || 0)} | latency=${Number(governorData.proxy.latency_ewma_ms || 0).toFixed(1)}ms</div>`
+          : '';
+        return `
+          <div class="card">
+            <div class="card-label">${esc(item.instance_id || 'governor')}</div>
+            <div class="card-value" style="font-size:15px">${Number(item.epsilon || 0).toFixed(2)}</div>
+            <div class="card-sub">measured=${Number(item.measured_signal || 0).toFixed(2)} | target=${Number(item.target || 0).toFixed(2)}</div>
+            <div style="margin-top:8px">${governorSparkline(item.sparkline || [])}</div>
+            <div style="margin-top:6px">${governorStatusBadge(item)}</div>
+            ${proxyExtra}
+            <div class="card-sub">basis: ${esc(item.formal_basis || 'n/a')}</div>
+            ${item.warning ? `<div class="card-sub" style="color:var(--amber)">${esc(item.warning)}</div>` : ''}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
 async function toApiError(res, path) {
   const raw = await res.text();
   let body = null;
@@ -1219,8 +1277,8 @@ initSSE();
 async function renderOverview() {
   content.innerHTML = '<div class="loading">Loading...</div>';
   try {
-    const [status, sessions, costs] = await Promise.all([
-      api('/status'), api('/sessions?limit=5'), api('/costs?monthly=true')
+    const [status, sessions, costs, governors] = await Promise.all([
+      api('/status'), api('/sessions?limit=5'), api('/costs?monthly=true'), api('/governor/status').catch(() => null)
     ]);
 
     const s = status;
@@ -1251,9 +1309,11 @@ async function renderOverview() {
             Codex: ${s.wrapping?.codex ? '<span class="badge badge-ok">ON</span>' : '<span class="badge badge-muted">OFF</span>'}
             Gemini: ${s.wrapping?.gemini ? '<span class="badge badge-ok">ON</span>' : '<span class="badge badge-muted">OFF</span>'}
           </div>
-          <div class="card-sub">PQ Wallet: ${s.pq_wallet ? 'Present' : 'Not created'}</div>
+          <div class="card-sub">PQ Wallet: ${s.pq_wallet ? 'Present' : 'Not created'} | Governors stable: ${Number(s.governors?.stable || 0)}/${Number(s.governors?.total || 0)}</div>
         </div>
       </div>
+
+      ${governors ? renderGovernorCards(governors) : ''}
 
       ${costs.buckets && costs.buckets.length > 0 ? `
         <div class="chart-container">
@@ -4634,6 +4694,21 @@ async function renderNucleusDB(subtab) {
             ? '<span class="badge badge-ok">HEALTHY</span>'
             : status.exists ? '<span class="badge badge-warn">EMPTY</span>' : '<span class="badge badge-muted">NO DB</span>'}</div>
           <div class="card-sub">${chainOk ? 'Seal #' + commitCount : status.exists ? 'No commits yet' : 'Create database first'}</div>
+        </div>
+      </div>
+
+      <div class="card-grid" style="margin-bottom:14px">
+        <div class="card">
+          <div class="card-label">AETHER Vector Guard</div>
+          <div class="card-value" style="font-size:14px">${Number(stats?.vector_aether?.governor_epsilon || 0).toFixed(2)}</div>
+          <div class="card-sub">guarded=${Number(stats?.vector_aether?.guarded_vectors || 0)} | reclaimable=${Number(stats?.vector_aether?.reclaimable_vectors || 0)}</div>
+          <div class="card-sub">basis: ${esc(stats?.vector_aether?.formal_basis || 'n/a')}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">AETHER Blob Guard</div>
+          <div class="card-value" style="font-size:14px">${Number(stats?.blob_aether?.governor_epsilon || 0).toFixed(2)}</div>
+          <div class="card-sub">guarded=${Number(stats?.blob_aether?.guarded_blobs || 0)} | reclaimable=${Number(stats?.blob_aether?.reclaimable_blobs || 0)}</div>
+          <div class="card-sub">basis: ${esc(stats?.blob_aether?.formal_basis || 'n/a')}</div>
         </div>
       </div>
 

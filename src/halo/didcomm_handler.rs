@@ -8,8 +8,7 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 pub type MessageHandler =
     Arc<dyn Fn(DIDCommMessage) -> BoxFuture<'static, Option<DIDCommMessage>> + Send + Sync>;
@@ -147,6 +146,7 @@ impl DIDCommHandler {
             Some(handler) => handler,
             None => return Ok(None),
         };
+        crate::halo::governor_telemetry::record_comms_batch(1);
 
         let Some(mut response) = handler(message).await else {
             return Ok(None);
@@ -162,6 +162,7 @@ impl DIDCommHandler {
         response.to = vec![sender_did];
 
         let packed_response = pack_authcrypt_hybrid(&response, &self.identity, &sender_doc, None)?;
+        crate::halo::governor_telemetry::record_comms_batch(1);
         Ok(Some(packed_response))
     }
 }

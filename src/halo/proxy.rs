@@ -13,6 +13,7 @@
 //! entire proxy subsystem.
 
 use crate::halo::api_keys::CustomerKeyStore;
+use crate::halo::governor_registry::{GovernorRegistry, GovernorSnapshot};
 use crate::halo::http_client;
 use crate::halo::pricing;
 use crate::halo::vault::Vault;
@@ -20,8 +21,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -111,6 +114,224 @@ impl std::fmt::Display for MeteredStreamError {
 }
 
 impl std::error::Error for MeteredStreamError {}
+
+#[derive(Clone)]
+pub struct ProxyGovernorRuntime {
+    inner: Arc<ProxyGovernorRuntimeInner>,
+}
+
+struct ProxyGovernorRuntimeInner {
+    registry: Arc<GovernorRegistry>,
+    in_flight: AtomicUsize,
+    latency_ewma_secs: Mutex<Option<f64>>,
+    last_latency_sample: Mutex<Option<Instant>>,
+    cost_ewma_usd_per_min: Mutex<Option<f64>>,
+    last_cost_sample: Mutex<Option<Instant>>,
+}
+
+pub struct ProxyPermit {
+    runtime: ProxyGovernorRuntime,
+}
+
+impl std::fmt::Debug for ProxyPermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyPermit").finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProxyGovernorStatus {
+    pub snapshot: GovernorSnapshot,
+    pub in_flight: usize,
+    pub latency_ewma_ms: Option<f64>,
+    pub cost_burn_rate_ewma_usd_per_min: Option<f64>,
+}
+
+impl ProxyGovernorRuntime {
+    pub fn new(registry: Arc<GovernorRegistry>) -> Self {
+        Self {
+            inner: Arc::new(ProxyGovernorRuntimeInner {
+                registry,
+                in_flight: AtomicUsize::new(0),
+                latency_ewma_secs: Mutex::new(None),
+                last_latency_sample: Mutex::new(None),
+                cost_ewma_usd_per_min: Mutex::new(None),
+                last_cost_sample: Mutex::new(None),
+            }),
+        }
+    }
+
+    pub fn try_acquire(&self) -> Result<ProxyPermit, String> {
+        let snapshot = self.inner.registry.snapshot_one("gov-proxy")?;
+        let limit = snapshot.epsilon.ceil().max(1.0) as usize;
+        loop {
+            let current = self.inner.in_flight.load(Ordering::SeqCst);
+            if current >= limit {
+                return Err(format!(
+                    "proxy backpressure: in-flight {} >= governor epsilon {:.2}",
+                    current, snapshot.epsilon
+                ));
+            }
+            if self
+                .inner
+                .in_flight
+                .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return Ok(ProxyPermit {
+                    runtime: self.clone(),
+                });
+            }
+        }
+    }
+
+    pub fn record_latency(&self, elapsed: Duration) -> Result<GovernorSnapshot, String> {
+        let mut ewma = self
+            .inner
+            .latency_ewma_secs
+            .lock()
+            .map_err(|e| format!("proxy latency EWMA lock poisoned: {e}"))?;
+        let sample = elapsed.as_secs_f64();
+        let updated = match *ewma {
+            Some(previous) => previous * 0.9 + sample * 0.1,
+            None => sample,
+        };
+        *ewma = Some(updated);
+        drop(ewma);
+        let mut last_sample = self
+            .inner
+            .last_latency_sample
+            .lock()
+            .map_err(|e| format!("proxy latency timestamp lock poisoned: {e}"))?;
+        *last_sample = Some(Instant::now());
+        drop(last_sample);
+        self.inner.registry.observe("gov-proxy", updated)?;
+        self.inner.registry.snapshot_one("gov-proxy")
+    }
+
+    pub fn admit_estimated_cost(&self, estimated_cost_usd: f64) -> Result<(), String> {
+        let snapshot = self.inner.registry.snapshot_one("gov-cost")?;
+        if estimated_cost_usd > snapshot.epsilon {
+            return Err(format!(
+                "cost governor rejected request: estimated ${estimated_cost_usd:.6} > epsilon ${:.6}",
+                snapshot.epsilon
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn record_cost(&self, customer_cost_usd: f64) -> Result<GovernorSnapshot, String> {
+        let now = Instant::now();
+        let mut last_sample = self
+            .inner
+            .last_cost_sample
+            .lock()
+            .map_err(|e| format!("proxy cost timestamp lock poisoned: {e}"))?;
+        let elapsed_minutes = last_sample
+            .map(|previous| (now - previous).as_secs_f64() / 60.0)
+            .unwrap_or(1.0 / 60.0)
+            .max(1.0 / 60.0);
+        *last_sample = Some(now);
+        drop(last_sample);
+
+        let sample_rate = customer_cost_usd / elapsed_minutes;
+        let mut ewma = self
+            .inner
+            .cost_ewma_usd_per_min
+            .lock()
+            .map_err(|e| format!("proxy cost EWMA lock poisoned: {e}"))?;
+        let updated = match *ewma {
+            Some(previous) => previous * 0.9 + sample_rate * 0.1,
+            None => sample_rate,
+        };
+        *ewma = Some(updated);
+        drop(ewma);
+        self.inner.registry.observe("gov-cost", updated)?;
+        self.inner.registry.snapshot_one("gov-cost")
+    }
+
+    pub fn status(&self) -> Result<ProxyGovernorStatus, String> {
+        let snapshot = self.inner.registry.snapshot_one("gov-proxy")?;
+        let latency_ewma_ms = self
+            .inner
+            .latency_ewma_secs
+            .lock()
+            .map_err(|e| format!("proxy latency EWMA lock poisoned: {e}"))?
+            .map(|secs| secs * 1000.0);
+        let cost_burn_rate_ewma_usd_per_min = *self
+            .inner
+            .cost_ewma_usd_per_min
+            .lock()
+            .map_err(|e| format!("proxy cost EWMA lock poisoned: {e}"))?;
+        Ok(ProxyGovernorStatus {
+            snapshot,
+            in_flight: self.inner.in_flight.load(Ordering::SeqCst),
+            latency_ewma_ms,
+            cost_burn_rate_ewma_usd_per_min,
+        })
+    }
+
+    pub fn soft_reset_if_quiescent(&self, idle_for: Duration) -> Result<(), String> {
+        if self.inner.in_flight.load(Ordering::SeqCst) != 0 {
+            return Ok(());
+        }
+        let now = Instant::now();
+        let proxy_idle = self
+            .inner
+            .last_latency_sample
+            .lock()
+            .map_err(|e| format!("proxy latency timestamp lock poisoned: {e}"))?
+            .map(|sample| now.duration_since(sample) >= idle_for)
+            .unwrap_or(true);
+        if proxy_idle {
+            self.inner.registry.soft_reset("gov-proxy")?;
+            *self
+                .inner
+                .latency_ewma_secs
+                .lock()
+                .map_err(|e| format!("proxy latency EWMA lock poisoned: {e}"))? = None;
+            *self
+                .inner
+                .last_latency_sample
+                .lock()
+                .map_err(|e| format!("proxy latency timestamp lock poisoned: {e}"))? = None;
+        }
+
+        let cost_idle = self
+            .inner
+            .last_cost_sample
+            .lock()
+            .map_err(|e| format!("proxy cost timestamp lock poisoned: {e}"))?
+            .map(|sample| now.duration_since(sample) >= idle_for)
+            .unwrap_or(true);
+        if cost_idle {
+            self.inner.registry.soft_reset("gov-cost")?;
+            *self
+                .inner
+                .cost_ewma_usd_per_min
+                .lock()
+                .map_err(|e| format!("proxy cost EWMA lock poisoned: {e}"))? = None;
+            *self
+                .inner
+                .last_cost_sample
+                .lock()
+                .map_err(|e| format!("proxy cost timestamp lock poisoned: {e}"))? = None;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ProxyPermit {
+    fn drop(&mut self) {
+        self.runtime
+            .inner
+            .in_flight
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.saturating_sub(1))
+            })
+            .ok();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Metered proxy — the ONLY public entry point for external customer requests
@@ -687,6 +908,25 @@ fn estimate_request_input_tokens(request: &ChatCompletionRequest) -> u64 {
         .sum()
 }
 
+pub fn estimate_marked_up_request_cost(
+    request: &ChatCompletionRequest,
+    pricing_table: &HashMap<String, pricing::ModelPricing>,
+    markup_pct: f64,
+) -> (String, f64) {
+    let or_model = openrouter_model_name(&request.model);
+    let estimated_input_tokens = estimate_request_input_tokens(request);
+    let estimated_output_tokens = request.max_tokens.unwrap_or(1024) as u64;
+    let (_, estimated_cost) = pricing::calculate_marked_up_cost(
+        &strip_provider_prefix(&or_model),
+        estimated_input_tokens,
+        estimated_output_tokens,
+        0,
+        pricing_table,
+        markup_pct,
+    );
+    (or_model, estimated_cost)
+}
+
 /// Extract token usage from an OpenAI-compatible response.
 fn extract_usage(resp: &Value) -> (u64, u64) {
     let usage = resp.get("usage");
@@ -839,5 +1079,49 @@ mod tests {
         assert!(usage.generation_id.is_none());
         assert!(usage.prompt_tokens.is_none());
         assert!(usage.completion_tokens.is_none());
+    }
+
+    #[test]
+    fn proxy_governor_runtime_tracks_backpressure_and_ewma() {
+        let registry = Arc::new(GovernorRegistry::new());
+        registry
+            .register(crate::halo::governor::GovernorConfig {
+                instance_id: "gov-proxy".to_string(),
+                alpha: 0.01,
+                beta: 0.05,
+                dt: 1.0,
+                eps_min: 1.0,
+                eps_max: 4.0,
+                target: 2.0,
+                formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.lyapunov_descent"
+                    .to_string(),
+            })
+            .expect("register gov-proxy");
+        registry
+            .register(crate::halo::governor::GovernorConfig {
+                instance_id: "gov-cost".to_string(),
+                alpha: 0.01,
+                beta: 0.05,
+                dt: 1.0,
+                eps_min: 0.01,
+                eps_max: 10.0,
+                target: 1.0,
+                formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime"
+                    .to_string(),
+            })
+            .expect("register gov-cost");
+        let runtime = ProxyGovernorRuntime::new(registry);
+        let permit = runtime.try_acquire().expect("permit");
+        let err = runtime.try_acquire().expect_err("backpressure");
+        assert!(err.contains("backpressure"));
+        runtime
+            .record_latency(Duration::from_millis(1750))
+            .expect("record latency");
+        runtime.record_cost(0.25).expect("record cost");
+        let status = runtime.status().expect("status");
+        assert_eq!(status.in_flight, 1);
+        assert!(status.latency_ewma_ms.unwrap_or_default() >= 1700.0);
+        drop(permit);
+        assert_eq!(runtime.status().expect("status after drop").in_flight, 0);
     }
 }

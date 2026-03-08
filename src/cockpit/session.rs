@@ -40,4 +40,8 @@ pub struct SessionInfo {
     pub runtime_secs: u64,
     #[serde(default)]
     pub trace_flushed: bool,
+    #[serde(default)]
+    pub idle_secs: u64,
+    #[serde(default)]
+    pub recommended_idle_timeout_secs: u64,
 }

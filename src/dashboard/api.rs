@@ -250,6 +250,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/deploy/preflight", post(api_deploy_preflight))
         .route("/deploy/launch", post(api_deploy_launch))
         .route("/deploy/status/{id}", get(api_deploy_status))
+        .route("/governor/status", get(api_governor_status))
+        .route("/governor/proxy/status", get(api_governor_proxy_status))
         // OpenAI-compatible proxy
         .route("/proxy/v1/chat/completions", post(api_proxy_chat))
         .route("/proxy/v1/models", get(api_proxy_models))
@@ -1985,7 +1987,55 @@ async fn api_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "gemini": wrap_status("gemini"),
         },
         "pq_wallet": has_wallet(),
+        "governors": governor_summary_json(&state),
     })))
+}
+
+async fn api_governor_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let snapshots = state.governor_registry.snapshot_all();
+    let _guard = state.db_lock.lock().await;
+    let mut db = load_halo_db(&state.db_path)?;
+    db.aether_maintenance_tick(now_unix_secs());
+    let vector_stats = db.vector_index.eviction_stats();
+    let blob_stats = db.blob_store.stats();
+    let mean_error = (vector_stats.governor_error + blob_stats.governor_error) / 2.0;
+    let memory_snapshot = json!({
+        "instance_id": "gov-memory",
+        "epsilon": ((vector_stats.governor_epsilon + blob_stats.governor_epsilon) / 2.0),
+        "target": ((vector_stats.max_entries + blob_stats.max_entries) as f64 / 2.0),
+        "measured_signal": ((vector_stats.tracked_vectors + blob_stats.tracked_blobs) as f64 / 2.0),
+        "error": mean_error,
+        "lyapunov": 0.5 * mean_error * mean_error,
+        "regime": "engineering aggregate (formal scope exited after first storage observation)",
+        "gamma": vector_stats.governor_gamma.max(blob_stats.governor_gamma),
+        "contraction_bound": vector_stats
+            .governor_contraction_bound
+            .max(blob_stats.governor_contraction_bound),
+        "stable": vector_stats.governor_stable && blob_stats.governor_stable,
+        "oscillating": vector_stats.governor_oscillating || blob_stats.governor_oscillating,
+        "gain_violated": vector_stats.governor_gain_violated || blob_stats.governor_gain_violated,
+        "clamp_active": vector_stats.governor_clamp_active || blob_stats.governor_clamp_active,
+        "formal_basis": "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime",
+        "sparkline": [
+            vector_stats.governor_epsilon,
+            blob_stats.governor_epsilon,
+        ],
+        "last_updated_unix": crate::halo::trace::now_unix_secs(),
+        "warning": "gov-memory aggregates two storage-local engineering governors plus Chebyshev wrapper telemetry; this aggregate is not itself formally verified and exits the single-step scope after the first storage observation."
+    });
+    let proxy_status = state.proxy_governor.status().map_err(internal_err)?;
+    Ok(Json(json!({
+        "instances": snapshots,
+        "memory": memory_snapshot,
+        "proxy": proxy_status,
+    })))
+}
+
+async fn api_governor_proxy_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let status = state.proxy_governor.status().map_err(internal_err)?;
+    Ok(Json(json!(status)))
 }
 
 async fn api_fallback_not_found(uri: axum::http::Uri) -> impl axum::response::IntoResponse {
@@ -6085,7 +6135,7 @@ async fn api_deploy_preflight(
     AxumState(state): AxumState<DashboardState>,
     Json(req): Json<DeployPreflightRequest>,
 ) -> ApiResult {
-    let result = deploy::preflight(&req.agent_id, state.vault.as_deref())
+    let result = deploy::preflight(&req.agent_id, state.vault.as_deref(), Some(&state.db_path))
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     Ok(Json(json!(result)))
 }
@@ -6095,8 +6145,13 @@ async fn api_deploy_launch(
     Json(req): Json<LaunchRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let result = deploy::launch(&req, &state.pty_manager, state.vault.as_deref())
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let result = deploy::launch(
+        &req,
+        &state.pty_manager,
+        state.vault.as_deref(),
+        Some(&state.db_path),
+    )
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     Ok(Json(json!(result)))
 }
 
@@ -6139,12 +6194,21 @@ async fn api_proxy_chat(
         req_for_proxy.stream = Some(true);
         let req_for_trace = req.clone();
         let state_for_trace = state.clone();
+        let proxy_runtime = state.proxy_governor.clone();
+        let permit = proxy_runtime
+            .try_acquire()
+            .map_err(|e| api_err(StatusCode::TOO_MANY_REQUESTS, &e))?;
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let started = std::time::Instant::now();
             let stream_result =
                 proxy::proxy_chat_stream_sync(&vault, &req_for_proxy, |data_payload| {
                     tx.send(Ok(Event::default().data(data_payload)))
                         .map_err(|_| "stream receiver dropped".to_string())
                 });
+            if let Err(e) = proxy_runtime.record_latency(started.elapsed()) {
+                eprintln!("warning: proxy governor latency update failed: {e}");
+            }
             match stream_result {
                 Ok(telemetry) => {
                     let _ = trace_tx.send(stream_trace_response(&req_for_proxy, &telemetry, None));
@@ -6174,12 +6238,21 @@ async fn api_proxy_chat(
             .into_response());
     }
 
+    let permit = state
+        .proxy_governor
+        .try_acquire()
+        .map_err(|e| api_err(StatusCode::TOO_MANY_REQUESTS, &e))?;
+    let started = std::time::Instant::now();
     let req_for_proxy = req.clone();
     let response =
         tokio::task::spawn_blocking(move || proxy::proxy_chat_sync(&vault, &req_for_proxy))
             .await
             .map_err(|e| internal_err(format!("proxy task join: {e}")))?
             .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    drop(permit);
+    if let Err(e) = state.proxy_governor.record_latency(started.elapsed()) {
+        eprintln!("warning: proxy governor latency update failed: {e}");
+    }
 
     if let Err(e) = record_proxy_trace(&state, &req, &response).await {
         eprintln!("warning: proxy trace write failed: {e}");
@@ -6254,6 +6327,12 @@ async fn api_metered_proxy_chat(
     let key_store = state.key_store.clone();
     let pricing_table = state.pricing_table.clone();
     let markup_pct = cfg.markup_pct;
+    let (_, estimated_cost_usd) =
+        proxy::estimate_marked_up_request_cost(&req, &pricing_table, markup_pct);
+    state
+        .proxy_governor
+        .admit_estimated_cost(estimated_cost_usd)
+        .map_err(|e| api_err(StatusCode::TOO_MANY_REQUESTS, &e))?;
     if req.stream.unwrap_or(false) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
         let (trace_tx, trace_rx) = tokio::sync::oneshot::channel::<Value>();
@@ -6261,7 +6340,13 @@ async fn api_metered_proxy_chat(
         req_for_proxy.stream = Some(true);
         let req_for_trace = req.clone();
         let state_for_trace = state.clone();
+        let proxy_runtime = state.proxy_governor.clone();
+        let permit = proxy_runtime
+            .try_acquire()
+            .map_err(|e| api_err(StatusCode::TOO_MANY_REQUESTS, &e))?;
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let started = std::time::Instant::now();
             let stream_result = proxy::metered_proxy_stream_sync(
                 &vault,
                 &key_store,
@@ -6274,6 +6359,16 @@ async fn api_metered_proxy_chat(
                         .map_err(|_| "stream receiver dropped".to_string())
                 },
             );
+            let settled_cost = match &stream_result {
+                Ok(settled) => settled.customer_cost_usd,
+                Err(err) => err.settled.customer_cost_usd,
+            };
+            if let Err(e) = proxy_runtime.record_latency(started.elapsed()) {
+                eprintln!("warning: metered proxy governor latency update failed: {e}");
+            }
+            if let Err(e) = proxy_runtime.record_cost(settled_cost) {
+                eprintln!("warning: metered proxy governor cost update failed: {e}");
+            }
             match stream_result {
                 Ok(settled) => {
                     let billing = json!({
@@ -6329,6 +6424,11 @@ async fn api_metered_proxy_chat(
             .into_response());
     }
 
+    let permit = state
+        .proxy_governor
+        .try_acquire()
+        .map_err(|e| api_err(StatusCode::TOO_MANY_REQUESTS, &e))?;
+    let started = std::time::Instant::now();
     let req_for_proxy = req.clone();
     let result = tokio::task::spawn_blocking(move || {
         proxy::metered_proxy_sync(
@@ -6343,6 +6443,13 @@ async fn api_metered_proxy_chat(
     .await
     .map_err(|e| internal_err(format!("metered proxy task join: {e}")))?
     .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    drop(permit);
+    if let Err(e) = state.proxy_governor.record_latency(started.elapsed()) {
+        eprintln!("warning: metered proxy governor latency update failed: {e}");
+    }
+    if let Err(e) = state.proxy_governor.record_cost(result.customer_cost_usd) {
+        eprintln!("warning: metered proxy governor cost update failed: {e}");
+    }
 
     if let Err(e) = record_proxy_trace(&state, &req, &result.body).await {
         eprintln!("warning: metered proxy trace write failed: {e}");
@@ -6902,7 +7009,10 @@ async fn api_nucleusdb_browse(
 
 async fn api_nucleusdb_stats(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let _guard = state.db_lock.lock().await;
-    let db = load_halo_db(&state.db_path)?;
+    let mut db = load_halo_db(&state.db_path)?;
+    db.aether_maintenance_tick(now_unix_secs());
+    let vector_stats = db.vector_index.eviction_stats();
+    let blob_stats = db.blob_store.stats();
 
     let key_count = db.keymap.len();
     let commit_count = db.entries.len();
@@ -7007,8 +7117,10 @@ async fn api_nucleusdb_stats(AxumState(state): AxumState<DashboardState>) -> Api
         "type_distribution": type_counts,
         "blob_count": blob_count,
         "blob_total_bytes": blob_bytes,
+        "blob_aether": blob_stats,
         "vector_count": vector_count,
         "vector_dims": vector_dims,
+        "vector_aether": vector_stats,
         "grant_count": grant_count,
         "grant_active_count": grant_active_count,
     })))
@@ -7364,7 +7476,7 @@ async fn api_nucleusdb_vector_search(
     Json(req): Json<VectorSearchRequest>,
 ) -> ApiResult {
     let _guard = state.db_lock.lock().await;
-    let db = load_halo_db(&state.db_path)?;
+    let mut db = load_halo_db(&state.db_path)?;
 
     let metric = crate::vector_index::DistanceMetric::from_str_tag(&req.metric)
         .unwrap_or(crate::vector_index::DistanceMetric::Cosine);
@@ -7378,7 +7490,7 @@ async fn api_nucleusdb_vector_search(
     };
     let results = db
         .vector_index
-        .search(&req.query, fetch_k, metric)
+        .search_with_access(&req.query, fetch_k, metric)
         .map_err(|e| internal_err(format!("vector search: {e}")))?;
 
     let items: Vec<Value> = results
@@ -7397,6 +7509,10 @@ async fn api_nucleusdb_vector_search(
         })
         .collect();
 
+    let wal_path = default_wal_path(&state.db_path);
+    persist_snapshot_and_sync_wal(&state.db_path, &wal_path, &db)
+        .map_err(|e| internal_err(format!("persist vector search telemetry: {e:?}")))?;
+
     Ok(Json(json!({
         "results": items,
         "query_dims": req.query.len(),
@@ -7404,6 +7520,7 @@ async fn api_nucleusdb_vector_search(
         "metric": req.metric,
         "total_vectors": db.vector_index.len(),
         "vector_count": db.vector_index.len(),
+        "aether": db.vector_index.eviction_stats(),
     })))
 }
 
@@ -7741,6 +7858,20 @@ fn load_halo_db(db_path: &std::path::Path) -> Result<NucleusDb, (StatusCode, Jso
     let mut cfg = default_witness_cfg();
     cfg.signing_algorithm = WitnessSignatureAlgorithm::MlDsa65;
     load_snapshot(db_path, cfg).map_err(|e| internal_err(format!("load NucleusDB: {e:?}")))
+}
+
+fn governor_summary_json(state: &DashboardState) -> Value {
+    let snapshots = state.governor_registry.snapshot_all();
+    let total = snapshots.len();
+    let stable = snapshots.iter().filter(|item| item.stable).count();
+    let oscillating = snapshots.iter().filter(|item| item.oscillating).count();
+    let gain_violated = snapshots.iter().filter(|item| item.gain_violated).count();
+    json!({
+        "total": total,
+        "stable": stable,
+        "oscillating": oscillating,
+        "gain_violated": gain_violated,
+    })
 }
 
 fn db_file_fingerprint(path: &std::path::Path) -> Option<super::DbFileFingerprint> {

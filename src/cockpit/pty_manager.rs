@@ -1,4 +1,5 @@
 use crate::cockpit::session::{SessionInfo, SessionStatus};
+use crate::halo::governor_registry::GovernorRegistry;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -10,6 +11,8 @@ use tokio::sync::broadcast;
 pub struct PtyManager {
     sessions: Mutex<HashMap<String, Arc<PtySession>>>,
     max_sessions: usize,
+    governor_registry: Option<Arc<GovernorRegistry>>,
+    recommended_idle_timeout_secs: AtomicU64,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +49,7 @@ pub struct PtySession {
     input_bytes: AtomicU64,
     output_bytes: AtomicU64,
     trace_flushed: AtomicBool,
+    last_activity_unix: AtomicU64,
 }
 
 impl PtySession {
@@ -142,10 +146,12 @@ impl PtySession {
 
     pub fn note_input(&self, n: u64) {
         self.input_bytes.fetch_add(n, Ordering::Relaxed);
+        self.touch_activity();
     }
 
     pub fn note_output(&self, n: u64) {
         self.output_bytes.fetch_add(n, Ordering::Relaxed);
+        self.touch_activity();
     }
 
     pub fn telemetry_snapshot(&self) -> SessionTelemetry {
@@ -195,6 +201,8 @@ impl PtySession {
             estimated_cost_usd: t.estimated_cost_usd,
             runtime_secs: t.runtime_secs,
             trace_flushed: t.trace_flushed,
+            idle_secs: self.idle_secs(),
+            recommended_idle_timeout_secs: 0,
         }
     }
 
@@ -211,13 +219,30 @@ impl PtySession {
         let maybe = child.try_wait().ok()?;
         maybe.map(|status| status.exit_code() as i32)
     }
+
+    pub fn idle_secs(&self) -> u64 {
+        now_unix().saturating_sub(self.last_activity_unix.load(Ordering::Relaxed))
+    }
+
+    fn touch_activity(&self) {
+        self.last_activity_unix.store(now_unix(), Ordering::Relaxed);
+    }
 }
 
 impl PtyManager {
     pub fn new(max: usize) -> Self {
+        Self::with_governor_registry(max, None)
+    }
+
+    pub fn with_governor_registry(
+        max: usize,
+        governor_registry: Option<Arc<GovernorRegistry>>,
+    ) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             max_sessions: max,
+            governor_registry,
+            recommended_idle_timeout_secs: AtomicU64::new(120),
         }
     }
 
@@ -256,12 +281,14 @@ impl PtyManager {
         rows: u16,
         agent_type: Option<String>,
     ) -> Result<String, String> {
+        self.reap_idle_sessions_if_needed();
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|e| format!("session map lock poisoned: {e}"))?;
-        if sessions.len() >= self.max_sessions {
-            return Err(format!("maximum {} sessions reached", self.max_sessions));
+        let effective_limit = self.effective_limit_from_len(sessions.len());
+        if sessions.len() >= effective_limit {
+            return Err(format!("maximum {effective_limit} sessions reached"));
         }
 
         let pty_system = native_pty_system();
@@ -320,10 +347,14 @@ impl PtyManager {
             input_bytes: AtomicU64::new(0),
             output_bytes: AtomicU64::new(0),
             trace_flushed: AtomicBool::new(false),
+            last_activity_unix: AtomicU64::new(now_unix()),
         });
 
         spawn_reader_thread(session.clone())?;
         sessions.insert(id.clone(), session);
+        let current_len = sessions.len();
+        drop(sessions);
+        self.observe_runtime(current_len);
         Ok(id)
     }
 
@@ -340,6 +371,7 @@ impl PtyManager {
         let session = removed.ok_or_else(|| format!("session `{id}` not found"))?;
         let _ = session.terminate();
         session.set_status(SessionStatus::Done { exit_code: 0 });
+        self.observe_runtime(self.session_count());
         Ok(())
     }
 
@@ -351,10 +383,18 @@ impl PtyManager {
     }
 
     pub fn list_sessions(&self) -> Vec<SessionInfo> {
-        self.sessions
+        let recommended_idle_timeout_secs = self.recommended_idle_timeout_secs();
+        let list: Vec<SessionInfo> = self
+            .sessions
             .lock()
             .map(|map| map.values().map(|s| s.info()).collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let mut list = list;
+        for item in &mut list {
+            item.recommended_idle_timeout_secs = recommended_idle_timeout_secs;
+        }
+        self.observe_runtime(list.len());
+        list
     }
 
     pub fn list_session_handles(&self) -> Vec<Arc<PtySession>> {
@@ -366,6 +406,94 @@ impl PtyManager {
 
     pub fn session_count(&self) -> usize {
         self.sessions.lock().map(|m| m.len()).unwrap_or(0)
+    }
+
+    pub fn recommended_idle_timeout_secs(&self) -> u64 {
+        self.recommended_idle_timeout_secs
+            .load(Ordering::Relaxed)
+            .max(30)
+    }
+
+    pub fn soft_reset_quiescent_governors(&self) {
+        let Some(registry) = &self.governor_registry else {
+            return;
+        };
+        if self.session_count() == 0 {
+            let _ = registry.soft_reset("gov-compute");
+            let _ = registry.soft_reset("gov-pty");
+        }
+    }
+
+    fn effective_limit_from_len(&self, current_len: usize) -> usize {
+        let Some(registry) = &self.governor_registry else {
+            return self.max_sessions;
+        };
+        let _ = registry.observe("gov-compute", current_len as f64);
+        registry
+            .snapshot_one("gov-compute")
+            .ok()
+            .map(|snapshot| snapshot.epsilon.ceil().clamp(1.0, self.max_sessions as f64) as usize)
+            .unwrap_or(self.max_sessions)
+    }
+
+    fn observe_runtime(&self, current_len: usize) {
+        let Some(registry) = &self.governor_registry else {
+            return;
+        };
+        let _ = registry.observe("gov-compute", current_len as f64);
+        let average_idle_secs = self
+            .sessions
+            .lock()
+            .map(|map| {
+                if map.is_empty() {
+                    0.0
+                } else {
+                    map.values()
+                        .map(|session| session.idle_secs() as f64)
+                        .sum::<f64>()
+                        / map.len() as f64
+                }
+            })
+            .unwrap_or(0.0);
+        let _ = registry.observe("gov-pty", average_idle_secs);
+        if let Ok(snapshot) = registry.snapshot_one("gov-pty") {
+            self.recommended_idle_timeout_secs
+                .store(snapshot.epsilon.ceil().max(30.0) as u64, Ordering::Relaxed);
+        }
+    }
+
+    fn reap_idle_sessions_if_needed(&self) {
+        let Some(registry) = &self.governor_registry else {
+            return;
+        };
+        let effective_limit = self.effective_limit_from_len(self.session_count());
+        let timeout = registry
+            .snapshot_one("gov-pty")
+            .ok()
+            .map(|snapshot| snapshot.epsilon.ceil().max(30.0) as u64)
+            .unwrap_or_else(|| self.recommended_idle_timeout_secs());
+        let ids_to_reap = self
+            .sessions
+            .lock()
+            .map(|map| {
+                map.iter()
+                    .filter(|(_, session)| {
+                        let idle = session.idle_secs();
+                        let status = session.status();
+                        idle > timeout
+                            && match status {
+                                SessionStatus::Done { .. } | SessionStatus::Error { .. } => true,
+                                SessionStatus::Active => map.len() >= effective_limit,
+                                SessionStatus::Starting => false,
+                            }
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for id in ids_to_reap {
+            let _ = self.destroy_session(&id);
+        }
     }
 }
 
@@ -463,6 +591,7 @@ mod tests {
         assert_eq!(list[0].id, id);
         assert_eq!(list[0].cols, 120);
         assert_eq!(list[0].rows, 40);
+        assert!(list[0].recommended_idle_timeout_secs >= 30);
 
         manager.destroy_session(&id).expect("destroy session");
         assert_eq!(manager.session_count(), 0);

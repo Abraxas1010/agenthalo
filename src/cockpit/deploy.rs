@@ -1,7 +1,17 @@
+use crate::cli::default_witness_cfg;
 use crate::cockpit::pty_manager::PtyManager;
+use crate::halo::topo_signature::{self, CompareResult, TopoSignature};
 use crate::halo::vault::Vault;
+use crate::persistence::{default_wal_path, load_snapshot, persist_snapshot_and_sync_wal};
+use crate::state::{Delta, State};
+use crate::typed_value::TypedValue;
+use crate::witness::WitnessSignatureAlgorithm;
+use crate::VcBackend;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::path::Path;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AgentDef {
@@ -103,6 +113,8 @@ pub struct PreflightResult {
     pub docker_available: bool,
     pub ready: bool,
     pub install_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binary_topology: Option<DeployTopologyStatus>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -130,6 +142,31 @@ pub struct PanelInfo {
     pub iframe_url: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeployTopologyStatus {
+    pub cli_path: String,
+    pub binary_sha256: String,
+    pub signature: TopoSignature,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<StoredTopoRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<CompareResult>,
+    pub hash_changed: bool,
+    pub structural_change_flagged: bool,
+    pub stored_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StoredTopoRecord {
+    pub agent_id: String,
+    pub cli_path: String,
+    pub binary_sha256: String,
+    pub signature: TopoSignature,
+    pub observed_at_unix: u64,
+}
+
 /// Check whether a CLI agent has native OAuth credentials on disk.
 ///
 /// Returns `true` if the agent's auth token file exists and is non-trivial
@@ -152,7 +189,11 @@ pub fn cli_authenticated(agent_id: &str) -> bool {
             .unwrap_or(false)
 }
 
-pub fn preflight(agent_id: &str, vault: Option<&Vault>) -> Result<PreflightResult, String> {
+pub fn preflight(
+    agent_id: &str,
+    vault: Option<&Vault>,
+    db_path: Option<&Path>,
+) -> Result<PreflightResult, String> {
     let catalog = agent_catalog();
     let agent = catalog
         .iter()
@@ -178,6 +219,10 @@ pub fn preflight(agent_id: &str, vault: Option<&Vault>) -> Result<PreflightResul
     // OAuth credentials (Claude/Codex/Gemini authenticate via their own CLIs).
     let keys_configured = vault_keys_ok || native_auth;
     let docker_available = which_command("docker").is_some();
+    let binary_topology = cli_path
+        .as_deref()
+        .map(|path| inspect_binary_topology(agent_id, Path::new(path), db_path))
+        .transpose()?;
 
     Ok(PreflightResult {
         cli_installed,
@@ -191,6 +236,7 @@ pub fn preflight(agent_id: &str, vault: Option<&Vault>) -> Result<PreflightResul
         docker_available,
         ready: cli_installed && keys_configured,
         install_hint: agent.install_hint.map(|s| s.to_string()),
+        binary_topology,
     })
 }
 
@@ -198,6 +244,7 @@ pub fn launch(
     req: &LaunchRequest,
     pty_manager: &PtyManager,
     vault: Option<&Vault>,
+    db_path: Option<&Path>,
 ) -> Result<LaunchResult, String> {
     let catalog = agent_catalog();
     let agent = catalog
@@ -205,7 +252,7 @@ pub fn launch(
         .find(|a| a.id == req.agent_id)
         .ok_or_else(|| format!("unknown agent `{}`", req.agent_id))?;
 
-    let pre = preflight(agent.id, vault)?;
+    let pre = preflight(agent.id, vault, db_path)?;
     if !pre.cli_installed {
         return Err(format!(
             "CLI `{}` is not installed. {}",
@@ -295,6 +342,139 @@ pub fn launch(
     })
 }
 
+fn inspect_binary_topology(
+    agent_id: &str,
+    cli_path: &Path,
+    db_path: Option<&Path>,
+) -> Result<DeployTopologyStatus, String> {
+    let bytes =
+        std::fs::read(cli_path).map_err(|e| format!("read binary {}: {e}", cli_path.display()))?;
+    let binary_sha256 = hex::encode(Sha256::digest(&bytes));
+    let signature = topo_signature::fingerprint(&bytes, 3);
+    let stored_key = format!("topo:{binary_sha256}");
+
+    let mut previous = None;
+    let mut comparison = None;
+    let mut hash_changed = false;
+    let mut structural_change_flagged = false;
+
+    if let Some(path) = db_path {
+        let record = StoredTopoRecord {
+            agent_id: agent_id.to_string(),
+            cli_path: cli_path.display().to_string(),
+            binary_sha256: binary_sha256.clone(),
+            signature: signature.clone(),
+            observed_at_unix: now_unix(),
+        };
+        let latest_key = format!("topo:agent:{agent_id}:latest");
+        let mut db = load_or_create_halo_db(path)?;
+        if let Some(TypedValue::Json(previous_json)) = db.get_typed(&latest_key) {
+            if let Ok(previous_record) = serde_json::from_value::<StoredTopoRecord>(previous_json) {
+                hash_changed = previous_record.binary_sha256 != binary_sha256;
+                if hash_changed {
+                    let result = topo_signature::compare(&previous_record.signature, &signature);
+                    structural_change_flagged = !result.within_formal_bound;
+                    comparison = Some(result);
+                }
+                previous = Some(previous_record);
+            }
+        }
+        persist_topology_records(&mut db, path, &stored_key, &latest_key, &record)?;
+    }
+
+    let warning = if structural_change_flagged {
+        Some(
+            "binary structure changed beyond the formal Betti overlap bound; keep SHA-256 as the primary authenticator and review the artifact diff."
+                .to_string(),
+        )
+    } else {
+        comparison.as_ref().and_then(|cmp| cmp.warning.clone())
+    };
+
+    Ok(DeployTopologyStatus {
+        cli_path: cli_path.display().to_string(),
+        binary_sha256,
+        signature,
+        previous,
+        comparison,
+        hash_changed,
+        structural_change_flagged,
+        stored_key,
+        warning,
+    })
+}
+
+fn persist_topology_records(
+    db: &mut crate::protocol::NucleusDb,
+    db_path: &Path,
+    stored_key: &str,
+    latest_key: &str,
+    record: &StoredTopoRecord,
+) -> Result<(), String> {
+    let desired_value =
+        serde_json::to_value(record).map_err(|e| format!("serialize topology record: {e}"))?;
+
+    let needs_hash_record = match db.get_typed(stored_key) {
+        Some(TypedValue::Json(existing)) => existing != desired_value,
+        Some(_) => true,
+        None => true,
+    };
+    let needs_latest_record = match db.get_typed(latest_key) {
+        Some(TypedValue::Json(existing)) => existing != desired_value,
+        Some(_) => true,
+        None => true,
+    };
+
+    if !needs_hash_record && !needs_latest_record {
+        return Ok(());
+    }
+
+    let mut writes = Vec::new();
+    if needs_hash_record {
+        let (idx, cell) = db
+            .put_typed(stored_key, TypedValue::Json(desired_value.clone()))
+            .map_err(|e| format!("store topology record: {e}"))?;
+        writes.push((idx, cell));
+    }
+    if needs_latest_record {
+        let (idx, cell) = db
+            .put_typed(latest_key, TypedValue::Json(desired_value))
+            .map_err(|e| format!("store latest topology record: {e}"))?;
+        writes.push((idx, cell));
+    }
+
+    if writes.is_empty() {
+        return Ok(());
+    }
+
+    db.commit(Delta::new(writes), &[])
+        .map_err(|e| format!("commit topology record: {e:?}"))?;
+    let wal_path = default_wal_path(db_path);
+    persist_snapshot_and_sync_wal(db_path, &wal_path, db)
+        .map_err(|e| format!("persist topology record: {e:?}"))?;
+    Ok(())
+}
+
+fn load_or_create_halo_db(db_path: &Path) -> Result<crate::protocol::NucleusDb, String> {
+    let mut cfg = default_witness_cfg();
+    cfg.signing_algorithm = WitnessSignatureAlgorithm::MlDsa65;
+    if !db_path.exists() {
+        return Ok(crate::protocol::NucleusDb::new(
+            State::new(vec![]),
+            VcBackend::BinaryMerkle,
+            cfg,
+        ));
+    }
+    load_snapshot(db_path, cfg).map_err(|e| format!("load NucleusDB {}: {e:?}", db_path.display()))
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 fn build_docker_args(
     image: &str,
     inner_command: &str,
@@ -367,7 +547,8 @@ fn which_command(command: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_docker_args, route_working_dir};
+    use super::{build_docker_args, inspect_binary_topology, route_working_dir, StoredTopoRecord};
+    use crate::halo::topo_signature::fingerprint;
 
     #[test]
     fn shell_uses_pty_cwd_not_cli_flag() {
@@ -408,5 +589,34 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["-w", "/tmp/work"]));
         assert!(args.iter().any(|a| a == "ubuntu:24.04"));
         assert!(args.iter().any(|a| a == "codex"));
+    }
+
+    #[test]
+    fn topology_fingerprint_is_deterministic_without_db() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("agent.bin");
+        std::fs::write(&path, b"abcdefabcdef").expect("write binary");
+        let first = inspect_binary_topology("shell", &path, None).expect("first");
+        let second = inspect_binary_topology("shell", &path, None).expect("second");
+        assert_eq!(first.binary_sha256, second.binary_sha256);
+        assert_eq!(
+            first.signature.betti1_heuristic,
+            second.signature.betti1_heuristic
+        );
+    }
+
+    #[test]
+    fn stored_topology_record_roundtrips() {
+        let record = StoredTopoRecord {
+            agent_id: "codex".to_string(),
+            cli_path: "/tmp/codex".to_string(),
+            binary_sha256: "abcd".to_string(),
+            signature: fingerprint(b"abcdabcd", 3),
+            observed_at_unix: 42,
+        };
+        let value = serde_json::to_value(&record).expect("serialize");
+        let roundtrip: StoredTopoRecord = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(roundtrip.agent_id, "codex");
+        assert_eq!(roundtrip.signature.data_len, 8);
     }
 }
