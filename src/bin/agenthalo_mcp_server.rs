@@ -7166,6 +7166,22 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn reset_mcp_crypto_state_for_tests() {
+        let mutex = mcp_crypto_mutex();
+        let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = McpCryptoState::new();
+        mutex.clear_poison();
+    }
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        let guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env_lock().clear_poison();
+        reset_mcp_crypto_state_for_tests();
+        guard
+    }
+
     fn make_temp_home(prefix: &str) -> PathBuf {
         let home = std::env::temp_dir().join(format!(
             "{prefix}_{}_{}",
@@ -7186,7 +7202,7 @@ mod tests {
 
     #[test]
     fn known_tool_clears_error_flag() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_test_{}_{}",
             std::process::id(),
@@ -7206,7 +7222,7 @@ mod tests {
 
     #[test]
     fn identity_tools_social_roundtrip() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_identity_{}_{}",
             std::process::id(),
@@ -7244,7 +7260,7 @@ mod tests {
 
     #[test]
     fn identity_tool_tier_set_roundtrip() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_identity_tier_{}_{}",
             std::process::id(),
@@ -7273,7 +7289,7 @@ mod tests {
 
     #[test]
     fn profile_set_roundtrip() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_profile_roundtrip_{}_{}",
             std::process::id(),
@@ -7302,7 +7318,7 @@ mod tests {
 
     #[test]
     fn identity_device_and_network_probe_tools_return_ok() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_identity_probe_{}_{}",
             std::process::id(),
@@ -7326,7 +7342,7 @@ mod tests {
 
     #[test]
     fn identity_anonymous_set_roundtrip() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_identity_anon_{}_{}",
             std::process::id(),
@@ -7353,7 +7369,7 @@ mod tests {
 
     #[test]
     fn genesis_status_tool_returns_non_error_payload() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_genesis_status_{}_{}",
             std::process::id(),
@@ -7378,7 +7394,7 @@ mod tests {
 
     #[test]
     fn wallet_status_tool_returns_non_error_payload() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_wallet_status_{}_{}",
             std::process::id(),
@@ -7404,7 +7420,7 @@ mod tests {
 
     #[test]
     fn wallet_import_rejects_invalid_mnemonic() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_wallet_import_invalid_{}_{}",
             std::process::id(),
@@ -7427,7 +7443,7 @@ mod tests {
 
     #[test]
     fn wallet_create_rejects_short_passphrase() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_wallet_create_short_{}_{}",
             std::process::id(),
@@ -7449,7 +7465,7 @@ mod tests {
 
     #[test]
     fn crypto_tools_password_roundtrip() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_crypto_roundtrip_{}_{}",
             std::process::id(),
@@ -7490,7 +7506,7 @@ mod tests {
 
     #[test]
     fn crypto_unlock_rejects_wrong_password_mcp() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_crypto_wrong_{}_{}",
             std::process::id(),
@@ -7516,7 +7532,7 @@ mod tests {
 
     #[test]
     fn tool_sign_pq_uses_v2_wallet_after_password_migration() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_sign_v2_wallet");
         std::env::set_var("AGENTHALO_HOME", &home);
         let _ = nucleusdb::halo::pq::keygen_pq(false).expect("bootstrap legacy wallet");
@@ -7544,7 +7560,7 @@ mod tests {
 
     #[test]
     fn agents_tools_roundtrip_mcp() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_agents_roundtrip_{}_{}",
             std::process::id(),
@@ -7588,7 +7604,7 @@ mod tests {
 
     #[test]
     fn attest_dry_run_returns_payload_without_tx_side_effects() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = std::env::temp_dir().join(format!(
             "agenthalo_mcp_attest_dry_{}_{}",
             std::process::id(),
@@ -7653,7 +7669,7 @@ mod tests {
 
     #[test]
     fn resolve_mcp_secret_requires_explicit_secret_or_dev_opt_in() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         std::env::remove_var("AGENTHALO_MCP_SECRET");
         std::env::remove_var("AGENTHALO_ALLOW_DEV_SECRET");
 
@@ -7697,7 +7713,7 @@ mod tests {
 
     #[test]
     fn append_jsonl_and_tally_votes_counts_expected_choices() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_vote_tally");
         std::env::set_var("AGENTHALO_HOME", &home);
 
@@ -7725,7 +7741,7 @@ mod tests {
 
     #[test]
     fn tool_vote_local_path_returns_stored_and_null_tx_hash() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_vote_local");
         std::env::set_var("AGENTHALO_HOME", &home);
         std::env::remove_var("AGENTHALO_ONCHAIN_SIMULATION");
@@ -7747,7 +7763,7 @@ mod tests {
 
     #[test]
     fn tool_vote_onchain_simulation_returns_submitted_tx_hash() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_vote_simulation");
         std::env::set_var("AGENTHALO_HOME", &home);
         std::env::set_var("AGENTHALO_ONCHAIN_SIMULATION", "1");
@@ -7771,7 +7787,7 @@ mod tests {
 
     #[test]
     fn tool_sync_local_path_creates_artifact() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_sync_local");
         std::env::set_var("AGENTHALO_HOME", &home);
 
@@ -7786,7 +7802,7 @@ mod tests {
 
     #[test]
     fn tool_privacy_pool_create_local_only_returns_null_tx_hash() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_pool_local");
         std::env::set_var("AGENTHALO_HOME", &home);
         addons::set_enabled("agentpmt-workflows", true).expect("enable workflow add-on");
@@ -7806,7 +7822,7 @@ mod tests {
 
     #[test]
     fn tool_privacy_pool_create_simulation_returns_tx_hash() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_pool_simulation");
         std::env::set_var("AGENTHALO_HOME", &home);
         std::env::set_var("AGENTHALO_ONCHAIN_SIMULATION", "1");
@@ -7832,7 +7848,7 @@ mod tests {
 
     #[test]
     fn execute_onchain_workflow_call_simulation_is_deterministic() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         std::env::set_var("AGENTHALO_ONCHAIN_SIMULATION", "1");
         let payload = json!({
             "id": "deterministic-test",
@@ -7881,7 +7897,7 @@ mod tests {
 
     #[test]
     fn mesh_peers_tool_dispatches_and_returns_status() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_mesh_peers_dispatch");
         std::env::set_var("AGENTHALO_HOME", &home);
         let registry_path = home.join("mesh-peers.json");
@@ -7904,7 +7920,7 @@ mod tests {
 
     #[test]
     fn mesh_ping_tool_dispatches_and_reports_missing_peer() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_mesh_ping_dispatch");
         std::env::set_var("AGENTHALO_HOME", &home);
         let registry_path = home.join("mesh-peers.json");
@@ -7924,7 +7940,7 @@ mod tests {
 
     #[test]
     fn nucleusdb_tools_roundtrip_via_agenthalo_dispatch() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_nucleusdb_dispatch");
         std::env::set_var("AGENTHALO_HOME", &home);
         let db_path = home.join("agenthalo_tools.ndb");
@@ -7971,7 +7987,7 @@ mod tests {
         use axum::{Json, Router};
         use std::time::Duration;
 
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_didcomm_receive");
         std::env::set_var("AGENTHALO_HOME", &home);
 
@@ -8095,7 +8111,7 @@ mod tests {
         use axum::{Json, Router};
         use std::time::Duration;
 
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("agenthalo_mcp_didcomm_rejects_without_cap");
         std::env::set_var("AGENTHALO_HOME", &home);
 
