@@ -5,10 +5,14 @@ use crate::halo::did::{dual_sign, dual_verify, DIDDocument, DIDIdentity};
 use crate::halo::util::{digest_bytes, hex_encode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(not(test))]
+use std::fs;
 use std::sync::{Mutex, OnceLock};
 
 const CHALLENGE_HASH_DOMAIN: &str = "agenthalo.capability.challenge.v1";
+const ZERO_SORRY_PAYLOAD_HASH_DOMAIN: &str = "agenthalo.capability.zero_sorry.payload.v1";
 const CHALLENGE_RATE_LIMIT_PER_MIN: usize = 10;
 const CHALLENGE_RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
@@ -76,10 +80,11 @@ impl DomainChallengeBank {
     pub fn issue_for_spec(
         &self,
         spec: &CapabilitySpec,
+        target_scope: &str,
         now: u64,
         ttl_secs: u64,
     ) -> Result<CapabilityChallenge, String> {
-        enforce_challenge_rate_limit(&spec.capability_id, now)?;
+        enforce_challenge_rate_limit(target_scope, &spec.capability_id, now)?;
         let kind = self
             .templates
             .iter()
@@ -105,11 +110,80 @@ fn challenge_rate_state() -> &'static Mutex<HashMap<String, VecDeque<u64>>> {
     RATE_STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn enforce_challenge_rate_limit(capability_id: &str, now: u64) -> Result<(), String> {
+#[cfg(not(test))]
+fn load_challenge_rate_store_from_disk() -> Result<HashMap<String, VecDeque<u64>>, String> {
+    let path = crate::halo::config::challenge_rate_store_path();
+    match fs::read(&path) {
+        Ok(raw) => {
+            let parsed = serde_json::from_slice::<HashMap<String, Vec<u64>>>(&raw)
+                .map_err(|e| format!("parse challenge rate store at {}: {e}", path.display()))?;
+            Ok(parsed
+                .into_iter()
+                .map(|(key, values)| (key, VecDeque::from(values)))
+                .collect())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(e) => Err(format!(
+            "read challenge rate store at {}: {e}",
+            path.display()
+        )),
+    }
+}
+
+#[cfg(test)]
+fn load_challenge_rate_store_from_disk() -> Result<HashMap<String, VecDeque<u64>>, String> {
+    Ok(HashMap::new())
+}
+
+#[cfg(not(test))]
+fn persist_challenge_rate_store_to_disk(
+    store: &HashMap<String, VecDeque<u64>>,
+) -> Result<(), String> {
+    crate::halo::config::ensure_halo_dir()?;
+    let path = crate::halo::config::challenge_rate_store_path();
+    let tmp_path = path.with_extension("json.tmp");
+    let serializable = store
+        .iter()
+        .map(|(key, values)| (key.clone(), values.iter().copied().collect::<Vec<_>>()))
+        .collect::<HashMap<_, _>>();
+    let raw = serde_json::to_vec(&serializable)
+        .map_err(|e| format!("serialize challenge rate store: {e}"))?;
+    fs::write(&tmp_path, raw).map_err(|e| {
+        format!(
+            "write challenge rate store temp file {}: {e}",
+            tmp_path.display()
+        )
+    })?;
+    fs::rename(&tmp_path, &path)
+        .map_err(|e| format!("persist challenge rate store to {}: {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn persist_challenge_rate_store_to_disk(
+    _store: &HashMap<String, VecDeque<u64>>,
+) -> Result<(), String> {
+    Ok(())
+}
+
+fn challenge_rate_key(target_scope: &str, capability_id: &str) -> String {
+    format!("{target_scope}:{capability_id}")
+}
+
+fn enforce_challenge_rate_limit(
+    target_scope: &str,
+    capability_id: &str,
+    now: u64,
+) -> Result<(), String> {
     let mut guard = challenge_rate_state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let entries = guard.entry(capability_id.to_string()).or_default();
+    if !cfg!(test) {
+        *guard = load_challenge_rate_store_from_disk()?;
+    }
+    let entries = guard
+        .entry(challenge_rate_key(target_scope, capability_id))
+        .or_default();
     while let Some(front) = entries.front().copied() {
         if now.saturating_sub(front) > CHALLENGE_RATE_LIMIT_WINDOW_SECS {
             let _ = entries.pop_front();
@@ -118,11 +192,13 @@ fn enforce_challenge_rate_limit(capability_id: &str, now: u64) -> Result<(), Str
         }
     }
     if entries.len() >= CHALLENGE_RATE_LIMIT_PER_MIN {
+        persist_challenge_rate_store_to_disk(&guard)?;
         return Err(format!(
-            "challenge issuance for `{capability_id}` exceeded {CHALLENGE_RATE_LIMIT_PER_MIN}/minute"
+            "challenge issuance for target `{target_scope}` capability `{capability_id}` exceeded {CHALLENGE_RATE_LIMIT_PER_MIN}/minute"
         ));
     }
     entries.push_back(now);
+    persist_challenge_rate_store_to_disk(&guard)?;
     Ok(())
 }
 
@@ -259,6 +335,12 @@ fn constraint_violation(
             }
         }
         CapabilityConstraint::ZeroSorry => {
+            let proof_ref = response
+                .metadata
+                .get("zero_sorry_proof_ref")
+                .map(String::as_str)
+                .unwrap_or("");
+            let expected_payload_hash = zero_sorry_payload_hash(&response.payload);
             if response
                 .metadata
                 .get("zero_sorry_verified")
@@ -266,6 +348,15 @@ fn constraint_violation(
                 != Some("true")
             {
                 Some("ZeroSorry requires kernel-level zero_sorry_verified=true".to_string())
+            } else if proof_ref.is_empty() {
+                Some("ZeroSorry requires a non-empty zero_sorry_proof_ref".to_string())
+            } else if response
+                .metadata
+                .get("zero_sorry_payload_hash")
+                .map(String::as_str)
+                != Some(expected_payload_hash.as_str())
+            {
+                Some("ZeroSorry payload hash metadata does not match response payload".to_string())
             } else if normalized_payload_text(&response.payload).contains("sorry")
                 || normalized_payload_text(&response.payload).contains("admit")
             {
@@ -309,14 +400,43 @@ fn constraint_violation(
     }
 }
 
+fn zero_sorry_payload_hash(payload: &Value) -> String {
+    let raw = serde_json::to_vec(payload).unwrap_or_default();
+    let digest = digest_bytes(ZERO_SORRY_PAYLOAD_HASH_DOMAIN, &raw);
+    let mut sha = Sha256::new();
+    sha.update(digest);
+    hex_encode(&sha.finalize())
+}
+
 fn normalized_payload_text(payload: &Value) -> String {
-    payload
-        .as_str()
-        .unwrap_or_default()
-        .chars()
+    let mut text = String::new();
+    collect_payload_text(payload, &mut text);
+    text.chars()
         .filter(|ch| !matches!(*ch, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
         .collect::<String>()
         .to_ascii_lowercase()
+}
+
+fn collect_payload_text(payload: &Value, out: &mut String) {
+    match payload {
+        Value::String(text) => {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(text);
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_payload_text(item, out);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values() {
+                collect_payload_text(value, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -501,6 +621,7 @@ mod tests {
         let spec = sample_spec();
         let challenge =
             issue_challenge(&spec, ChallengeKind::DeterministicText, 100, 60).expect("challenge");
+        let payload_hash = zero_sorry_payload_hash(&challenge.expected_output);
         let ok = verify_challenge_response(
             &spec,
             &challenge,
@@ -512,6 +633,11 @@ mod tests {
                 metadata: HashMap::from([
                     ("kernel".to_string(), "lean4".to_string()),
                     ("zero_sorry_verified".to_string(), "true".to_string()),
+                    (
+                        "zero_sorry_proof_ref".to_string(),
+                        "proof://lean/zero-sorry".to_string(),
+                    ),
+                    ("zero_sorry_payload_hash".to_string(), payload_hash.clone()),
                     ("indexes".to_string(), "mathlib,lean_index".to_string()),
                 ]),
                 completed_at: 100,
@@ -530,6 +656,14 @@ mod tests {
                 metadata: HashMap::from([
                     ("kernel".to_string(), "lean4".to_string()),
                     ("zero_sorry_verified".to_string(), "true".to_string()),
+                    (
+                        "zero_sorry_proof_ref".to_string(),
+                        "proof://lean/zero-sorry".to_string(),
+                    ),
+                    (
+                        "zero_sorry_payload_hash".to_string(),
+                        zero_sorry_payload_hash(&Value::String("sorry".to_string())),
+                    ),
                 ]),
                 completed_at: 100,
             },
@@ -563,7 +697,9 @@ mod tests {
         reset_challenge_rate_state_for_tests();
         let spec = sample_spec();
         let bank = DomainChallengeBank::with_defaults();
-        let challenge = bank.issue_for_spec(&spec, 100, 60).expect("challenge");
+        let challenge = bank
+            .issue_for_spec(&spec, "did:key:target", 100, 60)
+            .expect("challenge");
         assert_eq!(challenge.kind, ChallengeKind::DeterministicText);
         assert_eq!(challenge.challenge_id, challenge_hash(&challenge));
     }
@@ -649,13 +785,66 @@ mod tests {
         let spec = sample_spec();
         let bank = DomainChallengeBank::default();
         for now in 100..110 {
-            bank.issue_for_spec(&spec, now, 60)
+            bank.issue_for_spec(&spec, "did:key:rate-limit-test-a", now, 60)
                 .expect("within rate limit");
         }
         let err = bank
-            .issue_for_spec(&spec, 110, 60)
+            .issue_for_spec(&spec, "did:key:rate-limit-test-a", 110, 60)
             .expect_err("11th challenge in a minute must fail");
         assert!(err.contains("exceeded 10/minute"));
+    }
+
+    #[test]
+    fn challenge_rate_limit_is_scoped_per_target() {
+        reset_challenge_rate_state_for_tests();
+        let spec = sample_spec();
+        let bank = DomainChallengeBank::default();
+        for now in 100..110 {
+            bank.issue_for_spec(&spec, "did:key:rate-scope-test-a", now, 60)
+                .expect("target a within limit");
+        }
+        bank.issue_for_spec(&spec, "did:key:rate-scope-test-b", 110, 60)
+            .expect("target b should not be blocked by target a");
+    }
+
+    #[test]
+    fn zero_sorry_scans_nested_json_payloads() {
+        let spec = sample_spec();
+        let challenge =
+            issue_challenge(&spec, ChallengeKind::DeterministicText, 100, 60).expect("challenge");
+        let payload = serde_json::json!({
+            "proof": {
+                "body": "intro h\nexact so\u{200B}rry"
+            }
+        });
+        let result = verify_challenge_response(
+            &spec,
+            &challenge,
+            &ChallengeResponse {
+                output_type: TypeSpec::Text {
+                    language: Some("lean".to_string()),
+                },
+                payload: payload.clone(),
+                metadata: HashMap::from([
+                    ("kernel".to_string(), "lean4".to_string()),
+                    ("zero_sorry_verified".to_string(), "true".to_string()),
+                    (
+                        "zero_sorry_proof_ref".to_string(),
+                        "proof://lean/zero-sorry".to_string(),
+                    ),
+                    (
+                        "zero_sorry_payload_hash".to_string(),
+                        zero_sorry_payload_hash(&payload),
+                    ),
+                ]),
+                completed_at: 100,
+            },
+        );
+        assert!(!result.passed);
+        assert!(result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("ZeroSorry")));
     }
 
     #[test]

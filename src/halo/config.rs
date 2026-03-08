@@ -24,6 +24,10 @@ pub fn cab_nonce_store_path() -> PathBuf {
     halo_dir().join("cab_nonces.json")
 }
 
+pub fn challenge_rate_store_path() -> PathBuf {
+    halo_dir().join("challenge_rate_limits.json")
+}
+
 pub fn pricing_path() -> PathBuf {
     halo_dir().join("pricing.json")
 }

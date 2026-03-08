@@ -38,6 +38,12 @@ def rawTrust (records : List VerificationRecord) (now halfLife : Nat) : Int :=
 def computeTrust (records : List VerificationRecord) (now halfLife : Nat) : Int :=
   if rawTrust records now halfLife < 0 then 0 else rawTrust records now halfLife
 
+/-- `computeTrust` is tracked in deci-points so it can model the Rust `f64`
+runtime exactly at one decimal place without introducing floating-point proof
+obligations. Divide by `10` to compare against the Rust thresholds. -/
+def runtimeTrustApprox (records : List VerificationRecord) (now halfLife : Nat) : Rat :=
+  computeTrust records now halfLife / 10
+
 def sybilCost (identities challengeCost : Nat) : Nat :=
   identities * challengeCost
 
@@ -53,7 +59,7 @@ theorem trust_floor_nonneg (records : List VerificationRecord) (now halfLife : N
     exact Int.not_lt.mp h
 
 theorem ping_insufficient_for_routing :
-    computeTrust [{ difficulty := ChallengeDifficulty.ping, passed := true, verifiedAt := 0 }] 0 1 < 5 := by
+    runtimeTrustApprox [{ difficulty := ChallengeDifficulty.ping, passed := true, verifiedAt := 0 }] 0 1 < (1 : Rat) / 2 := by
   native_decide
 
 theorem trust_decays_to_zero (difficulty : ChallengeDifficulty) :

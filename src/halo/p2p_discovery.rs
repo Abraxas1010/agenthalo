@@ -21,6 +21,10 @@ const TYPE_ED25519: &str = "Ed25519VerificationKey2020";
 const MULTICODEC_ED25519_PUB: &[u8] = &[0xed, 0x01];
 const ZK_CREDENTIAL_DID_HASH_DOMAIN: &str = "agenthalo.zk_credential.did_hash.v1";
 const MAX_DYNAMIC_SUBSCRIPTIONS: usize = 64;
+const MAX_ANNOUNCED_CAPABILITY_SPECS: usize = 64;
+const MAX_ATTESTATIONS_PER_SPEC: usize = 32;
+const MAX_ANNOUNCEMENT_TTL_SECS: u64 = 86_400;
+const MAX_ANNOUNCEMENT_CLOCK_SKEW_SECS: u64 = 300;
 
 pub fn topic_general() -> String {
     dynamic_topic_for_domain(&CapabilityDomain::new("general", 1))
@@ -325,8 +329,13 @@ fn did_hash_for_zk_membership(did: &str) -> String {
     hex_encode(digest_bytes(ZK_CREDENTIAL_DID_HASH_DOMAIN, did.as_bytes()).as_slice())
 }
 
+fn bounded_announcement_ttl(ttl_secs: u64) -> u64 {
+    ttl_secs.min(MAX_ANNOUNCEMENT_TTL_SECS)
+}
+
 fn dht_record_expiry(ttl_secs: u64) -> Option<Instant> {
-    Some(Instant::now() + Duration::from_secs(ttl_secs.max(30)))
+    let ttl_secs = bounded_announcement_ttl(ttl_secs).max(30);
+    Some(Instant::now() + Duration::from_secs(ttl_secs))
 }
 
 fn verify_optional_anonymous_membership(announcement: &AgentAnnouncement) -> Result<(), String> {
@@ -446,7 +455,7 @@ impl AgentDiscovery {
             expires: expiry,
         };
         kademlia
-            .put_record(record, Quorum::One)
+            .put_record(record, Quorum::Majority)
             .map_err(|e| format!("DHT put_record failed: {e}"))?;
         let capability_ids = announcement.capability_ids();
         let capability_index = serde_json::to_vec(&capability_ids)
@@ -459,7 +468,7 @@ impl AgentDiscovery {
                     publisher: None,
                     expires: expiry,
                 },
-                Quorum::One,
+                Quorum::Majority,
             )
             .map_err(|e| format!("DHT put_record for agent capability index failed: {e}"))?;
         for capability_id in announcement.capability_ids() {
@@ -585,7 +594,6 @@ impl AgentDiscovery {
                     || attestation.ed25519_signature.is_empty()
                     || attestation.mldsa65_signature.is_empty()
                     || attestation.subject_did != subject_did
-                    || attestation.capability_id != capability_id
                 {
                     return false;
                 }
@@ -602,6 +610,45 @@ impl AgentDiscovery {
         }
     }
 
+    fn validate_announcement_shape(&self, announcement: &AgentAnnouncement) -> Result<(), String> {
+        if announcement.capability_specs.len() > MAX_ANNOUNCED_CAPABILITY_SPECS {
+            return Err(format!(
+                "announcement for `{}` exceeds max capability_specs ({MAX_ANNOUNCED_CAPABILITY_SPECS})",
+                announcement.did
+            ));
+        }
+        for spec in &announcement.capability_specs {
+            if spec.attestations.len() > MAX_ATTESTATIONS_PER_SPEC {
+                return Err(format!(
+                    "announcement for `{}` exceeds max attestations per capability ({MAX_ATTESTATIONS_PER_SPEC})",
+                    announcement.did
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_announcement_freshness(
+        &self,
+        announcement: &AgentAnnouncement,
+    ) -> Result<(), String> {
+        let now = now_unix();
+        if announcement.timestamp > now.saturating_add(MAX_ANNOUNCEMENT_CLOCK_SKEW_SECS) {
+            return Err(format!(
+                "announcement for `{}` is too far in the future",
+                announcement.did
+            ));
+        }
+        let effective_ttl = bounded_announcement_ttl(announcement.ttl);
+        if now.saturating_sub(announcement.timestamp) > effective_ttl {
+            return Err(format!(
+                "announcement for `{}` expired before ingress verification",
+                announcement.did
+            ));
+        }
+        Ok(())
+    }
+
     fn verify_and_upsert<F>(
         &mut self,
         mut announcement: AgentAnnouncement,
@@ -610,6 +657,8 @@ impl AgentDiscovery {
     where
         F: Fn(&str) -> Option<DIDDocument>,
     {
+        self.validate_announcement_shape(&announcement)?;
+        self.validate_announcement_freshness(&announcement)?;
         let did_document = announcement
             .did_document
             .clone()
@@ -629,12 +678,17 @@ impl AgentDiscovery {
             ));
         }
         verify_optional_anonymous_membership(&announcement)?;
+        announcement.ttl = bounded_announcement_ttl(announcement.ttl);
         self.sanitize_attestations(&mut announcement, &resolve_document);
         self.upsert_verified(announcement.clone());
         Ok(announcement)
     }
 
     pub fn upsert_verified(&mut self, mut announcement: AgentAnnouncement) {
+        if self.validate_announcement_shape(&announcement).is_err() {
+            return;
+        }
+        announcement.ttl = bounded_announcement_ttl(announcement.ttl);
         self.sanitize_attestations(&mut announcement, &|_| None);
         self.known_agents
             .insert(announcement.did.clone(), announcement);
@@ -681,10 +735,6 @@ impl AgentDiscovery {
             .filter(|announcement| {
                 self.best_capability_match(announcement, query, now, attestation_max_age_secs)
                     .is_some()
-                    || announcement.capabilities.iter().any(|capability| {
-                        capability.id == query.domain_prefix
-                            || capability.name.starts_with(&query.domain_prefix)
-                    })
             })
             .cloned()
             .collect()
@@ -707,35 +757,31 @@ impl AgentDiscovery {
                 .map(|spec| {
                     (
                         spec.metrics.success_rate,
-                        std::cmp::Reverse(
-                            spec.verified_attestation_count(now, attestation_max_age_secs),
-                        ),
-                        std::cmp::Reverse(u64::MAX - spec.metrics.latency_p99_ms),
-                        std::cmp::Reverse(u64::MAX - spec.metrics.cost_microdollars),
+                        spec.verified_attestation_count(now, attestation_max_age_secs),
+                        std::cmp::Reverse(spec.metrics.latency_p99_ms),
+                        std::cmp::Reverse(spec.metrics.cost_microdollars),
                     )
                 })
                 .unwrap_or((
                     0.0,
-                    std::cmp::Reverse(0),
-                    std::cmp::Reverse(0),
-                    std::cmp::Reverse(0),
+                    0,
+                    std::cmp::Reverse(u64::MAX),
+                    std::cmp::Reverse(u64::MAX),
                 ));
             let right_score = right_spec
                 .map(|spec| {
                     (
                         spec.metrics.success_rate,
-                        std::cmp::Reverse(
-                            spec.verified_attestation_count(now, attestation_max_age_secs),
-                        ),
-                        std::cmp::Reverse(u64::MAX - spec.metrics.latency_p99_ms),
-                        std::cmp::Reverse(u64::MAX - spec.metrics.cost_microdollars),
+                        spec.verified_attestation_count(now, attestation_max_age_secs),
+                        std::cmp::Reverse(spec.metrics.latency_p99_ms),
+                        std::cmp::Reverse(spec.metrics.cost_microdollars),
                     )
                 })
                 .unwrap_or((
                     0.0,
-                    std::cmp::Reverse(0),
-                    std::cmp::Reverse(0),
-                    std::cmp::Reverse(0),
+                    0,
+                    std::cmp::Reverse(u64::MAX),
+                    std::cmp::Reverse(u64::MAX),
                 ));
             right_score
                 .partial_cmp(&left_score)
@@ -1432,6 +1478,30 @@ mod tests {
             vec![],
         );
         fast.metrics.success_rate = 0.99;
+        fast.metrics.latency_p99_ms = 50;
+        fast.metrics.cost_microdollars = 5;
+        fast.attestations = vec![
+            crate::halo::capability_spec::CapabilityAttestation {
+                attester_did: "did:key:attester-1".to_string(),
+                subject_did: "did:key:fast".to_string(),
+                capability_id: fast.capability_id.clone(),
+                challenge_hash: "h1".to_string(),
+                passed: true,
+                verified_at: now_unix(),
+                ed25519_signature: vec![1],
+                mldsa65_signature: vec![1],
+            },
+            crate::halo::capability_spec::CapabilityAttestation {
+                attester_did: "did:key:attester-2".to_string(),
+                subject_did: "did:key:fast".to_string(),
+                capability_id: fast.capability_id.clone(),
+                challenge_hash: "h2".to_string(),
+                passed: true,
+                verified_at: now_unix(),
+                ed25519_signature: vec![1],
+                mldsa65_signature: vec![1],
+            },
+        ];
         let mut slow = fast.clone();
         slow.capability_id = CapabilitySpec::compute_id(
             &CapabilityDomain::new("prove/lean/analysis", 1),
@@ -1440,7 +1510,10 @@ mod tests {
             &slow.constraints,
         );
         slow.domain = CapabilityDomain::new("prove/lean/analysis", 1);
-        slow.metrics.success_rate = 0.50;
+        slow.metrics.success_rate = 0.99;
+        slow.metrics.latency_p99_ms = 500;
+        slow.metrics.cost_microdollars = 50;
+        slow.attestations.truncate(1);
         discovery.upsert_verified(AgentAnnouncement {
             peer_id: "peer-fast".to_string(),
             did: "did:key:fast".to_string(),
@@ -1512,5 +1585,154 @@ mod tests {
         );
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].peer_id, "peer-fast");
+    }
+
+    #[test]
+    fn find_by_query_does_not_match_legacy_capability_without_typed_spec() {
+        let mut discovery = AgentDiscovery::new();
+        discovery.upsert_verified(AgentAnnouncement {
+            peer_id: "peer-legacy".to_string(),
+            did: "did:key:legacy".to_string(),
+            name: "legacy".to_string(),
+            description: "legacy".to_string(),
+            capabilities: vec![AgentCapability {
+                id: "legacy-1".to_string(),
+                name: "prove/lean/fake".to_string(),
+                description: "legacy".to_string(),
+                input_types: vec!["text/plain".to_string()],
+                output_types: vec!["text/plain".to_string()],
+            }],
+            capability_specs: vec![],
+            multiaddrs: vec![],
+            protocols: vec![],
+            version: "1".to_string(),
+            timestamp: now_unix(),
+            ttl: 60,
+            did_document: None,
+            evm_address: None,
+            binding_proof_hash: None,
+            anonymous_membership_proof: None,
+            ed25519_signature: None,
+            mldsa65_signature: None,
+        });
+
+        let matches = discovery.find_by_query(
+            &CapabilityQuery {
+                domain_prefix: "prove/lean".to_string(),
+                required_inputs: vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+                required_outputs: vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+                required_constraints: vec![],
+                min_success_rate: None,
+                max_latency_p99_ms: None,
+                max_cost_microdollars: None,
+                min_attestations: None,
+                min_onchain_reputation: None,
+                count: 1,
+                query_timeout_ms: 200,
+            },
+            now_unix(),
+            3600,
+        );
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn handle_gossipsub_message_rejects_stale_announcement() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x79)).expect("identity");
+        let mut announcement =
+            announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+        announcement.timestamp = 1;
+        announcement.ttl = 60;
+        sign_announcement(&identity, &mut announcement).expect("sign");
+        let payload = serde_json::to_vec(&announcement).expect("serialize");
+
+        let mut discovery = AgentDiscovery::new();
+        let err = discovery
+            .handle_gossipsub_message(&payload, |_did| None)
+            .expect_err("stale announcement must fail");
+        assert!(err.contains("expired before ingress verification"));
+    }
+
+    #[test]
+    fn handle_gossipsub_message_rejects_oversized_capability_catalog() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x7A)).expect("identity");
+        let mut announcement =
+            announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+        announcement.capability_specs = (0..=MAX_ANNOUNCED_CAPABILITY_SPECS)
+            .map(|idx| {
+                CapabilitySpec::new(
+                    CapabilityDomain::new(format!("prove/lean/{idx}"), 1),
+                    vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+                    vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+                    vec![],
+                )
+            })
+            .collect();
+        sign_announcement(&identity, &mut announcement).expect("sign");
+        let payload = serde_json::to_vec(&announcement).expect("serialize");
+
+        let mut discovery = AgentDiscovery::new();
+        let err = discovery
+            .handle_gossipsub_message(&payload, |_did| None)
+            .expect_err("oversized announcement must fail");
+        assert!(err.contains("exceeds max capability_specs"));
+    }
+
+    #[test]
+    fn handle_gossipsub_message_rejects_oversized_attestation_sets() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x7C)).expect("identity");
+        let mut announcement =
+            announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+        let mut spec = CapabilitySpec::new(
+            CapabilityDomain::new("prove/lean/algebra", 1),
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![crate::halo::capability_spec::TypeSpec::LeanTerm],
+            vec![],
+        );
+        spec.attestations = (0..=MAX_ATTESTATIONS_PER_SPEC)
+            .map(|idx| crate::halo::capability_spec::CapabilityAttestation {
+                attester_did: format!("did:key:attester-{idx}"),
+                subject_did: identity.did.clone(),
+                capability_id: spec.capability_id.clone(),
+                challenge_hash: format!("h{idx}"),
+                passed: true,
+                verified_at: now_unix(),
+                ed25519_signature: vec![1],
+                mldsa65_signature: vec![2],
+            })
+            .collect();
+        announcement.capability_specs = vec![spec];
+        sign_announcement(&identity, &mut announcement).expect("sign");
+        let payload = serde_json::to_vec(&announcement).expect("serialize");
+
+        let mut discovery = AgentDiscovery::new();
+        let err = discovery
+            .handle_gossipsub_message(&payload, |_did| None)
+            .expect_err("oversized attestation set must fail");
+        assert!(err.contains("exceeds max attestations per capability"));
+    }
+
+    #[test]
+    fn ingest_clamps_announcement_ttl_to_maximum() {
+        let identity = crate::halo::did::did_from_genesis_seed(&seed(0x7B)).expect("identity");
+        let mut announcement =
+            announcement_for_identity(&identity, PeerId::random(), vec![], vec![]);
+        announcement.ttl = u64::MAX;
+        sign_announcement(&identity, &mut announcement).expect("sign");
+        let payload = serde_json::to_vec(&announcement).expect("serialize");
+
+        let mut discovery = AgentDiscovery::new();
+        let accepted = discovery
+            .handle_gossipsub_message(&payload, |_did| None)
+            .expect("verified gossip");
+        assert_eq!(accepted.ttl, MAX_ANNOUNCEMENT_TTL_SECS);
+        assert_eq!(
+            discovery
+                .known_agents()
+                .get(&identity.did)
+                .expect("stored")
+                .ttl,
+            MAX_ANNOUNCEMENT_TTL_SECS
+        );
     }
 }

@@ -25,7 +25,8 @@ pub fn compute_trust(records: &[VerificationRecord], now: u64, half_life_secs: u
         .iter()
         .map(|record| {
             let age = now.saturating_sub(record.verified_at);
-            let decay = 0.5_f64.powf(age as f64 / half_life_secs as f64);
+            let decay_steps = age / half_life_secs;
+            let decay = 0.5_f64.powi(decay_steps.min(i32::MAX as u64) as i32);
             let difficulty_weight = match record.challenge_difficulty {
                 ChallengeDifficulty::Ping => 0.1,
                 ChallengeDifficulty::Standard => 1.0,
@@ -158,6 +159,22 @@ mod tests {
             verified_at: 100,
         }];
         assert_eq!(compute_trust(&records, 100, 3600), 0.0);
+    }
+
+    #[test]
+    fn compute_trust_halves_at_each_half_life_boundary() {
+        let record = VerificationRecord {
+            peer_did: "did:key:a".to_string(),
+            capability_domain: "prove/lean".to_string(),
+            challenge_difficulty: ChallengeDifficulty::Standard,
+            passed: true,
+            elapsed_ms: 10,
+            verified_at: 0,
+        };
+        assert_eq!(compute_trust(std::slice::from_ref(&record), 0, 10), 1.0);
+        assert_eq!(compute_trust(std::slice::from_ref(&record), 9, 10), 1.0);
+        assert_eq!(compute_trust(std::slice::from_ref(&record), 10, 10), 0.5);
+        assert_eq!(compute_trust(&[record], 20, 10), 0.25);
     }
 
     #[test]

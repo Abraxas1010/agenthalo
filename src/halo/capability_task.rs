@@ -158,35 +158,31 @@ impl TaskManifold {
                     .map(|spec| {
                         (
                             spec.metrics.success_rate,
-                            std::cmp::Reverse(
-                                spec.verified_attestation_count(now, attestation_max_age_secs),
-                            ),
-                            std::cmp::Reverse(u64::MAX - spec.metrics.latency_p99_ms),
-                            std::cmp::Reverse(u64::MAX - spec.metrics.cost_microdollars),
+                            spec.verified_attestation_count(now, attestation_max_age_secs),
+                            std::cmp::Reverse(spec.metrics.latency_p99_ms),
+                            std::cmp::Reverse(spec.metrics.cost_microdollars),
                         )
                     })
                     .unwrap_or((
                         0.0,
-                        std::cmp::Reverse(0),
-                        std::cmp::Reverse(0),
-                        std::cmp::Reverse(0),
+                        0,
+                        std::cmp::Reverse(u64::MAX),
+                        std::cmp::Reverse(u64::MAX),
                     ));
                 let right_score = right_spec
                     .map(|spec| {
                         (
                             spec.metrics.success_rate,
-                            std::cmp::Reverse(
-                                spec.verified_attestation_count(now, attestation_max_age_secs),
-                            ),
-                            std::cmp::Reverse(u64::MAX - spec.metrics.latency_p99_ms),
-                            std::cmp::Reverse(u64::MAX - spec.metrics.cost_microdollars),
+                            spec.verified_attestation_count(now, attestation_max_age_secs),
+                            std::cmp::Reverse(spec.metrics.latency_p99_ms),
+                            std::cmp::Reverse(spec.metrics.cost_microdollars),
                         )
                     })
                     .unwrap_or((
                         0.0,
-                        std::cmp::Reverse(0),
-                        std::cmp::Reverse(0),
-                        std::cmp::Reverse(0),
+                        0,
+                        std::cmp::Reverse(u64::MAX),
+                        std::cmp::Reverse(u64::MAX),
                     ));
                 right_score
                     .partial_cmp(&left_score)
@@ -356,14 +352,14 @@ mod tests {
             onchain_reputation: Some(success_rate * 100.0),
         };
         spec.attestations.push(CapabilityAttestation {
-            attester_did: did.to_string(),
+            attester_did: format!("{did}:attester"),
             subject_did: did.to_string(),
             capability_id: spec.capability_id.clone(),
             challenge_hash: "h".to_string(),
             passed: true,
             verified_at: 100,
-            ed25519_signature: vec![],
-            mldsa65_signature: vec![],
+            ed25519_signature: vec![1],
+            mldsa65_signature: vec![2],
         });
         spec
     }
@@ -563,5 +559,46 @@ mod tests {
             150,
             3600
         ));
+    }
+
+    #[test]
+    fn manifold_prefers_lower_latency_and_higher_attestation_tiebreakers() {
+        let mut discovery = AgentDiscovery::new();
+        let mut better = spec("prove/lean/algebra", "did:key:a", 0.95, 10, 5);
+        better.attestations.push(CapabilityAttestation {
+            attester_did: "did:key:a:attester-2".to_string(),
+            subject_did: "did:key:a".to_string(),
+            capability_id: better.capability_id.clone(),
+            challenge_hash: "h2".to_string(),
+            passed: true,
+            verified_at: 100,
+            ed25519_signature: vec![3],
+            mldsa65_signature: vec![4],
+        });
+        let worse = spec("prove/lean/algebra", "did:key:b", 0.95, 200, 50);
+        discovery.upsert_verified(announcement("did:key:a", better));
+        discovery.upsert_verified(announcement("did:key:b", worse));
+
+        let manifold = TaskManifold {
+            task_id: "task-rank".to_string(),
+            description: "rank best provider".to_string(),
+            slots: vec![CapabilitySlot {
+                slot_id: "prove".to_string(),
+                query: base_query("prove/lean"),
+                redundancy: 1,
+                optional: false,
+            }],
+            edges: vec![],
+            constraints: ManifoldConstraints::default(),
+            originator_did: "did:key:origin".to_string(),
+            created_at: 100,
+            formation_timeout_ms: 250,
+            expires_at: 200,
+        };
+        let formation = manifold
+            .assemble_atomic(&discovery, 150, 3600)
+            .expect("best provider selected");
+        assert_eq!(formation.assignments.len(), 1);
+        assert_eq!(formation.assignments[0].assigned_did, "did:key:a");
     }
 }
