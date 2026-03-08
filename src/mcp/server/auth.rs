@@ -238,10 +238,13 @@ fn persist_cab_nonce_store_to_disk(store: &HashMap<String, u64>) -> Result<(), S
     crate::halo::config::ensure_halo_dir()?;
     let path = crate::halo::config::cab_nonce_store_path();
     let tmp_path = path.with_extension("json.tmp");
-    let raw =
-        serde_json::to_vec(store).map_err(|e| format!("serialize CAB nonce store: {e}"))?;
-    fs::write(&tmp_path, raw)
-        .map_err(|e| format!("write CAB nonce store temp file {}: {e}", tmp_path.display()))?;
+    let raw = serde_json::to_vec(store).map_err(|e| format!("serialize CAB nonce store: {e}"))?;
+    fs::write(&tmp_path, raw).map_err(|e| {
+        format!(
+            "write CAB nonce store temp file {}: {e}",
+            tmp_path.display()
+        )
+    })?;
     fs::rename(&tmp_path, &path)
         .map_err(|e| format!("persist CAB nonce store to {}: {e}", path.display()))?;
     Ok(())
@@ -254,7 +257,9 @@ fn reserve_cab_nonce(
     expires_at: u64,
 ) -> Result<bool, String> {
     let mutex = cab_nonce_store();
-    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *guard = load_cab_nonce_store_from_disk()?;
     guard.retain(|_, until| *until > now);
     let key = format!("{}:{}", normalize_evm_address(agent_address), nonce.trim());
@@ -270,7 +275,9 @@ fn reserve_cab_nonce(
 #[cfg(test)]
 fn clear_cab_nonce_reservations_for_tests() {
     let mutex = cab_nonce_store();
-    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.clear();
     let _ = fs::remove_file(crate::halo::config::cab_nonce_store_path());
     mutex.clear_poison();
@@ -279,7 +286,9 @@ fn clear_cab_nonce_reservations_for_tests() {
 #[cfg(test)]
 fn clear_cab_nonce_memory_cache_for_tests() {
     let mutex = cab_nonce_store();
-    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.clear();
     mutex.clear_poison();
 }
@@ -432,7 +441,14 @@ fn authenticate_cab_payload<F>(
     verify_agent: F,
 ) -> Result<Option<AuthIdentity>, (StatusCode, String)>
 where
-    F: Fn(&str, &str, &str) -> Result<crate::trust::onchain::AgentOnchainStatus, crate::trust::onchain::TrustBridgeError>,
+    F: Fn(
+        &str,
+        &str,
+        &str,
+    ) -> Result<
+        crate::trust::onchain::AgentOnchainStatus,
+        crate::trust::onchain::TrustBridgeError,
+    >,
 {
     let agent_address = cab.agent_address.trim().to_string();
     let contract_address = cab.contract_address.trim().to_string();
@@ -502,11 +518,18 @@ where
             "cab token requires non-empty 'signature' field".to_string(),
         ))?;
 
-    let signing_message = cab_signing_message(&cab)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    let signature_ok =
-        crate::halo::evm_wallet::verify_recoverable_signature(&agent_address, &signing_message, signature)
-            .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid cab signature: {e}")))?;
+    let signing_message = cab_signing_message(&cab).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let signature_ok = crate::halo::evm_wallet::verify_recoverable_signature(
+        &agent_address,
+        &signing_message,
+        signature,
+    )
+    .map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            format!("invalid cab signature: {e}"),
+        )
+    })?;
     if !signature_ok {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -532,8 +555,8 @@ where
     let nonce_expires_at = timestamp
         .saturating_add(config.cab_max_age_secs)
         .saturating_add(60);
-    let nonce_reserved = reserve_cab_nonce(&agent_address, nonce, now, nonce_expires_at)
-        .map_err(|e| {
+    let nonce_reserved =
+        reserve_cab_nonce(&agent_address, nonce, now, nonce_expires_at).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to persist CAB replay state: {e}"),
@@ -978,11 +1001,10 @@ mod tests {
             .unwrap_or(0);
         let cab = mk_signed_cab("cab-replay", now);
         let cfg = AuthConfig::default();
-        let first = authenticate_cab_payload(cab.clone(), &cfg, |_, _, _| {
-            Ok(mk_onchain_status(true, 3))
-        })
-        .expect("first auth should pass")
-        .expect("identity");
+        let first =
+            authenticate_cab_payload(cab.clone(), &cfg, |_, _, _| Ok(mk_onchain_status(true, 3)))
+                .expect("first auth should pass")
+                .expect("identity");
         assert!(first.has_scope(ToolScope::Write));
 
         let err = authenticate_cab_payload(cab, &cfg, |_, _, _| Ok(mk_onchain_status(true, 3)))

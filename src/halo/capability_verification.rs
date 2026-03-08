@@ -368,8 +368,8 @@ fn constraint_violation(
                 != Some(expected_payload_hash.as_str())
             {
                 Some("ZeroSorry payload hash metadata does not match response payload".to_string())
-            } else if normalized_payload_text(&response.payload).contains("sorry")
-                || normalized_payload_text(&response.payload).contains("admit")
+            } else if payload_contains_banned_token(&response.payload, "sorry")
+                || payload_contains_banned_token(&response.payload, "admit")
             {
                 Some("response violated ZeroSorry constraint".to_string())
             } else {
@@ -427,6 +427,18 @@ fn normalized_payload_text(payload: &Value) -> String {
         .filter(|ch| !matches!(*ch, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
         .collect::<String>();
     deunicode(&stripped).to_ascii_lowercase()
+}
+
+fn payload_contains_banned_token(payload: &Value, token: &str) -> bool {
+    let normalized = normalized_payload_text(payload);
+    if normalized.contains(token) {
+        return true;
+    }
+    let compact = normalized
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .collect::<String>();
+    compact.contains(token)
 }
 
 fn valid_zero_sorry_proof_ref(proof_ref: &str) -> bool {
@@ -609,6 +621,7 @@ pub fn transitive_trust(
 mod tests {
     use super::*;
     use crate::halo::capability_spec::{CapabilityDomain, CapabilitySpec};
+    use crate::test_support::lock_env;
 
     fn reset_challenge_rate_state_for_tests() {
         let mutex = challenge_rate_state();
@@ -714,6 +727,7 @@ mod tests {
 
     #[test]
     fn challenge_bank_selects_registered_domain_template() {
+        let _guard = lock_env();
         reset_challenge_rate_state_for_tests();
         let spec = sample_spec();
         let bank = DomainChallengeBank::with_defaults();
@@ -761,6 +775,7 @@ mod tests {
 
     #[test]
     fn challenge_nonce_is_unique_within_same_second() {
+        let _guard = lock_env();
         reset_challenge_rate_state_for_tests();
         let spec = sample_spec();
         let first = issue_challenge(&spec, ChallengeKind::DeterministicText, 100, 60)
@@ -801,21 +816,27 @@ mod tests {
 
     #[test]
     fn challenge_rate_limit_enforced_per_capability() {
+        let _guard = lock_env();
         reset_challenge_rate_state_for_tests();
-        let spec = sample_spec();
-        let bank = DomainChallengeBank::default();
-        for now in 100..110 {
-            bank.issue_for_spec(&spec, "did:key:rate-limit-test-a", now, 60)
-                .expect("within rate limit");
+        let target_scope = "did:key:rate-limit-test-a";
+        let capability_id = sample_spec().capability_id;
+        let key = challenge_rate_key(target_scope, &capability_id);
+        {
+            let mutex = challenge_rate_state();
+            let mut guard = mutex
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.insert(key, VecDeque::from((100..110).collect::<Vec<_>>()));
+            mutex.clear_poison();
         }
-        let err = bank
-            .issue_for_spec(&spec, "did:key:rate-limit-test-a", 110, 60)
+        let err = enforce_challenge_rate_limit(target_scope, &capability_id, 110)
             .expect_err("11th challenge in a minute must fail");
         assert!(err.contains("exceeded 10/minute"));
     }
 
     #[test]
     fn challenge_rate_limit_is_scoped_per_target() {
+        let _guard = lock_env();
         reset_challenge_rate_state_for_tests();
         let spec = sample_spec();
         let bank = DomainChallengeBank::default();
@@ -937,23 +958,60 @@ mod tests {
     }
 
     #[test]
-    fn challenge_rate_store_prunes_expired_keys() {
-        reset_challenge_rate_state_for_tests();
-        let bank = DomainChallengeBank::default();
+    fn zero_sorry_rejects_combining_mark_variants() {
         let spec = sample_spec();
-        bank.issue_for_spec(&spec, "did:key:old-prune-test", 100, 60)
-            .expect("old key created");
-        bank.issue_for_spec(&spec, "did:key:new-prune-test", 1000, 60)
-            .expect("new key created");
-        let guard = challenge_rate_state()
+        let challenge =
+            issue_challenge(&spec, ChallengeKind::DeterministicText, 100, 60).expect("challenge");
+        let payload = Value::String("exact s\u{0338}orry".to_string());
+        let result = verify_challenge_response(
+            &spec,
+            &challenge,
+            &ChallengeResponse {
+                output_type: TypeSpec::Text {
+                    language: Some("lean".to_string()),
+                },
+                payload: payload.clone(),
+                metadata: HashMap::from([
+                    ("kernel".to_string(), "lean4".to_string()),
+                    ("zero_sorry_verified".to_string(), "true".to_string()),
+                    (
+                        "zero_sorry_proof_ref".to_string(),
+                        "proof://lean/zero-sorry".to_string(),
+                    ),
+                    (
+                        "zero_sorry_payload_hash".to_string(),
+                        zero_sorry_payload_hash(&payload),
+                    ),
+                ]),
+                completed_at: 100,
+            },
+        );
+        assert!(!result.passed);
+        assert!(result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("ZeroSorry")));
+    }
+
+    #[test]
+    fn challenge_rate_store_prunes_expired_keys() {
+        let _guard = lock_env();
+        reset_challenge_rate_state_for_tests();
+        let mutex = challenge_rate_state();
+        let mut guard = mutex
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert!(guard
-            .keys()
-            .any(|key| key.starts_with("did:key:new-prune-test:")));
-        assert!(!guard
-            .keys()
-            .any(|key| key.starts_with("did:key:old-prune-test:")));
+        guard.insert(
+            "did:key:old-prune-test:cap".to_string(),
+            VecDeque::from(vec![100]),
+        );
+        guard.insert(
+            "did:key:new-prune-test:cap".to_string(),
+            VecDeque::from(vec![1000]),
+        );
+        prune_challenge_rate_store(&mut guard, 1000);
+        assert!(guard.contains_key("did:key:new-prune-test:cap"));
+        assert!(!guard.contains_key("did:key:old-prune-test:cap"));
     }
 
     #[test]

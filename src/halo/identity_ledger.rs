@@ -1264,7 +1264,9 @@ mod tests {
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         let mutex = env_lock();
-        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         mutex.clear_poison();
         guard
     }
@@ -1382,7 +1384,8 @@ mod tests {
         let first = encode_oauth_state("google", now_unix() + 60, secret);
         let second = encode_oauth_state("google", now_unix() + 60, secret);
         assert_ne!(first, second);
-        decode_oauth_state(&first, "google", now_unix(), secret).expect("first state must validate");
+        decode_oauth_state(&first, "google", now_unix(), secret)
+            .expect("first state must validate");
         decode_oauth_state(&second, "google", now_unix(), secret)
             .expect("second state must validate");
     }

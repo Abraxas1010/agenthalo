@@ -190,7 +190,8 @@ pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, 
         sign_announcement(&identity, &mut announcement)?;
         agent_discovery.upsert_verified(announcement.clone());
         for topic in announcement.topics() {
-            let _ = agent_discovery.announce(&topic, &announcement, node.gossipsub_mut());
+            let _ =
+                agent_discovery.announce(&identity, &topic, &announcement, node.gossipsub_mut());
         }
         let _ = agent_discovery.publish_to_dht(&announcement, node.kademlia_mut());
         eprintln!("[AgentHalo/Startup][5/5] discovery bootstrapped");

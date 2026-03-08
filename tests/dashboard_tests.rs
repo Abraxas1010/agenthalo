@@ -38,7 +38,9 @@ fn env_lock() -> &'static Mutex<()> {
 
 fn lock_env() -> std::sync::MutexGuard<'static, ()> {
     let mutex = env_lock();
-    let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     mutex.clear_poison();
     guard
 }
@@ -3132,8 +3134,15 @@ async fn auth_oauth_callback_rejects_replayed_state() {
         "/auth/oauth/start/github?expires_in_minutes=5",
     )
     .await;
-    assert_eq!(start_status, StatusCode::OK, "oauth start should succeed: {start_val}");
-    let oauth_url = start_val["oauth_url"].as_str().unwrap_or_default().to_string();
+    assert_eq!(
+        start_status,
+        StatusCode::OK,
+        "oauth start should succeed: {start_val}"
+    );
+    let oauth_url = start_val["oauth_url"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let state_param = oauth_state_from_url(&oauth_url);
     assert!(!state_param.is_empty(), "state param should be present");
 
@@ -3142,10 +3151,18 @@ async fn auth_oauth_callback_rejects_replayed_state() {
         state = state_param
     );
     let (first_status, first_body) = api_get_raw(state.clone(), &callback_path).await;
-    assert_eq!(first_status, StatusCode::OK, "first callback should succeed: {first_body}");
+    assert_eq!(
+        first_status,
+        StatusCode::OK,
+        "first callback should succeed: {first_body}"
+    );
 
     let (second_status, second_body) = api_get_raw(state.clone(), &callback_path).await;
-    assert_eq!(second_status, StatusCode::OK, "replayed callback still returns HTML");
+    assert_eq!(
+        second_status,
+        StatusCode::OK,
+        "replayed callback still returns HTML"
+    );
     assert!(
         second_body.contains("already used") || second_body.contains("not issued"),
         "replayed state should be rejected: {second_body}"
@@ -3160,13 +3177,24 @@ async fn auth_oauth_start_issues_unique_states_per_request() {
     let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("auth_oauth_unique_state");
-    let (_, first) = api_get(state.clone(), "/auth/oauth/start/github?expires_in_minutes=5").await;
-    let (_, second) = api_get(state.clone(), "/auth/oauth/start/github?expires_in_minutes=5").await;
+    let (_, first) = api_get(
+        state.clone(),
+        "/auth/oauth/start/github?expires_in_minutes=5",
+    )
+    .await;
+    let (_, second) = api_get(
+        state.clone(),
+        "/auth/oauth/start/github?expires_in_minutes=5",
+    )
+    .await;
     let first_state = oauth_state_from_url(first["oauth_url"].as_str().unwrap_or_default());
     let second_state = oauth_state_from_url(second["oauth_url"].as_str().unwrap_or_default());
     assert!(!first_state.is_empty(), "first state should exist");
     assert!(!second_state.is_empty(), "second state should exist");
-    assert_ne!(first_state, second_state, "oauth states must be unique per request");
+    assert_ne!(
+        first_state, second_state,
+        "oauth states must be unique per request"
+    );
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(&creds_path);

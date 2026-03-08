@@ -376,7 +376,12 @@ impl P2pNode {
                             let _ = discovery.subscribe(&topic, self.gossipsub_mut());
                         }
                         if let Err(error) =
-                            discovery.announce(&topic, &announcement, self.gossipsub_mut())
+                            discovery.announce(
+                                identity,
+                                &topic,
+                                &announcement,
+                                self.gossipsub_mut(),
+                            )
                         {
                             eprintln!(
                                 "[AgentHalo/P2P] periodic gossip announce failed on `{topic}`: {error}"

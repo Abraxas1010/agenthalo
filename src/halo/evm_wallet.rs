@@ -98,7 +98,10 @@ pub fn verify_recoverable_signature(
     message: &[u8],
     signature_hex: &str,
 ) -> Result<bool, String> {
-    let sig_hex = signature_hex.trim().strip_prefix("0x").unwrap_or(signature_hex.trim());
+    let sig_hex = signature_hex
+        .trim()
+        .strip_prefix("0x")
+        .unwrap_or(signature_hex.trim());
     let bytes = hex::decode(sig_hex).map_err(|e| format!("evm signature hex decode: {e}"))?;
     if bytes.len() != 65 {
         return Err(format!(
@@ -118,8 +121,8 @@ pub fn verify_recoverable_signature(
             ))
         }
     };
-    let recovery_id = RecoveryId::try_from(recovery_byte)
-        .map_err(|e| format!("evm recovery id parse: {e}"))?;
+    let recovery_id =
+        RecoveryId::try_from(recovery_byte).map_err(|e| format!("evm recovery id parse: {e}"))?;
     let recovered = VerifyingKey::recover_from_digest(
         Keccak256::new_with_prefix(message),
         &signature,
@@ -197,10 +200,10 @@ mod tests {
         let m2 = "legal winner thank year wave sausage worth useful legal winner thank yellow";
         let wallet_a = derive_from_mnemonic(m1, None).expect("wallet a");
         let wallet_b = derive_from_mnemonic(m2, None).expect("wallet b");
-        let signature = sign_recoverable_with_evm_key(&wallet_a.private_key_hex, b"payload")
-            .expect("sign");
-        let ok =
-            verify_recoverable_signature(&wallet_b.evm_address, b"payload", &signature).expect("verify");
+        let signature =
+            sign_recoverable_with_evm_key(&wallet_a.private_key_hex, b"payload").expect("sign");
+        let ok = verify_recoverable_signature(&wallet_b.evm_address, b"payload", &signature)
+            .expect("verify");
         assert!(!ok);
     }
 }

@@ -7168,7 +7168,9 @@ mod tests {
 
     fn reset_mcp_crypto_state_for_tests() {
         let mutex = mcp_crypto_mutex();
-        let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = McpCryptoState::new();
         mutex.clear_poison();
     }

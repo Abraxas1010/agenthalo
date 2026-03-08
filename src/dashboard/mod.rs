@@ -8,9 +8,9 @@ pub mod assets;
 
 use axum::routing::get;
 use axum::Router;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -99,7 +99,8 @@ fn default_grant_store_path(db_path: &Path) -> PathBuf {
 
 fn random_hex_secret() -> String {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).expect("OS entropy source unavailable for dashboard OAuth secret");
+    getrandom::getrandom(&mut bytes)
+        .expect("OS entropy source unavailable for dashboard OAuth secret");
     crate::halo::util::hex_encode(&bytes)
 }
 

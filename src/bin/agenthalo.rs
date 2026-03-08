@@ -4936,7 +4936,9 @@ mod tests {
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         let mutex = bin_env_lock();
-        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         mutex.clear_poison();
         guard
     }

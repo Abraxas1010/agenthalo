@@ -375,6 +375,7 @@ mod tests {
     }
 
     fn announcement(did: &str, spec: CapabilitySpec) -> AgentAnnouncement {
+        let now = crate::halo::util::now_unix_secs();
         AgentAnnouncement {
             peer_id: did.to_string(),
             did: did.to_string(),
@@ -385,8 +386,8 @@ mod tests {
             multiaddrs: vec![],
             protocols: vec![],
             version: "1".to_string(),
-            timestamp: 100,
-            ttl: 60,
+            timestamp: now,
+            ttl: 300,
             did_document: None,
             evm_address: None,
             binding_proof_hash: None,
@@ -574,17 +575,43 @@ mod tests {
     #[test]
     fn manifold_prefers_lower_latency_and_higher_attestation_tiebreakers() {
         let mut discovery = AgentDiscovery::new();
+        let attester_one =
+            crate::halo::did::did_from_genesis_seed(&[0x91; 64]).expect("attester one");
+        let attester_two =
+            crate::halo::did::did_from_genesis_seed(&[0x92; 64]).expect("attester two");
+        discovery.upsert_verified(crate::halo::p2p_discovery::announcement_for_identity(
+            &attester_one,
+            libp2p::PeerId::random(),
+            vec![],
+            vec![],
+        ));
+        discovery.upsert_verified(crate::halo::p2p_discovery::announcement_for_identity(
+            &attester_two,
+            libp2p::PeerId::random(),
+            vec![],
+            vec![],
+        ));
         let mut better = spec("prove/lean/algebra", "did:key:a", 0.95, 10, 5);
-        better.attestations.push(CapabilityAttestation {
-            attester_did: "did:key:a:attester-2".to_string(),
-            subject_did: "did:key:a".to_string(),
-            capability_id: better.capability_id.clone(),
-            challenge_hash: "h2".to_string(),
-            passed: true,
-            verified_at: 100,
-            ed25519_signature: vec![3],
-            mldsa65_signature: vec![4],
-        });
+        better.attestations = vec![
+            crate::halo::capability_verification::attest_capability(
+                &attester_one,
+                "did:key:a",
+                &better.capability_id,
+                "h1",
+                true,
+                100,
+            )
+            .expect("attestation 1"),
+            crate::halo::capability_verification::attest_capability(
+                &attester_two,
+                "did:key:a",
+                &better.capability_id,
+                "h2",
+                true,
+                100,
+            )
+            .expect("attestation 2"),
+        ];
         let worse = spec("prove/lean/algebra", "did:key:b", 0.95, 200, 50);
         discovery.upsert_verified(announcement("did:key:a", better));
         discovery.upsert_verified(announcement("did:key:b", worse));
