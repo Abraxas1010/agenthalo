@@ -2855,6 +2855,18 @@ async fn agentaddress_generate_genesis_requires_wallet_scope_when_locked() {
 
 #[tokio::test]
 async fn wdk_import_rejects_invalid_bip39_seed() {
+    let _guard = lock_env();
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_wdk_import_invalid_seed_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
     let (state, db_path) = test_state("wdk_import_invalid_seed");
     let (status, val) = api_post(
         state,
@@ -2874,6 +2886,7 @@ async fn wdk_import_rejects_invalid_bip39_seed() {
         val["error"].as_str().unwrap_or_default().contains("BIP-39"),
         "error should mention BIP-39 validity: {val}"
     );
+    let _ = std::fs::remove_dir_all(&halo_home);
     let _ = std::fs::remove_file(&db_path);
 }
 

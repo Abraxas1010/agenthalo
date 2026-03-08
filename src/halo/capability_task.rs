@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn manifold_forms_only_when_all_required_slots_are_satisfied() {
         let mut discovery = AgentDiscovery::new();
-        discovery.upsert_verified(announcement(
+        discovery.upsert_trusted_announcement(announcement(
             "did:key:a",
             spec("prove/lean/algebra", "did:key:a", 0.9, 40, 5),
         ));
@@ -458,11 +458,11 @@ mod tests {
     #[test]
     fn manifold_enforces_latency_and_distinct_agent_constraints() {
         let mut discovery = AgentDiscovery::new();
-        discovery.upsert_verified(announcement(
+        discovery.upsert_trusted_announcement(announcement(
             "did:key:a",
             spec("prove/lean/algebra", "did:key:a", 0.95, 70, 5),
         ));
-        discovery.upsert_verified(announcement(
+        discovery.upsert_trusted_announcement(announcement(
             "did:key:b",
             spec("translate/coq/to-lean", "did:key:b", 0.92, 60, 10),
         ));
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn ephemeral_group_dissolves_after_completion() {
         let mut discovery = AgentDiscovery::new();
-        discovery.upsert_verified(announcement(
+        discovery.upsert_trusted_announcement(announcement(
             "did:key:a",
             spec("prove/lean/algebra", "did:key:a", 0.9, 40, 5),
         ));
@@ -579,18 +579,22 @@ mod tests {
             crate::halo::did::did_from_genesis_seed(&[0x91; 64]).expect("attester one");
         let attester_two =
             crate::halo::did::did_from_genesis_seed(&[0x92; 64]).expect("attester two");
-        discovery.upsert_verified(crate::halo::p2p_discovery::announcement_for_identity(
-            &attester_one,
-            libp2p::PeerId::random(),
-            vec![],
-            vec![],
-        ));
-        discovery.upsert_verified(crate::halo::p2p_discovery::announcement_for_identity(
-            &attester_two,
-            libp2p::PeerId::random(),
-            vec![],
-            vec![],
-        ));
+        discovery.upsert_trusted_announcement(
+            crate::halo::p2p_discovery::announcement_for_identity(
+                &attester_one,
+                libp2p::PeerId::random(),
+                vec![],
+                vec![],
+            ),
+        );
+        discovery.upsert_trusted_announcement(
+            crate::halo::p2p_discovery::announcement_for_identity(
+                &attester_two,
+                libp2p::PeerId::random(),
+                vec![],
+                vec![],
+            ),
+        );
         let mut better = spec("prove/lean/algebra", "did:key:a", 0.95, 10, 5);
         better.attestations = vec![
             crate::halo::capability_verification::attest_capability(
@@ -613,8 +617,8 @@ mod tests {
             .expect("attestation 2"),
         ];
         let worse = spec("prove/lean/algebra", "did:key:b", 0.95, 200, 50);
-        discovery.upsert_verified(announcement("did:key:a", better));
-        discovery.upsert_verified(announcement("did:key:b", worse));
+        discovery.upsert_trusted_announcement(announcement("did:key:a", better));
+        discovery.upsert_trusted_announcement(announcement("did:key:b", worse));
 
         let manifold = TaskManifold {
             task_id: "task-rank".to_string(),
@@ -642,7 +646,7 @@ mod tests {
     #[test]
     fn task_formation_group_id_is_deterministic() {
         let mut discovery = AgentDiscovery::new();
-        discovery.upsert_verified(announcement(
+        discovery.upsert_trusted_announcement(announcement(
             "did:key:a",
             spec("prove/lean/algebra", "did:key:a", 0.95, 10, 5),
         ));

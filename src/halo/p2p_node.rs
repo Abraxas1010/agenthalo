@@ -370,7 +370,7 @@ impl P2pNode {
                     );
                     announcement.ttl = reannounce_ttl_secs;
                     sign_announcement(identity, &mut announcement)?;
-                    discovery.upsert_verified(announcement.clone());
+                    discovery.upsert_trusted_announcement(announcement.clone());
                     for topic in announcement.topics() {
                         if !discovery.is_subscribed(&topic) {
                             let _ = discovery.subscribe(&topic, self.gossipsub_mut());

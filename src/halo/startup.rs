@@ -188,7 +188,7 @@ pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, 
             }
         }
         sign_announcement(&identity, &mut announcement)?;
-        agent_discovery.upsert_verified(announcement.clone());
+        agent_discovery.upsert_trusted_announcement(announcement.clone());
         for topic in announcement.topics() {
             let _ =
                 agent_discovery.announce(&identity, &topic, &announcement, node.gossipsub_mut());
