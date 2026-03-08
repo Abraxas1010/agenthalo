@@ -1290,17 +1290,41 @@ fn social_provider_login_url(provider: &str) -> String {
 }
 
 fn oauth_state_secret(state: &DashboardState) -> String {
-    let mut h = sha2::Sha256::new();
-    use sha2::Digest;
-    h.update(
-        format!(
-            "agenthalo.identity.oauth.secret.v1:{}:{}",
-            state.credentials_path.display(),
-            state.db_path.display()
-        )
-        .as_bytes(),
-    );
-    crate::halo::util::hex_encode(&h.finalize())
+    state.oauth_state_secret.as_ref().clone()
+}
+
+fn register_oauth_state(
+    state: &DashboardState,
+    state_token: &str,
+    expires_at: u64,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let mut guard = state
+        .oauth_issued_states
+        .lock()
+        .map_err(|e| internal_err(format!("oauth state lock poisoned: {e}")))?;
+    let now = now_unix_secs();
+    guard.retain(|_, expiry| *expiry >= now);
+    guard.insert(state_token.to_string(), expires_at);
+    Ok(())
+}
+
+fn consume_oauth_state(
+    state: &DashboardState,
+    state_token: &str,
+    now: u64,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let mut guard = state
+        .oauth_issued_states
+        .lock()
+        .map_err(|e| internal_err(format!("oauth state lock poisoned: {e}")))?;
+    guard.retain(|_, expiry| *expiry >= now);
+    match guard.remove(state_token) {
+        Some(expiry) if expiry >= now => Ok(()),
+        _ => Err(api_err(
+            StatusCode::UNAUTHORIZED,
+            "OAuth state was not issued by this dashboard or was already used",
+        )),
+    }
 }
 
 fn clamp_social_expiry_days(days: Option<u64>) -> u64 {
@@ -1314,6 +1338,13 @@ fn html_escape(raw: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+fn path_display_hint(path: &std::path::Path) -> String {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn url_encode(raw: &str) -> String {
@@ -1947,7 +1978,7 @@ async fn api_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         "session_count": session_count,
         "total_cost_usd": total_cost,
         "total_tokens": total_tokens,
-        "db_path": db_path.to_string_lossy(),
+        "db_path": path_display_hint(db_path),
         "wrapping": {
             "claude": wrap_status("claude"),
             "codex": wrap_status("codex"),
@@ -3779,6 +3810,7 @@ async fn api_identity_social_oauth_start(
         now.saturating_add(600),
         &secret,
     );
+    register_oauth_state(&state, &state_token, now.saturating_add(600))?;
     let callback = format!(
         "http://127.0.0.1:3100/api/identity/social/oauth/callback?provider={provider}&expires_in_days={expires_days}"
     );
@@ -3791,7 +3823,6 @@ async fn api_identity_social_oauth_start(
         "provider": provider,
         "oauth_bridge_supported": true,
         "oauth_url": oauth_url,
-        "state": state_token,
         "expires_in_days": expires_days,
     })))
 }
@@ -3812,6 +3843,13 @@ async fn api_identity_social_oauth_callback(
         crate::halo::identity_ledger::decode_oauth_state(&query.state, &provider, now, &secret);
     let (ok, message) = if let Err(e) = validate {
         (false, format!("OAuth callback rejected: {e}"))
+    } else if let Err((_, body)) = consume_oauth_state(&state, &query.state, now) {
+        let err = body
+            .0
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("OAuth state rejected");
+        (false, err.to_string())
     } else if token.trim().is_empty() {
         (false, "OAuth callback missing token".to_string())
     } else {
@@ -4706,7 +4744,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "claude": wrap_status("claude"),
             "codex": wrap_status("codex"),
             "gemini": wrap_status("gemini"),
-            "shell_rc": rc.to_string_lossy(),
+            "shell_rc": path_display_hint(&rc),
         },
         "x402": {
             "enabled": x402_cfg.enabled,
@@ -4750,12 +4788,12 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         "pq_wallet": has_pq,
         "vault": {
             "available": state.vault.is_some(),
-            "path": config::vault_path().to_string_lossy(),
+            "path": path_display_hint(&config::vault_path()),
         },
         "paths": {
-            "home": config::halo_dir().to_string_lossy(),
-            "db": state.db_path.to_string_lossy(),
-            "credentials": state.credentials_path.to_string_lossy(),
+            "home": path_display_hint(&config::halo_dir()),
+            "db": path_display_hint(&state.db_path),
+            "credentials": path_display_hint(&state.credentials_path),
         },
     })))
 }
@@ -5620,6 +5658,7 @@ async fn api_auth_oauth_start(
     let secret = oauth_state_secret(&state);
     let state_token =
         crate::halo::identity_ledger::encode_oauth_state(&provider, expires_at, &secret);
+    register_oauth_state(&state, &state_token, expires_at)?;
     let redirect = format!("http://127.0.0.1:3100/api/auth/oauth/callback?provider={provider}");
     let oauth_url = format!(
         "https://agenthalo.dev/auth/{provider}?redirect={}&state={}",
@@ -5655,6 +5694,19 @@ async fn api_auth_oauth_callback(
         return Ok(Html(format!(
             "<!doctype html><html><head><meta charset=\"utf-8\"><title>AgentHALO OAuth</title></head><body style=\"font-family:ui-monospace,monospace;background:#070a05;color:#ff6b6b;padding:20px\"><h2>AgentHALO Auth</h2><p>{message}</p><script>(function(){{try{{if(window.opener)window.opener.postMessage({{type:'agenthalo-auth-oauth',status:'error',provider:'{provider}',message:{msg}}},'*');}}catch(_e){{}}setTimeout(function(){{window.close();}},1800);}})();</script></body></html>",
             msg = serde_json::to_string(&format!("OAuth state rejected: {e}")).unwrap_or_else(|_| "\"OAuth state rejected\"".to_string())
+        )));
+    }
+
+    if let Err((_, body)) = consume_oauth_state(&state, &query.state, now) {
+        let err = body
+            .0
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("OAuth state rejected");
+        let message = html_escape(err);
+        return Ok(Html(format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>AgentHALO OAuth</title></head><body style=\"font-family:ui-monospace,monospace;background:#070a05;color:#ff6b6b;padding:20px\"><h2>AgentHALO Auth</h2><p>{message}</p><script>(function(){{try{{if(window.opener)window.opener.postMessage({{type:'agenthalo-auth-oauth',status:'error',provider:'{provider}',message:{msg}}},'*');}}catch(_e){{}}setTimeout(function(){{window.close();}},1800);}})();</script></body></html>",
+            msg = serde_json::to_string(err).unwrap_or_else(|_| "\"OAuth state rejected\"".to_string())
         )));
     }
 
@@ -6761,7 +6813,7 @@ async fn api_nucleusdb_status(AxumState(state): AxumState<DashboardState>) -> Ap
         0
     };
     Ok(Json(json!({
-        "db_path": db_path.to_string_lossy(),
+        "db_path": path_display_hint(db_path),
         "exists": exists,
         "backend": "binary_merkle",
         "session_count": sessions,

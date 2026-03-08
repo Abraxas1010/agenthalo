@@ -4934,6 +4934,13 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        let mutex = bin_env_lock();
+        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        mutex.clear_poison();
+        guard
+    }
+
     fn make_temp_home(tag: &str) -> std::path::PathBuf {
         let home = std::env::temp_dir().join(format!(
             "agenthalo_keygen_guard_{}_{}_{}",
@@ -4948,7 +4955,7 @@ mod tests {
 
     #[test]
     fn keygen_rejects_when_wallet_missing_but_genesis_seed_exists() {
-        let _guard = bin_env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let home = make_temp_home("missing_wallet_with_seed");
         std::env::set_var("AGENTHALO_HOME", &home);
 

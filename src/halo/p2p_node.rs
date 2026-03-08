@@ -542,6 +542,13 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        let mutex = env_lock();
+        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        mutex.clear_poison();
+        guard
+    }
+
     struct EnvVarGuard {
         key: &'static str,
         prev: Option<String>,
@@ -574,7 +581,7 @@ mod tests {
 
     #[test]
     fn p2p_config_parses_bootstrap_multiaddrs() {
-        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = lock_env();
         let _bootstrap = EnvVarGuard::set(
             "P2P_BOOTSTRAP_PEERS",
             Some("/ip4/1.2.3.4/tcp/9090,/ip4/5.6.7.8/tcp/9091"),

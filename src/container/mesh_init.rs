@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn mesh_enabled_detects_env() {
-        let _guard = test_support::env_lock().lock().expect("lock env");
+        let _guard = test_support::lock_env();
         let had = std::env::var("NUCLEUSDB_MESH_AGENT_ID").ok();
         std::env::remove_var("NUCLEUSDB_MESH_AGENT_ID");
         assert!(!mesh_enabled());
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn register_and_deregister_use_registry_override() {
-        let _guard = test_support::env_lock().lock().expect("lock env");
+        let _guard = test_support::lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("mesh-peers.json");
 

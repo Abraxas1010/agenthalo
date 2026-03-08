@@ -391,6 +391,13 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        let mutex = env_lock();
+        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        mutex.clear_poison();
+        guard
+    }
+
     #[test]
     fn seed_encrypt_decrypt_roundtrip() {
         let enc = encrypt_seed(
@@ -445,7 +452,7 @@ mod tests {
 
     #[test]
     fn new_uses_wdk_auth_token_env_when_set() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         std::env::set_var(WDK_AUTH_TOKEN_ENV, "container-shared-token");
         let mgr = WdkManager::new();
         assert_eq!(mgr.auth_token, "container-shared-token");
@@ -454,7 +461,7 @@ mod tests {
 
     #[test]
     fn sidecar_dir_prefers_env_override() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("unix time")

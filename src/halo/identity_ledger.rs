@@ -1186,10 +1186,17 @@ pub fn project_social_status(now: u64) -> Result<LedgerProjection, String> {
     project_ledger_status(now)
 }
 
+fn oauth_state_nonce() -> String {
+    let mut nonce = [0u8; 16];
+    getrandom::getrandom(&mut nonce).expect("OS entropy source unavailable for OAuth state nonce");
+    crate::halo::util::hex_encode(&nonce)
+}
+
 pub fn encode_oauth_state(provider: &str, expires_at: u64, secret: &str) -> String {
     let payload = serde_json::json!({
         "provider": normalize_social_provider(provider),
         "expires_at": expires_at,
+        "nonce": oauth_state_nonce(),
     });
     let payload_raw = serde_json::to_vec(&payload).unwrap_or_default();
     let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload_raw);
@@ -1226,6 +1233,15 @@ pub fn decode_oauth_state(
     if normalize_social_provider(provider) != normalize_social_provider(expected_provider) {
         return Err("oauth state provider mismatch".to_string());
     }
+    let nonce = val
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "oauth state missing nonce".to_string())?;
+    if nonce.len() < 16 {
+        return Err("oauth state nonce too short".to_string());
+    }
     let expires_at = val
         .get("expires_at")
         .and_then(|v| v.as_u64())
@@ -1246,6 +1262,13 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        let mutex = env_lock();
+        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        mutex.clear_poison();
+        guard
+    }
+
     struct TmpHomeGuard {
         path: std::path::PathBuf,
         previous_home: Option<String>,
@@ -1254,7 +1277,7 @@ mod tests {
 
     impl TmpHomeGuard {
         fn new(tag: &str) -> Self {
-            let guard = env_lock().lock().expect("env lock");
+            let guard = lock_env();
             let previous_home = std::env::var("AGENTHALO_HOME").ok();
             let path = std::env::temp_dir().join(format!(
                 "identity_ledger_{}_{}_{}",
@@ -1354,6 +1377,17 @@ mod tests {
     }
 
     #[test]
+    fn oauth_state_tokens_are_unique_per_issue() {
+        let secret = "test-secret";
+        let first = encode_oauth_state("google", now_unix() + 60, secret);
+        let second = encode_oauth_state("google", now_unix() + 60, secret);
+        assert_ne!(first, second);
+        decode_oauth_state(&first, "google", now_unix(), secret).expect("first state must validate");
+        decode_oauth_state(&second, "google", now_unix(), secret)
+            .expect("second state must validate");
+    }
+
+    #[test]
     fn appends_all_identity_mutation_kinds() {
         let _home = set_tmp_home("all_kinds");
         append_profile_update(Some("Hal"), Some("initials"), true, 0).expect("profile");
@@ -1427,7 +1461,7 @@ mod tests {
 
     #[test]
     fn verify_chain_accepts_legacy_unsigned_completed_genesis_entry() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let _allow_legacy = EnvVarGuard::set("AGENTHALO_ALLOW_LEGACY_UNSIGNED_GENESIS", Some("1"));
         let _strict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", None);
         let mut entry = IdentityLedgerEntry {
@@ -1452,7 +1486,7 @@ mod tests {
 
     #[test]
     fn verify_chain_rejects_legacy_unsigned_completed_genesis_entry_in_strict_mode() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let _allow_legacy = EnvVarGuard::set("AGENTHALO_ALLOW_LEGACY_UNSIGNED_GENESIS", None);
         let _strict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", Some("1"));
         let mut entry = IdentityLedgerEntry {
@@ -1478,7 +1512,7 @@ mod tests {
 
     #[test]
     fn verify_chain_reports_missing_legacy_completed_payload_hash() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let _allow_legacy = EnvVarGuard::set("AGENTHALO_ALLOW_LEGACY_UNSIGNED_GENESIS", Some("1"));
         let _strict = EnvVarGuard::set("AGENTHALO_STRICT_GENESIS_SIGNATURES", None);
         let mut entry = IdentityLedgerEntry {

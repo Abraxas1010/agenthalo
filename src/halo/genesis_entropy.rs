@@ -560,9 +560,16 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        let mutex = env_lock();
+        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        mutex.clear_poison();
+        guard
+    }
+
     #[test]
     fn fixture_success_has_expected_shape() {
-        let _guard = env_lock().lock().expect("lock");
+        let _guard = lock_env();
         std::env::set_var("AGENTHALO_GENESIS_TEST_MODE", "success");
         let out = harvest_entropy().expect("harvest success");
         std::env::remove_var("AGENTHALO_GENESIS_TEST_MODE");
@@ -575,7 +582,7 @@ mod tests {
 
     #[test]
     fn fixture_pass_alias_has_expected_shape() {
-        let _guard = env_lock().lock().expect("lock");
+        let _guard = lock_env();
         std::env::set_var("AGENTHALO_GENESIS_TEST_MODE", "pass");
         let out = harvest_entropy().expect("harvest pass alias");
         std::env::remove_var("AGENTHALO_GENESIS_TEST_MODE");
@@ -588,7 +595,7 @@ mod tests {
 
     #[test]
     fn fixture_all_remote_failed_reports_expected_code() {
-        let _guard = env_lock().lock().expect("lock");
+        let _guard = lock_env();
         std::env::set_var("AGENTHALO_GENESIS_TEST_MODE", "all_remote_failed");
         let err = harvest_entropy().expect_err("expected failure");
         std::env::remove_var("AGENTHALO_GENESIS_TEST_MODE");
@@ -630,7 +637,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_curby_sample_parses_current_api() {
-        let _guard = env_lock().lock().expect("lock");
+        let _guard = lock_env();
         std::env::remove_var("AGENTHALO_GENESIS_TEST_MODE");
         let sample = fetch_curby_sample().expect("live curby fetch should parse");
         assert_eq!(sample.id, EntropySourceId::Curby);

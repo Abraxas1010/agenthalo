@@ -633,6 +633,13 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        let mutex = env_lock();
+        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        mutex.clear_poison();
+        guard
+    }
+
     fn test_state() -> BridgeState {
         let identity =
             Arc::new(crate::halo::did::did_from_genesis_seed(&[0x55; 64]).expect("identity"));
@@ -671,7 +678,7 @@ mod tests {
 
     #[test]
     fn agent_card_populates_binding_fields_from_ledger() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let temp_home = std::env::temp_dir().join(format!(
             "a2a_binding_card_{}_{}",
             std::process::id(),

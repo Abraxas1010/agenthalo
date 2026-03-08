@@ -351,7 +351,7 @@ fn l2_normalize(values: &mut [f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::env_lock;
+    use crate::test_support::lock_env;
 
     fn test_model() -> EmbeddingModel {
         EmbeddingModel::new_hash_test_backend(DEFAULT_MODEL_NAME, DEFAULT_EMBEDDING_DIMS)
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_model_files_required_when_hash_backend_disabled() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let prev = std::env::var(HASH_BACKEND_ENV).ok();
         // SAFETY: test-only env mutation is serialized by env_lock().
         unsafe { std::env::remove_var(HASH_BACKEND_ENV) };

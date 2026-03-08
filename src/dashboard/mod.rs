@@ -10,6 +10,7 @@ use axum::routing::get;
 use axum::Router;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -25,6 +26,8 @@ use tokio::time::Duration;
 pub struct DashboardState {
     pub db_path: std::path::PathBuf,
     pub credentials_path: std::path::PathBuf,
+    pub oauth_state_secret: Arc<String>,
+    pub oauth_issued_states: Arc<StdMutex<HashMap<String, u64>>>,
     pub db_lock: Arc<Mutex<()>>,
     pub grant_store: crate::pod::acl::SharedGrantStore,
     pub grant_store_path: PathBuf,
@@ -94,6 +97,12 @@ fn default_grant_store_path(db_path: &Path) -> PathBuf {
     db_path.with_extension("pod_grants.json")
 }
 
+fn random_hex_secret() -> String {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).expect("OS entropy source unavailable for dashboard OAuth secret");
+    crate::halo::util::hex_encode(&bytes)
+}
+
 fn load_grants_into_store(
     store: &crate::pod::acl::SharedGrantStore,
     path: &Path,
@@ -150,6 +159,8 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
     DashboardState {
         db_path,
         credentials_path,
+        oauth_state_secret: Arc::new(random_hex_secret()),
+        oauth_issued_states: Arc::new(StdMutex::new(HashMap::new())),
         db_lock: Arc::new(Mutex::new(())),
         grant_store,
         grant_store_path,

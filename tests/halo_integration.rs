@@ -28,6 +28,13 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    let mutex = env_lock();
+    let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    mutex.clear_poison();
+    guard
+}
+
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<String>,
@@ -392,7 +399,7 @@ fn halo_trust_query_reports_score() {
 
 #[test]
 fn halo_pq_keygen_and_sign_detached_roundtrip() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -528,7 +535,7 @@ fn halo_groth16_proof_is_deterministic() {
 
 #[test]
 fn halo_onchain_config_management() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let root = std::env::temp_dir().join(format!(
         "agenthalo_onchain_cfg_test_{}_{}",
         std::process::id(),

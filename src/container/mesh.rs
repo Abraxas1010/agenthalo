@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn mesh_registry_path_respects_env_override() {
-        let _guard = test_support::env_lock().lock().expect("lock env");
+        let _guard = test_support::lock_env();
         let prev = std::env::var("NUCLEUSDB_MESH_REGISTRY").ok();
         std::env::set_var(
             "NUCLEUSDB_MESH_REGISTRY",

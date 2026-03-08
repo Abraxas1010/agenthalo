@@ -21,10 +21,11 @@ use axum::{
 use base64::Engine;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const INTERNAL_AUTH_HEADER: &str = "x-nucleusdb-internal-auth";
+const CAB_TOKEN_DOMAIN: &str = "nucleusdb.cab.auth.v1";
 
 /// Scopes that gate access to tool categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -193,6 +194,55 @@ pub struct CabToken {
     pub timestamp: Option<u64>,
 }
 
+fn normalize_evm_address(address: &str) -> String {
+    address.trim().to_ascii_lowercase()
+}
+
+fn cab_signing_message(cab: &CabToken) -> Result<Vec<u8>, String> {
+    let nonce = cab
+        .nonce
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "cab token requires non-empty 'nonce' field".to_string())?;
+    let timestamp = cab
+        .timestamp
+        .ok_or_else(|| "cab token requires 'timestamp' field".to_string())?;
+    Ok(format!(
+        "{CAB_TOKEN_DOMAIN}|agent={}|contract={}|rpc={}|nonce={}|ts={timestamp}",
+        normalize_evm_address(&cab.agent_address),
+        normalize_evm_address(&cab.contract_address),
+        cab.rpc_url.trim(),
+        nonce,
+    )
+    .into_bytes())
+}
+
+fn cab_nonce_store() -> &'static Mutex<HashMap<String, u64>> {
+    static NONCES: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    NONCES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn reserve_cab_nonce(agent_address: &str, nonce: &str, now: u64, expires_at: u64) -> bool {
+    let mutex = cab_nonce_store();
+    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.retain(|_, until| *until > now);
+    let key = format!("{}:{}", normalize_evm_address(agent_address), nonce.trim());
+    if guard.contains_key(&key) {
+        return false;
+    }
+    guard.insert(key, expires_at.max(now.saturating_add(1)));
+    true
+}
+
+#[cfg(test)]
+fn clear_cab_nonce_reservations_for_tests() {
+    let mutex = cab_nonce_store();
+    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.clear();
+    mutex.clear_poison();
+}
+
 /// OAuth JWT claims.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthClaims {
@@ -330,10 +380,24 @@ fn authenticate_cab(
         )
     })?;
 
-    if cab.agent_address.trim().is_empty()
-        || cab.contract_address.trim().is_empty()
-        || cab.rpc_url.trim().is_empty()
-    {
+    authenticate_cab_payload(cab, config, |rpc_url, contract_address, agent_address| {
+        crate::trust::onchain::verify_agent_onchain(rpc_url, contract_address, agent_address)
+    })
+}
+
+fn authenticate_cab_payload<F>(
+    cab: CabToken,
+    config: &AuthConfig,
+    verify_agent: F,
+) -> Result<Option<AuthIdentity>, (StatusCode, String)>
+where
+    F: Fn(&str, &str, &str) -> Result<crate::trust::onchain::AgentOnchainStatus, crate::trust::onchain::TrustBridgeError>,
+{
+    let agent_address = cab.agent_address.trim().to_string();
+    let contract_address = cab.contract_address.trim().to_string();
+    let rpc_url = cab.rpc_url.trim().to_string();
+
+    if agent_address.is_empty() || contract_address.is_empty() || rpc_url.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             "cab token requires agent_address, contract_address, rpc_url".to_string(),
@@ -342,68 +406,75 @@ fn authenticate_cab(
 
     // RPC URL allowlist — reject attacker-controlled oracles.
     if !config.trusted_rpc_urls.is_empty() {
-        let rpc_trimmed = cab.rpc_url.trim();
-        if !config.trusted_rpc_urls.iter().any(|u| u == rpc_trimmed) {
+        if !config.trusted_rpc_urls.iter().any(|u| u == &rpc_url) {
             return Err((
                 StatusCode::FORBIDDEN,
-                format!(
-                    "rpc_url '{}' is not in the trusted RPC allowlist",
-                    rpc_trimmed
-                ),
+                format!("rpc_url '{}' is not in the trusted RPC allowlist", rpc_url),
             ));
         }
     }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let timestamp = cab.timestamp.ok_or((
+        StatusCode::BAD_REQUEST,
+        "cab token requires 'timestamp' field for replay protection".to_string(),
+    ))?;
 
     // Replay protection — require timestamp + nonce when auth is enforced.
-    if let Some(ts) = cab.timestamp {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        if ts > now + 60 {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "cab token timestamp is in the future".to_string(),
-            ));
-        }
-        if now.saturating_sub(ts) > config.cab_max_age_secs {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                format!(
-                    "cab token expired (age {}s exceeds max {}s)",
-                    now.saturating_sub(ts),
-                    config.cab_max_age_secs
-                ),
-            ));
-        }
-    } else {
+    if timestamp > now + 60 {
         return Err((
             StatusCode::BAD_REQUEST,
-            "cab token requires 'timestamp' field for replay protection".to_string(),
+            "cab token timestamp is in the future".to_string(),
+        ));
+    }
+    if now.saturating_sub(timestamp) > config.cab_max_age_secs {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            format!(
+                "cab token expired (age {}s exceeds max {}s)",
+                now.saturating_sub(timestamp),
+                config.cab_max_age_secs
+            ),
         ));
     }
 
-    if cab.nonce.as_ref().is_none_or(|n| n.trim().is_empty()) {
-        return Err((
+    let nonce = cab
+        .nonce
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .ok_or((
             StatusCode::BAD_REQUEST,
             "cab token requires non-empty 'nonce' field for replay protection".to_string(),
-        ));
-    }
+        ))?;
 
-    if cab.signature.as_ref().is_none_or(|s| s.trim().is_empty()) {
-        return Err((
+    let signature = cab
+        .signature
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or((
             StatusCode::BAD_REQUEST,
             "cab token requires non-empty 'signature' field".to_string(),
+        ))?;
+
+    let signing_message = cab_signing_message(&cab)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let signature_ok =
+        crate::halo::evm_wallet::verify_recoverable_signature(&agent_address, &signing_message, signature)
+            .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid cab signature: {e}")))?;
+    if !signature_ok {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "invalid cab signature: recovered signer does not match agent_address".to_string(),
         ));
     }
 
     // Verify on-chain via cast.
-    let status = crate::trust::onchain::verify_agent_onchain(
-        cab.rpc_url.trim(),
-        cab.contract_address.trim(),
-        cab.agent_address.trim(),
-    )
-    .map_err(|e| {
+    let status = verify_agent(&rpc_url, &contract_address, &agent_address).map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
             format!("on-chain verification failed: {e}"),
@@ -413,7 +484,17 @@ fn authenticate_cab(
     if !status.verified {
         return Err((
             StatusCode::FORBIDDEN,
-            format!("agent {} is not verified on-chain", cab.agent_address),
+            format!("agent {} is not verified on-chain", agent_address),
+        ));
+    }
+
+    let nonce_expires_at = timestamp
+        .saturating_add(config.cab_max_age_secs)
+        .saturating_add(60);
+    if !reserve_cab_nonce(&agent_address, nonce, now, nonce_expires_at) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            format!("cab token replay detected for agent {}", agent_address),
         ));
     }
 
@@ -421,7 +502,7 @@ fn authenticate_cab(
     let scopes = config.scopes_for_tier(tier);
 
     Ok(Some(AuthIdentity {
-        subject: cab.agent_address.trim().to_string(),
+        subject: agent_address,
         method: AuthMethod::Cab,
         scopes,
         puf_tier: Some(tier),
@@ -604,6 +685,43 @@ mod tests {
     use super::*;
     use crate::test_support::env_lock;
 
+    fn mk_onchain_status(verified: bool, tier: u8) -> crate::trust::onchain::AgentOnchainStatus {
+        crate::trust::onchain::AgentOnchainStatus {
+            verified,
+            active: Some(verified),
+            puf_digest: None,
+            tier: Some(tier),
+            last_attestation: None,
+            last_replay_seq: None,
+            raw_verify: verified.to_string(),
+            raw_status: "mock".to_string(),
+        }
+    }
+
+    fn mk_signed_cab(nonce: &str, timestamp: u64) -> CabToken {
+        let wallet = crate::halo::evm_wallet::derive_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            None,
+        )
+        .expect("wallet");
+        let mut cab = CabToken {
+            agent_address: wallet.evm_address,
+            contract_address: "0x1111111111111111111111111111111111111111".to_string(),
+            rpc_url: "https://rpc.example.com".to_string(),
+            signature: None,
+            nonce: Some(nonce.to_string()),
+            timestamp: Some(timestamp),
+        };
+        let message = cab_signing_message(&cab).expect("signing message");
+        let signature = crate::halo::evm_wallet::sign_recoverable_with_evm_key(
+            &wallet.private_key_hex,
+            &message,
+        )
+        .expect("recoverable signature");
+        cab.signature = Some(signature);
+        cab
+    }
+
     #[test]
     fn tool_scope_mapping_covers_all_tools() {
         let db_tools = [
@@ -737,23 +855,74 @@ mod tests {
 
     #[test]
     fn cab_token_roundtrip() {
-        let cab = CabToken {
-            agent_address: "0x1234".to_string(),
-            contract_address: "0x5678".to_string(),
-            rpc_url: "https://rpc.example.com".to_string(),
-            signature: Some("0xabcd".to_string()),
-            nonce: Some("deadbeef".to_string()),
-            timestamp: Some(1700000000),
-        };
+        let cab = mk_signed_cab("deadbeef", 1_700_000_000);
         let json = serde_json::to_vec(&cab).unwrap();
         let encoded = base64::engine::general_purpose::STANDARD.encode(&json);
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&encoded)
             .unwrap();
         let parsed: CabToken = serde_json::from_slice(&decoded).unwrap();
-        assert_eq!(parsed.agent_address, "0x1234");
+        assert!(parsed.agent_address.starts_with("0x"));
         assert_eq!(parsed.nonce, Some("deadbeef".to_string()));
         assert_eq!(parsed.timestamp, Some(1700000000));
+    }
+
+    #[test]
+    fn cab_auth_rejects_forged_signature() {
+        clear_cab_nonce_reservations_for_tests();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut cab = mk_signed_cab("cab-forge", now);
+        cab.signature = Some(format!("0x{}", "00".repeat(65)));
+        let err = authenticate_cab_payload(cab, &AuthConfig::default(), |_, _, _| {
+            Ok(mk_onchain_status(true, 4))
+        })
+        .expect_err("forged signature must fail");
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        assert!(err.1.contains("invalid cab signature"));
+    }
+
+    #[test]
+    fn cab_auth_rejects_replay_of_same_nonce() {
+        clear_cab_nonce_reservations_for_tests();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let cab = mk_signed_cab("cab-replay", now);
+        let cfg = AuthConfig::default();
+        let first = authenticate_cab_payload(cab.clone(), &cfg, |_, _, _| {
+            Ok(mk_onchain_status(true, 3))
+        })
+        .expect("first auth should pass")
+        .expect("identity");
+        assert!(first.has_scope(ToolScope::Write));
+
+        let err = authenticate_cab_payload(cab, &cfg, |_, _, _| Ok(mk_onchain_status(true, 3)))
+            .expect_err("replay must fail");
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+        assert!(err.1.contains("replay detected"));
+    }
+
+    #[test]
+    fn cab_auth_accepts_valid_signed_token() {
+        clear_cab_nonce_reservations_for_tests();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let cab = mk_signed_cab("cab-valid", now);
+        let identity = authenticate_cab_payload(cab.clone(), &AuthConfig::default(), |_, _, _| {
+            Ok(mk_onchain_status(true, 4))
+        })
+        .expect("auth")
+        .expect("identity");
+        assert_eq!(identity.subject, cab.agent_address);
+        assert_eq!(identity.method, AuthMethod::Cab);
+        assert!(identity.has_scope(ToolScope::TrustAttest));
+        assert!(identity.has_scope(ToolScope::Container));
     }
 
     #[test]

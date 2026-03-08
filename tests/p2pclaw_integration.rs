@@ -12,6 +12,13 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    let mutex = env_lock();
+    let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    mutex.clear_poison();
+    guard
+}
+
 struct EnvVarGuard {
     key: &'static str,
     prev: Option<String>,
@@ -64,7 +71,7 @@ fn write_wallet_json(path: &Path, key_id: &str, seed_hex: &str) {
 
 #[test]
 fn config_roundtrip_without_secret_field() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let home = temp_home("roundtrip");
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).expect("create temp home");
@@ -136,7 +143,7 @@ fn validate_endpoint_rejects_non_http_schemes() {
 
 #[test]
 fn configure_stores_secret_in_vault_when_wallet_available() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let home = temp_home("vault");
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).expect("create temp home");
@@ -177,7 +184,7 @@ fn configure_stores_secret_in_vault_when_wallet_available() {
 
 #[test]
 fn configure_uses_insecure_fallback_when_vault_unavailable() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let home = temp_home("fallback");
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).expect("create temp home");
@@ -213,7 +220,7 @@ fn configure_uses_insecure_fallback_when_vault_unavailable() {
 fn config_file_permissions_are_owner_only() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let home = temp_home("perm");
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).expect("create temp home");

@@ -36,6 +36,13 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    let mutex = env_lock();
+    let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    mutex.clear_poison();
+    guard
+}
+
 struct EnvVarGuard {
     key: &'static str,
     prev: Option<String>,
@@ -60,6 +67,14 @@ impl Drop for EnvVarGuard {
             std::env::remove_var(self.key);
         }
     }
+}
+
+fn oauth_state_from_url(oauth_url: &str) -> String {
+    oauth_url
+        .split("state=")
+        .nth(1)
+        .map(|s| s.split('&').next().unwrap_or_default().to_string())
+        .unwrap_or_default()
 }
 
 fn test_state(tag: &str) -> (DashboardState, PathBuf) {
@@ -508,7 +523,7 @@ async fn attestation_verify_is_cryptographic() {
     // AGENTHALO_HOME via config::attestations_dir().  Without the lock a
     // concurrent genesis test can change AGENTHALO_HOME between the attest
     // and verify steps, making the verify scan a different directory.
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_attest_verify_{}_{}",
         std::process::id(),
@@ -564,7 +579,7 @@ async fn attestation_verify_is_cryptographic() {
 
 #[tokio::test]
 async fn attestation_verify_nonexistent_returns_not_found() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_attest_missing_{}_{}",
         std::process::id(),
@@ -610,6 +625,11 @@ async fn status_endpoint_returns_expected_fields() {
     assert!(val.get("session_count").is_some());
     assert!(val.get("total_cost_usd").is_some());
     assert!(val.get("wrapping").is_some());
+    let db_path_hint = val["db_path"].as_str().unwrap_or_default();
+    assert!(
+        !db_path_hint.starts_with('/'),
+        "status should not leak absolute db paths: {db_path_hint}"
+    );
 
     let _ = std::fs::remove_file(&db_path);
 }
@@ -902,7 +922,7 @@ async fn nucleusdb_stats_includes_type_distribution() {
 
 #[tokio::test]
 async fn nucleusdb_memory_store_and_recall_roundtrip() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _embedding_backend_guard =
         EnvVarGuard::set("AGENTHALO_EMBEDDING_BACKEND", Some("hash-test"));
     let (state, db_path) = test_state("ndb_memory_roundtrip");
@@ -945,7 +965,7 @@ async fn nucleusdb_memory_store_and_recall_roundtrip() {
 
 #[tokio::test]
 async fn nucleusdb_memory_recall_handles_negation_and_paraphrase_gap() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _embedding_backend_guard =
         EnvVarGuard::set("AGENTHALO_EMBEDDING_BACKEND", Some("hash-test"));
     let (state, db_path) = test_state("ndb_memory_negation_paraphrase");
@@ -1008,7 +1028,7 @@ async fn nucleusdb_memory_recall_handles_negation_and_paraphrase_gap() {
 
 #[tokio::test]
 async fn nucleusdb_memory_ingest_and_stats() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _embedding_backend_guard =
         EnvVarGuard::set("AGENTHALO_EMBEDDING_BACKEND", Some("hash-test"));
     let (state, db_path) = test_state("ndb_memory_ingest_stats");
@@ -1043,7 +1063,7 @@ async fn nucleusdb_memory_ingest_and_stats() {
 
 #[tokio::test]
 async fn nucleusdb_memory_cache_reloads_after_external_db_update() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _embedding_backend_guard =
         EnvVarGuard::set("AGENTHALO_EMBEDDING_BACKEND", Some("hash-test"));
     let (state, db_path) = test_state("ndb_memory_cache_reload");
@@ -1081,7 +1101,7 @@ async fn nucleusdb_memory_cache_reloads_after_external_db_update() {
 #[cfg(unix)]
 #[tokio::test]
 async fn nucleusdb_memory_store_persist_failure_does_not_poison_cache() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _embedding_backend_guard =
         EnvVarGuard::set("AGENTHALO_EMBEDDING_BACKEND", Some("hash-test"));
     let (mut state, _db_path) = test_state("ndb_memory_persist_fail");
@@ -1358,7 +1378,7 @@ async fn deploy_catalog_and_preflight_shell() {
 
 #[tokio::test]
 async fn vault_set_list_delete_via_api() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_vault_set_list_delete_via_api_{}_{}",
         std::process::id(),
@@ -1644,7 +1664,7 @@ async fn config_includes_setup_complete_fields() {
 
 #[tokio::test]
 async fn genesis_status_incomplete_when_missing() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_genesis_status_missing_{}_{}",
         std::process::id(),
@@ -1673,7 +1693,7 @@ async fn genesis_status_incomplete_when_missing() {
 
 #[tokio::test]
 async fn genesis_harvest_success_writes_ledger_and_trace() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_genesis_success_{}_{}",
         std::process::id(),
@@ -1753,7 +1773,7 @@ async fn genesis_harvest_success_writes_ledger_and_trace() {
 
 #[tokio::test]
 async fn genesis_harvest_failure_records_trace_and_stays_incomplete() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_genesis_failure_{}_{}",
         std::process::id(),
@@ -1799,7 +1819,7 @@ async fn genesis_harvest_failure_records_trace_and_stays_incomplete() {
 
 #[tokio::test]
 async fn genesis_harvest_reports_seed_read_failure_with_structured_code() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_genesis_seed_read_failure_{}_{}",
         std::process::id(),
@@ -1841,7 +1861,7 @@ async fn genesis_harvest_reports_seed_read_failure_with_structured_code() {
 
 #[tokio::test]
 async fn genesis_reset_is_forbidden_by_default() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_genesis_reset_forbidden_{}_{}",
         std::process::id(),
@@ -1869,7 +1889,7 @@ async fn genesis_reset_is_forbidden_by_default() {
 
 #[tokio::test]
 async fn genesis_reset_is_blocked_after_completed_commit() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_genesis_reset_after_completed_{}_{}",
         std::process::id(),
@@ -1914,7 +1934,7 @@ async fn genesis_reset_is_blocked_after_completed_commit() {
 
 #[tokio::test]
 async fn profile_get_and_save_roundtrip() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_profile_{}_{}",
         std::process::id(),
@@ -1954,7 +1974,7 @@ async fn profile_get_and_save_roundtrip() {
 
 #[tokio::test]
 async fn profile_rename_requires_explicit_rename_flag() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_profile_rename_{}_{}",
         std::process::id(),
@@ -2005,7 +2025,7 @@ async fn profile_rename_requires_explicit_rename_flag() {
 
 #[tokio::test]
 async fn identity_anonymous_status_roundtrip() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_identity_{}_{}",
         std::process::id(),
@@ -2043,7 +2063,7 @@ async fn identity_anonymous_status_roundtrip() {
 
 #[tokio::test]
 async fn identity_tier_roundtrip() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_identity_tier_{}_{}",
         std::process::id(),
@@ -2091,7 +2111,7 @@ async fn identity_tier_roundtrip() {
 
 #[tokio::test]
 async fn identity_tier_rolls_back_when_ledger_append_fails() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_identity_tier_rollback_{}_{}",
         std::process::id(),
@@ -2128,7 +2148,7 @@ async fn identity_tier_rolls_back_when_ledger_append_fails() {
 
 #[tokio::test]
 async fn identity_device_scan_and_save_roundtrip() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_identity_device_{}_{}",
         std::process::id(),
@@ -2179,7 +2199,7 @@ async fn identity_device_scan_and_save_roundtrip() {
 
 #[tokio::test]
 async fn identity_network_configured_semantics_roundtrip() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_identity_network_{}_{}",
         std::process::id(),
@@ -2248,7 +2268,7 @@ async fn identity_network_configured_semantics_roundtrip() {
 
 #[tokio::test]
 async fn identity_social_connect_and_revoke_roundtrip() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_identity_social_{}_{}",
         std::process::id(),
@@ -2303,7 +2323,7 @@ async fn identity_social_connect_and_revoke_roundtrip() {
 
 #[tokio::test]
 async fn identity_super_secure_update_roundtrip() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_identity_super_secure_{}_{}",
         std::process::id(),
@@ -2361,7 +2381,7 @@ async fn identity_super_secure_update_roundtrip() {
 
 #[tokio::test]
 async fn identity_pod_share_filters_by_pattern() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_identity_pod_share_{}_{}",
         std::process::id(),
@@ -2436,7 +2456,7 @@ async fn identity_pod_share_filters_by_pattern() {
 
 #[tokio::test]
 async fn config_agentpmt_setup_false_when_token_unverified() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_agentpmt_unverified_{}_{}",
         std::process::id(),
@@ -2480,7 +2500,7 @@ async fn config_agentpmt_setup_false_when_token_unverified() {
 async fn ensure_halo_dir_enforces_owner_only_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_halo_dir_perms_{}_{}",
         std::process::id(),
@@ -2505,7 +2525,7 @@ async fn ensure_halo_dir_enforces_owner_only_permissions() {
 
 #[tokio::test]
 async fn agentpmt_refresh_requires_auth() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("agentpmt_refresh_auth");
     let (status, val) = api_post(state, "/agentpmt/refresh", json!({})).await;
@@ -2523,7 +2543,7 @@ async fn agentpmt_refresh_requires_auth() {
 
 #[tokio::test]
 async fn identity_ledger_migrate_requires_auth() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("identity_ledger_migrate_auth");
     let (s, _v) = api_post(
@@ -2542,7 +2562,7 @@ async fn identity_ledger_migrate_requires_auth() {
 
 #[tokio::test]
 async fn identity_ledger_migrate_returns_ok_for_authenticated_operator() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_identity_ledger_migrate_ok_{}_{}",
         std::process::id(),
@@ -2573,7 +2593,7 @@ async fn identity_ledger_migrate_returns_ok_for_authenticated_operator() {
 
 #[tokio::test]
 async fn agentpmt_enable_requires_auth() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("agentpmt_enable_auth");
     let (status, val) = api_post(state, "/agentpmt/enable", json!({})).await;
@@ -2591,7 +2611,7 @@ async fn agentpmt_enable_requires_auth() {
 
 #[tokio::test]
 async fn wdk_status_requires_auth() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("wdk_status_auth");
     let (status, val) = api_get(state, "/wdk/status").await;
@@ -2603,7 +2623,7 @@ async fn wdk_status_requires_auth() {
 
 #[tokio::test]
 async fn wdk_available_requires_auth() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("wdk_available_auth");
     let (status, val) = api_get(state, "/wdk/available").await;
@@ -2615,7 +2635,7 @@ async fn wdk_available_requires_auth() {
 
 #[tokio::test]
 async fn agents_list_requires_auth() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("agents_list_auth");
     let (status, val) = api_get(state, "/agents/list").await;
@@ -2654,7 +2674,7 @@ async fn agentaddress_status_and_chains_routes_work() {
 
 #[tokio::test]
 async fn agentaddress_generate_requires_auth() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("agentaddress_generate_auth");
     let (status, val) = api_post(state, "/agentaddress/generate", json!({})).await;
@@ -2666,7 +2686,7 @@ async fn agentaddress_generate_requires_auth() {
 
 #[tokio::test]
 async fn agentaddress_generate_genesis_requires_seed() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_agentaddress_genesis_requires_seed_{}_{}",
         std::process::id(),
@@ -2705,7 +2725,7 @@ async fn agentaddress_generate_genesis_requires_seed() {
 
 #[tokio::test]
 async fn agentaddress_generate_genesis_is_deterministic_and_persists_source() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_agentaddress_genesis_deterministic_{}_{}",
         std::process::id(),
@@ -2784,7 +2804,7 @@ async fn agentaddress_generate_genesis_is_deterministic_and_persists_source() {
 
 #[tokio::test]
 async fn agentaddress_generate_genesis_requires_wallet_scope_when_locked() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_agentaddress_genesis_scope_lock_{}_{}",
         std::process::id(),
@@ -2857,7 +2877,7 @@ async fn wdk_import_rejects_invalid_bip39_seed() {
 
 #[tokio::test]
 async fn wdk_create_requires_genesis_seed() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_wdk_create_requires_genesis_seed_{}_{}",
         std::process::id(),
@@ -2897,7 +2917,7 @@ async fn wdk_create_requires_genesis_seed() {
 
 #[tokio::test]
 async fn crypto_unlock_rejects_wrong_password_after_creation() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_crypto_unlock_wrong_password_{}_{}",
         std::process::id(),
@@ -2943,7 +2963,7 @@ async fn crypto_unlock_rejects_wrong_password_after_creation() {
 
 #[tokio::test]
 async fn crypto_change_password_rejects_wrong_current_password() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_crypto_change_password_wrong_current_{}_{}",
         std::process::id(),
@@ -3027,7 +3047,7 @@ async fn auth_set_key_route_removed() {
 
 #[tokio::test]
 async fn auth_oauth_start_returns_bridge_url_for_supported_provider() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("auth_oauth_start");
     let (status, val) = api_get(state, "/auth/oauth/start/github?expires_in_minutes=5").await;
@@ -3049,7 +3069,7 @@ async fn auth_oauth_start_returns_bridge_url_for_supported_provider() {
 
 #[tokio::test]
 async fn auth_oauth_callback_persists_credentials() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("auth_oauth_callback");
     let (start_status, start_val) = api_get(
@@ -3066,11 +3086,7 @@ async fn auth_oauth_callback_persists_credentials() {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let state_param = oauth_url
-        .split("state=")
-        .nth(1)
-        .map(|s| s.split('&').next().unwrap_or_default().to_string())
-        .unwrap_or_default();
+    let state_param = oauth_state_from_url(&oauth_url);
     assert!(
         !state_param.is_empty(),
         "state param should be present in oauth_url"
@@ -3107,8 +3123,58 @@ async fn auth_oauth_callback_persists_credentials() {
 }
 
 #[tokio::test]
+async fn auth_oauth_callback_rejects_replayed_state() {
+    let _guard = lock_env();
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
+    let (state, db_path, creds_path) = test_state_unauth("auth_oauth_replay");
+    let (start_status, start_val) = api_get(
+        state.clone(),
+        "/auth/oauth/start/github?expires_in_minutes=5",
+    )
+    .await;
+    assert_eq!(start_status, StatusCode::OK, "oauth start should succeed: {start_val}");
+    let oauth_url = start_val["oauth_url"].as_str().unwrap_or_default().to_string();
+    let state_param = oauth_state_from_url(&oauth_url);
+    assert!(!state_param.is_empty(), "state param should be present");
+
+    let callback_path = format!(
+        "/auth/oauth/callback?provider=github&state={state}&token=first-token",
+        state = state_param
+    );
+    let (first_status, first_body) = api_get_raw(state.clone(), &callback_path).await;
+    assert_eq!(first_status, StatusCode::OK, "first callback should succeed: {first_body}");
+
+    let (second_status, second_body) = api_get_raw(state.clone(), &callback_path).await;
+    assert_eq!(second_status, StatusCode::OK, "replayed callback still returns HTML");
+    assert!(
+        second_body.contains("already used") || second_body.contains("not issued"),
+        "replayed state should be rejected: {second_body}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn auth_oauth_start_issues_unique_states_per_request() {
+    let _guard = lock_env();
+    let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
+    let (state, db_path, creds_path) = test_state_unauth("auth_oauth_unique_state");
+    let (_, first) = api_get(state.clone(), "/auth/oauth/start/github?expires_in_minutes=5").await;
+    let (_, second) = api_get(state.clone(), "/auth/oauth/start/github?expires_in_minutes=5").await;
+    let first_state = oauth_state_from_url(first["oauth_url"].as_str().unwrap_or_default());
+    let second_state = oauth_state_from_url(second["oauth_url"].as_str().unwrap_or_default());
+    assert!(!first_state.is_empty(), "first state should exist");
+    assert!(!second_state.is_empty(), "second state should exist");
+    assert_ne!(first_state, second_state, "oauth states must be unique per request");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
 async fn agentpmt_enable_sets_enabled_in_config() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
         "dashboard_test_agentpmt_enable_{}_{}",
         std::process::id(),
@@ -3140,7 +3206,7 @@ async fn agentpmt_enable_sets_enabled_in_config() {
 
 #[tokio::test]
 async fn cockpit_create_requires_auth_and_returns_setup_payload() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("cockpit_auth_required");
     let (status, val) = api_post(
@@ -3163,7 +3229,7 @@ async fn cockpit_create_requires_auth_and_returns_setup_payload() {
 
 #[tokio::test]
 async fn funding_webhook_missing_signature_rejected() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("funding-webhook-secret"));
     let _simulation_guard = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
 
@@ -3211,7 +3277,7 @@ async fn funding_webhook_missing_signature_rejected() {
 
 #[tokio::test]
 async fn funding_webhook_invalid_signature_rejected() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("funding-webhook-secret"));
     let _simulation_guard = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
 
@@ -3260,7 +3326,7 @@ async fn funding_webhook_invalid_signature_rejected() {
 
 #[tokio::test]
 async fn funding_operator_credit_bypasses_webhook_signature() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("funding-webhook-secret"));
 
     let (state, db_path) = test_state("funding_operator_credit_bypass_sig");
@@ -3305,7 +3371,7 @@ async fn funding_operator_credit_bypasses_webhook_signature() {
 
 #[tokio::test]
 async fn api_addons_route_can_toggle_p2pclaw() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let home = std::env::temp_dir().join(format!(
         "dashboard_addons_toggle_{}_{}",
         std::process::id(),
@@ -3340,7 +3406,7 @@ async fn api_addons_route_can_toggle_p2pclaw() {
 
 #[tokio::test]
 async fn api_p2pclaw_configure_persists_config_and_vault_secret() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let home = std::env::temp_dir().join(format!(
         "dashboard_p2pclaw_cfg_{}_{}",
         std::process::id(),
@@ -3394,7 +3460,7 @@ async fn api_p2pclaw_configure_persists_config_and_vault_secret() {
 
 #[tokio::test]
 async fn api_p2pclaw_status_requires_authentication() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("api_p2pclaw_status_auth");
     let (status, body) = api_get(state, "/p2pclaw/status").await;
@@ -3411,7 +3477,7 @@ async fn api_p2pclaw_status_requires_authentication() {
 
 #[tokio::test]
 async fn api_p2pclaw_briefing_requires_authentication() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _auth_guard = EnvVarGuard::set("AGENTHALO_REQUIRE_DASHBOARD_AUTH", Some("1"));
     let (state, db_path, creds_path) = test_state_unauth("api_p2pclaw_briefing_auth");
     let (status, body) = api_get(state, "/p2pclaw/briefing").await;
@@ -3428,7 +3494,7 @@ async fn api_p2pclaw_briefing_requires_authentication() {
 
 #[tokio::test]
 async fn api_orchestrator_routes_return_json() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let (state, db_path) = test_state("api_orchestrator_routes");
 
     let (s_agents, v_agents) = api_get(state.clone(), "/orchestrator/agents").await;
@@ -3458,7 +3524,7 @@ async fn api_orchestrator_routes_return_json() {
 
 #[tokio::test]
 async fn api_orchestrator_agents_reports_non_fixed_base_when_floor_raises_trust() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let _floor_guard = EnvVarGuard::set("AGENTHALO_EPISTEMIC_TRUST_FLOOR", Some("0.95"));
     let (state, db_path) = test_state("api_orchestrator_trust_fixed_point");
 
@@ -3499,7 +3565,7 @@ async fn api_orchestrator_agents_reports_non_fixed_base_when_floor_raises_trust(
 
 #[tokio::test]
 async fn api_orchestrator_launch_and_task_shell_roundtrip() {
-    let _guard = env_lock().lock().expect("lock env");
+    let _guard = lock_env();
     let (state, db_path) = test_state("api_orchestrator_launch_task");
 
     let (s_launch, v_launch) = api_post(

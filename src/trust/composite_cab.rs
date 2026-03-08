@@ -213,7 +213,7 @@ mod tests {
     use crate::cli::default_witness_cfg;
     use crate::protocol::VcBackend;
     use crate::state::State;
-    use crate::test_support::env_lock;
+    use crate::test_support::lock_env;
     use tempfile::TempDir;
 
     struct EnvVarGuard {
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn generate_proof_returns_real_payload() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let halo_home = TempDir::new().expect("temp halo home");
         let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", halo_home.path().to_str());
         let db = new_test_db();
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn submit_attestation_simulation_returns_tx_hash() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let halo_home = TempDir::new().expect("temp halo home");
         let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", halo_home.path().to_str());
         let db = new_test_db();

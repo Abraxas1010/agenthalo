@@ -765,7 +765,7 @@ mod tests {
     use crate::embeddings::{EmbeddingModel, DEFAULT_EMBEDDING_DIMS, DEFAULT_MODEL_NAME};
     use crate::protocol::VcBackend;
     use crate::state::State;
-    use crate::test_support::env_lock;
+    use crate::test_support::lock_env;
 
     fn test_db() -> NucleusDb {
         let mut cfg = default_witness_cfg();
@@ -909,7 +909,7 @@ mod tests {
 
     #[test]
     fn test_negation_aware_rerank_prefers_negated_match() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let _query_expansion = EnvVarGuard::set(QUERY_EXPANSION_ENABLED_ENV, None);
         let _rerank = EnvVarGuard::set(RERANK_ENABLED_ENV, None);
 
@@ -952,7 +952,7 @@ mod tests {
 
     #[test]
     fn test_query_expansion_improves_zero_overlap_vocab() {
-        let _guard = env_lock().lock().expect("lock env");
+        let _guard = lock_env();
         let _query_expansion = EnvVarGuard::set(QUERY_EXPANSION_ENABLED_ENV, Some("true"));
         let _rerank = EnvVarGuard::set(RERANK_ENABLED_ENV, Some("true"));
         let _llm_expansion = EnvVarGuard::set(QUERY_EXPANSION_LLM_ENV, Some("false"));

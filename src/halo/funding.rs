@@ -442,6 +442,13 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        let mutex = env_lock();
+        let guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        mutex.clear_poison();
+        guard
+    }
+
     struct EnvVarGuard {
         key: &'static str,
         prev: Option<String>,
@@ -477,7 +484,7 @@ mod tests {
 
     #[test]
     fn agentpmt_funding_valid() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("test-secret"));
         let sig = hmac_hex(
             "test-secret",
@@ -507,7 +514,7 @@ mod tests {
 
     #[test]
     fn agentpmt_funding_rejects_missing_signature() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("test-secret"));
         let source = FundingSource::AgentpmtTokens {
             receipt_id: "rcpt_123".to_string(),
@@ -520,7 +527,7 @@ mod tests {
 
     #[test]
     fn x402_funding_valid() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let _simulation_guard = EnvVarGuard::set("AGENTHALO_ONCHAIN_SIMULATION", Some("1"));
         let source = FundingSource::X402Direct {
             transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
@@ -535,7 +542,7 @@ mod tests {
 
     #[test]
     fn x402_funding_rejects_invalid_hash() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let source = FundingSource::X402Direct {
             transaction_hash: "0xinvalid".to_string(),
             amount_base_units: 1_000_000,
@@ -547,7 +554,7 @@ mod tests {
 
     #[test]
     fn x402_funding_rejects_unknown_network() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let source = FundingSource::X402Direct {
             transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
                 .to_string(),
@@ -560,7 +567,7 @@ mod tests {
 
     #[test]
     fn operator_credit_valid() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let source = FundingSource::OperatorCredit {
             reason: "testing".to_string(),
         };
@@ -571,7 +578,7 @@ mod tests {
 
     #[test]
     fn operator_credit_rejects_empty_reason() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let source = FundingSource::OperatorCredit {
             reason: "".to_string(),
         };
@@ -581,7 +588,7 @@ mod tests {
 
     #[test]
     fn agentpmt_funding_rejects_invalid_signature() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("test-secret"));
         let source = FundingSource::AgentpmtTokens {
             receipt_id: "rcpt_123".to_string(),
@@ -598,7 +605,7 @@ mod tests {
 
     #[test]
     fn agentpmt_funding_rejects_when_secret_missing() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", None);
         let source = FundingSource::AgentpmtTokens {
             receipt_id: "rcpt_123".to_string(),
@@ -615,7 +622,7 @@ mod tests {
 
     #[test]
     fn webhook_signature_verifies() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = lock_env();
         let _secret = EnvVarGuard::set("AGENTPMT_WEBHOOK_SECRET", Some("test-secret"));
         let source = FundingSource::X402Direct {
             transaction_hash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
