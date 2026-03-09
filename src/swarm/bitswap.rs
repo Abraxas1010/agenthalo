@@ -345,6 +345,21 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
+    #[tokio::test]
+    async fn codec_write_rejects_oversized_message() {
+        let chunk_ids = (0u32..70_000)
+            .map(|idx| ChunkId::from_bytes(&idx.to_be_bytes()))
+            .collect::<Vec<_>>();
+        let message = BitswapMessage::Want(chunk_ids);
+        let mut codec = BitswapCodec;
+        let mut buffer = Cursor::new(Vec::new());
+        let err = codec
+            .write_request(&BITSWAP_PROTOCOL, &mut buffer, message)
+            .await
+            .expect_err("must reject oversized write frame");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
     #[test]
     fn want_have_exchange_uses_local_inventory() {
         let chunk = chunk_data(b"hello bitswap", &ChunkParams::default())[0].clone();

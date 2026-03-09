@@ -167,6 +167,11 @@ pub struct P2pNode {
     bitswap_runtime: crate::swarm::bitswap::BitswapRuntime,
 }
 
+enum DeferredBehaviourEvent {
+    Kademlia(kad::Event),
+    Gossipsub(gossipsub::Event),
+}
+
 impl P2pNode {
     pub fn create(
         ed25519_signing_key: &Ed25519SigningKey,
@@ -319,76 +324,123 @@ impl P2pNode {
         }
     }
 
+    fn handle_identify_event(&self, event: identify::Event) {
+        eprintln!("[AgentHalo/P2P] identify event: {event:?}");
+    }
+
+    fn handle_relay_client_event(&self, event: relay::client::Event) {
+        eprintln!("[AgentHalo/P2P] relay client event: {event:?}");
+    }
+
+    fn handle_dcutr_event(&self, event: dcutr::Event) {
+        eprintln!("[AgentHalo/P2P] dcutr event: {event:?}");
+    }
+
+    fn handle_autonat_event(&self, event: autonat::Event) {
+        eprintln!("[AgentHalo/P2P] autonat event: {event:?}");
+    }
+
+    fn handle_mdns_event(&mut self, event: mdns::Event) {
+        match event {
+            mdns::Event::Discovered(peers) => {
+                for (peer, addr) in peers {
+                    self.swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer, addr.clone());
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .add_explicit_peer(&peer);
+                }
+            }
+            mdns::Event::Expired(peers) => {
+                for (peer, addr) in peers {
+                    self.swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .remove_address(&peer, &addr);
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .remove_explicit_peer(&peer);
+                }
+            }
+        }
+    }
+
+    fn handle_transport_event(
+        &mut self,
+        event: SwarmEvent<HaloBehaviourEvent>,
+    ) -> Option<DeferredBehaviourEvent> {
+        match event {
+            SwarmEvent::Behaviour(HaloBehaviourEvent::Identify(event)) => {
+                self.handle_identify_event(*event);
+                None
+            }
+            SwarmEvent::Behaviour(HaloBehaviourEvent::Kademlia(event)) => {
+                Some(DeferredBehaviourEvent::Kademlia(*event))
+            }
+            SwarmEvent::Behaviour(HaloBehaviourEvent::Gossipsub(event)) => {
+                Some(DeferredBehaviourEvent::Gossipsub(*event))
+            }
+            SwarmEvent::Behaviour(HaloBehaviourEvent::Bitswap(event)) => {
+                self.handle_bitswap_event(*event);
+                None
+            }
+            SwarmEvent::Behaviour(HaloBehaviourEvent::RelayClient(event)) => {
+                self.handle_relay_client_event(*event);
+                None
+            }
+            SwarmEvent::Behaviour(HaloBehaviourEvent::Dcutr(event)) => {
+                self.handle_dcutr_event(*event);
+                None
+            }
+            SwarmEvent::Behaviour(HaloBehaviourEvent::Mdns(event)) => {
+                self.handle_mdns_event(*event);
+                None
+            }
+            SwarmEvent::Behaviour(HaloBehaviourEvent::Autonat(event)) => {
+                self.handle_autonat_event(*event);
+                None
+            }
+            SwarmEvent::NewListenAddr { address, .. } => {
+                eprintln!("[AgentHalo/P2P] listening on {address}");
+                None
+            }
+            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                eprintln!("[AgentHalo/P2P] connection established to {peer_id}");
+                None
+            }
+            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                eprintln!(
+                    "[AgentHalo/P2P] outgoing connection error to {:?}: {error}",
+                    peer_id
+                );
+                None
+            }
+            SwarmEvent::IncomingConnectionError { error, .. } => {
+                eprintln!("[AgentHalo/P2P] incoming connection error: {error}");
+                None
+            }
+            _ => None,
+        }
+    }
+
     pub async fn run(&mut self) -> Result<(), String> {
         loop {
             let Some(event) = self.swarm.next().await else {
                 return Err("p2p swarm stream ended unexpectedly".to_string());
             };
 
-            match event {
-                SwarmEvent::Behaviour(HaloBehaviourEvent::Identify(event)) => {
-                    eprintln!("[AgentHalo/P2P] identify event: {event:?}");
-                }
-                SwarmEvent::Behaviour(HaloBehaviourEvent::Kademlia(event)) => {
+            match self.handle_transport_event(event) {
+                Some(DeferredBehaviourEvent::Kademlia(event)) => {
                     eprintln!("[AgentHalo/P2P] kad event: {event:?}");
                 }
-                SwarmEvent::Behaviour(HaloBehaviourEvent::Gossipsub(event)) => {
+                Some(DeferredBehaviourEvent::Gossipsub(event)) => {
                     eprintln!("[AgentHalo/P2P] gossipsub event: {event:?}");
                 }
-                SwarmEvent::Behaviour(HaloBehaviourEvent::Bitswap(event)) => {
-                    self.handle_bitswap_event(*event);
-                }
-                SwarmEvent::Behaviour(HaloBehaviourEvent::RelayClient(event)) => {
-                    eprintln!("[AgentHalo/P2P] relay client event: {event:?}");
-                }
-                SwarmEvent::Behaviour(HaloBehaviourEvent::Dcutr(event)) => {
-                    eprintln!("[AgentHalo/P2P] dcutr event: {event:?}");
-                }
-                SwarmEvent::Behaviour(HaloBehaviourEvent::Mdns(event)) => match *event {
-                    mdns::Event::Discovered(peers) => {
-                        for (peer, addr) in peers {
-                            self.swarm
-                                .behaviour_mut()
-                                .kademlia
-                                .add_address(&peer, addr.clone());
-                            self.swarm
-                                .behaviour_mut()
-                                .gossipsub
-                                .add_explicit_peer(&peer);
-                        }
-                    }
-                    mdns::Event::Expired(peers) => {
-                        for (peer, addr) in peers {
-                            self.swarm
-                                .behaviour_mut()
-                                .kademlia
-                                .remove_address(&peer, &addr);
-                            self.swarm
-                                .behaviour_mut()
-                                .gossipsub
-                                .remove_explicit_peer(&peer);
-                        }
-                    }
-                },
-                SwarmEvent::Behaviour(HaloBehaviourEvent::Autonat(event)) => {
-                    eprintln!("[AgentHalo/P2P] autonat event: {event:?}");
-                }
-                SwarmEvent::NewListenAddr { address, .. } => {
-                    eprintln!("[AgentHalo/P2P] listening on {address}");
-                }
-                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                    eprintln!("[AgentHalo/P2P] connection established to {peer_id}");
-                }
-                SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                    eprintln!(
-                        "[AgentHalo/P2P] outgoing connection error to {:?}: {error}",
-                        peer_id
-                    );
-                }
-                SwarmEvent::IncomingConnectionError { error, .. } => {
-                    eprintln!("[AgentHalo/P2P] incoming connection error: {error}");
-                }
-                _ => {}
+                None => {}
             }
         }
     }
@@ -441,12 +493,9 @@ impl P2pNode {
                     let Some(event) = maybe_event else {
                         return Err("p2p swarm stream ended unexpectedly".to_string());
                     };
-                    match event {
-                        SwarmEvent::Behaviour(HaloBehaviourEvent::Identify(event)) => {
-                            eprintln!("[AgentHalo/P2P] identify event: {event:?}");
-                        }
-                        SwarmEvent::Behaviour(HaloBehaviourEvent::Kademlia(event)) => {
-                            match *event {
+                    match self.handle_transport_event(event) {
+                        Some(DeferredBehaviourEvent::Kademlia(event)) => {
+                            match event {
                                 kad::Event::OutboundQueryProgressed { result, .. } => match result {
                                     kad::QueryResult::GetRecord(Ok(
                                         kad::GetRecordOk::FoundRecord(peer_record),
@@ -496,7 +545,7 @@ impl P2pNode {
                                 }
                             }
                         }
-                        SwarmEvent::Behaviour(HaloBehaviourEvent::Gossipsub(event)) => match *event {
+                        Some(DeferredBehaviourEvent::Gossipsub(event)) => match event {
                             gossipsub::Event::Message {
                                 propagation_source,
                                 message_id,
@@ -533,60 +582,7 @@ impl P2pNode {
                                 eprintln!("[AgentHalo/P2P] gossipsub event: {other:?}");
                             }
                         },
-                        SwarmEvent::Behaviour(HaloBehaviourEvent::Bitswap(event)) => {
-                            self.handle_bitswap_event(*event);
-                        }
-                        SwarmEvent::Behaviour(HaloBehaviourEvent::RelayClient(event)) => {
-                            eprintln!("[AgentHalo/P2P] relay client event: {event:?}");
-                        }
-                        SwarmEvent::Behaviour(HaloBehaviourEvent::Dcutr(event)) => {
-                            eprintln!("[AgentHalo/P2P] dcutr event: {event:?}");
-                        }
-                        SwarmEvent::Behaviour(HaloBehaviourEvent::Mdns(event)) => match *event {
-                            mdns::Event::Discovered(peers) => {
-                                for (peer, addr) in peers {
-                                    self.swarm
-                                        .behaviour_mut()
-                                        .kademlia
-                                        .add_address(&peer, addr.clone());
-                                    self.swarm
-                                        .behaviour_mut()
-                                        .gossipsub
-                                        .add_explicit_peer(&peer);
-                                }
-                            }
-                            mdns::Event::Expired(peers) => {
-                                for (peer, addr) in peers {
-                                    self.swarm
-                                        .behaviour_mut()
-                                        .kademlia
-                                        .remove_address(&peer, &addr);
-                                    self.swarm
-                                        .behaviour_mut()
-                                        .gossipsub
-                                        .remove_explicit_peer(&peer);
-                                }
-                            }
-                        },
-                        SwarmEvent::Behaviour(HaloBehaviourEvent::Autonat(event)) => {
-                            eprintln!("[AgentHalo/P2P] autonat event: {event:?}");
-                        }
-                        SwarmEvent::NewListenAddr { address, .. } => {
-                            eprintln!("[AgentHalo/P2P] listening on {address}");
-                        }
-                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                            eprintln!("[AgentHalo/P2P] connection established to {peer_id}");
-                        }
-                        SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                            eprintln!(
-                                "[AgentHalo/P2P] outgoing connection error to {:?}: {error}",
-                                peer_id
-                            );
-                        }
-                        SwarmEvent::IncomingConnectionError { error, .. } => {
-                            eprintln!("[AgentHalo/P2P] incoming connection error: {error}");
-                        }
-                        _ => {}
+                        None => {}
                     }
                 }
             }
