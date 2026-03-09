@@ -149,7 +149,7 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
     ));
     let proxy_config = crate::halo::pricing::load_proxy_config();
     let pricing_table = crate::halo::pricing::default_pricing();
-    let governor_registry = build_governor_registry();
+    let governor_registry = crate::halo::governor_registry::build_default_registry();
     crate::halo::governor_registry::install_global_registry(governor_registry.clone());
     let proxy_governor = Arc::new(crate::halo::proxy::ProxyGovernorRuntime::new(
         governor_registry.clone(),
@@ -278,76 +278,4 @@ pub async fn serve(port: u16, open_browser: bool) -> Result<(), String> {
         crate::container::deregister_self_from_mesh();
     }
     serve_result
-}
-
-fn build_governor_registry() -> Arc<crate::halo::governor_registry::GovernorRegistry> {
-    use crate::halo::governor::GovernorConfig;
-
-    let registry = Arc::new(crate::halo::governor_registry::GovernorRegistry::new());
-    let configs = [
-        GovernorConfig {
-            instance_id: "gov-proxy".to_string(),
-            alpha: 0.01,
-            beta: 0.05,
-            dt: 1.0,
-            eps_min: 1.0,
-            eps_max: 50.0,
-            target: 2.0,
-            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.lyapunov_descent".to_string(),
-        },
-        GovernorConfig {
-            instance_id: "gov-comms".to_string(),
-            alpha: 0.01,
-            beta: 0.05,
-            dt: 1.0,
-            eps_min: 1.0,
-            eps_max: 32.0,
-            target: 10.0,
-            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
-        },
-        GovernorConfig {
-            instance_id: "gov-compute".to_string(),
-            alpha: 0.01,
-            beta: 0.05,
-            dt: 1.0,
-            eps_min: 1.0,
-            eps_max: 10.0,
-            target: 8.0,
-            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
-        },
-        GovernorConfig {
-            instance_id: "gov-cost".to_string(),
-            alpha: 0.01,
-            beta: 0.05,
-            dt: 1.0,
-            eps_min: 0.01,
-            eps_max: 10.0,
-            target: 1.0,
-            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
-        },
-        GovernorConfig {
-            instance_id: "gov-pty".to_string(),
-            alpha: 0.01,
-            beta: 0.05,
-            dt: 1.0,
-            eps_min: 30.0,
-            eps_max: 900.0,
-            target: 120.0,
-            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
-        },
-    ];
-
-    for config in configs {
-        if let Err(error) = registry.register(config) {
-            eprintln!("warning: failed to register governor: {error}");
-        }
-    }
-
-    for (instance_id, result) in registry.validate_all() {
-        if let Err(error) = result {
-            eprintln!("warning: governor `{instance_id}` outside formal regime: {error}");
-        }
-    }
-
-    registry
 }

@@ -156,6 +156,10 @@ impl BlobStore {
         self.apply_time_maintenance(now_unix)
     }
 
+    pub fn soft_reset_governor(&mut self) {
+        self.memory_governor.reset();
+    }
+
     fn enforce_pressure(&mut self) {
         self.last_eviction_count = 0;
         if self.blobs.is_empty() {

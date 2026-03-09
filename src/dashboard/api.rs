@@ -250,7 +250,18 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/deploy/preflight", post(api_deploy_preflight))
         .route("/deploy/launch", post(api_deploy_launch))
         .route("/deploy/status/{id}", get(api_deploy_status))
+        .route("/models/status", get(api_models_status))
+        .route("/models/search", get(api_models_search))
+        .route("/models/pull", post(api_models_pull))
+        .route("/models/rm", post(api_models_rm))
+        .route("/models/serve", post(api_models_serve))
+        .route("/models/stop", post(api_models_stop))
+        .route(
+            "/models/login/huggingface",
+            post(api_models_login_huggingface),
+        )
         .route("/governor/status", get(api_governor_status))
+        .route("/governor/reset", post(api_governor_reset))
         .route("/governor/proxy/status", get(api_governor_proxy_status))
         // OpenAI-compatible proxy
         .route("/proxy/v1/chat/completions", post(api_proxy_chat))
@@ -517,6 +528,50 @@ pub struct CockpitResizeRequest {
 #[derive(Deserialize)]
 pub struct DeployPreflightRequest {
     agent_id: String,
+    #[serde(default)]
+    admission_mode: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct ModelSearchQuery {
+    q: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct LocalModelActionRequest {
+    model: String,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct LocalModelServeRequest {
+    #[serde(default)]
+    backend: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct LocalModelStopRequest {
+    #[serde(default)]
+    backend: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct HuggingFaceLoginRequest {
+    #[serde(default)]
+    token: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct GovernorResetRequest {
+    #[serde(default)]
+    instance_id: Option<String>,
+    #[serde(default)]
+    all: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -746,6 +801,8 @@ struct OrchestratorLaunchApiRequest {
     trace: Option<bool>,
     #[serde(default)]
     capabilities: Vec<String>,
+    #[serde(default)]
+    admission_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1996,7 +2053,7 @@ async fn api_governor_status(AxumState(state): AxumState<DashboardState>) -> Api
     let snapshots = state.governor_registry.snapshot_all();
     let _guard = state.db_lock.lock().await;
     let mut db = load_halo_db(&state.db_path)?;
-    db.aether_maintenance_tick(now_unix_secs());
+    apply_and_persist_aether_maintenance(&state.db_path, &mut db)?;
     let vector_stats = db.vector_index.eviction_stats();
     let blob_stats = db.blob_store.stats();
     let mean_error = (vector_stats.governor_error + blob_stats.governor_error) / 2.0;
@@ -2030,6 +2087,44 @@ async fn api_governor_status(AxumState(state): AxumState<DashboardState>) -> Api
         "memory": memory_snapshot,
         "proxy": proxy_status,
     })))
+}
+
+async fn api_governor_reset(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<GovernorResetRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let instance_id = req.instance_id.unwrap_or_else(|| "all".to_string());
+    let reset_all = req.all.unwrap_or(false) || instance_id == "all";
+
+    if reset_all {
+        for runtime_id in [
+            "gov-proxy",
+            "gov-comms",
+            "gov-compute",
+            "gov-cost",
+            "gov-pty",
+        ] {
+            state
+                .governor_registry
+                .soft_reset(runtime_id)
+                .map_err(internal_err)?;
+        }
+    } else if instance_id != "gov-memory" {
+        state
+            .governor_registry
+            .soft_reset(&instance_id)
+            .map_err(internal_err)?;
+    }
+
+    if reset_all || instance_id == "gov-memory" {
+        let _guard = state.db_lock.lock().await;
+        let mut db = load_halo_db(&state.db_path)?;
+        db.soft_reset_aether_memory();
+        persist_halo_db(&state.db_path, &db)?;
+    }
+
+    api_governor_status(AxumState(state)).await
 }
 
 async fn api_governor_proxy_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
@@ -4297,10 +4392,31 @@ async fn api_orch_launch(
                 "model": req.model,
                 "trace": req.trace.unwrap_or(true),
                 "capabilities": req.capabilities,
+                "admission_mode": req.admission_mode,
             }),
         )
         .await?;
         return Ok(Json(payload));
+    }
+    let admission_mode =
+        crate::halo::admission::AdmissionMode::parse(req.admission_mode.as_deref())
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let admission = crate::halo::admission::evaluate_launch_admission(
+        admission_mode,
+        Some(&state.governor_registry),
+        None,
+    );
+    if !admission.allowed {
+        let reason = admission
+            .issues
+            .iter()
+            .map(|issue| issue.message.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("AETHER admission policy blocked orchestrator launch: {reason}"),
+        ));
     }
     let orchestrator = local_orchestrator(&state)?;
     let launched = orchestrator
@@ -4323,6 +4439,7 @@ async fn api_orch_launch(
         "agent_type": launched.agent_type,
         "capabilities": launched.capabilities,
         "model": launched.model,
+        "admission": admission,
     })))
 }
 
@@ -4767,6 +4884,9 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let has_pq = has_wallet();
     let legacy_identity_ok = has_auth || has_pq;
     let identity_ok = profile.has_name() || identity_cfg.anonymous_mode || legacy_identity_ok;
+    let local_model_status = tokio::task::spawn_blocking(crate::halo::local_models::detect_status)
+        .await
+        .map_err(|e| internal_err(format!("local model status task join: {e}")))?;
     let llm_ok = state
         .vault
         .as_ref()
@@ -4782,7 +4902,9 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         || std::env::var("OPENROUTER_API_KEY")
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .is_some();
+            .is_some()
+        || local_model_status.ollama.healthy
+        || local_model_status.vllm.healthy;
     let setup_complete = identity_ok && wallet_complete && llm_ok;
 
     Ok(Json(json!({
@@ -4836,6 +4958,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "complete": setup_complete,
         },
         "pq_wallet": has_pq,
+        "local_models": local_model_status,
         "vault": {
             "available": state.vault.is_some(),
             "path": path_display_hint(&config::vault_path()),
@@ -6135,8 +6258,17 @@ async fn api_deploy_preflight(
     AxumState(state): AxumState<DashboardState>,
     Json(req): Json<DeployPreflightRequest>,
 ) -> ApiResult {
-    let result = deploy::preflight(&req.agent_id, state.vault.as_deref(), Some(&state.db_path))
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let admission_mode =
+        crate::halo::admission::AdmissionMode::parse(req.admission_mode.as_deref())
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let result = deploy::preflight(
+        &req.agent_id,
+        state.vault.as_deref(),
+        Some(&state.db_path),
+        Some(&state.governor_registry),
+        admission_mode,
+    )
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     Ok(Json(json!(result)))
 }
 
@@ -6150,6 +6282,7 @@ async fn api_deploy_launch(
         &state.pty_manager,
         state.vault.as_deref(),
         Some(&state.db_path),
+        Some(&state.governor_registry),
     )
     .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     Ok(Json(json!(result)))
@@ -6166,12 +6299,130 @@ async fn api_deploy_status(
     Ok(Json(json!({ "id": id, "status": session.status() })))
 }
 
+async fn api_models_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let status = tokio::task::spawn_blocking(crate::halo::local_models::detect_status)
+        .await
+        .map_err(|e| internal_err(format!("local model status task join: {e}")))?;
+    Ok(Json(json!(status)))
+}
+
+async fn api_models_search(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<ModelSearchQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let q = query.q.unwrap_or_default();
+    let q_for_search = q.clone();
+    let results = tokio::task::spawn_blocking(move || {
+        crate::halo::local_models::search_models(&q_for_search, 8)
+    })
+    .await
+    .map_err(|e| internal_err(format!("local model search task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({ "query": q, "results": results })))
+}
+
+async fn api_models_pull(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<LocalModelActionRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let model = req.model.clone();
+    let source = req.source.clone();
+    let (installed, log) = tokio::task::spawn_blocking(move || {
+        let mut stdout = Vec::new();
+        let installed =
+            crate::halo::local_models::pull_model(&model, source.as_deref(), &mut stdout)?;
+        Ok::<_, String>((installed, String::from_utf8_lossy(&stdout).to_string()))
+    })
+    .await
+    .map_err(|e| internal_err(format!("local model pull task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(
+        json!({ "ok": true, "installed": installed, "log": log }),
+    ))
+}
+
+async fn api_models_rm(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<LocalModelActionRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let model = req.model.clone();
+    let source = req.source.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::halo::local_models::remove_model(&model, source.as_deref())
+    })
+    .await
+    .map_err(|e| internal_err(format!("local model remove task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({ "ok": true, "model": req.model })))
+}
+
+async fn api_models_serve(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<LocalModelServeRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let backend = req
+        .backend
+        .clone()
+        .unwrap_or_else(|| "ollama".to_string())
+        .parse::<crate::halo::local_models::LocalBackendType>()
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let result = tokio::task::spawn_blocking(move || {
+        crate::halo::local_models::serve_backend(crate::halo::local_models::ServeRequest {
+            backend,
+            port: req.port,
+            model: req.model,
+        })
+    })
+    .await
+    .map_err(|e| internal_err(format!("local model serve task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!(result)))
+}
+
+async fn api_models_stop(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<LocalModelStopRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let backend = req
+        .backend
+        .clone()
+        .unwrap_or_else(|| "ollama".to_string())
+        .parse::<crate::halo::local_models::LocalBackendType>()
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let result =
+        tokio::task::spawn_blocking(move || crate::halo::local_models::stop_backend(backend))
+            .await
+            .map_err(|e| internal_err(format!("local model stop task join: {e}")))?
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!(result)))
+}
+
+async fn api_models_login_huggingface(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<HuggingFaceLoginRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let token = req.token.clone();
+    let stored_via = tokio::task::spawn_blocking(move || {
+        crate::halo::local_models::login_huggingface(token.as_deref())
+    })
+    .await
+    .map_err(|e| internal_err(format!("huggingface login task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(
+        json!({ "ok": true, "provider": "huggingface", "stored_via": stored_via }),
+    ))
+}
+
 async fn api_proxy_models(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
-    let models = match state.vault.as_ref() {
-        Some(vault) => proxy::list_available_models(vault),
-        None => Vec::new(),
-    };
+    let models = proxy::list_available_models(state.vault.as_deref());
     Ok(Json(json!({ "object": "list", "data": models })))
 }
 
@@ -6180,12 +6431,7 @@ async fn api_proxy_chat(
     Json(req): Json<proxy::ChatCompletionRequest>,
 ) -> Result<Response, (StatusCode, Json<Value>)> {
     require_sensitive_access(&state)?;
-    let Some(vault) = state.vault.clone() else {
-        return Err(api_err(
-            StatusCode::BAD_REQUEST,
-            "vault unavailable: configure PQ wallet and API keys first",
-        ));
-    };
+    let vault = state.vault.clone();
 
     if req.stream.unwrap_or(false) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
@@ -6202,7 +6448,7 @@ async fn api_proxy_chat(
             let _permit = permit;
             let started = std::time::Instant::now();
             let stream_result =
-                proxy::proxy_chat_stream_sync(&vault, &req_for_proxy, |data_payload| {
+                proxy::proxy_chat_stream_sync(vault.as_deref(), &req_for_proxy, |data_payload| {
                     tx.send(Ok(Event::default().data(data_payload)))
                         .map_err(|_| "stream receiver dropped".to_string())
                 });
@@ -6244,11 +6490,12 @@ async fn api_proxy_chat(
         .map_err(|e| api_err(StatusCode::TOO_MANY_REQUESTS, &e))?;
     let started = std::time::Instant::now();
     let req_for_proxy = req.clone();
-    let response =
-        tokio::task::spawn_blocking(move || proxy::proxy_chat_sync(&vault, &req_for_proxy))
-            .await
-            .map_err(|e| internal_err(format!("proxy task join: {e}")))?
-            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let response = tokio::task::spawn_blocking(move || {
+        proxy::proxy_chat_sync(vault.as_deref(), &req_for_proxy)
+    })
+    .await
+    .map_err(|e| internal_err(format!("proxy task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     drop(permit);
     if let Err(e) = state.proxy_governor.record_latency(started.elapsed()) {
         eprintln!("warning: proxy governor latency update failed: {e}");
@@ -6278,14 +6525,7 @@ async fn api_metered_proxy_models(
         return Err(api_err(StatusCode::UNAUTHORIZED, "invalid API key"));
     }
 
-    let Some(vault) = state.vault.clone() else {
-        return Err(api_err(
-            StatusCode::BAD_REQUEST,
-            "vault unavailable: configure OpenRouter key first",
-        ));
-    };
-
-    let models = proxy::list_available_models(&vault);
+    let models = proxy::list_available_models(state.vault.as_deref());
     Ok(Json(json!({"object":"list","data":models})))
 }
 
@@ -6318,12 +6558,7 @@ async fn api_metered_proxy_chat(
         ));
     }
 
-    let Some(vault) = state.vault.clone() else {
-        return Err(api_err(
-            StatusCode::BAD_REQUEST,
-            "vault unavailable: configure OpenRouter key first",
-        ));
-    };
+    let vault = state.vault.clone();
     let key_store = state.key_store.clone();
     let pricing_table = state.pricing_table.clone();
     let markup_pct = cfg.markup_pct;
@@ -6348,7 +6583,7 @@ async fn api_metered_proxy_chat(
             let _permit = permit;
             let started = std::time::Instant::now();
             let stream_result = proxy::metered_proxy_stream_sync(
-                &vault,
+                vault.as_deref(),
                 &key_store,
                 &customer_key,
                 &req_for_proxy,
@@ -6432,7 +6667,7 @@ async fn api_metered_proxy_chat(
     let req_for_proxy = req.clone();
     let result = tokio::task::spawn_blocking(move || {
         proxy::metered_proxy_sync(
-            &vault,
+            vault.as_deref(),
             &key_store,
             &customer_key,
             &req_for_proxy,
@@ -7010,7 +7245,7 @@ async fn api_nucleusdb_browse(
 async fn api_nucleusdb_stats(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let _guard = state.db_lock.lock().await;
     let mut db = load_halo_db(&state.db_path)?;
-    db.aether_maintenance_tick(now_unix_secs());
+    apply_and_persist_aether_maintenance(&state.db_path, &mut db)?;
     let vector_stats = db.vector_index.eviction_stats();
     let blob_stats = db.blob_store.stats();
 
@@ -7594,11 +7829,13 @@ async fn api_nucleusdb_memory_recall(
         refresh_memory_db_cache_locked(&mut cache, &db_path)?;
         let db = cache
             .db
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| internal_err("memory DB cache missing after refresh".to_string()))?;
         let results = memory_store
             .recall(db, &query, k)
             .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+        persist_halo_db(&db_path, db)?;
+        cache.file_fingerprint = db_file_fingerprint(&db_path);
         Ok(json!({
             "ok": true,
             "query": query,
@@ -7858,6 +8095,25 @@ fn load_halo_db(db_path: &std::path::Path) -> Result<NucleusDb, (StatusCode, Jso
     let mut cfg = default_witness_cfg();
     cfg.signing_algorithm = WitnessSignatureAlgorithm::MlDsa65;
     load_snapshot(db_path, cfg).map_err(|e| internal_err(format!("load NucleusDB: {e:?}")))
+}
+
+fn persist_halo_db(
+    db_path: &std::path::Path,
+    db: &NucleusDb,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let wal_path = default_wal_path(db_path);
+    persist_snapshot_and_sync_wal(db_path, &wal_path, db)
+        .map_err(|e| internal_err(format!("persist NucleusDB: {e:?}")))
+}
+
+fn apply_and_persist_aether_maintenance(
+    db_path: &std::path::Path,
+    db: &mut NucleusDb,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if db.aether_maintenance_tick(now_unix_secs()) {
+        persist_halo_db(db_path, db)?;
+    }
+    Ok(())
 }
 
 fn governor_summary_json(state: &DashboardState) -> Value {

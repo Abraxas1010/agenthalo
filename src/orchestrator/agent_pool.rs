@@ -342,6 +342,10 @@ impl AgentPool {
         self.pty_manager.get_session(session_id)
     }
 
+    pub fn destroy_pty_session(&self, session_id: &str) -> Result<(), String> {
+        self.pty_manager.destroy_session(session_id)
+    }
+
     pub async fn current_session_for_agent(
         &self,
         agent_id: &str,

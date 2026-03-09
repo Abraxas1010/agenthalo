@@ -16,6 +16,18 @@ pub fn db_path() -> PathBuf {
     halo_dir().join("traces.ndb")
 }
 
+pub fn local_models_config_path() -> PathBuf {
+    halo_dir().join("local_models.json")
+}
+
+pub fn local_models_dir() -> PathBuf {
+    halo_dir().join("models")
+}
+
+pub fn local_models_hf_dir() -> PathBuf {
+    local_models_dir().join("huggingface")
+}
+
 pub fn credentials_path() -> PathBuf {
     halo_dir().join("credentials.json")
 }

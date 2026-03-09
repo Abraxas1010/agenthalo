@@ -1,4 +1,4 @@
-//! Metered proxy — all inference routes through OpenRouter.
+//! Metered proxy — routes inference through OpenRouter or a local backend.
 //!
 //! Architecture:
 //! - Customer authenticates with an AgentHALO API key (issued via `api_keys` module)
@@ -15,6 +15,7 @@
 use crate::halo::api_keys::CustomerKeyStore;
 use crate::halo::governor_registry::{GovernorRegistry, GovernorSnapshot};
 use crate::halo::http_client;
+use crate::halo::local_models::{self, LocalBackendType};
 use crate::halo::pricing;
 use crate::halo::vault::Vault;
 use serde::{Deserialize, Serialize};
@@ -51,7 +52,7 @@ pub struct Message {
 pub struct MeteredResult {
     /// OpenAI-compatible response body (with injected `x_agenthalo` billing block).
     pub body: Value,
-    /// OpenRouter model ID that was actually used.
+    /// Model ID that was actually used upstream.
     pub or_model: String,
     /// Tokens consumed.
     pub input_tokens: u64,
@@ -347,7 +348,7 @@ impl Drop for ProxyPermit {
 /// 5. Deduct from customer balance
 /// 6. Return enriched response with billing metadata
 pub fn metered_proxy_sync(
-    vault: &Vault,
+    vault: Option<&Vault>,
     key_store: &Arc<CustomerKeyStore>,
     customer_key: &str,
     request: &ChatCompletionRequest,
@@ -363,19 +364,25 @@ pub fn metered_proxy_sync(
         return Err("API key is suspended".to_string());
     }
 
-    // 2. Resolve model to OpenRouter canonical name.
-    let or_model = openrouter_model_name(&request.model);
+    // 2. Resolve the requested backend/model.
+    let route = resolve_backend_for_request(&request.model)?;
+    let routed_model = route.routed_model().to_string();
 
     // 3. Pre-authorize: estimate cost from pricing table.
     let estimated_tokens = request.max_tokens.unwrap_or(1024) as u64;
-    let (_est_base, est_marked_up) = pricing::calculate_marked_up_cost(
-        &strip_provider_prefix(&or_model),
-        100, // conservative input estimate
-        estimated_tokens,
-        0,
-        pricing_table,
-        markup_pct,
-    );
+    let est_marked_up = if route.is_local() {
+        0.0
+    } else {
+        let (_est_base, est_marked_up) = pricing::calculate_marked_up_cost(
+            &strip_provider_prefix(&routed_model),
+            100, // conservative input estimate
+            estimated_tokens,
+            0,
+            pricing_table,
+            markup_pct,
+        );
+        est_marked_up
+    };
 
     // Require at least the estimated marked-up cost in balance.
     let balance = key_store.get_balance(&customer.key_id);
@@ -386,13 +393,8 @@ pub fn metered_proxy_sync(
         ));
     }
 
-    // 4. Get operator's OpenRouter key from vault.
-    let or_api_key = vault
-        .get_key("openrouter")
-        .map_err(|_| "proxy service unavailable: upstream not configured".to_string())?;
-
-    // 5. Call OpenRouter.
-    let resp_body = call_openrouter(&or_api_key, &or_model, request)?;
+    // 4. Call the resolved backend.
+    let resp_body = call_resolved_backend(vault, &route, request)?;
 
     // 6. Extract actual usage from response.
     let (input_tokens, output_tokens) = extract_usage(&resp_body);
@@ -402,15 +404,19 @@ pub fn metered_proxy_sync(
         .map(|s| s.to_string());
 
     // 7. Calculate actual costs.
-    let model_for_pricing = strip_provider_prefix(&or_model);
-    let (upstream_cost, customer_cost) = pricing::calculate_marked_up_cost(
-        &model_for_pricing,
-        input_tokens,
-        output_tokens,
-        0,
-        pricing_table,
-        markup_pct,
-    );
+    let (upstream_cost, customer_cost) = if route.is_local() {
+        (0.0, 0.0)
+    } else {
+        let model_for_pricing = strip_provider_prefix(&routed_model);
+        pricing::calculate_marked_up_cost(
+            &model_for_pricing,
+            input_tokens,
+            output_tokens,
+            0,
+            pricing_table,
+            markup_pct,
+        )
+    };
 
     // 8. Deduct from customer balance.
     let remaining = key_store.deduct_balance(&customer.key_id, customer_cost);
@@ -418,7 +424,7 @@ pub fn metered_proxy_sync(
     // 9. Record usage for audit trail.
     key_store.record_usage(
         &customer.key_id,
-        &or_model,
+        &route.display_model(),
         input_tokens,
         output_tokens,
         customer_cost,
@@ -430,7 +436,9 @@ pub fn metered_proxy_sync(
     let mut enriched = resp_body.clone();
     enriched["x_agenthalo"] = json!({
         "customer_id": customer.key_id,
-        "model": or_model,
+        "model": route.display_model(),
+        "backend": route.backend_label(),
+        "upstream_model": routed_model,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": customer_cost,
@@ -440,7 +448,7 @@ pub fn metered_proxy_sync(
 
     Ok(MeteredResult {
         body: enriched,
-        or_model,
+        or_model: route.display_model(),
         input_tokens,
         output_tokens,
         upstream_cost_usd: upstream_cost,
@@ -452,7 +460,7 @@ pub fn metered_proxy_sync(
 
 #[allow(clippy::result_large_err)]
 pub fn metered_proxy_stream_sync<F>(
-    vault: &Vault,
+    vault: Option<&Vault>,
     key_store: &Arc<CustomerKeyStore>,
     customer_key: &str,
     request: &ChatCompletionRequest,
@@ -494,19 +502,38 @@ where
         });
     }
 
-    let or_model = openrouter_model_name(&request.model);
+    let balance = key_store.get_balance(&customer.key_id);
+    let route =
+        resolve_backend_for_request(&request.model).map_err(|message| MeteredStreamError {
+            message,
+            settled: MeteredStreamResult {
+                or_model: request.model.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                upstream_cost_usd: 0.0,
+                customer_cost_usd: 0.0,
+                remaining_balance_usd: balance,
+                generation_id: None,
+                telemetry: StreamTelemetry::default(),
+            },
+        })?;
+    let routed_model = route.routed_model().to_string();
     let estimated_input_tokens = estimate_request_input_tokens(request);
     let estimated_output_tokens = request.max_tokens.unwrap_or(1024) as u64;
-    let (_est_base, est_marked_up) = pricing::calculate_marked_up_cost(
-        &strip_provider_prefix(&or_model),
-        estimated_input_tokens,
-        estimated_output_tokens,
-        0,
-        pricing_table,
-        markup_pct,
-    );
+    let est_marked_up = if route.is_local() {
+        0.0
+    } else {
+        let (_est_base, est_marked_up) = pricing::calculate_marked_up_cost(
+            &strip_provider_prefix(&routed_model),
+            estimated_input_tokens,
+            estimated_output_tokens,
+            0,
+            pricing_table,
+            markup_pct,
+        );
+        est_marked_up
+    };
 
-    let balance = key_store.get_balance(&customer.key_id);
     if est_marked_up > 0.0 && balance < est_marked_up {
         return Err(MeteredStreamError {
             message: format!(
@@ -514,7 +541,7 @@ where
                 balance, est_marked_up
             ),
             settled: MeteredStreamResult {
-                or_model: or_model.clone(),
+                or_model: route.display_model(),
                 input_tokens: 0,
                 output_tokens: 0,
                 upstream_cost_usd: 0.0,
@@ -526,24 +553,8 @@ where
         });
     }
 
-    let or_api_key = vault
-        .get_key("openrouter")
-        .map_err(|_| MeteredStreamError {
-            message: "proxy service unavailable: upstream not configured".to_string(),
-            settled: MeteredStreamResult {
-                or_model: or_model.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                upstream_cost_usd: 0.0,
-                customer_cost_usd: 0.0,
-                remaining_balance_usd: balance,
-                generation_id: None,
-                telemetry: StreamTelemetry::default(),
-            },
-        })?;
-
     let (telemetry, stream_error) =
-        match call_openrouter_stream(&or_api_key, &or_model, request, |chunk| on_data(chunk)) {
+        match call_resolved_backend_stream(vault, &route, request, |chunk| on_data(chunk)) {
             Ok(t) => (t, None),
             Err(err) => (err.telemetry, Some(err.message)),
         };
@@ -552,25 +563,29 @@ where
     let output_tokens = telemetry
         .completion_tokens
         .unwrap_or_else(|| estimate_text_tokens(&telemetry.completion_preview));
-    let (upstream_cost, customer_cost) = pricing::calculate_marked_up_cost(
-        &strip_provider_prefix(&or_model),
-        input_tokens,
-        output_tokens,
-        0,
-        pricing_table,
-        markup_pct,
-    );
+    let (upstream_cost, customer_cost) = if route.is_local() {
+        (0.0, 0.0)
+    } else {
+        pricing::calculate_marked_up_cost(
+            &strip_provider_prefix(&routed_model),
+            input_tokens,
+            output_tokens,
+            0,
+            pricing_table,
+            markup_pct,
+        )
+    };
     let remaining = key_store.deduct_balance(&customer.key_id, customer_cost);
     key_store.record_usage(
         &customer.key_id,
-        &or_model,
+        &route.display_model(),
         input_tokens,
         output_tokens,
         customer_cost,
     );
 
     let settled = MeteredStreamResult {
-        or_model,
+        or_model: route.display_model(),
         input_tokens,
         output_tokens,
         upstream_cost_usd: upstream_cost,
@@ -593,56 +608,51 @@ where
 
 /// Owner-mode proxy call. Still routes through OpenRouter, still tracks usage,
 /// but does not require a customer key or balance.
-pub fn proxy_chat_sync(vault: &Vault, request: &ChatCompletionRequest) -> Result<Value, String> {
-    let or_api_key = vault.get_key("openrouter").map_err(|_| {
-        "no OpenRouter API key configured — run: agenthalo vault set openrouter".to_string()
-    })?;
-
-    let or_model = openrouter_model_name(&request.model);
-    let resp = call_openrouter(&or_api_key, &or_model, request)?;
-    Ok(resp)
+pub fn proxy_chat_sync(
+    vault: Option<&Vault>,
+    request: &ChatCompletionRequest,
+) -> Result<Value, String> {
+    let route = resolve_backend_for_request(&request.model)?;
+    call_resolved_backend(vault, &route, request)
 }
 
 pub fn proxy_chat_stream_sync<F>(
-    vault: &Vault,
+    vault: Option<&Vault>,
     request: &ChatCompletionRequest,
     mut on_data: F,
 ) -> Result<StreamTelemetry, StreamForwardError>
 where
     F: FnMut(&str) -> Result<(), String>,
 {
-    let or_api_key = vault
-        .get_key("openrouter")
-        .map_err(|_| StreamForwardError {
-            message: "no OpenRouter API key configured — run: agenthalo vault set openrouter"
-                .to_string(),
+    let route =
+        resolve_backend_for_request(&request.model).map_err(|message| StreamForwardError {
+            message,
             telemetry: StreamTelemetry::default(),
         })?;
-    let or_model = openrouter_model_name(&request.model);
-    call_openrouter_stream(&or_api_key, &or_model, request, |chunk| on_data(chunk))
+    call_resolved_backend_stream(vault, &route, request, |chunk| on_data(chunk))
 }
 
 // ---------------------------------------------------------------------------
 // Model catalog
 // ---------------------------------------------------------------------------
 
-/// Return available models. Requires OpenRouter key to be configured.
-pub fn list_available_models(vault: &Vault) -> Vec<Value> {
-    if vault.get_key("openrouter").is_err() {
-        return Vec::new();
-    }
-
-    OPENROUTER_MODELS
-        .iter()
-        .map(|(id, owner, or_id)| {
+/// Return available cloud + local models.
+pub fn list_available_models(vault: Option<&Vault>) -> Vec<Value> {
+    let mut models = local_models::catalog_entries();
+    if vault
+        .and_then(|vault| vault.get_key("openrouter").ok())
+        .is_some()
+    {
+        models.extend(OPENROUTER_MODELS.iter().map(|(id, owner, or_id)| {
             json!({
                 "id": id,
                 "object": "model",
                 "owned_by": owner,
                 "openrouter_id": or_id,
             })
-        })
-        .collect()
+        }));
+    }
+    models
 }
 
 /// Curated model catalog. Each entry: (display_id, owner, openrouter_model_id).
@@ -755,9 +765,50 @@ fn call_openrouter(
     or_model: &str,
     request: &ChatCompletionRequest,
 ) -> Result<Value, String> {
+    call_openai_compatible(
+        "https://openrouter.ai/api/v1/chat/completions",
+        &[
+            ("Authorization", format!("Bearer {api_key}")),
+            ("X-Title", "AgentHALO".to_string()),
+        ],
+        or_model,
+        request,
+        sanitize_upstream_error,
+    )
+}
+
+fn call_openrouter_stream<F>(
+    api_key: &str,
+    or_model: &str,
+    request: &ChatCompletionRequest,
+    mut on_data: F,
+) -> Result<StreamTelemetry, StreamForwardError>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    call_openai_compatible_stream(
+        "https://openrouter.ai/api/v1/chat/completions",
+        &[
+            ("Authorization", format!("Bearer {api_key}")),
+            ("X-Title", "AgentHALO".to_string()),
+        ],
+        or_model,
+        request,
+        sanitize_upstream_error,
+        |chunk| on_data(chunk),
+    )
+}
+
+fn call_openai_compatible(
+    endpoint: &str,
+    headers: &[(&str, String)],
+    model: &str,
+    request: &ChatCompletionRequest,
+    sanitize_error: fn(&ureq::Error) -> String,
+) -> Result<Value, String> {
     let mut payload =
         serde_json::to_value(request).map_err(|e| format!("serialize request: {e}"))?;
-    payload["model"] = Value::String(or_model.to_string());
+    payload["model"] = Value::String(model.to_string());
 
     // Remove stream=false to avoid issues — we handle non-streaming only.
     if let Some(obj) = payload.as_object_mut() {
@@ -766,12 +817,11 @@ fn call_openrouter(
         }
     }
 
-    let resp = http_client::post("https://openrouter.ai/api/v1/chat/completions")?
-        .header("Authorization", &format!("Bearer {api_key}"))
-        .header("X-Title", "AgentHALO")
-        .content_type("application/json")
-        .send_json(payload)
-        .map_err(|e| sanitize_upstream_error(&e))?;
+    let mut req = http_client::post(endpoint)?.content_type("application/json");
+    for (name, value) in headers {
+        req = req.header(*name, value);
+    }
+    let resp = req.send_json(payload).map_err(|err| sanitize_error(&err))?;
 
     let body: Value = resp
         .into_body()
@@ -790,10 +840,12 @@ fn call_openrouter(
     Ok(body)
 }
 
-fn call_openrouter_stream<F>(
-    api_key: &str,
-    or_model: &str,
+fn call_openai_compatible_stream<F>(
+    endpoint: &str,
+    headers: &[(&str, String)],
+    model: &str,
     request: &ChatCompletionRequest,
+    sanitize_error: fn(&ureq::Error) -> String,
     mut on_data: F,
 ) -> Result<StreamTelemetry, StreamForwardError>
 where
@@ -803,25 +855,22 @@ where
         message: format!("serialize request: {e}"),
         telemetry: StreamTelemetry::default(),
     })?;
-    payload["model"] = Value::String(or_model.to_string());
+    payload["model"] = Value::String(model.to_string());
     payload["stream"] = Value::Bool(true);
     payload["stream_options"] = json!({"include_usage": true});
 
     let mut telemetry = StreamTelemetry::default();
-    let resp = http_client::post_with_timeout(
-        "https://openrouter.ai/api/v1/chat/completions",
-        Duration::from_secs(300),
-    )
-    .map_err(|e| StreamForwardError {
-        message: e,
-        telemetry: telemetry.clone(),
-    })?
-    .header("Authorization", &format!("Bearer {api_key}"))
-    .header("X-Title", "AgentHALO")
-    .content_type("application/json")
-    .send_json(payload)
-    .map_err(|e| StreamForwardError {
-        message: sanitize_upstream_error(&e),
+    let mut req = http_client::post_with_timeout(endpoint, Duration::from_secs(300))
+        .map_err(|e| StreamForwardError {
+            message: e,
+            telemetry: telemetry.clone(),
+        })?
+        .content_type("application/json");
+    for (name, value) in headers {
+        req = req.header(*name, value);
+    }
+    let resp = req.send_json(payload).map_err(|e| StreamForwardError {
+        message: sanitize_error(&e),
         telemetry: telemetry.clone(),
     })?;
 
@@ -851,6 +900,176 @@ where
     }
 
     Ok(telemetry)
+}
+
+#[derive(Clone, Debug)]
+enum ResolvedBackend {
+    OpenRouter {
+        routed_model: String,
+    },
+    Local {
+        backend: LocalBackendType,
+        base_url: String,
+        routed_model: String,
+    },
+}
+
+impl ResolvedBackend {
+    fn routed_model(&self) -> &str {
+        match self {
+            Self::OpenRouter { routed_model } => routed_model,
+            Self::Local { routed_model, .. } => routed_model,
+        }
+    }
+
+    fn display_model(&self) -> String {
+        match self {
+            Self::OpenRouter { routed_model } => routed_model.clone(),
+            Self::Local { routed_model, .. } => format!("local/{routed_model}"),
+        }
+    }
+
+    fn backend_label(&self) -> &'static str {
+        match self {
+            Self::OpenRouter { .. } => "openrouter",
+            Self::Local { backend, .. } => backend.as_str(),
+        }
+    }
+
+    fn is_local(&self) -> bool {
+        matches!(self, Self::Local { .. })
+    }
+}
+
+fn resolve_backend_for_request(model: &str) -> Result<ResolvedBackend, String> {
+    let requested = model.trim();
+    if requested.is_empty() {
+        return Err("model must not be empty".to_string());
+    }
+    if requested.starts_with("local/") {
+        let resolved = local_models::resolve_local_route(requested)?;
+        return Ok(ResolvedBackend::Local {
+            backend: resolved.backend,
+            base_url: resolved.base_url,
+            routed_model: resolved.model,
+        });
+    }
+
+    if requested.contains('/') {
+        if local_models::installed_backend_for_model(requested).is_some() {
+            let resolved = local_models::resolve_local_route(requested)?;
+            return Ok(ResolvedBackend::Local {
+                backend: resolved.backend,
+                base_url: resolved.base_url,
+                routed_model: resolved.model,
+            });
+        }
+        return Ok(ResolvedBackend::OpenRouter {
+            routed_model: openrouter_model_name(requested),
+        });
+    }
+
+    if looks_like_openrouter_cloud_model(requested) {
+        return Ok(ResolvedBackend::OpenRouter {
+            routed_model: openrouter_model_name(requested),
+        });
+    }
+
+    if local_models::installed_backend_for_model(requested).is_some() {
+        let resolved = local_models::resolve_local_route(requested)?;
+        return Ok(ResolvedBackend::Local {
+            backend: resolved.backend,
+            base_url: resolved.base_url,
+            routed_model: resolved.model,
+        });
+    }
+
+    Ok(ResolvedBackend::OpenRouter {
+        routed_model: openrouter_model_name(requested),
+    })
+}
+
+fn looks_like_openrouter_cloud_model(model: &str) -> bool {
+    model.starts_with("claude")
+        || model.starts_with("gpt")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+        || model.starts_with("gemini")
+        || model.starts_with("deepseek/")
+        || model.starts_with("mistralai/")
+        || model.starts_with("cohere/")
+        || model.starts_with("perplexity/")
+        || model.starts_with("meta-llama/")
+}
+
+fn call_resolved_backend(
+    vault: Option<&Vault>,
+    route: &ResolvedBackend,
+    request: &ChatCompletionRequest,
+) -> Result<Value, String> {
+    match route {
+        ResolvedBackend::OpenRouter { routed_model } => {
+            let or_api_key = vault
+                .ok_or_else(|| {
+                    "proxy service unavailable: local backend not selected and OpenRouter is not configured".to_string()
+                })?
+                .get_key("openrouter")
+                .map_err(|_| "proxy service unavailable: upstream not configured".to_string())?;
+            call_openrouter(&or_api_key, routed_model, request)
+        }
+        ResolvedBackend::Local {
+            base_url,
+            routed_model,
+            ..
+        } => call_openai_compatible(
+            &format!("{}/v1/chat/completions", base_url.trim_end_matches('/')),
+            &[],
+            routed_model,
+            request,
+            |err| format!("local backend error: {err}"),
+        ),
+    }
+}
+
+fn call_resolved_backend_stream<F>(
+    vault: Option<&Vault>,
+    route: &ResolvedBackend,
+    request: &ChatCompletionRequest,
+    mut on_data: F,
+) -> Result<StreamTelemetry, StreamForwardError>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    match route {
+        ResolvedBackend::OpenRouter { routed_model } => {
+            let or_api_key = vault
+                .ok_or_else(|| StreamForwardError {
+                    message: "OpenRouter not configured and no local backend matched".to_string(),
+                    telemetry: StreamTelemetry::default(),
+                })?
+                .get_key("openrouter")
+                .map_err(|_| StreamForwardError {
+                    message:
+                        "no OpenRouter API key configured — run: agenthalo vault set openrouter"
+                            .to_string(),
+                    telemetry: StreamTelemetry::default(),
+                })?;
+            call_openrouter_stream(&or_api_key, routed_model, request, |chunk| on_data(chunk))
+        }
+        ResolvedBackend::Local {
+            base_url,
+            routed_model,
+            ..
+        } => call_openai_compatible_stream(
+            &format!("{}/v1/chat/completions", base_url.trim_end_matches('/')),
+            &[],
+            routed_model,
+            request,
+            |err| format!("local backend error: {err}"),
+            |chunk| on_data(chunk),
+        ),
+    }
 }
 
 fn update_stream_usage_from_payload(payload: &str, usage: &mut StreamTelemetry) {
@@ -913,7 +1132,14 @@ pub fn estimate_marked_up_request_cost(
     pricing_table: &HashMap<String, pricing::ModelPricing>,
     markup_pct: f64,
 ) -> (String, f64) {
-    let or_model = openrouter_model_name(&request.model);
+    let route =
+        resolve_backend_for_request(&request.model).unwrap_or(ResolvedBackend::OpenRouter {
+            routed_model: openrouter_model_name(&request.model),
+        });
+    if route.is_local() {
+        return (route.display_model(), 0.0);
+    }
+    let or_model = route.routed_model().to_string();
     let estimated_input_tokens = estimate_request_input_tokens(request);
     let estimated_output_tokens = request.max_tokens.unwrap_or(1024) as u64;
     let (_, estimated_cost) = pricing::calculate_marked_up_cost(
@@ -990,6 +1216,33 @@ mod tests {
         );
         // Unknown — pass through.
         assert_eq!(openrouter_model_name("some-new-model"), "some-new-model");
+    }
+
+    #[test]
+    fn estimate_cost_for_explicit_local_model_is_zero() {
+        let request = ChatCompletionRequest {
+            model: "local/qwen2.5-coder:7b".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: Value::String("hello".to_string()),
+            }],
+            temperature: None,
+            max_tokens: Some(64),
+            stream: Some(false),
+            top_p: None,
+        };
+        let (_model, cost) = estimate_marked_up_request_cost(&request, &HashMap::new(), 0.2);
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn cloud_model_heuristic_catches_openrouter_families() {
+        assert!(looks_like_openrouter_cloud_model("gpt-4o"));
+        assert!(looks_like_openrouter_cloud_model("claude-opus-4-6"));
+        assert!(looks_like_openrouter_cloud_model(
+            "meta-llama/llama-4-maverick"
+        ));
+        assert!(!looks_like_openrouter_cloud_model("qwen2.5-coder:7b"));
     }
 
     #[test]

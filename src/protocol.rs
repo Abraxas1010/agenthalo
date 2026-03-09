@@ -222,6 +222,11 @@ impl NucleusDb {
         vector_changed || blob_changed
     }
 
+    pub fn soft_reset_aether_memory(&mut self) {
+        self.vector_index.soft_reset_governor();
+        self.blob_store.soft_reset_governor();
+    }
+
     /// Get the current write mode.
     pub fn write_mode(&self) -> &WriteMode {
         &self.write_mode

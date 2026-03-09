@@ -348,6 +348,7 @@ impl Orchestrator {
                     let mut graph = self.inner.graph.lock().await;
                     graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
                 }
+                let _ = self.inner.pool.destroy_pty_session(&execution.session_id);
                 self.inner
                     .pool
                     .complete_task(&execution.agent_id, outcome.estimated_cost_usd)
@@ -383,6 +384,7 @@ impl Orchestrator {
                     let mut graph = self.inner.graph.lock().await;
                     graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
                 }
+                let _ = self.inner.pool.destroy_pty_session(&execution.session_id);
                 self.inner
                     .pool
                     .complete_task(&execution.agent_id, 0.0)

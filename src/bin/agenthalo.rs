@@ -104,6 +104,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "dashboard" => cmd_dashboard(&args[2..]),
         "doctor" => cmd_doctor(&args[2..]),
         "governor" => cmd_governor(&args[2..]),
+        "deploy" => cmd_deploy(&args[2..]),
+        "models" => cmd_models(&args[2..]),
         "version" | "--version" | "-V" => {
             println!("agenthalo 0.3.0");
             Ok(())
@@ -504,7 +506,71 @@ fn cmd_status(_args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_governor(args: &[String]) -> Result<(), String> {
-    match args.first().map(|s| s.as_str()).unwrap_or("validate") {
+    match args.first().map(|s| s.as_str()).unwrap_or("status") {
+        "status" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let instance_id = args
+                .iter()
+                .skip(1)
+                .find(|arg| !arg.starts_with('-'))
+                .cloned();
+            let payload = dashboard_api_get("governor/status")?;
+            let filtered = filter_governor_payload(&payload, instance_id.as_deref());
+            if json_mode {
+                print_json(&filtered)
+            } else {
+                print_governor_status_text(&filtered)
+            }
+        }
+        "reset" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let instance_id = args
+                .iter()
+                .skip(1)
+                .find(|arg| !arg.starts_with('-'))
+                .cloned()
+                .unwrap_or_else(|| "all".to_string());
+            let payload = dashboard_api_post(
+                "governor/reset",
+                serde_json::json!({
+                    "instance_id": instance_id,
+                    "all": instance_id == "all",
+                }),
+            )?;
+            if json_mode {
+                print_json(&payload)
+            } else {
+                print_governor_status_text(&payload)
+            }
+        }
+        "watch" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let instance_id = args
+                .iter()
+                .skip(1)
+                .find(|arg| !arg.starts_with('-'))
+                .cloned();
+            let interval_secs = args
+                .iter()
+                .position(|arg| arg == "--interval")
+                .and_then(|idx| args.get(idx + 1))
+                .map(|value| value.parse::<u64>().map_err(|_| "--interval must be an integer"))
+                .transpose()?
+                .unwrap_or(5)
+                .max(1);
+            loop {
+                let payload = dashboard_api_get("governor/status")?;
+                let filtered = filter_governor_payload(&payload, instance_id.as_deref());
+                if json_mode {
+                    print_json(&filtered)?;
+                } else {
+                    println!("timestamp={}", now_unix_secs());
+                    print_governor_status_text(&filtered)?;
+                    println!();
+                }
+                std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+            }
+        }
         "validate" => {
             let mut instance_id = "gov-cli".to_string();
             let mut alpha = 0.01;
@@ -626,10 +692,274 @@ fn cmd_governor(args: &[String]) -> Result<(), String> {
             }
         }
         _ => Err(
-            "usage: agenthalo governor validate --alpha <f64> --beta <f64> --dt <f64> --eps-min <f64> --eps-max <f64> --target <f64> [--instance-id ID] [--json]"
+            "usage: agenthalo governor [status [INSTANCE] [--json] | reset [INSTANCE|all] [--json] | watch [INSTANCE] [--interval SECS] [--json] | validate --alpha <f64> --beta <f64> --dt <f64> --eps-min <f64> --eps-max <f64> --target <f64> [--instance-id ID] [--json]]"
                 .to_string(),
         ),
     }
+}
+
+fn filter_governor_payload(
+    payload: &serde_json::Value,
+    instance_id: Option<&str>,
+) -> serde_json::Value {
+    let Some(instance_id) = instance_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return payload.clone();
+    };
+    if instance_id == "gov-memory" {
+        return serde_json::json!({
+            "instances": [],
+            "memory": payload.get("memory").cloned().unwrap_or(serde_json::Value::Null),
+            "proxy": payload.get("proxy").cloned().unwrap_or(serde_json::Value::Null),
+        });
+    }
+    let instances = payload
+        .get("instances")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| {
+                    item.get("instance_id")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value == instance_id)
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    serde_json::json!({
+        "instances": instances,
+        "memory": payload.get("memory").cloned().unwrap_or(serde_json::Value::Null),
+        "proxy": payload.get("proxy").cloned().unwrap_or(serde_json::Value::Null),
+    })
+}
+
+fn print_governor_status_text(payload: &serde_json::Value) -> Result<(), String> {
+    if let Some(instances) = payload.get("instances").and_then(|value| value.as_array()) {
+        for item in instances {
+            println!(
+                "{}: epsilon={:.3} regime={} stable={} oscillating={} clamp_active={} warning={}",
+                item.get("instance_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("governor"),
+                item.get("epsilon")
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or(0.0),
+                item.get("regime")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown"),
+                item.get("stable")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+                item.get("oscillating")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+                item.get("clamp_active")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+                item.get("warning")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("none"),
+            );
+        }
+    }
+    if let Some(memory) = payload.get("memory").and_then(|value| value.as_object()) {
+        println!(
+            "gov-memory: epsilon={:.3} regime={} stable={} oscillating={} warning={}",
+            memory
+                .get("epsilon")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0),
+            memory
+                .get("regime")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown"),
+            memory
+                .get("stable")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            memory
+                .get("oscillating")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            memory
+                .get("warning")
+                .and_then(|value| value.as_str())
+                .unwrap_or("none"),
+        );
+    }
+    Ok(())
+}
+
+fn cmd_deploy(args: &[String]) -> Result<(), String> {
+    match args.first().map(|s| s.as_str()).unwrap_or("preflight") {
+        "preflight" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let agent_id = args
+                .iter()
+                .position(|arg| arg == "--agent")
+                .and_then(|idx| args.get(idx + 1))
+                .cloned()
+                .ok_or_else(|| "usage: agenthalo deploy preflight --agent <id> [--admission-mode warn|block|force] [--json]".to_string())?;
+            let admission_mode = args
+                .iter()
+                .position(|arg| arg == "--admission-mode")
+                .and_then(|idx| args.get(idx + 1))
+                .cloned();
+            let payload = dashboard_api_post(
+                "deploy/preflight",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "admission_mode": admission_mode,
+                }),
+            )?;
+            if json_mode {
+                print_json(&payload)
+            } else {
+                print_deploy_payload_text(&payload)
+            }
+        }
+        "launch" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let agent_id = args
+                .iter()
+                .position(|arg| arg == "--agent")
+                .and_then(|idx| args.get(idx + 1))
+                .cloned()
+                .ok_or_else(|| "usage: agenthalo deploy launch --agent <id> --mode <terminal|cockpit|gui|gui+terminal> [--working-dir DIR] [--container] [--admission-mode warn|block|force] [--json]".to_string())?;
+            let mode = args
+                .iter()
+                .position(|arg| arg == "--mode")
+                .and_then(|idx| args.get(idx + 1))
+                .cloned()
+                .ok_or_else(|| "usage: agenthalo deploy launch --agent <id> --mode <terminal|cockpit|gui|gui+terminal> [--working-dir DIR] [--container] [--admission-mode warn|block|force] [--json]".to_string())?;
+            let working_dir = args
+                .iter()
+                .position(|arg| arg == "--working-dir")
+                .and_then(|idx| args.get(idx + 1))
+                .cloned();
+            let admission_mode = args
+                .iter()
+                .position(|arg| arg == "--admission-mode")
+                .and_then(|idx| args.get(idx + 1))
+                .cloned();
+            let payload = dashboard_api_post(
+                "deploy/launch",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "mode": mode,
+                    "container": args.iter().any(|arg| arg == "--container"),
+                    "working_dir": working_dir,
+                    "admission_mode": admission_mode,
+                }),
+            )?;
+            if json_mode {
+                print_json(&payload)
+            } else {
+                print_deploy_payload_text(&payload)
+            }
+        }
+        "status" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let session_id = args
+                .iter()
+                .skip(1)
+                .find(|arg| !arg.starts_with('-'))
+                .cloned()
+                .ok_or_else(|| "usage: agenthalo deploy status <session-id> [--json]".to_string())?;
+            let payload = dashboard_api_get(&format!("deploy/status/{session_id}"))?;
+            if json_mode {
+                print_json(&payload)
+            } else {
+                print_deploy_payload_text(&payload)
+            }
+        }
+        _ => Err(
+            "usage: agenthalo deploy [preflight --agent <id> [--admission-mode warn|block|force] [--json] | launch --agent <id> --mode <terminal|cockpit|gui|gui+terminal> [--working-dir DIR] [--container] [--admission-mode warn|block|force] [--json] | status <session-id> [--json]]".to_string(),
+        ),
+    }
+}
+
+fn print_deploy_payload_text(payload: &serde_json::Value) -> Result<(), String> {
+    if let Some(ready) = payload.get("ready").and_then(|value| value.as_bool()) {
+        println!(
+            "ready={} cli_installed={} keys_configured={} docker_available={}",
+            ready,
+            payload
+                .get("cli_installed")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            payload
+                .get("keys_configured")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            payload
+                .get("docker_available")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+        );
+        if let Some(admission) = payload.get("admission") {
+            println!(
+                "admission mode={} allowed={} forced={}",
+                admission
+                    .get("mode")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("warn"),
+                admission
+                    .get("allowed")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(true),
+                admission
+                    .get("forced")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+            );
+            if let Some(issues) = admission.get("issues").and_then(|value| value.as_array()) {
+                for issue in issues {
+                    println!(
+                        "  issue: {}",
+                        issue
+                            .get("message")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("unknown"),
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
+    if let Some(session_id) = payload.get("session_id").and_then(|value| value.as_str()) {
+        println!("session_id={session_id}");
+        if let Some(panels) = payload.get("panels").and_then(|value| value.as_array()) {
+            println!("panels={}", panels.len());
+        }
+        if let Some(admission) = payload.get("admission") {
+            println!(
+                "admission mode={} forced={}",
+                admission
+                    .get("mode")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("warn"),
+                admission
+                    .get("forced")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+            );
+        }
+        return Ok(());
+    }
+    if payload.get("status").is_some() {
+        println!(
+            "status={}",
+            payload
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown"),
+        );
+        return Ok(());
+    }
+    print_json(payload)
 }
 
 fn cmd_export(args: &[String]) -> Result<(), String> {
@@ -4843,6 +5173,189 @@ fn print_dashboard_usage() {
     );
 }
 
+fn cmd_models(args: &[String]) -> Result<(), String> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!(
+            "usage: agenthalo models [status|list|search <query>|pull <model> [--source ollama|vllm]|rm <model> [--source ollama|vllm]|serve [--backend ollama|vllm] [--port PORT] [--model MODEL]|stop [--backend ollama|vllm]|login huggingface [--token hf_xxx]]"
+        );
+        return Ok(());
+    }
+
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "status" => {
+            let status = nucleusdb::halo::local_models::detect_status();
+            print_local_models_status(&status);
+            Ok(())
+        }
+        "list" => {
+            let models = nucleusdb::halo::local_models::list_installed_models();
+            print_installed_models(&models);
+            Ok(())
+        }
+        "login" => {
+            let provider = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            if provider != "huggingface" {
+                return Err(
+                    "usage: agenthalo models login huggingface [--token hf_xxx]".to_string()
+                );
+            }
+            let token = args
+                .iter()
+                .position(|arg| arg == "--token")
+                .and_then(|idx| args.get(idx + 1))
+                .cloned();
+            let token = if let Some(token) = token {
+                token
+            } else {
+                let _ = webbrowser::open("https://huggingface.co/settings/tokens");
+                prompt_nonempty_value("Paste your Hugging Face token: ")?
+            };
+            let stored = nucleusdb::halo::local_models::login_huggingface(Some(&token))?;
+            println!("Hugging Face token saved via {stored}");
+            Ok(())
+        }
+        "search" => {
+            let query = args
+                .iter()
+                .skip(1)
+                .filter(|arg| !arg.starts_with('-'))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if query.trim().is_empty() {
+                return Err("usage: agenthalo models search <query>".to_string());
+            }
+            let results = nucleusdb::halo::local_models::search_models(&query, 8)?;
+            print_search_results(&results);
+            if results.is_empty() {
+                return Ok(());
+            }
+            let choice =
+                prompt_nonempty_value("Pull a model? Enter number to download, or q to quit: ")
+                    .unwrap_or_else(|_| "q".to_string());
+            if choice.eq_ignore_ascii_case("q") {
+                return Ok(());
+            }
+            let index = choice
+                .parse::<usize>()
+                .map_err(|_| "expected a numeric selection or q".to_string())?;
+            let selected = results
+                .iter()
+                .find(|item| item.index == index)
+                .ok_or_else(|| format!("no search result numbered {index}"))?;
+            let mut stdout = io::stdout();
+            let source =
+                if selected.backend == nucleusdb::halo::local_models::LocalBackendType::Vllm {
+                    Some("vllm")
+                } else {
+                    Some("ollama")
+                };
+            let installed =
+                nucleusdb::halo::local_models::pull_model(&selected.model, source, &mut stdout)?;
+            println!("\nModel ready: {}", installed.model);
+            Ok(())
+        }
+        "pull" => {
+            let model = args.get(1).ok_or_else(|| {
+                "usage: agenthalo models pull <model> [--source ollama|vllm]".to_string()
+            })?;
+            let source = args
+                .iter()
+                .position(|arg| arg == "--source")
+                .and_then(|idx| args.get(idx + 1))
+                .map(|value| value.as_str());
+            let mut stdout = io::stdout();
+            let installed = nucleusdb::halo::local_models::pull_model(model, source, &mut stdout)?;
+            println!("\nModel ready: {}", installed.model);
+            Ok(())
+        }
+        "rm" => {
+            let model = args.get(1).ok_or_else(|| {
+                "usage: agenthalo models rm <model> [--source ollama|vllm]".to_string()
+            })?;
+            let source = args
+                .iter()
+                .position(|arg| arg == "--source")
+                .and_then(|idx| args.get(idx + 1))
+                .map(|value| value.as_str());
+            nucleusdb::halo::local_models::remove_model(model, source)?;
+            println!("Removed local model {model}");
+            Ok(())
+        }
+        "serve" => {
+            let backend = args
+                .iter()
+                .position(|arg| arg == "--backend")
+                .and_then(|idx| args.get(idx + 1))
+                .map(|value| value.parse::<nucleusdb::halo::local_models::LocalBackendType>())
+                .transpose()?
+                .unwrap_or(nucleusdb::halo::local_models::LocalBackendType::Ollama);
+            let port = args
+                .iter()
+                .position(|arg| arg == "--port")
+                .and_then(|idx| args.get(idx + 1))
+                .map(|value| {
+                    value
+                        .parse::<u16>()
+                        .map_err(|_| "--port must be a valid integer")
+                })
+                .transpose()?;
+            let model = args
+                .iter()
+                .position(|arg| arg == "--model")
+                .and_then(|idx| args.get(idx + 1))
+                .cloned();
+            let result = nucleusdb::halo::local_models::serve_backend(
+                nucleusdb::halo::local_models::ServeRequest {
+                    backend,
+                    port,
+                    model,
+                },
+            )?;
+            println!(
+                "{} {} at {}{}",
+                result.backend.display_name(),
+                if result.already_running {
+                    "already running"
+                } else {
+                    "started"
+                },
+                result.base_url,
+                result
+                    .model
+                    .as_ref()
+                    .map(|value| format!(" (model: {value})"))
+                    .unwrap_or_default()
+            );
+            Ok(())
+        }
+        "stop" => {
+            let backend = args
+                .iter()
+                .position(|arg| arg == "--backend")
+                .and_then(|idx| args.get(idx + 1))
+                .map(|value| value.parse::<nucleusdb::halo::local_models::LocalBackendType>())
+                .transpose()?
+                .unwrap_or(nucleusdb::halo::local_models::LocalBackendType::Ollama);
+            let result = nucleusdb::halo::local_models::stop_backend(backend)?;
+            println!(
+                "{} stopped at {}{}",
+                result.backend.display_name(),
+                result.base_url,
+                result
+                    .pid
+                    .map(|pid| format!(" (pid {pid})"))
+                    .unwrap_or_default()
+            );
+            Ok(())
+        }
+        other => Err(format!(
+            "unknown models subcommand: {other}. Run `agenthalo models --help`."
+        )),
+    }
+}
+
 fn cmd_doctor(_args: &[String]) -> Result<(), String> {
     println!();
     println!("  Agent H.A.L.O. v0.3.0");
@@ -4976,6 +5489,16 @@ fn cmd_doctor(_args: &[String]) -> Result<(), String> {
         }
     }
 
+    let model_status = nucleusdb::halo::local_models::detect_status();
+    println!("  Local models:");
+    print_doctor_backend_line(&model_status.ollama);
+    print_doctor_backend_line(&model_status.vllm);
+    if model_status.huggingface_token_configured {
+        println!("    Hugging Face    TOKEN CONFIGURED");
+    } else {
+        println!("    Hugging Face    TOKEN NOT CONFIGURED");
+    }
+
     // OpenClaw gateway
     if which_path("openclaw").is_some() {
         let gw = std::process::Command::new("openclaw")
@@ -5013,6 +5536,149 @@ fn format_number_inline(v: u64) -> String {
     out.chars().rev().collect()
 }
 
+fn print_doctor_backend_line(status: &nucleusdb::halo::local_models::BackendStatus) {
+    let installed = if status.cli_installed {
+        "INSTALLED"
+    } else {
+        "NOT FOUND"
+    };
+    let health = if status.healthy {
+        "HEALTHY"
+    } else {
+        "NOT RUNNING"
+    };
+    let version = status
+        .cli_version
+        .as_deref()
+        .map(|value| format!(" ({value})"))
+        .unwrap_or_default();
+    println!(
+        "    {:<14} {installed}, {health} @ {}{}",
+        status.backend.display_name(),
+        status.base_url,
+        version
+    );
+}
+
+fn print_local_models_status(status: &nucleusdb::halo::local_models::LocalModelsStatus) {
+    println!("Local Models");
+    println!(
+        "  Preferred backend: {}",
+        status.config.preferred_backend.display_name()
+    );
+    if let Some(gpu) = &status.gpu {
+        println!(
+            "  GPU: {} ({:.1} GiB {})",
+            gpu.name, gpu.total_memory_gib, gpu.vendor
+        );
+    } else {
+        println!("  GPU: not detected");
+    }
+    println!(
+        "  Hugging Face token: {}",
+        if status.huggingface_token_configured {
+            "configured"
+        } else {
+            "not configured"
+        }
+    );
+    print_backend_status_block(&status.ollama);
+    print_backend_status_block(&status.vllm);
+}
+
+fn print_backend_status_block(status: &nucleusdb::halo::local_models::BackendStatus) {
+    println!(
+        "\n  {}: {}{}",
+        status.backend.display_name(),
+        if status.cli_installed {
+            "installed"
+        } else {
+            "not installed"
+        },
+        status
+            .cli_version
+            .as_deref()
+            .map(|value| format!(" ({value})"))
+            .unwrap_or_default()
+    );
+    println!("    endpoint: {}", status.base_url);
+    println!(
+        "    health: {}",
+        if status.healthy {
+            "healthy"
+        } else {
+            status.error.as_deref().unwrap_or("not responding")
+        }
+    );
+    if !status.served_models.is_empty() {
+        println!("    served: {}", status.served_models.join(", "));
+    }
+    if !status.installed_models.is_empty() {
+        println!("    installed: {}", status.installed_models.len());
+    }
+}
+
+fn print_installed_models(models: &[nucleusdb::halo::local_models::InstalledLocalModel]) {
+    if models.is_empty() {
+        println!("No local models installed.");
+        return;
+    }
+    println!(
+        "{:<14} {:<7} {:<40} {:<10} {:<10}",
+        "Source", "Backend", "Model", "Size", "Quant"
+    );
+    for model in models {
+        println!(
+            "{:<14} {:<7} {:<40} {:<10} {:<10}",
+            model.source,
+            model.backend.as_str(),
+            truncate(&model.model, 40),
+            model.size.clone().unwrap_or_else(|| "-".to_string()),
+            model
+                .quantization
+                .clone()
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+}
+
+fn print_search_results(results: &[nucleusdb::halo::local_models::ModelSearchResult]) {
+    if results.is_empty() {
+        println!("No local-model search results.");
+        return;
+    }
+    println!(
+        "{:<3} {:<12} {:<42} {:<10} {:<10} {:<10}",
+        "#", "Source", "Model", "Size", "Quant", "Downloads"
+    );
+    for item in results {
+        println!(
+            "{:<3} {:<12} {:<42} {:<10} {:<10} {:<10}",
+            item.index,
+            item.source,
+            truncate(&item.model, 42),
+            item.size.clone().unwrap_or_else(|| "-".to_string()),
+            item.quantization.clone().unwrap_or_else(|| "-".to_string()),
+            item.downloads.clone().unwrap_or_else(|| "-".to_string())
+        );
+    }
+}
+
+fn truncate(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    if value.chars().count() <= max_chars {
+        value.to_string()
+    } else {
+        let truncated: String = value.chars().take(max_chars - 3).collect();
+        format!("{truncated}...")
+    }
+}
+
 fn infer_model(args: &[String]) -> Option<String> {
     let mut i = 0;
     while i + 1 < args.len() {
@@ -5047,7 +5713,7 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install|wire-mcp|gateway-status]\n                             Agent CLI management and OpenClaw MCP wiring\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nControl:\n  governor validate --alpha A --beta B --dt DT --eps-min LO --eps-max HI --target T\n                             Validate the AETHER gain condition and formal regime\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install|wire-mcp|gateway-status]\n                             Agent CLI management and OpenClaw MCP wiring\n  models [status|list|search|pull|serve|stop|rm|login]\n                             Local Ollama/vLLM model discovery, download, and serving\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nControl:\n  governor status [INSTANCE] [--json]\n                             Show live AETHER governor state from the dashboard control plane\n  governor reset [INSTANCE|all] [--json]\n                             Soft-reset runtime/storage governors back to from-rest\n  governor watch [INSTANCE] [--interval SECS] [--json]\n                             Poll governor status for manager loops\n  governor validate --alpha A --beta B --dt DT --eps-min LO --eps-max HI --target T\n                             Validate the AETHER gain condition and formal regime\n  deploy preflight --agent ID [--admission-mode warn|block|force] [--json]\n                             Check CLI readiness, Betti topology drift, and AETHER admission\n  deploy launch --agent ID --mode terminal|cockpit|gui|gui+terminal [--container]\n                [--working-dir DIR] [--admission-mode warn|block|force] [--json]\n                             Launch a cockpit-managed agent session with admission control\n  deploy status <session-id> [--json]\n                             Show current status for a cockpit-managed deploy session\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
   NYM_FAIL_CLOSED=0           Legacy equivalent of NYM_FAIL_OPEN=1"
     );
 }
@@ -5084,6 +5750,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).expect("create temp home");
         home
+    }
+
+    #[test]
+    fn truncate_never_exceeds_requested_width() {
+        assert_eq!(truncate("abcdef", 5), "ab...");
+        assert_eq!(truncate("abc", 5), "abc");
+        assert_eq!(truncate("abcdef", 3), "...");
+        assert_eq!(truncate("abcdef", 0), "");
     }
 
     #[test]

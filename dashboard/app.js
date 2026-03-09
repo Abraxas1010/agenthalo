@@ -37,6 +37,14 @@ const PROVIDER_INFO = {
     required: false,
     description: 'Optional direct access (operator only). Customer traffic uses OpenRouter.',
   },
+  huggingface: {
+    name: 'Hugging Face',
+    envVar: 'HF_TOKEN',
+    keyUrl: 'https://huggingface.co/settings/tokens',
+    category: 'llm',
+    required: false,
+    description: 'Optional token for gated model downloads, Hub search, and vLLM-backed local serving.',
+  },
   pinata: {
     name: 'Pinata (IPFS Storage)',
     envVar: 'PINATA_JWT',
@@ -80,7 +88,7 @@ const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
   identification: renderIdentificationPage, communication: renderCommunicationPage, 'nucleusdb-docs': renderNucleusDBDocsPage,
   networking: renderNetworkingPage,
-  trust: renderTrust, nucleusdb: renderNucleusDB, orchestrator: renderOrchestrator, cockpit: renderCockpit, deploy: renderDeploy };
+  trust: renderTrust, nucleusdb: renderNucleusDB, orchestrator: renderOrchestrator, cockpit: renderCockpit, deploy: renderDeploy, models: renderModels };
 
 const NETWORKS = [
   {
@@ -1968,6 +1976,238 @@ async function renderConfig() {
     content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
 }
+
+let _modelsSearchQuery = '';
+
+function modelBackendBadge(backend) {
+  const normalized = String(backend || '').toLowerCase();
+  if (normalized === 'ollama') return '<span class="badge badge-ok">Ollama</span>';
+  if (normalized === 'vllm') return '<span class="badge badge-info">vLLM</span>';
+  return `<span class="badge badge-muted">${esc(backend || 'unknown')}</span>`;
+}
+
+function summarizeModelCounts(status) {
+  const ollamaCount = Array.isArray(status?.ollama?.installed_models) ? status.ollama.installed_models.length : 0;
+  const vllmCount = Array.isArray(status?.vllm?.installed_models) ? status.vllm.installed_models.length : 0;
+  return ollamaCount + vllmCount;
+}
+
+function installedModelsTableRows(status) {
+  const models = []
+    .concat(Array.isArray(status?.ollama?.installed_models) ? status.ollama.installed_models : [])
+    .concat(Array.isArray(status?.vllm?.installed_models) ? status.vllm.installed_models : []);
+  if (!models.length) {
+    return `<tr><td colspan="6" class="muted">No local models installed.</td></tr>`;
+  }
+  return models.sort((a, b) => String(a.model || '').localeCompare(String(b.model || ''))).map(model => `
+    <tr>
+      <td>${esc(model.model || '')}</td>
+      <td>${esc(model.source || '-')}</td>
+      <td>${modelBackendBadge(model.backend)}</td>
+      <td>${esc(model.size || '-')}</td>
+      <td>${esc(model.quantization || '-')}</td>
+      <td>
+        ${model.served ? '<span class="badge badge-ok">Serving</span>' : '<span class="badge badge-muted">Idle</span>'}
+        <button class="btn btn-sm" style="margin-left:6px" onclick='modelsRemove(${JSON.stringify(String(model.model || ''))}, ${JSON.stringify(String(model.backend === 'vllm' ? 'vllm' : model.backend || ''))})'>Remove</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function searchResultsRows(results) {
+  if (!results.length) {
+    return `<tr><td colspan="7" class="muted">Run a search to see Ollama and Hugging Face candidates.</td></tr>`;
+  }
+  return results.map(item => `
+    <tr>
+      <td>${Number(item.index || 0)}</td>
+      <td>${esc(item.source || '-')}</td>
+      <td>${esc(item.model || '')}</td>
+      <td>${modelBackendBadge(item.backend)}</td>
+      <td>${esc(item.size || '-')}</td>
+      <td>${esc(item.downloads || '-')}</td>
+      <td>
+        <button class="btn btn-sm btn-primary" onclick='modelsPull(${JSON.stringify(String(item.model || ''))}, ${JSON.stringify(String(item.backend === 'vllm' ? 'vllm' : item.backend || ''))})'>Pull</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function backendCard(status) {
+  const installedCount = Array.isArray(status?.installed_models) ? status.installed_models.length : 0;
+  const served = Array.isArray(status?.served_models) && status.served_models.length
+    ? status.served_models.map(esc).join(', ')
+    : 'none';
+  return `
+    <div class="card">
+      <div class="card-label">${esc(status?.backend || 'backend')}</div>
+      <div class="card-value" style="font-size:15px">${status?.healthy ? 'Healthy' : 'Unavailable'}</div>
+      <div class="card-sub">${status?.cli_installed ? 'CLI installed' : 'CLI missing'}${status?.cli_version ? ` · ${esc(status.cli_version)}` : ''}</div>
+      <div class="card-sub">endpoint: ${esc(status?.base_url || '-')}</div>
+      <div class="card-sub">installed: ${installedCount} · served: ${served}</div>
+      ${status?.error ? `<div class="card-sub" style="color:var(--amber)">${esc(status.error)}</div>` : ''}
+      <div style="margin-top:10px">
+        <button class="btn btn-sm ${status?.backend === 'ollama' ? 'btn-primary' : ''}" onclick="modelsServe('ollama')">Serve Ollama</button>
+        <button class="btn btn-sm ${status?.backend === 'vllm' ? 'btn-primary' : ''}" style="margin-left:6px" onclick="modelsServe('vllm')">Serve vLLM</button>
+        <button class="btn btn-sm" style="margin-left:6px" onclick="modelsStop('${esc(String(status?.backend || 'ollama'))}')">Stop</button>
+      </div>
+    </div>
+  `;
+}
+
+function summarizeManagedBackends(config) {
+  const managed = Array.isArray(config?.managed) ? config.managed : [];
+  if (!managed.length) return 'none';
+  return managed.map(item => String(item?.backend || '')).filter(Boolean).join(', ') || 'none';
+}
+
+async function renderModels() {
+  content.innerHTML = '<div class="loading">Loading local models...</div>';
+  try {
+    const status = await api('/models/status');
+    const results = _modelsSearchQuery
+      ? ((await api(`/models/search?q=${encodeURIComponent(_modelsSearchQuery)}`)).results || [])
+      : [];
+
+    content.innerHTML = `
+      <div class="page-title">Models</div>
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-label">Preferred Backend</div>
+          <div class="card-value" style="font-size:15px">${esc(status?.config?.preferred_backend || 'ollama')}</div>
+          <div class="card-sub">managed: ${esc(summarizeManagedBackends(status?.config))}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Installed Models</div>
+          <div class="card-value">${summarizeModelCounts(status)}</div>
+          <div class="card-sub">catalog appears under /v1/models automatically</div>
+        </div>
+        <div class="card">
+          <div class="card-label">GPU</div>
+          <div class="card-value" style="font-size:15px">${esc(status?.gpu?.name || 'Not detected')}</div>
+          <div class="card-sub">${status?.gpu ? `${Number(status.gpu.total_memory_gib || 0).toFixed(1)} GiB ${esc(status.gpu.vendor || '')}` : 'Search still works without GPU detection'}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Hugging Face Token</div>
+          <div class="card-value" style="font-size:15px">${status?.huggingface_token_configured ? 'Configured' : 'Missing'}</div>
+          <div class="card-sub">used for gated Hub access and vLLM-backed downloads</div>
+        </div>
+      </div>
+
+      <div class="section-header">Backend Health</div>
+      <div class="card-grid">
+        ${backendCard(status?.ollama)}
+        ${backendCard(status?.vllm)}
+      </div>
+
+      <div class="section-header">Controls</div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+        <div class="config-row">
+          <div>
+            <div class="config-label">Search Local Models</div>
+            <div class="config-desc">Search Ollama library and Hugging Face Hub from one surface.</div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <input class="input" id="models-search-query" style="min-width:280px" placeholder="code assistant 7b" value="${esc(_modelsSearchQuery)}">
+            <button class="btn btn-primary" id="models-search-btn">Search</button>
+          </div>
+        </div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">Hugging Face Login</div>
+            <div class="config-desc">Stores HF token in the encrypted vault when available.</div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="btn btn-sm" onclick="window.open('https://huggingface.co/settings/tokens','_blank')">Open Tokens</button>
+            <button class="btn btn-sm btn-primary" onclick="modelsLoginHuggingFace()">Set Token</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-header">Installed</div>
+      <div class="table-wrap"><table>
+        <thead>
+          <tr><th>Model</th><th>Source</th><th>Backend</th><th>Size</th><th>Quant</th><th>Status</th></tr>
+        </thead>
+        <tbody>${installedModelsTableRows(status)}</tbody>
+      </table></div>
+
+      <div class="section-header">Search Results${_modelsSearchQuery ? ` for "${esc(_modelsSearchQuery)}"` : ''}</div>
+      <div class="table-wrap"><table>
+        <thead>
+          <tr><th>#</th><th>Source</th><th>Model</th><th>Backend</th><th>Size</th><th>Downloads</th><th>Action</th></tr>
+        </thead>
+        <tbody>${searchResultsRows(results)}</tbody>
+      </table></div>
+    `;
+
+    const input = $('#models-search-query');
+    const runSearch = () => {
+      _modelsSearchQuery = String(input?.value || '').trim();
+      renderModels();
+    };
+    $('#models-search-btn')?.addEventListener('click', runSearch);
+    input?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') runSearch();
+    });
+  } catch (e) {
+    content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+window.modelsLoginHuggingFace = async function modelsLoginHuggingFace() {
+  const token = window.prompt('Paste Hugging Face token (hf_...)');
+  if (!token) return;
+  try {
+    await apiPost('/models/login/huggingface', { token: String(token).trim() });
+    alert('Hugging Face token saved.');
+    await renderModels();
+  } catch (e) {
+    alert(`Hugging Face login failed: ${String(e && e.message || e)}`);
+  }
+};
+
+window.modelsServe = async function modelsServe(backend) {
+  try {
+    const payload = { backend };
+    if (backend === 'vllm') {
+      const model = window.prompt('vLLM model to serve (installed HF repo id or path)', '');
+      if (model && String(model).trim()) payload.model = String(model).trim();
+    }
+    await apiPost('/models/serve', payload);
+    await renderModels();
+  } catch (e) {
+    alert(`Serve failed: ${String(e && e.message || e)}`);
+  }
+};
+
+window.modelsStop = async function modelsStop(backend) {
+  try {
+    await apiPost('/models/stop', { backend });
+    await renderModels();
+  } catch (e) {
+    alert(`Stop failed: ${String(e && e.message || e)}`);
+  }
+};
+
+window.modelsPull = async function modelsPull(model, source) {
+  try {
+    await apiPost('/models/pull', { model, source });
+    await renderModels();
+  } catch (e) {
+    alert(`Pull failed: ${String(e && e.message || e)}`);
+  }
+};
+
+window.modelsRemove = async function modelsRemove(model, source) {
+  if (!window.confirm(`Remove local model ${model}?`)) return;
+  try {
+    await apiPost('/models/rm', { model, source });
+    await renderModels();
+  } catch (e) {
+    alert(`Remove failed: ${String(e && e.message || e)}`);
+  }
+};
 
 window.refreshAgentPmtCatalog = async function refreshAgentPmtCatalog() {
   try {

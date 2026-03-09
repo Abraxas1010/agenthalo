@@ -43,7 +43,7 @@ We humbly thank the collective intelligence of humanity for providing the techno
 <br>
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-![Tests](https://img.shields.io/badge/tests-875%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-1055%20passing-brightgreen.svg)
 ![Lean 4](https://img.shields.io/badge/Lean%204-131%20modules-blue.svg)
 ![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
 
@@ -221,6 +221,7 @@ A real-time observability dashboard embedded in the binary — no npm, no CDN, n
 | **NucleusDB** | Browse the verifiable store, execute SQL, view commit history |
 | **Cockpit** | Launch and manage agent sessions in browser-based xterm.js terminals, diversity gauge, trace topology |
 | **Deploy** | Agent catalog cards, preflight checks, one-click agent deployment |
+| **Networking** | P2P mesh status, Bitswap runtime stats, swarm chunk/manifest inventory |
 
 Dark/light theme toggle. SSE live updates. Chart.js analytics. Responsive layout.
 
@@ -281,6 +282,32 @@ Budget enforcement is atomic — check-and-insert under a single lock with no TO
 ### P2P Mesh Networking
 
 Agents discover each other via a peer registry and exchange status over a libp2p mesh. The cockpit renders live peer topology — which agents are online, their latency, and reachability.
+
+### Bitswap Distribution Layer
+
+Content-addressed asset distribution over the P2P mesh. Agents publish binary assets (models, datasets, container layers) which are BLAKE3-chunked, Merkle-committed, and exchanged peer-to-peer via the Bitswap protocol.
+
+```bash
+# Publish an asset — returns a manifest ID
+agenthalo swarm publish --file model.bin --type model
+
+# Fetch locally — reassemble from local chunk store
+agenthalo swarm fetch --manifest <id>
+
+# Check swarm inventory
+agenthalo swarm status
+```
+
+| Component | What It Does |
+|-----------|-------------|
+| **Chunk Engine** | Splits data into 256 KiB BLAKE3-hashed chunks. Verification recomputes the hash from payload — tampered chunks are rejected. |
+| **Manifest System** | Multi-chunk asset descriptors with a BLAKE3 root hash and a durable ProofEnvelope. Manifests and proofs are stored as sibling NucleusDB records and reattached on reload. |
+| **Bitswap Protocol** | libp2p request-response codec (`/agenthalo/bitswap/1.0.0`) for Want/Have/Block exchange. 4 MiB frame cap. Inbound blocks are hash-verified before insertion. |
+| **Grant Enforcement** | Per-chunk ACL via `GrantStore`. When `HALO_BITSWAP_REQUIRE_GRANTS=1`, empty grants deny all reads (fail-closed). Without grants, access is open by default. |
+| **PCN Settlement** | Chunk transfers are settled via payment channel state updates. The leecher's balance is debited and the seeder's credited — conservation-proof. |
+| **Startup Hydration** | On boot, `hydrate_bitswap_runtime` loads persisted chunks from NucleusDB and grants from `*.pod_grants.json` into the live Bitswap runtime. |
+
+4 MCP tools: `swarm_publish`, `swarm_fetch` (local reassembly), `swarm_remote_fetch` (reserved stub for future outbound peer fetch), `swarm_status`.
 
 ### MCP Orchestration Tools
 
@@ -344,7 +371,7 @@ A cloud dashboard can show you what it claims happened. It cannot prove the log 
 | **Cryptographic seals** | None | Hash chain — each commit binds to all prior commits |
 | **Works offline** | No | Yes |
 | **Agent support** | Framework-specific SDKs | Wraps any CLI agent directly |
-| **MCP native** | No | Yes — 20 native + proxied tools over HTTP, 11 tools over stdio |
+| **MCP native** | No | Yes — 24 native + proxied tools over HTTP, 11 tools over stdio |
 | **Formal verification** | No | 131 Lean 4 modules with sheaf-theoretic proofs |
 
 H.A.L.O. doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.
@@ -693,13 +720,13 @@ More details: `Docs/ops/mcp_streamable_http.md` and `Docs/ops/orchestrator_debug
 - **CAB-as-bearer-token**: Hardware-anchored agent identity verified on-chain
 - **OAuth 2.1 JWT**: Standard bearer tokens for non-attested agents
 
-**Per-tool scope enforcement** — 27 tools across 5 security tiers:
+**Per-tool scope enforcement** — 31 tools across 5 security tiers:
 
 | Scope | Tools | Auth Required |
 |-------|-------|---------------|
-| `read` | help, status, query, verify, export, history, evidence_combine, uncertainty_translate | Basic token |
+| `read` | help, status, query, verify, export, history, evidence_combine, uncertainty_translate, swarm_status | Basic token |
 | `trust:verify` | verify_agent, verify_agent_multichain, list_chains | Basic token |
-| `write` | execute_sql, create_database, checkpoint, channels | CAB tier 3+ or JWT |
+| `write` | execute_sql, create_database, checkpoint, channels, swarm_publish, swarm_fetch, swarm_remote_fetch | CAB tier 3+ or JWT |
 | `trust:attest` | agent_register, register_chain, submit_attestation | CAB tier 4 or JWT |
 | `container` | container_launch | CAB tier 4 or JWT |
 
@@ -757,6 +784,13 @@ Phase 5 scripts:
   │     Mesh networking ────┤          Terminal UI                │
   │     DIDComm v2 ─────────┘          MCP Server (stdio + HTTP) │
   │                                                              │
+  │   Swarm Distribution Layer                                   │
+  │     Chunk engine (BLAKE3) ────▶ swarm/chunk_engine.rs        │
+  │     Manifest + ProofEnvelope ─▶ swarm/manifest.rs            │
+  │     Bitswap P2P exchange ─────▶ swarm/bitswap.rs             │
+  │     Grant enforcement ────────▶ pod/acl.rs                   │
+  │     PCN settlement ───────────▶ pcn/adapter.rs               │
+  │                                                              │
   │   Epistemic Calculi                                          │
   │     Tsallis diversity ──────────▶ metrics/diversity.rs       │
   │     Trust nucleus ──────────────▶ trust.rs (EpistemicTrust)  │
@@ -776,7 +810,7 @@ Phase 5 scripts:
   └──────────────────────────────────────────────────────────────┘
 ```
 
-**184 Rust source files** | **79,000+ lines** | **7,500+ lines of tests** | **20 Solidity contracts** | **131 Lean 4 modules**
+**205 Rust source files** | **94,000+ lines** | **10,000+ lines of tests** | **20 Solidity contracts** | **131 Lean 4 modules**
 
 ## Security
 
@@ -807,18 +841,18 @@ When `APPEND_ONLY` is active:
 
 ## Testing
 
-875 tests passing (2026-03-06 snapshot), 0 failures, 0 warnings:
+1055 tests passing (2026-03-08 snapshot), 0 failures, 0 warnings:
 
 ```bash
-cargo test                        # 836 Rust tests
+cargo test                        # 1016 Rust tests
 cd contracts && forge test        # 39 Solidity tests
 ```
 
 | Suite | Tests |
 |-------|-------|
-| Rust (unit + integration + binary tests) | 836 |
+| Rust (unit + integration + binary tests) | 1016 |
 | Solidity (Foundry) | 39 |
-| **Total** | **875** |
+| **Total** | **1055** |
 
 ## Known Limitations
 
@@ -826,6 +860,7 @@ cd contracts && forge test        # 39 Solidity tests
 - The `ipa` backend carries full-vector opening payloads (not logarithmic-size IPA arguments).
 - The KZG backend's default trusted setup is for development/demo use. Production KZG deployments require externally managed ceremony artifacts.
 - Sheaf coherence checks are local-view oriented, not full global-state reconciliation.
+- `swarm_fetch` is local-only reassembly; outbound peer-to-peer fetch (`swarm_remote_fetch`) is stubbed pending live P2P node injection into MCP service state.
 - H.A.L.O. cloud sync is planned but not yet implemented; traces are currently local-only.
 
 ## License

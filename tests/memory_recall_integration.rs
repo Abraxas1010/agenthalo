@@ -89,7 +89,7 @@ fn test_store_and_recall_roundtrip() {
         )
         .expect("store");
     let hits = memory
-        .recall(&db, "find vector similarity defaults", 5)
+        .recall(&mut db, "find vector similarity defaults", 5)
         .expect("recall");
     assert!(!hits.is_empty());
     assert!(hits[0].key.starts_with(MEMORY_KEY_PREFIX));
@@ -123,7 +123,7 @@ fn test_memory_prefix_isolation() {
     let delta = nucleusdb::state::Delta::new(vec![(idx, cell)]);
     let _ = db.commit(delta, &[]).expect("commit other");
 
-    let hits = memory.recall(&db, "memory key", 10).expect("recall");
+    let hits = memory.recall(&mut db, "memory key", 10).expect("recall");
     assert!(hits.iter().all(|h| h.key.starts_with(MEMORY_KEY_PREFIX)));
 }
 
@@ -154,7 +154,7 @@ fn test_negation_and_paraphrase_recall_quality() {
         .expect("store noise");
 
     let neg_hits = memory
-        .recall(&db, "endpoint not private", 2)
+        .recall(&mut db, "endpoint not private", 2)
         .expect("neg recall");
     assert!(
         neg_hits[0].text.contains("not private"),
@@ -163,7 +163,7 @@ fn test_negation_and_paraphrase_recall_quality() {
     );
 
     let paraphrase_hits = memory
-        .recall(&db, "mathematical guarantees for software behavior", 2)
+        .recall(&mut db, "mathematical guarantees for software behavior", 2)
         .expect("paraphrase recall");
     assert!(
         paraphrase_hits[0].text.contains("Machine-checked proofs"),
@@ -190,9 +190,9 @@ fn test_memory_survives_restart() {
     {
         let mut cfg = nucleusdb::cli::default_witness_cfg();
         cfg.signing_algorithm = nucleusdb::witness::WitnessSignatureAlgorithm::MlDsa65;
-        let db = NucleusDb::load_persistent(&db_path, cfg).expect("load snapshot");
+        let mut db = NucleusDb::load_persistent(&db_path, cfg).expect("load snapshot");
         let hits = memory
-            .recall(&db, "reload persisted memory", 5)
+            .recall(&mut db, "reload persisted memory", 5)
             .expect("recall");
         assert!(!hits.is_empty(), "memory should survive restart");
     }

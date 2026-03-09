@@ -1,6 +1,7 @@
 pub mod a2a_bridge;
 pub mod adapters;
 pub mod addons;
+pub mod admission;
 pub mod agent_auth;
 pub mod agentpmt;
 pub mod api_keys;
@@ -38,6 +39,7 @@ pub mod http_client;
 pub mod hybrid_kem;
 pub mod identity;
 pub mod identity_ledger;
+pub mod local_models;
 pub mod metrics;
 pub mod migration;
 pub mod nym;

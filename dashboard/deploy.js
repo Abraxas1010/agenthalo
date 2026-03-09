@@ -2,6 +2,15 @@
 'use strict';
 
 (function() {
+  function currentAdmissionMode() {
+    return localStorage.getItem('deploy_admission_mode') || 'warn';
+  }
+
+  function admissionIssues(preflight) {
+    const issues = Array.isArray(preflight?.admission?.issues) ? preflight.admission.issues : [];
+    return issues.map(issue => String(issue?.message || '').trim()).filter(Boolean);
+  }
+
   async function initDeployPage(hostEl) {
     hostEl.innerHTML = '<div class="loading">Loading deploy catalog...</div>';
 
@@ -21,7 +30,7 @@
         const res = await fetch('/api/deploy/preflight', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent_id: agent.id }),
+          body: JSON.stringify({ agent_id: agent.id, admission_mode: currentAdmissionMode() }),
         });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
@@ -44,6 +53,14 @@
           Container isolation
         </label>
         <span style="opacity:0.8;">(requires Docker)</span>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin-left:16px;">
+          Admission mode
+          <select id="deploy-admission-mode">
+            <option value="warn">warn</option>
+            <option value="block">block</option>
+            <option value="force">force</option>
+          </select>
+        </label>
       </div>
       <div class="deploy-grid">
         ${agents.map((agent) => renderAgentCard(agent, preflightMap.get(agent.id) || {})).join('')}
@@ -56,6 +73,14 @@
       toggle.checked = localStorage.getItem('deploy_container_mode') === '1';
       toggle.addEventListener('change', () => {
         localStorage.setItem('deploy_container_mode', toggle.checked ? '1' : '0');
+      });
+    }
+    const admissionSelect = hostEl.querySelector('#deploy-admission-mode');
+    if (admissionSelect) {
+      admissionSelect.value = currentAdmissionMode();
+      admissionSelect.addEventListener('change', () => {
+        localStorage.setItem('deploy_admission_mode', admissionSelect.value || 'warn');
+        initDeployPage(hostEl);
       });
     }
 
@@ -78,11 +103,21 @@
     const dockerDot = preflight.docker_available ? 'green' : 'grey';
     const missing = (preflight.missing_keys || []).join(', ');
     const topo = preflight.binary_topology || null;
+    const admission = preflight.admission || null;
+    const admissionMsgs = admissionIssues(preflight);
     const topoBanner = topo
       ? `<div class="deploy-banner" style="margin-top:8px">
           SHA-256: ${escapeHtml(String(topo.binary_sha256 || '').slice(0, 16))}...
           | Betti β̂₁=${Number(topo.signature?.betti1_heuristic || 0)}
           ${topo.structural_change_flagged ? '| structure changed beyond formal bound' : topo.hash_changed ? '| hash changed within loose bound' : '| topology stable'}
+        </div>`
+      : '';
+
+    const admissionBanner = admission
+      ? `<div class="deploy-banner" style="margin-top:8px;color:${admission.allowed ? 'var(--text-dim)' : 'var(--red)'}">
+          Admission ${escapeHtml(String(admission.mode || 'warn'))}: ${admission.allowed ? 'allowed' : 'blocked'}
+          ${admission.forced ? '| forced override active' : ''}
+          ${admissionMsgs.length ? `<br>${admissionMsgs.map(msg => escapeHtml(msg)).join('<br>')}` : ''}
         </div>`
       : '';
 
@@ -103,6 +138,7 @@
           <button class="btn" data-launch="1" data-agent="${escapeHtml(agent.id)}" data-mode="cockpit">Open in Cockpit</button>
         </div>
         ${topoBanner}
+        ${admissionBanner}
         ${topo?.warning ? `<div class="deploy-banner" style="color:var(--amber)">${escapeHtml(topo.warning)}</div>` : ''}
         ${preflight.install_hint ? `<div class="deploy-banner">${escapeHtml(preflight.install_hint)}</div>` : ''}
       </div>`;
@@ -116,7 +152,7 @@
       pre = await fetchJson('/api/deploy/preflight', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent_id: agentId }),
+        body: JSON.stringify({ agent_id: agentId, admission_mode: currentAdmissionMode() }),
       });
     } catch (e) {
       if (typeof window.trySetupRedirect === 'function' && window.trySetupRedirect(e, agentId, 'deploy')) return;
@@ -141,6 +177,10 @@
         }
         return;
       }
+      if (pre.admission && pre.admission.allowed === false) {
+        setBanner(`${agentId}: AETHER admission blocked launch. ${(admissionIssues(pre).join(' | ') || 'Review governor and topology state.')}`, true);
+        return;
+      }
     }
 
     if (localStorage.getItem('deploy_container_mode') === '1' && !pre.docker_available) {
@@ -160,6 +200,7 @@
           mode,
           container: localStorage.getItem('deploy_container_mode') === '1',
           working_dir: null,
+          admission_mode: currentAdmissionMode(),
         }),
       });
     } catch (e) {
@@ -167,7 +208,8 @@
       throw e;
     }
 
-    setBanner(`${agentId} launched. Opening Cockpit.`);
+    const launchIssues = admissionIssues(launch);
+    setBanner(`${agentId} launched. ${launchIssues.length ? launchIssues.join(' | ') + ' ' : ''}Opening Cockpit.`);
 
     if (window.CockpitPage && typeof window.CockpitPage.queueLaunch === 'function') {
       window.CockpitPage.queueLaunch(launch);

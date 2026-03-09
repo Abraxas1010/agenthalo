@@ -160,9 +160,13 @@ impl GovernorRegistry {
             .telemetry
             .lock()
             .map_err(|e| format!("governor telemetry lock poisoned: {e}"))?;
+        telemetry.measured_signal = 0.0;
         telemetry.oscillating = false;
         telemetry.error = 0.0;
         telemetry.lyapunov = 0.0;
+        telemetry.clamp_active = false;
+        telemetry.sparkline.clear();
+        telemetry.last_updated_unix = 0;
         Ok(())
     }
 
@@ -269,6 +273,76 @@ pub fn global_registry() -> Option<Arc<GovernorRegistry>> {
     GLOBAL_GOVERNOR_REGISTRY.get().cloned()
 }
 
+pub fn build_default_registry() -> Arc<GovernorRegistry> {
+    let registry = Arc::new(GovernorRegistry::new());
+    let configs = [
+        GovernorConfig {
+            instance_id: "gov-proxy".to_string(),
+            alpha: 0.01,
+            beta: 0.05,
+            dt: 1.0,
+            eps_min: 1.0,
+            eps_max: 50.0,
+            target: 2.0,
+            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.lyapunov_descent".to_string(),
+        },
+        GovernorConfig {
+            instance_id: "gov-comms".to_string(),
+            alpha: 0.01,
+            beta: 0.05,
+            dt: 1.0,
+            eps_min: 1.0,
+            eps_max: 32.0,
+            target: 10.0,
+            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+        },
+        GovernorConfig {
+            instance_id: "gov-compute".to_string(),
+            alpha: 0.01,
+            beta: 0.05,
+            dt: 1.0,
+            eps_min: 1.0,
+            eps_max: 10.0,
+            target: 8.0,
+            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+        },
+        GovernorConfig {
+            instance_id: "gov-cost".to_string(),
+            alpha: 0.01,
+            beta: 0.05,
+            dt: 1.0,
+            eps_min: 0.01,
+            eps_max: 10.0,
+            target: 1.0,
+            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+        },
+        GovernorConfig {
+            instance_id: "gov-pty".to_string(),
+            alpha: 0.01,
+            beta: 0.05,
+            dt: 1.0,
+            eps_min: 30.0,
+            eps_max: 900.0,
+            target: 120.0,
+            formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+        },
+    ];
+
+    for config in configs {
+        if let Err(error) = registry.register(config) {
+            eprintln!("warning: failed to register governor: {error}");
+        }
+    }
+
+    for (instance_id, result) in registry.validate_all() {
+        if let Err(error) = result {
+            eprintln!("warning: governor `{instance_id}` outside formal regime: {error}");
+        }
+    }
+
+    registry
+}
+
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -323,6 +397,11 @@ mod tests {
         let registry = registry_with_one();
         registry.observe("gov-proxy", 3.0).expect("observe");
         registry.soft_reset("gov-proxy").expect("reset");
+        let snapshot = registry.snapshot_one("gov-proxy").expect("snapshot");
+        assert!(snapshot.sparkline.is_empty());
+        assert_eq!(snapshot.last_updated_unix, 0);
+        assert_eq!(snapshot.measured_signal, 0.0);
+        assert!(!snapshot.clamp_active);
         let handle = registry.get("gov-proxy").expect("handle");
         let state = handle.lock().expect("state lock");
         assert_eq!(state.e_prev, 0.0);

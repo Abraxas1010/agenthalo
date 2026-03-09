@@ -1,5 +1,7 @@
 use crate::cli::default_witness_cfg;
 use crate::cockpit::pty_manager::PtyManager;
+use crate::halo::admission::{evaluate_launch_admission, AdmissionMode, AdmissionReport};
+use crate::halo::governor_registry::GovernorRegistry;
 use crate::halo::topo_signature::{self, CompareResult, TopoSignature};
 use crate::halo::vault::Vault;
 use crate::persistence::{default_wal_path, load_snapshot, persist_snapshot_and_sync_wal};
@@ -115,6 +117,8 @@ pub struct PreflightResult {
     pub install_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binary_topology: Option<DeployTopologyStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission: Option<AdmissionReport>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -124,12 +128,16 @@ pub struct LaunchRequest {
     #[serde(default)]
     pub container: bool,
     pub working_dir: Option<String>,
+    #[serde(default)]
+    pub admission_mode: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LaunchResult {
     pub session_id: String,
     pub panels: Vec<PanelInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission: Option<AdmissionReport>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -193,6 +201,8 @@ pub fn preflight(
     agent_id: &str,
     vault: Option<&Vault>,
     db_path: Option<&Path>,
+    governor_registry: Option<&GovernorRegistry>,
+    admission_mode: AdmissionMode,
 ) -> Result<PreflightResult, String> {
     let catalog = agent_catalog();
     let agent = catalog
@@ -223,6 +233,15 @@ pub fn preflight(
         .as_deref()
         .map(|path| inspect_binary_topology(agent_id, Path::new(path), db_path))
         .transpose()?;
+    let admission = Some(evaluate_launch_admission(
+        admission_mode,
+        governor_registry,
+        binary_topology.as_ref(),
+    ));
+    let admission_allowed = admission
+        .as_ref()
+        .map(|report| report.allowed)
+        .unwrap_or(true);
 
     Ok(PreflightResult {
         cli_installed,
@@ -234,9 +253,10 @@ pub fn preflight(
             missing_keys
         },
         docker_available,
-        ready: cli_installed && keys_configured,
+        ready: cli_installed && keys_configured && admission_allowed,
         install_hint: agent.install_hint.map(|s| s.to_string()),
         binary_topology,
+        admission,
     })
 }
 
@@ -245,6 +265,7 @@ pub fn launch(
     pty_manager: &PtyManager,
     vault: Option<&Vault>,
     db_path: Option<&Path>,
+    governor_registry: Option<&GovernorRegistry>,
 ) -> Result<LaunchResult, String> {
     let catalog = agent_catalog();
     let agent = catalog
@@ -252,7 +273,8 @@ pub fn launch(
         .find(|a| a.id == req.agent_id)
         .ok_or_else(|| format!("unknown agent `{}`", req.agent_id))?;
 
-    let pre = preflight(agent.id, vault, db_path)?;
+    let admission_mode = AdmissionMode::parse(req.admission_mode.as_deref())?;
+    let pre = preflight(agent.id, vault, db_path, governor_registry, admission_mode)?;
     if !pre.cli_installed {
         return Err(format!(
             "CLI `{}` is not installed. {}",
@@ -263,6 +285,20 @@ pub fn launch(
     }
     if !pre.keys_configured {
         return Err(format!("missing API keys: {}", pre.missing_keys.join(", ")));
+    }
+    if let Some(admission) = pre.admission.as_ref() {
+        if !admission.allowed {
+            let reasons = admission
+                .issues
+                .iter()
+                .map(|issue| issue.message.clone())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            return Err(format!(
+                "AETHER admission policy blocked launch (mode={}): {}",
+                admission.mode, reasons
+            ));
+        }
     }
 
     let mut env_vars: Vec<(String, String)> = Vec::new();
@@ -339,6 +375,7 @@ pub fn launch(
     Ok(LaunchResult {
         session_id: id,
         panels,
+        admission: pre.admission,
     })
 }
 
@@ -547,7 +584,12 @@ fn which_command(command: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_docker_args, inspect_binary_topology, route_working_dir, StoredTopoRecord};
+    use super::{
+        build_docker_args, inspect_binary_topology, preflight, route_working_dir, StoredTopoRecord,
+    };
+    use crate::halo::admission::AdmissionMode;
+    use crate::halo::governor::GovernorConfig;
+    use crate::halo::governor_registry::GovernorRegistry;
     use crate::halo::topo_signature::fingerprint;
 
     #[test]
@@ -618,5 +660,43 @@ mod tests {
         let roundtrip: StoredTopoRecord = serde_json::from_value(value).expect("deserialize");
         assert_eq!(roundtrip.agent_id, "codex");
         assert_eq!(roundtrip.signature.data_len, 8);
+    }
+
+    #[test]
+    fn preflight_reports_blocked_admission_when_governor_is_outside_regime() {
+        let registry = GovernorRegistry::new();
+        registry
+            .register(GovernorConfig {
+                instance_id: "gov-compute".to_string(),
+                alpha: 0.8,
+                beta: 0.3,
+                dt: 1.0,
+                eps_min: 1.0,
+                eps_max: 10.0,
+                target: 8.0,
+                formal_basis: "test".to_string(),
+            })
+            .expect("register gov-compute");
+        registry
+            .register(GovernorConfig {
+                instance_id: "gov-pty".to_string(),
+                alpha: 0.01,
+                beta: 0.05,
+                dt: 1.0,
+                eps_min: 30.0,
+                eps_max: 900.0,
+                target: 120.0,
+                formal_basis: "test".to_string(),
+            })
+            .expect("register gov-pty");
+
+        let result = preflight("shell", None, None, Some(&registry), AdmissionMode::Block)
+            .expect("preflight");
+        let admission = result.admission.expect("admission");
+        assert!(!admission.allowed);
+        assert!(admission
+            .issues
+            .iter()
+            .any(|issue| issue.code == "governor_gain_violated"));
     }
 }

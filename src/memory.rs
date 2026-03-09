@@ -232,7 +232,7 @@ impl MemoryStore {
 
     pub fn recall(
         &self,
-        db: &NucleusDb,
+        db: &mut NucleusDb,
         query: &str,
         k: usize,
     ) -> Result<Vec<MemoryRecallRecord>, String> {
@@ -250,22 +250,26 @@ impl MemoryStore {
         let candidate_k = (k * cfg.candidate_multiplier)
             .max(k)
             .min(cfg.max_candidates);
-        let mut candidates = db
-            .vector_index
-            .all_keys()
+        let search_results = db.vector_index.search_with_access(
+            &query_vec,
+            db.vector_index.len(),
+            crate::vector_index::DistanceMetric::Cosine,
+        )?;
+        let mut candidates = search_results
             .into_iter()
-            .filter(|key| key.starts_with(MEMORY_KEY_PREFIX) && key.ends_with(MEMORY_VECTOR_SUFFIX))
-            .filter_map(|key| {
-                let vec = db.vector_index.get(&key)?;
-                let distance = crate::embeddings::cosine_distance(&query_vec, vec).ok()?;
-                let base_key = key.strip_suffix(MEMORY_VECTOR_SUFFIX)?;
-                let typed = db.get_typed(base_key)?;
+            .filter(|result| {
+                result.key.starts_with(MEMORY_KEY_PREFIX)
+                    && result.key.ends_with(MEMORY_VECTOR_SUFFIX)
+            })
+            .filter_map(|result| {
+                let base_key = result.key.strip_suffix(MEMORY_VECTOR_SUFFIX)?;
+                let typed = db.get_typed_touching(base_key)?;
                 let text = match typed {
                     TypedValue::Text(t) => t,
                     _ => return None,
                 };
                 let meta_key = format!("{base_key}{MEMORY_META_SUFFIX}");
-                let (source, created) = match db.get_typed(&meta_key) {
+                let (source, created) = match db.get_typed_touching(&meta_key) {
                     Some(TypedValue::Json(meta)) => {
                         let source = meta
                             .get("source")
@@ -284,7 +288,7 @@ impl MemoryStore {
                     text,
                     source,
                     created,
-                    base_distance: distance,
+                    base_distance: result.distance,
                 })
             })
             .collect::<Vec<_>>();
@@ -829,7 +833,7 @@ mod tests {
             )
             .expect("store");
         let hits = store
-            .recall(&db, "how does vector similarity search work", 5)
+            .recall(&mut db, "how does vector similarity search work", 5)
             .expect("recall");
         assert!(!hits.is_empty(), "expected at least one recall hit");
         assert!(hits[0].key.starts_with(MEMORY_KEY_PREFIX));
@@ -931,7 +935,7 @@ mod tests {
             .expect("store not-private");
 
         let hits = store
-            .recall(&db, "route not private visibility policy", 2)
+            .recall(&mut db, "route not private visibility policy", 2)
             .expect("recall");
         assert_eq!(hits.len(), 2);
         assert!(
@@ -975,7 +979,7 @@ mod tests {
             .expect("store noise");
 
         let hits = store
-            .recall(&db, "mathematical guarantees for software behavior", 2)
+            .recall(&mut db, "mathematical guarantees for software behavior", 2)
             .expect("recall");
         assert_eq!(hits.len(), 2);
         assert!(

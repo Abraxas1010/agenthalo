@@ -321,6 +321,7 @@ pub fn provider_default_env_var(provider: &str) -> String {
     }
     match normalized.as_str() {
         "anthropic" => "ANTHROPIC_API_KEY".to_string(),
+        "huggingface" => "HF_TOKEN".to_string(),
         "openai" => "OPENAI_API_KEY".to_string(),
         "google" => "GOOGLE_API_KEY".to_string(),
         "openrouter" => "OPENROUTER_API_KEY".to_string(),
@@ -339,6 +340,7 @@ pub fn provider_default_env_var(provider: &str) -> String {
 fn known_providers() -> Vec<&'static str> {
     vec![
         "anthropic",
+        "huggingface",
         "openai",
         "google",
         "openrouter",

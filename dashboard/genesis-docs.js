@@ -124,6 +124,21 @@ const DOCS_PAGES = [
       { val: 'PQ', lbl: 'Witnesses' },
     ],
   },
+  {
+    id: 'networking',
+    title: 'Distribution',
+    subtitle: 'Content-Addressed Bitswap Over P2P Mesh',
+    icon: '\u2B21',
+    color: 'blue',
+    status: 'live',
+    summary: 'Peer-to-peer asset distribution using BLAKE3 content-addressed chunks and the Bitswap protocol over libp2p. Assets are split into 256 KiB chunks, assembled into manifests with durable ProofEnvelopes, and exchanged via Want/Have/Block messages with a 4 MiB frame cap. Grant-based ACL enforcement (optional fail-closed mode) and PCN payment channel settlement for chunk transfers. Startup hydration restores persisted chunks and grants into the live runtime.',
+    stats: [
+      { val: 'BLAKE3', lbl: 'Hashing' },
+      { val: '256 KiB', lbl: 'Chunks' },
+      { val: 'PCN', lbl: 'Settlement' },
+      { val: '4 MiB', lbl: 'Frame Cap' },
+    ],
+  },
 ];
 
 function renderDocsOverview() {
