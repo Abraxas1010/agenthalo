@@ -5,6 +5,9 @@ use crate::halo::p2p_discovery::{
     announcement_for_identity, sign_announcement, topic_general, AgentDiscovery,
 };
 use crate::halo::p2p_node::{P2pConfig, P2pNode};
+use crate::persistence::{default_wal_path, load_wal};
+use crate::protocol::NucleusDb;
+use crate::swarm::chunk_store::ChunkStore;
 use base64::Engine as _;
 use std::sync::Arc;
 use std::time::Duration;
@@ -89,6 +92,36 @@ impl StartupConfig {
     }
 }
 
+fn load_swarm_db() -> Option<NucleusDb> {
+    let db_path = crate::halo::config::db_path();
+    let wal_path = default_wal_path(&db_path);
+    if wal_path.exists() {
+        load_wal(&wal_path, crate::cli::default_witness_cfg())
+            .ok()
+            .or_else(|| {
+                NucleusDb::load_persistent(&db_path, crate::cli::default_witness_cfg()).ok()
+            })
+    } else if db_path.exists() {
+        NucleusDb::load_persistent(&db_path, crate::cli::default_witness_cfg()).ok()
+    } else {
+        None
+    }
+}
+
+fn hydrate_bitswap_runtime(node: &mut P2pNode) {
+    let swarm_config = crate::swarm::config::SwarmConfig::from_env();
+    node.bitswap_runtime_mut()
+        .set_require_grants(swarm_config.require_grants);
+    if let Some(db) = load_swarm_db() {
+        let swarm_store = ChunkStore::load_from_db(&db);
+        node.bitswap_runtime_mut()
+            .register_local_chunks(&swarm_store.all_chunks());
+    }
+    let grant_path = crate::halo::config::db_path().with_extension("pod_grants.json");
+    let grants = crate::pod::acl::GrantStore::load_or_default(&grant_path);
+    node.bitswap_runtime_mut().set_grants(grants);
+}
+
 pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, String> {
     let identity = Arc::new(did_from_genesis_seed(seed)?);
     eprintln!("[AgentHalo/Startup][1/5] identity loaded: {}", identity.did);
@@ -119,6 +152,7 @@ pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, 
 
     if config.p2p_enabled && config.p2p_config.enabled {
         let mut node = P2pNode::create_from_did(&identity, &config.p2p_config)?;
+        hydrate_bitswap_runtime(&mut node);
         eprintln!("[AgentHalo/Startup][3/5] p2p peer id: {}", node.peer_id());
 
         let mut handler = DIDCommHandler::new(identity.clone());
@@ -224,6 +258,57 @@ pub async fn start(seed: &[u8; 64], config: StartupConfig) -> Result<HaloStack, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::default_witness_cfg;
+    use crate::protocol::{NucleusDb, VcBackend};
+    use crate::state::State;
+    use crate::swarm::chunk_engine::chunk_data;
+    use crate::swarm::chunk_store::ChunkStore;
+    use crate::swarm::config::ChunkParams;
+    use crate::test_support::lock_env;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "agenthalo_startup_{tag}_{}_{}.ndb",
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    fn cleanup_db_files(db_path: &Path) {
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_file(default_wal_path(db_path));
+        let _ = std::fs::remove_file(db_path.with_extension("pod_grants.json"));
+    }
+
+    struct EnvVarRestore {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvVarRestore {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            if let Some(prev) = &self.prev {
+                std::env::set_var(self.key, prev);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn startup_without_p2p_still_loads_identity() {
@@ -251,5 +336,135 @@ mod tests {
         let stack = start(&seed, config).await.expect("startup");
         assert!(!stack.nym_status.healthy);
         assert_eq!(stack.nym_status.mode, crate::halo::nym::NymMode::Disabled);
+    }
+
+    #[test]
+    fn startup_hydrates_bitswap_chunks_from_db() {
+        let join = std::thread::Builder::new()
+            .name("startup_hydrates_bitswap_chunks_from_db".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime");
+                rt.block_on(async {
+                    let _guard = lock_env();
+                    let db_path = temp_db_path("bitswap_hydrate");
+                    let mut db = NucleusDb::new(
+                        State::new(vec![]),
+                        VcBackend::BinaryMerkle,
+                        default_witness_cfg(),
+                    );
+                    let mut store = ChunkStore::new();
+                    let chunk = chunk_data(b"startup bitswap", &ChunkParams::default())
+                        .into_iter()
+                        .next()
+                        .expect("chunk");
+                    store
+                        .store_chunks(&mut db, &[chunk.clone()])
+                        .expect("store chunks");
+                    db.save_persistent(&db_path).expect("save db");
+                    std::env::set_var("AGENTHALO_DB_PATH", db_path.display().to_string());
+
+                    let seed = [0x7cu8; 64];
+                    let config = StartupConfig {
+                        nym_enabled: false,
+                        p2p_enabled: true,
+                        p2p_config: P2pConfig {
+                            listen_port: 0,
+                            ..P2pConfig::default()
+                        },
+                        ..StartupConfig::default()
+                    };
+                    let mut stack = start(&seed, config).await.expect("startup");
+                    let peer = libp2p::PeerId::random();
+                    let response = stack
+                        .p2p_node
+                        .as_mut()
+                        .expect("p2p node")
+                        .bitswap_runtime_mut()
+                        .handle_request(
+                            &peer,
+                            crate::swarm::bitswap::BitswapMessage::Want(vec![chunk.id.clone()]),
+                        );
+                    assert_eq!(
+                        response,
+                        crate::swarm::bitswap::BitswapMessage::Have(vec![chunk.id])
+                    );
+
+                    std::env::remove_var("AGENTHALO_DB_PATH");
+                    cleanup_db_files(&db_path);
+                });
+            })
+            .expect("spawn large-stack test thread");
+        join.join()
+            .expect("startup bitswap hydration test thread panicked");
+    }
+
+    #[test]
+    fn startup_hydrates_require_grants_mode_from_env() {
+        let join = std::thread::Builder::new()
+            .name("startup_hydrates_require_grants_mode_from_env".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime");
+                rt.block_on(async {
+                    let _guard = lock_env();
+                    let _require_grants = EnvVarRestore::set("HALO_BITSWAP_REQUIRE_GRANTS", "1");
+                    let db_path = temp_db_path("bitswap_require_grants");
+                    let _db_path_env =
+                        EnvVarRestore::set("AGENTHALO_DB_PATH", &db_path.display().to_string());
+
+                    let mut db = NucleusDb::new(
+                        State::new(vec![]),
+                        VcBackend::BinaryMerkle,
+                        default_witness_cfg(),
+                    );
+                    let mut store = ChunkStore::new();
+                    let chunk = chunk_data(b"startup locked bitswap", &ChunkParams::default())
+                        .into_iter()
+                        .next()
+                        .expect("chunk");
+                    store
+                        .store_chunks(&mut db, &[chunk.clone()])
+                        .expect("store chunks");
+                    db.save_persistent(&db_path).expect("save db");
+
+                    let seed = [0x7du8; 64];
+                    let config = StartupConfig {
+                        nym_enabled: false,
+                        p2p_enabled: true,
+                        p2p_config: P2pConfig {
+                            listen_port: 0,
+                            ..P2pConfig::default()
+                        },
+                        ..StartupConfig::default()
+                    };
+                    let mut stack = start(&seed, config).await.expect("startup");
+                    let peer = libp2p::PeerId::random();
+                    let response = stack
+                        .p2p_node
+                        .as_mut()
+                        .expect("p2p node")
+                        .bitswap_runtime_mut()
+                        .handle_request(
+                            &peer,
+                            crate::swarm::bitswap::BitswapMessage::Want(vec![chunk.id]),
+                        );
+                    assert_eq!(
+                        response,
+                        crate::swarm::bitswap::BitswapMessage::Have(Vec::new())
+                    );
+
+                    cleanup_db_files(&db_path);
+                });
+            })
+            .expect("spawn large-stack test thread");
+        join.join()
+            .expect("startup require-grants test thread panicked");
     }
 }

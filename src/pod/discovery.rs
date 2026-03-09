@@ -42,6 +42,12 @@ pub struct PodCapabilities {
     /// Peer agent IDs this agent is aware of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub known_peers: Vec<String>,
+    /// Whether the agent exposes the local chunk store surface.
+    #[serde(default)]
+    pub chunk_store_available: bool,
+    /// Whether Bitswap request-response is enabled on the halo mesh.
+    #[serde(default)]
+    pub bitswap_enabled: bool,
 }
 
 impl PodCapabilities {
@@ -70,6 +76,8 @@ impl PodCapabilities {
             agent_id: None,
             mesh_network: None,
             known_peers: vec![],
+            chunk_store_available: true,
+            bitswap_enabled: crate::swarm::config::SwarmConfig::from_env().bitswap_enabled,
         }
     }
 

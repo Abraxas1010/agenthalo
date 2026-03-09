@@ -757,15 +757,28 @@ async fn nucleus_pod_handler(
     axum::extract::State(state): axum::extract::State<DidcommRouteState>,
 ) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
     match load_agent_identity() {
-        Ok(identity) => (
-            axum::http::StatusCode::OK,
-            axum::Json(serde_json::json!({
-                "agent_id": std::env::var("NUCLEUSDB_MESH_AGENT_ID").unwrap_or_default(),
-                "agent_did": identity.did,
-                "did_document": identity.did_document,
-                "mcp_endpoint": state.mcp_endpoint,
-            })),
-        ),
+        Ok(identity) => {
+            let mut caps = crate::pod::discovery::PodCapabilities::build(
+                &state.mcp_endpoint.trim_end_matches("/mcp"),
+                &[crate::protocol::VcBackend::BinaryMerkle],
+                None,
+            )
+            .with_mesh_from_env();
+            caps.mcp_endpoint = Some(state.mcp_endpoint.clone());
+            caps.agent_id = Some(std::env::var("NUCLEUSDB_MESH_AGENT_ID").unwrap_or_default());
+            caps.agent_did = Some(identity.did.clone());
+            (
+                axum::http::StatusCode::OK,
+                axum::Json(serde_json::json!({
+                    "agent_id": caps.agent_id,
+                    "agent_did": caps.agent_did,
+                    "did_document": identity.did_document,
+                    "mcp_endpoint": caps.mcp_endpoint,
+                    "chunk_store_available": caps.chunk_store_available,
+                    "bitswap_enabled": caps.bitswap_enabled,
+                })),
+            )
+        }
         Err(e) => (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(serde_json::json!({
@@ -804,7 +817,8 @@ async fn auth_info_handler(config: Arc<AuthConfig>) -> axum::Json<serde_json::Va
                 "nucleusdb_help", "nucleusdb_status", "nucleusdb_query",
                 "nucleusdb_query_range", "nucleusdb_verify", "nucleusdb_export",
                 "nucleusdb_history", "abraxas_query_records", "abraxas_record_status",
-                "abraxas_merge_status", "abraxas_workspace_diff", "mesh_peers", "mesh_ping"
+                "abraxas_merge_status", "abraxas_workspace_diff", "mesh_peers", "mesh_ping",
+                "swarm_status"
             ],
             "trust:verify": [
                 "nucleusdb_verify_agent", "verify_agent_multichain", "register_chain"
@@ -814,7 +828,7 @@ async fn auth_info_handler(config: Arc<AuthConfig>) -> axum::Json<serde_json::Va
                 "nucleusdb_open_database", "nucleusdb_checkpoint",
                 "abraxas_submit_record", "abraxas_resolve_conflict",
                 "abraxas_export_git", "abraxas_workspace_init", "abraxas_workspace_submit",
-                "mesh_call", "mesh_exchange_envelope"
+                "mesh_call", "mesh_exchange_envelope", "swarm_publish", "swarm_fetch"
             ],
             "trust:attest": [
                 "nucleusdb_agent_register", "submit_composite_attestation", "mesh_grant"

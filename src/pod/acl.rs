@@ -9,6 +9,7 @@
 use crate::pod::{now_unix, now_unix_nanos};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -172,6 +173,18 @@ impl GrantStore {
 
     pub fn replace_all(&mut self, grants: Vec<AccessGrant>) {
         self.grants = grants;
+    }
+
+    pub fn load_from_path(path: &Path) -> Result<Self, String> {
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("read grants {}: {e}", path.display()))?;
+        let grants: Vec<AccessGrant> = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("parse grants {}: {e}", path.display()))?;
+        Ok(Self::from_grants(grants))
+    }
+
+    pub fn load_or_default(path: &Path) -> Self {
+        Self::load_from_path(path).unwrap_or_default()
     }
 
     /// Create a new grant and return it.
@@ -461,5 +474,30 @@ mod tests {
         });
         assert!(store.can_control(&puf_b(), "acl/ruleset"));
         assert!(!store.can_control(&puf_b(), "other/ruleset"));
+    }
+
+    #[test]
+    fn load_from_path_roundtrip() {
+        let mut store = GrantStore::new();
+        store.create(GrantRequest {
+            grantor_puf: puf_a(),
+            grantee_puf: puf_b(),
+            key_pattern: "swarm/chunk/*".to_string(),
+            permissions: GrantPermissions::read_only(),
+            expires_at: None,
+        });
+        let path = std::env::temp_dir().join(format!(
+            "pod_grants_roundtrip_{}_{}.json",
+            std::process::id(),
+            now_unix_nanos()
+        ));
+        let raw = serde_json::to_vec(store.list_all()).expect("serialize");
+        std::fs::write(&path, raw).expect("write");
+
+        let loaded = GrantStore::load_from_path(&path).expect("load");
+        assert_eq!(loaded.list_all().len(), 1);
+        assert!(loaded.can_read(&puf_b(), "swarm/chunk/demo"));
+
+        let _ = std::fs::remove_file(path);
     }
 }

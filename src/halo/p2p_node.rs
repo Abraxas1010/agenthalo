@@ -13,6 +13,7 @@ use libp2p::kad::{self, store::MemoryStore};
 use libp2p::mdns;
 use libp2p::noise;
 use libp2p::relay;
+use libp2p::request_response;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::yamux;
 use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
@@ -92,6 +93,7 @@ pub struct HaloBehaviour {
     pub identify: identify::Behaviour,
     pub kademlia: kad::Behaviour<MemoryStore>,
     pub gossipsub: gossipsub::Behaviour,
+    pub bitswap: crate::swarm::bitswap::BitswapBehaviour,
     pub relay_client: relay::client::Behaviour,
     pub dcutr: dcutr::Behaviour,
     pub mdns: mdns::tokio::Behaviour,
@@ -103,6 +105,7 @@ pub enum HaloBehaviourEvent {
     Identify(Box<identify::Event>),
     Kademlia(Box<kad::Event>),
     Gossipsub(Box<gossipsub::Event>),
+    Bitswap(Box<crate::swarm::bitswap::BitswapEvent>),
     RelayClient(Box<relay::client::Event>),
     Dcutr(Box<dcutr::Event>),
     Mdns(Box<mdns::Event>),
@@ -124,6 +127,12 @@ impl From<kad::Event> for HaloBehaviourEvent {
 impl From<gossipsub::Event> for HaloBehaviourEvent {
     fn from(value: gossipsub::Event) -> Self {
         Self::Gossipsub(Box::new(value))
+    }
+}
+
+impl From<crate::swarm::bitswap::BitswapEvent> for HaloBehaviourEvent {
+    fn from(value: crate::swarm::bitswap::BitswapEvent) -> Self {
+        Self::Bitswap(Box::new(value))
     }
 }
 
@@ -155,6 +164,7 @@ pub struct P2pNode {
     swarm: Swarm<HaloBehaviour>,
     peer_id: PeerId,
     config: P2pConfig,
+    bitswap_runtime: crate::swarm::bitswap::BitswapRuntime,
 }
 
 impl P2pNode {
@@ -213,6 +223,7 @@ impl P2pNode {
                     )),
                     kademlia: kad_behaviour,
                     gossipsub,
+                    bitswap: crate::swarm::bitswap::BitswapProtocol::behaviour(),
                     relay_client,
                     dcutr: dcutr::Behaviour::new(local_peer_id),
                     mdns: mdns_behaviour,
@@ -245,6 +256,7 @@ impl P2pNode {
             swarm,
             peer_id,
             config,
+            bitswap_runtime: crate::swarm::bitswap::BitswapRuntime::default(),
         })
     }
 
@@ -277,6 +289,36 @@ impl P2pNode {
         &mut self.swarm.behaviour_mut().gossipsub
     }
 
+    pub fn bitswap_runtime_mut(&mut self) -> &mut crate::swarm::bitswap::BitswapRuntime {
+        &mut self.bitswap_runtime
+    }
+
+    fn handle_bitswap_event(&mut self, event: crate::swarm::bitswap::BitswapEvent) {
+        match event {
+            request_response::Event::Message { peer, message, .. } => match message {
+                request_response::Message::Request {
+                    request, channel, ..
+                } => {
+                    let response = self.bitswap_runtime.handle_request(&peer, request);
+                    if let Err(error) = self
+                        .swarm
+                        .behaviour_mut()
+                        .bitswap
+                        .send_response(channel, response)
+                    {
+                        eprintln!("[AgentHalo/P2P] bitswap send_response failed: {error:?}");
+                    }
+                }
+                request_response::Message::Response { response, .. } => {
+                    let _ = self.bitswap_runtime.handle_request(&peer, response);
+                }
+            },
+            other => {
+                eprintln!("[AgentHalo/P2P] bitswap event: {other:?}");
+            }
+        }
+    }
+
     pub async fn run(&mut self) -> Result<(), String> {
         loop {
             let Some(event) = self.swarm.next().await else {
@@ -292,6 +334,9 @@ impl P2pNode {
                 }
                 SwarmEvent::Behaviour(HaloBehaviourEvent::Gossipsub(event)) => {
                     eprintln!("[AgentHalo/P2P] gossipsub event: {event:?}");
+                }
+                SwarmEvent::Behaviour(HaloBehaviourEvent::Bitswap(event)) => {
+                    self.handle_bitswap_event(*event);
                 }
                 SwarmEvent::Behaviour(HaloBehaviourEvent::RelayClient(event)) => {
                     eprintln!("[AgentHalo/P2P] relay client event: {event:?}");
@@ -488,6 +533,9 @@ impl P2pNode {
                                 eprintln!("[AgentHalo/P2P] gossipsub event: {other:?}");
                             }
                         },
+                        SwarmEvent::Behaviour(HaloBehaviourEvent::Bitswap(event)) => {
+                            self.handle_bitswap_event(*event);
+                        }
                         SwarmEvent::Behaviour(HaloBehaviourEvent::RelayClient(event)) => {
                             eprintln!("[AgentHalo/P2P] relay client event: {event:?}");
                         }

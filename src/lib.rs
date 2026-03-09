@@ -27,6 +27,7 @@ pub mod security_utils;
 pub mod sheaf;
 pub mod sql;
 pub mod state;
+pub mod swarm;
 pub mod transparency;
 pub mod trust;
 pub mod tui;

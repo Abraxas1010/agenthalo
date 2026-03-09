@@ -87,7 +87,8 @@ impl ToolScope {
             | "proof_gate_verify"
             | "proof_gate_requirements"
             | "agenthalo_evidence_combine"
-            | "agenthalo_uncertainty_translate" => Self::Read,
+            | "agenthalo_uncertainty_translate"
+            | "swarm_status" => Self::Read,
             // Trust verification (read-only chain queries)
             "nucleusdb_verify_agent"
             | "verify_agent_multichain"
@@ -107,7 +108,9 @@ impl ToolScope {
             | "abraxas_workspace_submit"
             | "access_grant"
             | "access_revoke"
-            | "proof_gate_submit" => Self::Write,
+            | "proof_gate_submit"
+            | "swarm_publish"
+            | "swarm_fetch" => Self::Write,
             // Trust attestation (on-chain submit)
             "nucleusdb_agent_register"
             | "submit_composite_attestation"

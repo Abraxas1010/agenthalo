@@ -1,8 +1,13 @@
 use crate::cli::{default_witness_cfg, parse_backend};
+use crate::cockpit::deploy;
 use crate::container::launcher::{
     container_logs as launcher_container_logs, container_status as launcher_container_status,
     launch_container, list_sessions as list_container_sessions,
     stop_container as launcher_stop_container, MeshConfig, RunConfig,
+};
+use crate::halo::admission::{evaluate_launch_admission, AdmissionMode};
+use crate::halo::governor_registry::{
+    build_default_registry, install_global_registry, GovernorRegistry,
 };
 use crate::immutable::WriteMode;
 use crate::orchestrator::{
@@ -14,6 +19,11 @@ use crate::persistence::{init_wal, load_wal, persist_snapshot_and_sync_wal, trun
 use crate::protocol::{NucleusDb, QueryProof, VcBackend};
 use crate::sql::executor::{SqlExecutor, SqlResult};
 use crate::state::State;
+use crate::swarm::chunk_engine::{chunk_data, reassemble_chunks};
+use crate::swarm::chunk_store::ChunkStore;
+use crate::swarm::config::{ChunkParams, SwarmConfig};
+use crate::swarm::manifest::{verify_manifest, ManifestBuilder};
+use crate::swarm::types::{AssetType, ManifestId};
 use crate::transparency::ct6962::hex_encode;
 use crate::trust::composite_cab::CompositeCabGenerator;
 use crate::trust::onchain::{
@@ -26,6 +36,7 @@ use crate::vcs::{
     parse_hash_hex as vcs_parse_hash_hex, work_records_from_workspace,
     QueryFilter as VcsQueryFilter, WorkRecord, WorkRecordInput, WorkRecordStore, WorkRecordView,
 };
+use base64::Engine;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{Implementation, ServerCapabilities, ServerInfo},
@@ -40,14 +51,19 @@ use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[derive(Debug)]
 struct ServiceState {
     db: NucleusDb,
     db_path: PathBuf,
     wal_path: PathBuf,
     work_record_store: WorkRecordStore,
     memory_store: crate::memory::MemoryStore,
+    swarm_store: ChunkStore,
+    swarm_config: SwarmConfig,
+    bitswap_runtime: crate::swarm::bitswap::BitswapRuntime,
     orchestrator: Orchestrator,
+    vault: Option<Arc<crate::halo::vault::Vault>>,
+    pty_manager: Arc<crate::cockpit::pty_manager::PtyManager>,
+    governor_registry: Arc<GovernorRegistry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +72,7 @@ enum ExportFormat {
     TypedV2,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct NucleusDbMcpService {
     state: Arc<Mutex<ServiceState>>,
     tool_router: ToolRouter<Self>,
@@ -160,6 +176,74 @@ pub struct MemoryIngestResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SwarmPublishRequest {
+    /// UTF-8 text or base64-encoded bytes depending on `encoding`.
+    pub data: String,
+    /// `utf8` (default) or `base64`.
+    pub encoding: Option<String>,
+    /// Optional asset type label.
+    pub asset_type: Option<AssetType>,
+    /// Optional creator DID. Defaults to `did:key:local`.
+    pub creator_did: Option<String>,
+    /// Optional chunk size override.
+    pub chunk_size_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SwarmFetchRequest {
+    pub manifest_id: String,
+    /// `utf8` or `base64` (default).
+    pub encoding: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SwarmRemoteFetchRequest {
+    pub manifest_id: String,
+    /// `utf8` or `base64` (default) for the eventual fetched payload.
+    pub encoding: Option<String>,
+    /// Optional per-request timeout hint for the future live Bitswap implementation.
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SwarmPublishResponse {
+    pub manifest_id: String,
+    pub chunk_count: usize,
+    pub total_size: usize,
+    pub root_hash: String,
+    pub proof_attached: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SwarmFetchResponse {
+    pub manifest_id: String,
+    pub chunk_count: usize,
+    pub total_size: usize,
+    pub encoding: String,
+    pub data: String,
+    pub verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SwarmRemoteFetchResponse {
+    pub manifest_id: String,
+    pub implemented: bool,
+    pub message: String,
+    pub tracking_issue: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SwarmStatusResponse {
+    pub total_chunks: usize,
+    pub total_bytes: usize,
+    pub manifest_count: usize,
+    pub active_transfers: usize,
+    pub peer_count: usize,
+    pub bitswap_enabled: bool,
+    pub chunk_credit_cost: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EvidenceCombineRequest {
     /// Optional prior probability P(H). If omitted, use prior_odds_false_over_true.
     pub prior_probability_true: Option<f64>,
@@ -214,6 +298,8 @@ pub struct OrchestratorLaunchRequest {
     /// Capability set granted to this agent.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// AETHER admission mode: warn | block | force.
+    pub admission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -225,6 +311,11 @@ pub struct OrchestratorLaunchResponse {
     pub agent_name: String,
     pub capabilities: Vec<String>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub admission_mode: Option<String>,
+    pub admission_forced: bool,
+    #[serde(default)]
+    pub admission_issues: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -831,6 +922,8 @@ pub struct ContainerLaunchRequest {
     /// Optional mesh settings for inter-container communication.
     #[serde(default)]
     pub mesh: Option<ContainerMeshRequest>,
+    /// AETHER admission mode: warn | block | force.
+    pub admission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -852,6 +945,67 @@ pub struct ContainerLaunchResponse {
     pub image: String,
     pub agent_id: String,
     pub host_sock: String,
+    #[serde(default)]
+    pub admission_mode: Option<String>,
+    pub admission_forced: bool,
+    #[serde(default)]
+    pub admission_issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GovernorStatusRequest {
+    /// Optional specific instance id. When omitted, returns all registered runtime governors plus gov-memory aggregate.
+    pub instance_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GovernorResetToolRequest {
+    /// Instance id to reset. Use `gov-memory` for the storage-local governors or omit with `all=true`.
+    pub instance_id: Option<String>,
+    /// Reset all runtime governors plus gov-memory.
+    pub all: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeployPreflightToolRequest {
+    pub agent_id: String,
+    pub admission_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeployLaunchToolRequest {
+    pub agent_id: String,
+    pub mode: String,
+    pub container: Option<bool>,
+    pub working_dir: Option<String>,
+    pub admission_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeployStatusToolRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GovernorStatusToolResponse {
+    pub instances: Vec<serde_json::Value>,
+    pub memory: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeployPreflightToolResponse {
+    pub result: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeployLaunchToolResponse {
+    pub result: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeployStatusToolResponse {
+    pub id: String,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1544,6 +1698,52 @@ impl NucleusDbMcpService {
         format!("0x{}", hex_encode(&h.finalize()))
     }
 
+    fn decode_swarm_payload(data: &str, encoding: Option<&str>) -> Result<Vec<u8>, McpError> {
+        match encoding
+            .unwrap_or("utf8")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "utf8" | "text" => Ok(data.as_bytes().to_vec()),
+            "base64" => base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|e| {
+                    McpError::invalid_params(format!("invalid base64 swarm payload: {e}"), None)
+                }),
+            other => Err(McpError::invalid_params(
+                format!("unsupported swarm encoding `{other}`"),
+                None,
+            )),
+        }
+    }
+
+    fn encode_swarm_payload(
+        data: &[u8],
+        encoding: Option<&str>,
+    ) -> Result<(String, String), McpError> {
+        match encoding
+            .unwrap_or("base64")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "utf8" | "text" => String::from_utf8(data.to_vec())
+                .map(|value| (value, "utf8".to_string()))
+                .map_err(|e| {
+                    McpError::invalid_params(format!("payload is not valid UTF-8: {e}"), None)
+                }),
+            "base64" => Ok((
+                base64::engine::general_purpose::STANDARD.encode(data),
+                "base64".to_string(),
+            )),
+            other => Err(McpError::invalid_params(
+                format!("unsupported swarm encoding `{other}`"),
+                None,
+            )),
+        }
+    }
+
     fn create_state(
         db_path: PathBuf,
         wal_path: PathBuf,
@@ -1561,14 +1761,35 @@ impl NucleusDbMcpService {
         )
         .ok()
         .map(Arc::new);
-        let pty_manager = Arc::new(crate::cockpit::pty_manager::PtyManager::new(24));
+        let governor_registry = build_default_registry();
+        install_global_registry(governor_registry.clone());
+        let pty_manager = Arc::new(
+            crate::cockpit::pty_manager::PtyManager::with_governor_registry(
+                24,
+                Some(governor_registry.clone()),
+            ),
+        );
+        let swarm_store = ChunkStore::load_from_db(&db);
+        let swarm_config = SwarmConfig::from_env();
+        let mut bitswap_runtime = crate::swarm::bitswap::BitswapRuntime::default();
+        bitswap_runtime.register_local_chunks(&swarm_store.all_chunks());
+        bitswap_runtime.set_require_grants(swarm_config.require_grants);
+        bitswap_runtime.set_grants(crate::pod::acl::GrantStore::load_or_default(
+            &db_path.with_extension("pod_grants.json"),
+        ));
         Ok(ServiceState {
             db,
-            orchestrator: Orchestrator::new(pty_manager, vault, db_path.clone()),
+            orchestrator: Orchestrator::new(pty_manager.clone(), vault.clone(), db_path.clone()),
             db_path,
             wal_path,
             work_record_store: WorkRecordStore::new(),
             memory_store: crate::memory::MemoryStore::default(),
+            swarm_store,
+            swarm_config,
+            bitswap_runtime,
+            vault,
+            pty_manager,
+            governor_registry,
         })
     }
 
@@ -1598,14 +1819,35 @@ impl NucleusDbMcpService {
         )
         .ok()
         .map(Arc::new);
-        let pty_manager = Arc::new(crate::cockpit::pty_manager::PtyManager::new(24));
+        let governor_registry = build_default_registry();
+        install_global_registry(governor_registry.clone());
+        let pty_manager = Arc::new(
+            crate::cockpit::pty_manager::PtyManager::with_governor_registry(
+                24,
+                Some(governor_registry.clone()),
+            ),
+        );
+        let swarm_store = ChunkStore::load_from_db(&db);
+        let swarm_config = SwarmConfig::from_env();
+        let mut bitswap_runtime = crate::swarm::bitswap::BitswapRuntime::default();
+        bitswap_runtime.register_local_chunks(&swarm_store.all_chunks());
+        bitswap_runtime.set_require_grants(swarm_config.require_grants);
+        bitswap_runtime.set_grants(crate::pod::acl::GrantStore::load_or_default(
+            &db_path.with_extension("pod_grants.json"),
+        ));
         Ok(ServiceState {
             db,
-            orchestrator: Orchestrator::new(pty_manager, vault, db_path.clone()),
+            orchestrator: Orchestrator::new(pty_manager.clone(), vault.clone(), db_path.clone()),
             db_path,
             wal_path,
             work_record_store: WorkRecordStore::new(),
             memory_store: crate::memory::MemoryStore::default(),
+            swarm_store,
+            swarm_config,
+            bitswap_runtime,
+            vault,
+            pty_manager,
+            governor_registry,
         })
     }
 
@@ -1912,13 +2154,20 @@ impl NucleusDbMcpService {
         let state = self.state.clone();
         let query_for_task = query.clone();
         let results = tokio::task::spawn_blocking(move || {
-            let (memory_store, db_snapshot) = {
-                let guard = state.blocking_lock();
-                (guard.memory_store.clone(), guard.db.clone())
-            };
-            memory_store
-                .recall(&db_snapshot, &query_for_task, k)
-                .map_err(|e| McpError::invalid_params(e, None))
+            let mut guard = state.blocking_lock();
+            let memory_store = guard.memory_store.clone();
+            let results = memory_store
+                .recall(&mut guard.db, &query_for_task, k)
+                .map_err(|e| McpError::invalid_params(e, None))?;
+            persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(
+                |e| {
+                    McpError::internal_error(
+                        format!("persist memory recall telemetry failed: {e:?}"),
+                        None,
+                    )
+                },
+            )?;
+            Ok(results)
         })
         .await
         .map_err(|e| {
@@ -2007,6 +2256,168 @@ impl NucleusDbMcpService {
             McpError::internal_error(format!("memory_ingest task join failed: {e}"), None)
         })??;
         Ok(Json(response))
+    }
+
+    #[tool(
+        name = "swarm_publish",
+        description = "Chunk data into BLAKE3-addressed swarm pieces, persist them in NucleusDB, and emit a manifest. Example: {\"data\":\"hello\",\"encoding\":\"utf8\"}"
+    )]
+    pub async fn swarm_publish(
+        &self,
+        Parameters(req): Parameters<SwarmPublishRequest>,
+    ) -> Result<Json<SwarmPublishResponse>, McpError> {
+        let raw = Self::decode_swarm_payload(&req.data, req.encoding.as_deref())?;
+        let state = self.state.clone();
+        let asset_type = req.asset_type.unwrap_or(AssetType::Binary);
+        let creator_did = req
+            .creator_did
+            .unwrap_or_else(|| "did:key:local".to_string());
+        let chunk_size_bytes = req.chunk_size_bytes;
+        let response = tokio::task::spawn_blocking(move || {
+            let mut guard = state.blocking_lock();
+            let params = ChunkParams {
+                chunk_size_bytes: chunk_size_bytes
+                    .unwrap_or(guard.swarm_config.chunk_params.chunk_size_bytes),
+            };
+            let chunks = chunk_data(&raw, &params);
+            let mut swarm_store = std::mem::take(&mut guard.swarm_store);
+            swarm_store
+                .store_chunks(&mut guard.db, &chunks)
+                .map_err(|e| McpError::internal_error(e, None))?;
+            guard.bitswap_runtime.register_local_chunks(&chunks);
+            swarm_store.set_active_transfers(guard.bitswap_runtime.active_transfers());
+            let builder = ManifestBuilder {
+                asset_type,
+                creator_did,
+                params,
+            };
+            let manifest = builder
+                .build(&chunks)
+                .map_err(|e| McpError::invalid_params(e, None))?;
+            swarm_store
+                .store_manifest(&mut guard.db, manifest.clone())
+                .map_err(|e| McpError::internal_error(e, None))?;
+            let proof_attached = swarm_store
+                .get_manifest(&manifest.manifest_id)
+                .and_then(|stored| stored.proof.as_ref())
+                .is_some();
+            guard.swarm_store = swarm_store;
+            persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(
+                |e| McpError::internal_error(format!("persist swarm publish failed: {e:?}"), None),
+            )?;
+            Ok(SwarmPublishResponse {
+                manifest_id: manifest.manifest_id.to_string(),
+                chunk_count: chunks.len(),
+                total_size: manifest.total_size,
+                root_hash: manifest.root_hash,
+                proof_attached,
+            })
+        })
+        .await
+        .map_err(|e| {
+            McpError::internal_error(format!("swarm_publish task join failed: {e}"), None)
+        })??;
+        Ok(Json(response))
+    }
+
+    #[tool(
+        name = "swarm_fetch",
+        description = "Resolve a locally cached swarm manifest, verify its chunks, and reassemble the asset. Local-only; this tool does not contact peers. Example: {\"manifest_id\":\"<hex>\",\"encoding\":\"base64\"}"
+    )]
+    pub async fn swarm_fetch(
+        &self,
+        Parameters(req): Parameters<SwarmFetchRequest>,
+    ) -> Result<Json<SwarmFetchResponse>, McpError> {
+        let manifest_id = req
+            .manifest_id
+            .parse::<ManifestId>()
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        let state = self.state.clone();
+        let encoding = req.encoding.clone();
+        let response = tokio::task::spawn_blocking(move || {
+            let guard = state.blocking_lock();
+            let manifest = guard
+                .swarm_store
+                .get_manifest(&manifest_id)
+                .cloned()
+                .ok_or_else(|| McpError::invalid_params("unknown manifest id", None))?;
+            let chunks = manifest
+                .chunk_hashes
+                .iter()
+                .map(|chunk_id| {
+                    guard
+                        .swarm_store
+                        .get_chunk(chunk_id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            McpError::invalid_params(
+                                format!("missing local chunk {chunk_id}"),
+                                None,
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let verification = verify_manifest(&manifest, &chunks);
+            if !verification.accepted {
+                return Err(McpError::internal_error(
+                    "manifest verification failed",
+                    None,
+                ));
+            }
+            let rebuilt = reassemble_chunks(&chunks).map_err(|e| {
+                McpError::internal_error(format!("reassemble swarm asset: {e}"), None)
+            })?;
+            let (data, resolved_encoding) =
+                Self::encode_swarm_payload(&rebuilt, encoding.as_deref())?;
+            Ok(SwarmFetchResponse {
+                manifest_id: manifest.manifest_id.to_string(),
+                chunk_count: chunks.len(),
+                total_size: rebuilt.len(),
+                encoding: resolved_encoding,
+                data,
+                verified: verification.accepted,
+            })
+        })
+        .await
+        .map_err(|e| {
+            McpError::internal_error(format!("swarm_fetch task join failed: {e}"), None)
+        })??;
+        Ok(Json(response))
+    }
+
+    #[tool(
+        name = "swarm_remote_fetch",
+        description = "Reserved control-plane stub for future remote Bitswap retrieval. Returns a deferred status until a live P2P node handle is threaded into MCP service state."
+    )]
+    pub async fn swarm_remote_fetch(
+        &self,
+        Parameters(req): Parameters<SwarmRemoteFetchRequest>,
+    ) -> Result<Json<SwarmRemoteFetchResponse>, McpError> {
+        Ok(Json(SwarmRemoteFetchResponse {
+            manifest_id: req.manifest_id,
+            implemented: false,
+            message: "swarm_remote_fetch is not yet implemented; MCP service state does not yet own a live P2P node handle for outbound Bitswap requests".to_string(),
+            tracking_issue: "WIP/bitswap_remote_fetch_tracking_2026-03-08.md".to_string(),
+        }))
+    }
+
+    #[tool(
+        name = "swarm_status",
+        description = "Report local swarm chunk/manifest inventory plus Bitswap runtime status."
+    )]
+    pub async fn swarm_status(&self) -> Result<Json<SwarmStatusResponse>, McpError> {
+        let guard = self.state.lock().await;
+        let store_stats = guard.swarm_store.stats();
+        let bitswap_status = guard.bitswap_runtime.status();
+        Ok(Json(SwarmStatusResponse {
+            total_chunks: store_stats.total_chunks,
+            total_bytes: store_stats.total_bytes,
+            manifest_count: store_stats.manifest_count,
+            active_transfers: bitswap_status.active_transfers,
+            peer_count: bitswap_status.peer_count,
+            bitswap_enabled: guard.swarm_config.bitswap_enabled,
+            chunk_credit_cost: guard.swarm_config.chunk_credit_cost,
+        }))
     }
 
     #[tool(
@@ -2306,6 +2717,23 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<ContainerLaunchRequest>,
     ) -> Result<Json<ContainerLaunchResponse>, McpError> {
+        let admission_mode = AdmissionMode::parse(req.admission_mode.as_deref())
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        let guard = self.state.lock().await;
+        let admission =
+            evaluate_launch_admission(admission_mode, Some(&guard.governor_registry), None);
+        if !admission.allowed {
+            let reason = admission
+                .issues
+                .iter()
+                .map(|issue| issue.message.clone())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            return Err(McpError::invalid_params(
+                format!("AETHER admission policy blocked container launch: {reason}"),
+                None,
+            ));
+        }
         let command = if req.command.is_empty() {
             vec![
                 "/bin/sh".to_string(),
@@ -2360,6 +2788,13 @@ impl NucleusDbMcpService {
             image: info.image,
             agent_id: info.agent_id,
             host_sock: info.host_sock.display().to_string(),
+            admission_mode: Some(admission.mode),
+            admission_forced: admission.forced,
+            admission_issues: admission
+                .issues
+                .into_iter()
+                .map(|issue| issue.message)
+                .collect(),
         }))
     }
 
@@ -2384,6 +2819,189 @@ impl NucleusDbMcpService {
         Ok(Json(ContainerListResponse {
             count: views.len(),
             sessions: views,
+        }))
+    }
+
+    #[tool(
+        name = "agenthalo_governor_status",
+        description = "Return AETHER governor status for runtime lanes plus the gov-memory aggregate. Example: {\"instance_id\":\"gov-compute\"}"
+    )]
+    pub async fn governor_status(
+        &self,
+        Parameters(req): Parameters<GovernorStatusRequest>,
+    ) -> Result<Json<GovernorStatusToolResponse>, McpError> {
+        let mut guard = self.state.lock().await;
+        if guard.db.aether_maintenance_tick(now_unix_secs()) {
+            persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(
+                |e| McpError::internal_error(format!("persist governor maintenance: {e:?}"), None),
+            )?;
+        }
+        let vector_stats = guard.db.vector_index.eviction_stats();
+        let blob_stats = guard.db.blob_store.stats();
+        let mean_error = (vector_stats.governor_error + blob_stats.governor_error) / 2.0;
+        let memory_snapshot = serde_json::json!({
+            "instance_id": "gov-memory",
+            "epsilon": (vector_stats.governor_epsilon + blob_stats.governor_epsilon) / 2.0,
+            "target": (vector_stats.max_entries + blob_stats.max_entries) as f64 / 2.0,
+            "measured_signal": (vector_stats.tracked_vectors + blob_stats.tracked_blobs) as f64 / 2.0,
+            "error": mean_error,
+            "lyapunov": 0.5 * mean_error * mean_error,
+            "regime": "engineering aggregate (formal scope exited after first storage observation)",
+            "gamma": vector_stats.governor_gamma.max(blob_stats.governor_gamma),
+            "contraction_bound": vector_stats
+                .governor_contraction_bound
+                .max(blob_stats.governor_contraction_bound),
+            "stable": vector_stats.governor_stable && blob_stats.governor_stable,
+            "oscillating": vector_stats.governor_oscillating || blob_stats.governor_oscillating,
+            "gain_violated": vector_stats.governor_gain_violated || blob_stats.governor_gain_violated,
+            "clamp_active": vector_stats.governor_clamp_active || blob_stats.governor_clamp_active,
+            "formal_basis": "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime",
+            "sparkline": [vector_stats.governor_epsilon, blob_stats.governor_epsilon],
+            "last_updated_unix": now_unix_secs(),
+            "warning": "gov-memory aggregates two storage-local engineering governors plus Chebyshev wrapper telemetry; this aggregate is not itself formally verified and exits the single-step scope after the first storage observation."
+        });
+        let instances = match req
+            .instance_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            Some("gov-memory") => Vec::new(),
+            Some(instance_id) => vec![guard
+                .governor_registry
+                .snapshot_one(instance_id)
+                .map_err(|e| McpError::invalid_params(e, None))?],
+            None => guard.governor_registry.snapshot_all(),
+        };
+        let instances = serde_json::to_value(instances)
+            .map_err(|e| {
+                McpError::internal_error(format!("serialize governor instances: {e}"), None)
+            })?
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        Ok(Json(GovernorStatusToolResponse {
+            instances,
+            memory: memory_snapshot,
+        }))
+    }
+
+    #[tool(
+        name = "agenthalo_governor_reset",
+        description = "Soft-reset a governor instance, gov-memory, or all governors back to from-rest when quiescent. Example: {\"instance_id\":\"gov-compute\"}"
+    )]
+    pub async fn governor_reset(
+        &self,
+        Parameters(req): Parameters<GovernorResetToolRequest>,
+    ) -> Result<Json<GovernorStatusToolResponse>, McpError> {
+        {
+            let mut guard = self.state.lock().await;
+            let instance_id = req.instance_id.unwrap_or_else(|| "all".to_string());
+            let reset_all = req.all.unwrap_or(false) || instance_id == "all";
+
+            if reset_all {
+                for runtime_id in [
+                    "gov-proxy",
+                    "gov-comms",
+                    "gov-compute",
+                    "gov-cost",
+                    "gov-pty",
+                ] {
+                    guard
+                        .governor_registry
+                        .soft_reset(runtime_id)
+                        .map_err(|e| McpError::invalid_params(e, None))?;
+                }
+            } else if instance_id != "gov-memory" {
+                guard
+                    .governor_registry
+                    .soft_reset(&instance_id)
+                    .map_err(|e| McpError::invalid_params(e, None))?;
+            }
+
+            if reset_all || instance_id == "gov-memory" {
+                guard.db.soft_reset_aether_memory();
+                persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(
+                    |e| McpError::internal_error(format!("persist governor reset: {e:?}"), None),
+                )?;
+            }
+        }
+        self.governor_status(Parameters(GovernorStatusRequest { instance_id: None }))
+            .await
+    }
+
+    #[tool(
+        name = "agenthalo_deploy_preflight",
+        description = "Inspect CLI readiness, topology drift, and AETHER admission before cockpit launch. Example: {\"agent_id\":\"codex\",\"admission_mode\":\"block\"}"
+    )]
+    pub async fn deploy_preflight(
+        &self,
+        Parameters(req): Parameters<DeployPreflightToolRequest>,
+    ) -> Result<Json<DeployPreflightToolResponse>, McpError> {
+        let guard = self.state.lock().await;
+        let admission_mode = AdmissionMode::parse(req.admission_mode.as_deref())
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        let result = deploy::preflight(
+            &req.agent_id,
+            guard.vault.as_deref(),
+            Some(&guard.db_path),
+            Some(&guard.governor_registry),
+            admission_mode,
+        )
+        .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(Json(DeployPreflightToolResponse {
+            result: serde_json::to_value(result).map_err(|e| {
+                McpError::internal_error(format!("serialize deploy preflight: {e}"), None)
+            })?,
+        }))
+    }
+
+    #[tool(
+        name = "agenthalo_deploy_launch",
+        description = "Launch a cockpit-managed agent session with AETHER admission control. Example: {\"agent_id\":\"codex\",\"mode\":\"terminal\",\"container\":true,\"admission_mode\":\"block\"}"
+    )]
+    pub async fn deploy_launch(
+        &self,
+        Parameters(req): Parameters<DeployLaunchToolRequest>,
+    ) -> Result<Json<DeployLaunchToolResponse>, McpError> {
+        let guard = self.state.lock().await;
+        let result = deploy::launch(
+            &deploy::LaunchRequest {
+                agent_id: req.agent_id,
+                mode: req.mode,
+                container: req.container.unwrap_or(false),
+                working_dir: req.working_dir,
+                admission_mode: req.admission_mode,
+            },
+            &guard.pty_manager,
+            guard.vault.as_deref(),
+            Some(&guard.db_path),
+            Some(&guard.governor_registry),
+        )
+        .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(Json(DeployLaunchToolResponse {
+            result: serde_json::to_value(result).map_err(|e| {
+                McpError::internal_error(format!("serialize deploy launch: {e}"), None)
+            })?,
+        }))
+    }
+
+    #[tool(
+        name = "agenthalo_deploy_status",
+        description = "Return current cockpit deploy session status by session id. Example: {\"session_id\":\"pty-...\"}"
+    )]
+    pub async fn deploy_status(
+        &self,
+        Parameters(req): Parameters<DeployStatusToolRequest>,
+    ) -> Result<Json<DeployStatusToolResponse>, McpError> {
+        let guard = self.state.lock().await;
+        let session = guard
+            .pty_manager
+            .get_session(&req.session_id)
+            .ok_or_else(|| McpError::invalid_params("session not found", None))?;
+        Ok(Json(DeployStatusToolResponse {
+            id: req.session_id,
+            status: format!("{:?}", session.status()),
         }))
     }
 
@@ -3933,7 +4551,26 @@ impl NucleusDbMcpService {
                 })?;
             return Ok(Json(parsed));
         }
-        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        let admission_mode = AdmissionMode::parse(req.admission_mode.as_deref())
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        let (orchestrator, admission) = {
+            let guard = self.state.lock().await;
+            let admission =
+                evaluate_launch_admission(admission_mode, Some(&guard.governor_registry), None);
+            (guard.orchestrator.clone(), admission)
+        };
+        if !admission.allowed {
+            let reason = admission
+                .issues
+                .iter()
+                .map(|issue| issue.message.clone())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            return Err(McpError::invalid_params(
+                format!("AETHER admission policy blocked orchestrator launch: {reason}"),
+                None,
+            ));
+        }
         let launched = orchestrator
             .launch_agent(OrchLaunchRequest {
                 agent: req.agent,
@@ -3955,6 +4592,13 @@ impl NucleusDbMcpService {
             agent_name: launched.agent_name,
             capabilities: launched.capabilities,
             model: launched.model,
+            admission_mode: Some(admission.mode),
+            admission_forced: admission.forced,
+            admission_issues: admission
+                .issues
+                .into_iter()
+                .map(|issue| issue.message)
+                .collect(),
         }))
     }
 
@@ -4943,6 +5587,225 @@ mod tests {
         cleanup_db_files(&db_path);
     }
 
+    #[tokio::test]
+    async fn swarm_publish_fetch_roundtrip() {
+        let db_path = temp_db_path("swarm_publish_fetch");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(published) = service
+            .swarm_publish(Parameters(SwarmPublishRequest {
+                data: "hello swarm".to_string(),
+                encoding: Some("utf8".to_string()),
+                asset_type: Some(AssetType::Text),
+                creator_did: Some("did:key:test".to_string()),
+                chunk_size_bytes: Some(4),
+            }))
+            .await
+            .expect("publish");
+        assert!(published.chunk_count > 1);
+        assert!(published.proof_attached);
+
+        let Json(fetched) = service
+            .swarm_fetch(Parameters(SwarmFetchRequest {
+                manifest_id: published.manifest_id.clone(),
+                encoding: Some("utf8".to_string()),
+            }))
+            .await
+            .expect("fetch");
+        assert_eq!(fetched.data, "hello swarm");
+        assert!(fetched.verified);
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn swarm_remote_fetch_stub_reports_deferred_status() {
+        let db_path = temp_db_path("swarm_remote_fetch_stub");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(response) = service
+            .swarm_remote_fetch(Parameters(SwarmRemoteFetchRequest {
+                manifest_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_string(),
+                encoding: Some("base64".to_string()),
+                timeout_secs: Some(30),
+            }))
+            .await
+            .expect("remote fetch stub");
+        assert!(!response.implemented);
+        assert!(response.message.contains("not yet implemented"));
+        assert_eq!(
+            response.tracking_issue,
+            "WIP/bitswap_remote_fetch_tracking_2026-03-08.md"
+        );
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn swarm_status_reports_inventory_after_publish() {
+        let db_path = temp_db_path("swarm_status");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let _ = service
+            .swarm_publish(Parameters(SwarmPublishRequest {
+                data: base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3, 4, 5, 6]),
+                encoding: Some("base64".to_string()),
+                asset_type: Some(AssetType::Binary),
+                creator_did: Some("did:key:test".to_string()),
+                chunk_size_bytes: Some(2),
+            }))
+            .await
+            .expect("publish");
+
+        let Json(status) = service.swarm_status().await.expect("status");
+        assert_eq!(status.total_bytes, 6);
+        assert_eq!(status.total_chunks, 3);
+        assert_eq!(status.manifest_count, 1);
+        assert!(status.bitswap_enabled);
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn swarm_manifest_proof_survives_service_reload() {
+        let db_path = temp_db_path("swarm_manifest_reload");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(published) = service
+            .swarm_publish(Parameters(SwarmPublishRequest {
+                data: "proof survives restart".to_string(),
+                encoding: Some("utf8".to_string()),
+                asset_type: Some(AssetType::Text),
+                creator_did: Some("did:key:test".to_string()),
+                chunk_size_bytes: Some(5),
+            }))
+            .await
+            .expect("publish");
+        drop(service);
+
+        let reloaded = NucleusDbMcpService::new(&db_path).expect("reloaded service");
+        let manifest_id = published
+            .manifest_id
+            .parse::<ManifestId>()
+            .expect("manifest id");
+        let guard = reloaded.state.lock().await;
+        let manifest = guard
+            .swarm_store
+            .get_manifest(&manifest_id)
+            .expect("manifest");
+        assert!(manifest.proof.is_some());
+        drop(guard);
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn swarm_state_loads_grants_from_db_path() {
+        let db_path = temp_db_path("swarm_grants");
+        let grants_path = db_path.with_extension("pod_grants.json");
+        let grants = vec![crate::pod::acl::AccessGrant {
+            grant_id: crate::pod::acl::AccessGrant::compute_id(
+                &[1u8; 32],
+                &[2u8; 32],
+                "swarm/chunk/*",
+                123,
+                1,
+            ),
+            grantor_puf: [1u8; 32],
+            grantee_puf: [2u8; 32],
+            key_pattern: "swarm/chunk/*".to_string(),
+            permissions: crate::pod::acl::GrantPermissions::read_only(),
+            expires_at: None,
+            created_at: 123,
+            nonce: 1,
+            revoked: false,
+        }];
+        std::fs::write(
+            &grants_path,
+            serde_json::to_vec(&grants).expect("serialize grants"),
+        )
+        .expect("write grants");
+
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let Json(published) = service
+            .swarm_publish(Parameters(SwarmPublishRequest {
+                data: "granted chunk".to_string(),
+                encoding: Some("utf8".to_string()),
+                asset_type: Some(AssetType::Text),
+                creator_did: Some("did:key:test".to_string()),
+                chunk_size_bytes: Some(256 * 1024),
+            }))
+            .await
+            .expect("publish");
+        let guard = service.state.lock().await;
+        let peer = libp2p::PeerId::random();
+        let manifest_id = published
+            .manifest_id
+            .parse::<ManifestId>()
+            .expect("manifest id");
+        let chunk_id = guard
+            .swarm_store
+            .get_manifest(&manifest_id)
+            .expect("manifest")
+            .chunk_hashes[0]
+            .clone();
+        let response = guard.bitswap_runtime.clone().handle_request(
+            &peer,
+            crate::swarm::bitswap::BitswapMessage::Want(vec![chunk_id]),
+        );
+        assert_eq!(
+            response,
+            crate::swarm::bitswap::BitswapMessage::Have(Vec::new())
+        );
+        drop(guard);
+
+        let _ = std::fs::remove_file(&grants_path);
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn swarm_state_respects_require_grants_env() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _require_grants = EnvVarRestore::set("HALO_BITSWAP_REQUIRE_GRANTS", "1");
+        let db_path = temp_db_path("swarm_require_grants");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(published) = service
+            .swarm_publish(Parameters(SwarmPublishRequest {
+                data: "locked chunk".to_string(),
+                encoding: Some("utf8".to_string()),
+                asset_type: Some(AssetType::Text),
+                creator_did: Some("did:key:test".to_string()),
+                chunk_size_bytes: Some(256 * 1024),
+            }))
+            .await
+            .expect("publish");
+        let guard = service.state.lock().await;
+        let peer = libp2p::PeerId::random();
+        let manifest_id = published
+            .manifest_id
+            .parse::<ManifestId>()
+            .expect("manifest id");
+        let chunk_id = guard
+            .swarm_store
+            .get_manifest(&manifest_id)
+            .expect("manifest")
+            .chunk_hashes[0]
+            .clone();
+        let response = guard.bitswap_runtime.clone().handle_request(
+            &peer,
+            crate::swarm::bitswap::BitswapMessage::Want(vec![chunk_id]),
+        );
+        assert_eq!(
+            response,
+            crate::swarm::bitswap::BitswapMessage::Have(Vec::new())
+        );
+        drop(guard);
+
+        cleanup_db_files(&db_path);
+    }
+
     #[test]
     fn mesh_mode_parser_rejects_unknown_values() {
         let ok = parse_mesh_access_modes(&["read".to_string(), "WRITE".to_string()])
@@ -4976,6 +5839,7 @@ mod tests {
                 model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string(), "memory_write".to_string()],
+                admission_mode: None,
             }))
             .await
             .expect("launch shell");
@@ -5021,6 +5885,7 @@ mod tests {
                 model: None,
                 trace: Some(true),
                 capabilities: vec!["memory_read".to_string()],
+                admission_mode: None,
             }))
             .await
             .expect("launch shell");
@@ -5077,6 +5942,7 @@ mod tests {
                 model: None,
                 trace: Some(false),
                 capabilities: vec!["bogus_capability".to_string()],
+                admission_mode: None,
             }))
             .await;
         match result {
@@ -5107,6 +5973,7 @@ mod tests {
                 model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string()],
+                admission_mode: None,
             }))
             .await
             .expect("launch source");
@@ -5120,6 +5987,7 @@ mod tests {
                 model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string()],
+                admission_mode: None,
             }))
             .await
             .expect("launch target");
@@ -5172,6 +6040,7 @@ mod tests {
                 model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string()],
+                admission_mode: None,
             }))
             .await
             .expect("launch");
