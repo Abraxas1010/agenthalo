@@ -11,7 +11,8 @@ from PIL import Image
 
 DOCS = Path(__file__).resolve().parent.parent / "docs"
 HTML = DOCS / "index.html"
-OUT = DOCS / "proof-explorer.gif"
+ASSETS = Path(__file__).resolve().parent.parent / "assets"
+OUT = ASSETS / "proof-explorer.gif"
 FRAMES = 60
 WIDTH = 960
 HEIGHT = 540
@@ -42,10 +43,10 @@ def main():
         page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT})
         page.goto(f"http://127.0.0.1:{PORT}/index.html")
 
-        # Wait for data to load
-        page.wait_for_function("() => document.getElementById('loading')?.style.display === 'none'", timeout=15000)
-        # Extra settle time
-        time.sleep(1)
+        # Wait for Three.js scene to load (loading div hidden after init)
+        page.wait_for_function("() => document.getElementById('loading')?.style.display === 'none'", timeout=30000)
+        # Extra settle time for Three.js rendering + bloom to stabilize
+        time.sleep(3)
 
         print(f"Capturing {FRAMES} frames at {WIDTH}x{HEIGHT}...")
         for i in range(FRAMES):
