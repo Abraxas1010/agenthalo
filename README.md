@@ -72,7 +72,7 @@ This is the gap H.A.L.O. exists to close.
 ### Explore the Proof Corpus
 
 <p align="center">
-  <a href="https://abraxas1010.github.io/agenthalo/">
+  <a href="https://www.apoth3osis.io/projects#proof-explorer">
     <img src="assets/proof-explorer.gif" alt="AgentHALO Proof Explorer — 962 declarations across 15 families" width="720"/>
   </a>
 </p>
