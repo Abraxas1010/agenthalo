@@ -19,6 +19,9 @@ You may choose ONE of the following licenses:
    - Required for all other uses. Minimum fee USD 25,000/month (indexed to CPI-U) plus usage-based fees per audit.
    - Includes rights to use the "Apoth3osis-Certified" mark, attestation bundle, SLAs, and support.
 
+Reservation of Rights
+- Licensor (Equation Capital LLC DBA Apoth3osis) reserves the right to terminate any license granted under this License Stack, in whole or in part, at any time and for any reason that Licensor, in its sole discretion, deems reasonable, upon thirty (30) days' written notice to the licensee. Upon the effective date of termination: (a) all rights granted immediately cease; (b) the licensee must cease all use, copying, modification, and distribution of the Software; and (c) the licensee must destroy or delete all copies of the Software in their possession or control within thirty (30) days. Termination does not release the licensee from any obligation accrued prior to the effective date. For paid licenses, Licensor will refund prepaid fees attributable to the period after the effective date, if any.
+
 Trademarks & Services
 - "Apoth3osis-Certified" is a trademark. Use requires an active CECL and compliance with the Apoth3osis-Certified Trademark License.
 - Certification attestations and related services are governed by the Apoth3osis Attestation Service Terms.
