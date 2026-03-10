@@ -44,7 +44,7 @@ We humbly thank the collective intelligence of humanity for providing the techno
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
 ![Tests](https://img.shields.io/badge/tests-1055%20passing-brightgreen.svg)
-![Lean 4](https://img.shields.io/badge/Lean%204-131%20modules-blue.svg)
+![Lean 4](https://img.shields.io/badge/Lean%204-137%20modules-blue.svg)
 ![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
 
 [The Problem](#the-problem) · [Quick Start](#quick-start) · [Web Dashboard](#web-dashboard) · [Orchestrator](#orchestrator) · [Sovereign Identity](#sovereign-identity) · [The Algebraic Foundation](#the-algebraic-foundation) · [NucleusDB](#nucleusdb) · [Architecture](#architecture) · [Contributing](CONTRIBUTING.md)
@@ -524,7 +524,7 @@ Every x402 payment flows through H.A.L.O.'s trace, giving you a complete audit t
 
 Most databases describe their correctness properties in English. NucleusDB proves them in Lean 4 using the mathematics of sheaf theory — the same framework algebraic geometers use to describe how local observations compose into global structure.
 
-This is not a marketing claim. It is 131 Lean 4 modules, type-checked by the Lean kernel, that formally prove the properties NucleusDB relies on. We are not aware of any other database — verifiable or otherwise — that provides this level of mathematical foundation.
+This is not a marketing claim. It is 137 Lean 4 modules, type-checked by the Lean kernel, that formally prove the properties NucleusDB relies on. We are not aware of any other database — verifiable or otherwise — that provides this level of mathematical foundation.
 
 ### Why Sheaves
 
@@ -559,7 +559,22 @@ H.A.L.O. asks you to trust the Lean 4 kernel — a small, independently auditabl
 lake build NucleusDB
 ```
 
-The 131 modules cover:
+### Explore the Proof Corpus
+
+<p align="center">
+  <a href="https://abraxas1010.github.io/agenthalo/">
+    <img src="assets/proof-explorer.gif" alt="AgentHALO Proof Explorer — 962 declarations, 286 theorems, 15 families" width="720"/>
+  </a>
+</p>
+
+<p align="center">
+  <strong>962 declarations</strong> &middot; <strong>286 theorems</strong> &middot; <strong>36 lemmas</strong> &middot; <strong>134 structures</strong> &middot; <strong>137 files</strong> &middot; <strong>15 families</strong><br>
+  <a href="https://abraxas1010.github.io/agenthalo/"><strong>Open Interactive Explorer &rarr;</strong></a>
+</p>
+
+Every node is a declaration from the Lean proof corpus. Theorems glow brightest. Families cluster by color: cyan for Core, teal for Identity, emerald for Genesis, rose for Security, amber for PaymentChannels. Drag to rotate. Scroll to zoom. Click a family pill to filter. Hover any node to inspect.
+
+The 137 modules cover:
 
 | Domain | Modules | What's Proved |
 |--------|---------|---------------|

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AgentHALO Proof Explorer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#06080c;color:#c0c8d8;font-family:'SF Mono','Fira Code','Consolas',monospace;overflow:hidden}
+#app{width:100vw;height:100vh;display:flex;flex-direction:column}
+
+/* Header */
+.header{padding:12px 20px;display:flex;align-items:center;gap:16px;border-bottom:1px solid rgba(34,211,238,0.12);background:rgba(6,8,12,0.95);z-index:10;flex-shrink:0}
+.header h1{font-size:16px;font-weight:700;letter-spacing:0.05em}
+.header h1 span{color:#22d3ee}
+.header .stats{font-size:10px;color:rgba(192,200,216,0.4);display:flex;gap:12px;margin-left:auto}
+.header .stats span{display:flex;align-items:center;gap:4px}
+.header .stats .dot{width:5px;height:5px;border-radius:50%;display:inline-block}
+
+/* Controls */
+.controls{padding:8px 20px;display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid rgba(34,211,238,0.08);background:rgba(6,8,12,0.9);z-index:9;flex-shrink:0}
+.pill{font-size:9px;padding:3px 10px;border-radius:12px;border:1px solid rgba(255,255,255,0.1);cursor:pointer;user-select:none;transition:all 0.15s;letter-spacing:0.05em;text-transform:uppercase}
+.pill:hover{border-color:rgba(255,255,255,0.25)}
+.pill.active{border-color:var(--c,#22d3ee);background:color-mix(in srgb,var(--c,#22d3ee) 12%,transparent);color:var(--c,#22d3ee)}
+.pill-group{display:flex;gap:4px;align-items:center}
+.pill-group-label{font-size:8px;color:rgba(192,200,216,0.3);text-transform:uppercase;letter-spacing:0.15em;margin-right:4px}
+
+/* Canvas area */
+.canvas-wrap{flex:1;position:relative;overflow:hidden}
+canvas{display:block;width:100%;height:100%;cursor:grab}
+canvas:active{cursor:grabbing}
+
+/* Tooltip */
+.tooltip{position:absolute;pointer-events:none;background:rgba(6,8,12,0.92);border:1px solid rgba(34,211,238,0.25);border-radius:6px;padding:10px 14px;font-size:11px;line-height:1.5;max-width:320px;z-index:20;backdrop-filter:blur(8px);display:none}
+.tooltip .name{color:#22d3ee;font-weight:700;font-size:12px}
+.tooltip .kind{color:rgba(192,200,216,0.5);font-size:9px;text-transform:uppercase;letter-spacing:0.1em}
+.tooltip .file{color:rgba(192,200,216,0.35);font-size:9px;margin-top:4px}
+.tooltip .family-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:8px;margin-top:4px;border:1px solid rgba(255,255,255,0.15)}
+
+/* Legend */
+.legend{position:absolute;bottom:12px;right:12px;background:rgba(6,8,12,0.85);border:1px solid rgba(34,211,238,0.12);border-radius:8px;padding:10px 14px;font-size:9px;z-index:15;backdrop-filter:blur(6px)}
+.legend-title{font-size:8px;color:rgba(192,200,216,0.35);text-transform:uppercase;letter-spacing:0.15em;margin-bottom:6px}
+.legend-item{display:flex;align-items:center;gap:6px;margin-bottom:3px}
+.legend-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+
+/* Loading */
+.loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px}
+.loading .spinner{width:28px;height:28px;border:2px solid rgba(34,211,238,0.15);border-top-color:#22d3ee;border-radius:50%;animation:spin 0.8s linear infinite}
+.loading .text{font-size:11px;color:rgba(34,211,238,0.5);letter-spacing:0.15em;text-transform:uppercase}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <h1>Agent<span>HALO</span> Proof Explorer</h1>
+    <div class="stats" id="stats"></div>
+  </div>
+  <div class="controls" id="controls"></div>
+  <div class="canvas-wrap" id="wrap">
+    <canvas id="c"></canvas>
+    <div class="tooltip" id="tip"></div>
+    <div class="legend" id="legend"></div>
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <div class="text">Initializing proof lattice...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Color palette: cyan/teal/emerald AgentHALO theme ──
+const FAMILY_COLORS = {
+  Core:             '#22d3ee', // Cyan
+  Comms:            '#06b6d4', // Darker cyan
+  Identity:         '#2dd4bf', // Teal
+  Genesis:          '#34d399', // Emerald
+  Security:         '#f43f5e', // Rose (danger)
+  Crypto:           '#a78bfa', // Violet
+  PaymentChannels:  '#f59e0b', // Amber
+  TrustLayer:       '#3b82f6', // Blue
+  Sheaf:            '#8b5cf6', // Purple
+  Adversarial:      '#ef4444', // Red
+  Transparency:     '#10b981', // Green
+  Commitment:       '#6366f1', // Indigo
+  Contracts:        '#f97316', // Orange
+  Integration:      '#14b8a6', // Teal-600
+  Bridge:           '#0ea5e9', // Sky
+};
+
+const KIND_SHAPES = {
+  theorem: { sides: 0, label: 'Theorem' },  // circle
+  lemma:   { sides: 3, label: 'Lemma' },     // triangle
+  def:     { sides: 4, label: 'Definition' }, // diamond
+  structure:{ sides: 6, label: 'Structure' }, // hexagon
+  axiom:   { sides: 5, label: 'Axiom' },     // pentagon
+  instance:{ sides: 4, label: 'Instance' },   // square
+  example: { sides: 0, label: 'Example' },    // circle
+};
+
+let DATA = null;
+let enabledFamilies = {};
+let rotation = 0;
+let autoRotate = true;
+let dragStart = null;
+let rotationOffset = 0;
+let hovered = -1;
+let camDist = 120;
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const tipEl = document.getElementById('tip');
+const statsEl = document.getElementById('stats');
+const controlsEl = document.getElementById('controls');
+const legendEl = document.getElementById('legend');
+const loadingEl = document.getElementById('loading');
+const wrapEl = document.getElementById('wrap');
+
+// ── Data loading ──
+fetch('proof-lattice.json')
+  .then(r => r.json())
+  .then(d => { DATA = d; init(); })
+  .catch(e => { loadingEl.innerHTML = `<div class="text" style="color:#f43f5e">Failed to load: ${e.message}</div>`; });
+
+function init() {
+  loadingEl.style.display = 'none';
+
+  // Enable all families
+  DATA.families.forEach(f => enabledFamilies[f] = true);
+
+  // Stats bar
+  const s = DATA.stats;
+  statsEl.innerHTML = `
+    <span><span class="dot" style="background:#22d3ee"></span>${s.total_declarations} declarations</span>
+    <span><span class="dot" style="background:#f43f5e"></span>${s.by_kind.theorem || 0} theorems</span>
+    <span><span class="dot" style="background:#34d399"></span>${s.by_kind.lemma || 0} lemmas</span>
+    <span><span class="dot" style="background:#3b82f6"></span>${s.by_kind.def || 0} definitions</span>
+    <span><span class="dot" style="background:#a78bfa"></span>${s.by_kind.structure || 0} structures</span>
+    <span><span class="dot" style="background:#888"></span>${s.total_files} files</span>
+  `;
+
+  // Family filter pills
+  let html = '<span class="pill-group-label">Families</span>';
+  DATA.families.forEach(f => {
+    const c = FAMILY_COLORS[f] || '#888';
+    html += `<span class="pill active" data-fam="${f}" style="--c:${c}" onclick="toggleFam('${f}',this)">${f}</span>`;
+  });
+  html += '<span style="margin-left:8px" class="pill-group-label">|</span>';
+  html += `<span class="pill active" style="--c:#22d3ee" onclick="toggleRotate(this)">Auto-Rotate</span>`;
+  controlsEl.innerHTML = html;
+
+  // Legend
+  let leg = '<div class="legend-title">Declaration Kind</div>';
+  for (const [k, v] of Object.entries(KIND_SHAPES)) {
+    if (DATA.stats.by_kind[k]) {
+      leg += `<div class="legend-item"><div class="legend-dot" style="background:rgba(192,200,216,0.5)"></div>${v.label} (${DATA.stats.by_kind[k]})</div>`;
+    }
+  }
+  legendEl.innerHTML = leg;
+
+  resize();
+  window.addEventListener('resize', resize);
+  canvas.addEventListener('mousemove', onMove);
+  canvas.addEventListener('mousedown', onDown);
+  canvas.addEventListener('mouseup', onUp);
+  canvas.addEventListener('mouseleave', onUp);
+  canvas.addEventListener('wheel', onWheel, { passive: false });
+  requestAnimationFrame(draw);
+}
+
+function resize() {
+  const r = wrapEl.getBoundingClientRect();
+  canvas.width = r.width * devicePixelRatio;
+  canvas.height = r.height * devicePixelRatio;
+  canvas.style.width = r.width + 'px';
+  canvas.style.height = r.height + 'px';
+}
+
+function toggleFam(f, el) {
+  enabledFamilies[f] = !enabledFamilies[f];
+  el.classList.toggle('active');
+}
+function toggleRotate(el) {
+  autoRotate = !autoRotate;
+  el.classList.toggle('active');
+}
+
+// ── 3D projection ──
+function project(node) {
+  const a = rotation + rotationOffset;
+  const cos = Math.cos(a), sin = Math.sin(a);
+  const x3 = node.x * cos - node.z * sin;
+  const z3 = node.x * sin + node.z * cos;
+  const y3 = node.y;
+  const scale = camDist / (camDist + z3 + 60);
+  const cx = canvas.width / (2 * devicePixelRatio);
+  const cy = canvas.height / (2 * devicePixelRatio);
+  return {
+    sx: cx + x3 * scale * 3,
+    sy: cy + y3 * scale * 3,
+    scale,
+    z: z3,
+  };
+}
+
+// ── Drawing ──
+function draw() {
+  if (!DATA) { requestAnimationFrame(draw); return; }
+
+  const dpr = devicePixelRatio;
+  const w = canvas.width / dpr;
+  const h = canvas.height / dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  if (autoRotate) rotation += 0.003;
+
+  const nodes = DATA.nodes;
+  const projected = nodes.map(n => ({ ...project(n), idx: n.id, fam: n.family, enabled: enabledFamilies[n.family] !== false }));
+
+  // Sort by z for painter's algorithm
+  const sorted = projected.filter(p => p.enabled).sort((a, b) => a.z - b.z);
+
+  // Draw edges (subtle)
+  ctx.globalAlpha = 0.06;
+  ctx.strokeStyle = '#22d3ee';
+  ctx.lineWidth = 0.5;
+  for (const [a, b] of DATA.edges) {
+    const pa = projected[a], pb = projected[b];
+    if (!pa || !pb || !pa.enabled || !pb.enabled) continue;
+    ctx.beginPath();
+    ctx.moveTo(pa.sx, pa.sy);
+    ctx.lineTo(pb.sx, pb.sy);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Draw nodes
+  hovered = -1;
+  let minDist = 12;
+  const mx = lastMouse.x, my = lastMouse.y;
+
+  for (const p of sorted) {
+    const n = nodes[p.idx];
+    const color = FAMILY_COLORS[n.family] || '#888';
+    const baseR = (n.kind === 'theorem' ? 3.5 : n.kind === 'lemma' ? 2.8 : n.kind === 'structure' ? 3.2 : 2.2);
+    const r = baseR * p.scale * (n.importance || 1);
+
+    // Glow
+    const glow = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, r * 3);
+    glow.addColorStop(0, color + '30');
+    glow.addColorStop(1, color + '00');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, r * 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Node
+    ctx.globalAlpha = 0.4 + p.scale * 0.6;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Hit test
+    const dx = p.sx - mx, dy = p.sy - my;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < minDist) {
+      minDist = dist;
+      hovered = p.idx;
+    }
+  }
+
+  // Highlight hovered
+  if (hovered >= 0) {
+    const n = nodes[hovered];
+    const p = projected[hovered];
+    if (p && p.enabled) {
+      const color = FAMILY_COLORS[n.family] || '#888';
+      const r = 6 * p.scale;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, r + 4, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Show tooltip
+      tipEl.style.display = 'block';
+      tipEl.style.left = Math.min(p.sx + 16, w - 280) + 'px';
+      tipEl.style.top = Math.min(p.sy - 20, h - 100) + 'px';
+      tipEl.innerHTML = `
+        <div class="name">${n.name}</div>
+        <div class="kind">${n.kind}</div>
+        <div class="file">${n.file}:${n.line}</div>
+        <div class="family-badge" style="border-color:${color};color:${color}">${n.family}</div>
+      `;
+    }
+  } else {
+    tipEl.style.display = 'none';
+  }
+
+  requestAnimationFrame(draw);
+}
+
+// ── Input ──
+let lastMouse = { x: -999, y: -999 };
+
+function onMove(e) {
+  const r = canvas.getBoundingClientRect();
+  lastMouse.x = e.clientX - r.left;
+  lastMouse.y = e.clientY - r.top;
+
+  if (dragStart) {
+    const dx = e.clientX - dragStart.x;
+    rotationOffset = dragStart.rot + dx * 0.005;
+  }
+}
+
+function onDown(e) {
+  dragStart = { x: e.clientX, rot: rotationOffset };
+  autoRotate = false;
+  // Update the pill
+  const pills = controlsEl.querySelectorAll('.pill');
+  pills.forEach(p => { if (p.textContent === 'Auto-Rotate') p.classList.remove('active'); });
+}
+
+function onUp() {
+  dragStart = null;
+}
+
+function onWheel(e) {
+  e.preventDefault();
+  camDist = Math.max(40, Math.min(300, camDist + e.deltaY * 0.3));
+}
+</script>
+</body>
+</html>
