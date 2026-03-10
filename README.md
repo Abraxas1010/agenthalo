@@ -69,6 +69,21 @@ This is not an edge case. This is the default experience for everyone using AI a
 
 This is the gap H.A.L.O. exists to close.
 
+### Explore the Proof Corpus
+
+<p align="center">
+  <a href="https://abraxas1010.github.io/agenthalo/">
+    <img src="assets/proof-explorer.gif" alt="AgentHALO Proof Explorer — 962 declarations across 15 families" width="720"/>
+  </a>
+</p>
+
+<p align="center">
+  <strong>962 declarations</strong> &middot; <strong>286 theorems</strong> &middot; <strong>36 lemmas</strong> &middot; <strong>134 structures</strong> &middot; <strong>137 files</strong> &middot; <strong>15 families</strong><br>
+  <sub>Every claim below is machine-checked. Neural firing visualizes the proof dependency lattice.</sub>
+</p>
+
+---
+
 ## The Solution
 
 Agent H.A.L.O. wraps any AI coding agent — Claude, Codex, Gemini, or your own — and records **every event** into a local, cryptographically sealed trace store. One command. Nothing else changes.
@@ -558,38 +573,6 @@ H.A.L.O. asks you to trust the Lean 4 kernel — a small, independently auditabl
 # Verify the proofs yourself (requires Lean 4 toolchain)
 lake build NucleusDB
 ```
-
-### Explore the Proof Corpus
-
-<p align="center">
-  <a href="https://abraxas1010.github.io/agenthalo/">
-    <img src="assets/proof-explorer.gif" alt="AgentHALO Proof Explorer — 962 declarations, 286 theorems, 15 families" width="720"/>
-  </a>
-</p>
-
-<p align="center">
-  <strong>962 declarations</strong> &middot; <strong>286 theorems</strong> &middot; <strong>36 lemmas</strong> &middot; <strong>134 structures</strong> &middot; <strong>137 files</strong> &middot; <strong>15 families</strong><br>
-  <a href="https://abraxas1010.github.io/agenthalo/"><strong>Open Interactive Explorer &rarr;</strong></a>
-</p>
-
-Every node is a declaration from the Lean proof corpus. Theorems glow brightest. Families cluster by color: cyan for Core, teal for Identity, emerald for Genesis, rose for Security, amber for PaymentChannels. Drag to rotate. Scroll to zoom. Click a family pill to filter. Hover any node to inspect.
-
-The 137 modules cover:
-
-| Domain | Modules | What's Proved |
-|--------|---------|---------------|
-| **Core** | Nucleus, Ledger, Invariants, Authorization, Certificates | Protocol invariants, authorization policies |
-| **Security** | Assumptions, Parameters, Reductions, Refinement | Security reductions — if you break NucleusDB, you break SHA-256 |
-| **Commitment** | VectorModel, Adapter | Backend abstraction, commitment correctness |
-| **Sheaf** | Coherence, MaterializationFunctor, ChainTransport, ChainGluing | Local-to-global consistency, transport round-trips, gluing |
-| **Transparency** | CT6962, Consistency, LogModel | RFC 6962 append-only tree, consistency proofs |
-| **Adversarial** | ForkEvidence, Witness | Fork detection, witness validity |
-| **Trust Layer** | Presheaf, GluingCondition, GlobalCab, SheafBridge | Multi-chain compliance, composite attestation |
-| **Identity** | Genesis, DID, KeyPair, Ceremony | Agent identity lifecycle, key derivation |
-| **Comms** | DIDComm, HybridKEM, P2P, ZK | Encrypted messaging, hybrid post-quantum KEM |
-| **Crypto** | MLDSA, MLKEM, HashChain | Post-quantum signature/KEM correctness |
-| **Epistemic** | TsallisEntropy, BayesianUpdate, UncertaintyTranslation | Diversity gauges, odds-update correctness, cross-calculus functor laws |
-| **Contracts** | PaymentChannels, EVM | On-chain payment channel state transitions |
 
 ---
 
