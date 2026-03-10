@@ -212,6 +212,19 @@ impl GovernorRegistry {
         self.snapshot_entry(instance_id, &entry)
     }
 
+    pub fn configs_all(&self) -> Vec<GovernorConfig> {
+        let instances = match self.instances.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let mut configs = instances
+            .values()
+            .filter_map(|entry| entry.state.lock().ok().map(|state| state.config.clone()))
+            .collect::<Vec<_>>();
+        configs.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+        configs
+    }
+
     fn snapshot_entry(
         &self,
         instance_id: &str,

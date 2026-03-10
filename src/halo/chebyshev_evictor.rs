@@ -10,6 +10,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub(crate) const DEFAULT_CHEBYSHEV_K: f64 = 2.0;
+pub(crate) const DEFAULT_CHEBYSHEV_DECAY_RATE: f64 = 0.05;
+pub(crate) const DEFAULT_CHEBYSHEV_IMPULSE_MAGNITUDE: f64 = 1.0;
+
 fn mean(x: &[f64]) -> f64 {
     if x.is_empty() {
         0.0
@@ -75,7 +79,11 @@ pub struct ChebyshevEvictor {
 
 impl Default for ChebyshevEvictor {
     fn default() -> Self {
-        Self::new(2.0, 0.05, 1.0)
+        Self::new(
+            DEFAULT_CHEBYSHEV_K,
+            DEFAULT_CHEBYSHEV_DECAY_RATE,
+            DEFAULT_CHEBYSHEV_IMPULSE_MAGNITUDE,
+        )
     }
 }
 

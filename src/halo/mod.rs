@@ -51,6 +51,7 @@ pub mod p2p_node;
 pub mod p2pclaw;
 pub mod password;
 pub mod pinata;
+pub mod policy_registry;
 pub mod pq;
 pub mod pricing;
 pub mod privacy_controller;

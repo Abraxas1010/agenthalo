@@ -229,17 +229,17 @@ impl Default for BlobStore {
     }
 }
 
-fn default_blob_ceiling() -> usize {
+pub(crate) fn default_blob_ceiling() -> usize {
     100_000
 }
 
-fn storage_reset_window_secs() -> u64 {
+pub(crate) fn storage_reset_window_secs() -> u64 {
     30
 }
 
-fn default_blob_memory_governor() -> GovernorState {
-    GovernorState::new(GovernorConfig {
-        instance_id: "gov-memory".to_string(),
+pub(crate) fn default_blob_memory_governor_config() -> GovernorConfig {
+    GovernorConfig {
+        instance_id: "gov-memory-blob".to_string(),
         alpha: 0.01,
         beta: 0.05,
         dt: 1.0,
@@ -247,7 +247,11 @@ fn default_blob_memory_governor() -> GovernorState {
         eps_max: 512.0,
         target: default_blob_ceiling() as f64,
         formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
-    })
+    }
+}
+
+fn default_blob_memory_governor() -> GovernorState {
+    GovernorState::new(default_blob_memory_governor_config())
 }
 
 fn now_unix() -> u64 {

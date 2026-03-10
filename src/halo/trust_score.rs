@@ -46,6 +46,34 @@ pub const TRUST_THRESHOLD_ROUTE_HIGH: f64 = 5.0;
 pub const TRUST_THRESHOLD_ATTEST: f64 = 10.0;
 pub const TRUST_THRESHOLD_FORMATION: f64 = 15.0;
 
+/// Diode floor constants: minimum trust that cannot be driven below by
+/// adversarial challenge bursts. Only applies to tiers that have earned
+/// durable identity standing. Anonymous and Verified peers have no floor
+/// (their trust can reach zero).
+///
+/// Floor values are deliberately below operational routing thresholds so
+/// a floored peer loses privileges (routing requires 5.0) but is not
+/// annihilated — preserving the ability to recover through legitimate
+/// re-verification rather than requiring full re-onboarding.
+pub const TRUST_FLOOR_ANCHORED: f64 = 0.5;
+pub const TRUST_FLOOR_STAKED: f64 = 2.0;
+
+/// One-way floor on trust score keyed by identity tier.
+///
+/// Prevents coordinated Sybil attacks from driving an established peer's
+/// trust to zero within a single half-life window. The floor is a hard
+/// minimum: `max(raw_trust, floor_for_tier)`.
+///
+/// Anonymous and Verified peers have no floor (returns `trust` unchanged).
+pub fn diode_floor(trust: f64, tier: IdentityTier) -> f64 {
+    let floor = match tier {
+        IdentityTier::Anonymous | IdentityTier::Verified => return trust,
+        IdentityTier::Anchored => TRUST_FLOOR_ANCHORED,
+        IdentityTier::Staked => TRUST_FLOOR_STAKED,
+    };
+    trust.max(floor)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum IdentityTier {
     Anonymous = 0,
@@ -183,6 +211,78 @@ mod tests {
         assert_eq!(required_tier("receive_routed_work"), IdentityTier::Verified);
         assert_eq!(required_tier("high_value_task"), IdentityTier::Anchored);
         assert_eq!(required_tier("hold_escrow"), IdentityTier::Staked);
+    }
+
+    #[test]
+    fn diode_floor_protects_anchored_peer() {
+        assert_eq!(
+            diode_floor(0.0, IdentityTier::Anchored),
+            TRUST_FLOOR_ANCHORED
+        );
+        assert_eq!(diode_floor(10.0, IdentityTier::Anchored), 10.0);
+        assert_eq!(
+            diode_floor(TRUST_FLOOR_ANCHORED - 0.1, IdentityTier::Anchored),
+            TRUST_FLOOR_ANCHORED
+        );
+    }
+
+    #[test]
+    fn diode_floor_protects_staked_peer() {
+        assert_eq!(diode_floor(0.0, IdentityTier::Staked), TRUST_FLOOR_STAKED);
+        assert_eq!(diode_floor(15.0, IdentityTier::Staked), 15.0);
+        assert_eq!(
+            diode_floor(TRUST_FLOOR_STAKED - 0.5, IdentityTier::Staked),
+            TRUST_FLOOR_STAKED
+        );
+    }
+
+    #[test]
+    fn diode_floor_is_transparent_for_low_tiers() {
+        assert_eq!(diode_floor(0.0, IdentityTier::Anonymous), 0.0);
+        assert_eq!(diode_floor(0.0, IdentityTier::Verified), 0.0);
+        assert_eq!(diode_floor(5.0, IdentityTier::Anonymous), 5.0);
+        assert_eq!(diode_floor(5.0, IdentityTier::Verified), 5.0);
+    }
+
+    #[test]
+    fn sybil_burst_cannot_annihilate_staked_peer() {
+        // Simulate a Sybil attack: 20 rapid failed Deep challenges against a
+        // Staked peer that previously had strong trust from legitimate work.
+        let legitimate = VerificationRecord {
+            peer_did: "did:key:staked".to_string(),
+            capability_domain: "prove/lean".to_string(),
+            challenge_difficulty: ChallengeDifficulty::Deep,
+            passed: true,
+            elapsed_ms: 400,
+            verified_at: 100,
+        };
+        let attack_records: Vec<VerificationRecord> = (0..20)
+            .map(|i| VerificationRecord {
+                peer_did: "did:key:staked".to_string(),
+                capability_domain: "prove/lean".to_string(),
+                challenge_difficulty: ChallengeDifficulty::Deep,
+                passed: false,
+                elapsed_ms: 10,
+                verified_at: 200 + i,
+            })
+            .collect();
+
+        let mut all_records = vec![legitimate];
+        all_records.extend(attack_records);
+
+        let raw_trust = compute_trust(&all_records, 220, 3600);
+        // Raw trust is driven to zero by the attack burst
+        assert_eq!(
+            raw_trust, 0.0,
+            "raw trust should be floored at 0.0 by .max(0.0)"
+        );
+
+        // But with the diode, the Staked peer retains minimum standing
+        let protected = diode_floor(raw_trust, IdentityTier::Staked);
+        assert_eq!(protected, TRUST_FLOOR_STAKED);
+        // The peer loses high-value routing (requires 5.0) but is not annihilated
+        assert!(protected < TRUST_THRESHOLD_ROUTE_HIGH);
+        assert!(protected >= TRUST_FLOOR_STAKED);
     }
 
     #[test]

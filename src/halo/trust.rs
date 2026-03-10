@@ -1,4 +1,5 @@
 use crate::halo::hash::{self, HashAlgorithm};
+use crate::halo::identity::{IdentitySecurityTier, DEFAULT_SECURITY_TIER};
 use crate::halo::schema::SessionStatus;
 use crate::halo::trace::{list_sessions, now_unix_secs, paid_operations};
 use schemars::JsonSchema;
@@ -20,6 +21,22 @@ pub struct TrustScoreResult {
     pub session_id: Option<String>,
     pub digest: String,
     pub timestamp: u64,
+}
+
+/// Map the node's identity security tier to a trust score floor on [0,1].
+///
+/// Nodes that invest in stronger identity verification earn a diode floor
+/// that prevents trust annihilation. The floor is deliberately below the
+/// "cautious" threshold (0.40) — a floored node still has reduced
+/// privileges but is not driven to zero.
+///
+/// `LowSecurity` nodes chose minimal verification and get no floor.
+pub fn security_tier_trust_floor(tier: &IdentitySecurityTier) -> f64 {
+    match tier {
+        IdentitySecurityTier::MaxSafe => 0.30,
+        IdentitySecurityTier::LessSafe => 0.15,
+        IdentitySecurityTier::LowSecurity => 0.0,
+    }
 }
 
 /// Nucleus-grounded epistemic trust calculus on [0,1].
@@ -134,6 +151,16 @@ pub fn query_trust_score(
     }
     score *= failure_penalty;
     score = score.clamp(0.0, 1.0);
+
+    // Apply identity-tier diode floor: nodes with stronger identity
+    // verification earn a minimum trust that cannot be driven to zero.
+    let identity = crate::halo::identity::load();
+    let id_tier = identity
+        .security_tier
+        .as_ref()
+        .unwrap_or(&DEFAULT_SECURITY_TIER);
+    let floor = security_tier_trust_floor(id_tier);
+    score = score.max(floor);
 
     let tier = trust_tier(score).to_string();
     let digest = score_digest(ScoreDigestInput {
@@ -320,5 +347,37 @@ mod tests {
         let fused = et.fuse(x, y);
         let hom = et.ihom(y, z);
         assert_eq!(fused <= z, x <= hom);
+    }
+
+    #[test]
+    fn security_tier_floor_values() {
+        use crate::halo::identity::IdentitySecurityTier;
+        assert_eq!(
+            security_tier_trust_floor(&IdentitySecurityTier::MaxSafe),
+            0.30
+        );
+        assert_eq!(
+            security_tier_trust_floor(&IdentitySecurityTier::LessSafe),
+            0.15
+        );
+        assert_eq!(
+            security_tier_trust_floor(&IdentitySecurityTier::LowSecurity),
+            0.0
+        );
+    }
+
+    #[test]
+    fn diode_floor_active_in_production_path() {
+        // With no identity config file, DEFAULT_SECURITY_TIER (LessSafe) applies.
+        // The floor for LessSafe is 0.15, so even a fresh node with no history
+        // should never score below 0.15.
+        let db_path = temp_db_path("diode_prod");
+        let out = query_trust_score(&db_path, None).expect("score");
+        assert!(
+            out.score >= security_tier_trust_floor(&DEFAULT_SECURITY_TIER),
+            "score {} should be >= default floor {}",
+            out.score,
+            security_tier_trust_floor(&DEFAULT_SECURITY_TIER),
+        );
     }
 }
