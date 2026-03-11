@@ -10,6 +10,14 @@ pub const EVIDENCE_COMBINATION_FORMAL_BASIS: &str =
 pub const EVIDENCE_COMBINATION_FORMAL_BASIS_LOCAL: &str =
     "HeytingLean.NucleusDB.Core.EvidenceFusion.combineEvidence_comm";
 
+/// Canonical/local theorem-path pair for audit surfaces.
+pub fn evidence_combination_formal_provenance() -> (&'static str, &'static str) {
+    (
+        EVIDENCE_COMBINATION_FORMAL_BASIS,
+        EVIDENCE_COMBINATION_FORMAL_BASIS_LOCAL,
+    )
+}
+
 /// Tool-provided evidence for a hypothesis.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ToolEvidence {
@@ -52,11 +60,6 @@ impl EvidenceCombination {
     /// Runtime-local arithmetic mirror of the same order-independence property.
     pub fn formal_basis_local() -> &'static str {
         EVIDENCE_COMBINATION_FORMAL_BASIS_LOCAL
-    }
-
-    /// Canonical/local theorem-path pair for audit surfaces.
-    pub fn formal_provenance() -> (&'static str, &'static str) {
-        (Self::formal_basis(), Self::formal_basis_local())
     }
 }
 
