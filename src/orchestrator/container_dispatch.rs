@@ -2,7 +2,6 @@ use crate::container::agent_lock::ReusePolicy;
 use crate::container::launcher::{destroy_container, launch_container, MeshConfig, RunConfig};
 use crate::container::mesh::{call_remote_tool, mesh_registry_path, PeerRegistry};
 use crate::container::AgentResponse;
-use crate::container::{mesh_auth_token, DEFAULT_MESH_REGISTRY_VOLUME};
 use crate::orchestrator::dispatch::ContainerHookupRequest;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -12,38 +11,6 @@ use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::Mutex;
 use std::time::Duration;
-
-fn decode_remote_tool_value<T: serde::de::DeserializeOwned>(
-    value: serde_json::Value,
-    context: &str,
-) -> Result<T, String> {
-    let is_error = value
-        .get("isError")
-        .or_else(|| value.get("is_error"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if is_error {
-        return Err(format!("remote tool returned error for {context}: {value}"));
-    }
-    let payload = value
-        .get("structuredContent")
-        .or_else(|| value.get("structured_content"))
-        .cloned()
-        .or_else(|| {
-            value.get("content").and_then(|content| {
-                content.as_array().and_then(|items| {
-                    items.iter().find_map(|item| {
-                        item.get("text")
-                            .and_then(|text| text.as_str())
-                            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-                    })
-                })
-            })
-        })
-        .unwrap_or(value);
-    serde_json::from_value(payload.clone())
-        .map_err(|e| format!("decode {context}: {e}; payload={payload}"))
-}
 
 #[derive(Debug, Clone)]
 pub struct ContainerProvisionSpec {
@@ -135,34 +102,18 @@ pub struct MeshContainerDispatch {
 impl Default for MeshContainerDispatch {
     fn default() -> Self {
         Self {
-            default_image: std::env::var("NUCLEUSDB_CONTAINER_IMAGE")
+            default_image: std::env::var("AGENTHALO_CONTAINER_IMAGE")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
-                .or_else(|| {
-                    std::env::var("AGENTHALO_CONTAINER_IMAGE")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                })
-                .unwrap_or_else(|| "nucleusdb:latest".to_string()),
-            default_registry_volume: std::env::var("NUCLEUSDB_CONTAINER_REGISTRY_VOLUME")
+                .unwrap_or_else(|| "nucleusdb-agent:latest".to_string()),
+            default_registry_volume: std::env::var("AGENTHALO_CONTAINER_REGISTRY_VOLUME")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var("AGENTHALO_CONTAINER_REGISTRY_VOLUME")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                        .map(PathBuf::from)
-                })
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_MESH_REGISTRY_VOLUME)),
-            default_mcp_port: std::env::var("NUCLEUSDB_CONTAINER_MCP_PORT")
+                .unwrap_or_else(|| PathBuf::from("/tmp/nucleusdb-mesh")),
+            default_mcp_port: std::env::var("AGENTHALO_CONTAINER_MCP_PORT")
                 .ok()
                 .and_then(|v| v.parse::<u16>().ok())
-                .or_else(|| {
-                    std::env::var("AGENTHALO_CONTAINER_MCP_PORT")
-                        .ok()
-                        .and_then(|v| v.parse::<u16>().ok())
-                })
                 .unwrap_or(crate::container::mesh::DEFAULT_MCP_PORT),
         }
     }
@@ -207,12 +158,9 @@ impl MeshContainerDispatch {
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let peer = self.find_peer(peer_agent_id).await?;
-        let auth_token = mesh_auth_token();
-        tokio::task::spawn_blocking(move || {
-            call_remote_tool(&peer, tool_name, arguments, auth_token.as_deref())
-        })
-        .await
-        .map_err(|e| format!("mesh remote call join failure: {e}"))?
+        tokio::task::spawn_blocking(move || call_remote_tool(&peer, tool_name, arguments, None))
+            .await
+            .map_err(|e| format!("mesh remote call join failure: {e}"))?
     }
 }
 
@@ -251,16 +199,7 @@ impl ContainerDispatch for MeshContainerDispatch {
             launch_container(RunConfig {
                 image,
                 agent_id: peer_agent_id.clone(),
-                command: vec![
-                    "nucleusdb-mcp".to_string(),
-                    "/data/nucleusdb.ndb".to_string(),
-                    "--transport".to_string(),
-                    "http".to_string(),
-                    "--host".to_string(),
-                    "0.0.0.0".to_string(),
-                    "--port".to_string(),
-                    mcp_port.to_string(),
-                ],
+                command: vec!["agenthalo-mcp-server".to_string()],
                 use_gvisor: false,
                 host_sock: None,
                 env_vars,
@@ -300,7 +239,8 @@ impl ContainerDispatch for MeshContainerDispatch {
                 payload,
             )
             .await?;
-        decode_remote_tool_value(value, "container initialize response")
+        serde_json::from_value(value)
+            .map_err(|e| format!("decode container initialize response: {e}"))
     }
 
     async fn send_prompt(&self, spec: ContainerPromptSpec) -> Result<AgentResponse, String> {
@@ -311,7 +251,7 @@ impl ContainerDispatch for MeshContainerDispatch {
                 json!({ "prompt": spec.prompt }),
             )
             .await?;
-        decode_remote_tool_value(value, "container prompt response")
+        serde_json::from_value(value).map_err(|e| format!("decode container prompt response: {e}"))
     }
 
     async fn deinitialize(
@@ -325,7 +265,8 @@ impl ContainerDispatch for MeshContainerDispatch {
                 json!({}),
             )
             .await?;
-        decode_remote_tool_value(value, "container deinitialize response")
+        serde_json::from_value(value)
+            .map_err(|e| format!("decode container deinitialize response: {e}"))
     }
 
     async fn destroy(&self, session_id: &str) -> Result<(), String> {

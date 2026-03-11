@@ -1,15 +1,8 @@
-use crate::container::coordination::acquire_pid_lock;
 use crate::container::{current_container_id, AgentHookupKind, ReusePolicy};
 use crate::halo::config;
 use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-const REGISTRY_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
-const REGISTRY_LOCK_RETRY: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SubsidiaryRegistry {
@@ -59,13 +52,6 @@ impl SubsidiaryRegistry {
         Self::load_or_create_at(&path, operator_agent_id)
     }
 
-    pub fn load_or_create_locked(
-        operator_agent_id: &str,
-    ) -> Result<(SubsidiaryRegistryLock, Self), String> {
-        let path = config::subsidiaries_registry_path();
-        Self::load_or_create_locked_at(&path, operator_agent_id)
-    }
-
     pub fn load_or_create_at(path: &Path, operator_agent_id: &str) -> Result<Self, String> {
         let operator_container_id = current_container_id();
         if path.exists() {
@@ -97,34 +83,17 @@ impl SubsidiaryRegistry {
         Ok(registry)
     }
 
-    pub fn load_or_create_locked_at(
-        path: &Path,
-        operator_agent_id: &str,
-    ) -> Result<(SubsidiaryRegistryLock, Self), String> {
-        let lock = SubsidiaryRegistryLock::acquire(path)?;
-        let registry = Self::load_or_create_at(path, operator_agent_id)?;
-        Ok((lock, registry))
-    }
-
     pub fn save(&self) -> Result<(), String> {
         self.save_to_path(&config::subsidiaries_registry_path())
     }
 
     pub fn save_to_path(&self, path: &Path) -> Result<(), String> {
         ensure_parent_dir(path)?;
+        let tmp = temp_path(path);
         let raw = serde_json::to_vec_pretty(self)
             .map_err(|e| format!("serialize subsidiary registry: {e}"))?;
-        path.parent()
-            .ok_or_else(|| format!("subsidiary registry path {} has no parent", path.display()))?;
-        let tmp = unique_temp_path(path);
-        {
-            let mut file = File::create(&tmp)
-                .map_err(|e| format!("create temp subsidiary registry {}: {e}", tmp.display()))?;
-            file.write_all(&raw)
-                .map_err(|e| format!("write temp subsidiary registry {}: {e}", tmp.display()))?;
-            file.flush()
-                .map_err(|e| format!("flush temp subsidiary registry {}: {e}", tmp.display()))?;
-        }
+        std::fs::write(&tmp, &raw)
+            .map_err(|e| format!("write temp subsidiary registry {}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, path).map_err(|e| {
             format!(
                 "commit subsidiary registry {} -> {}: {e}",
@@ -276,48 +245,8 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-#[derive(Debug)]
-pub struct SubsidiaryRegistryLock {
-    path: PathBuf,
-    _file: File,
-}
-
-impl SubsidiaryRegistryLock {
-    fn acquire(path: &Path) -> Result<Self, String> {
-        let lock_path = lock_path(path);
-        ensure_parent_dir(&lock_path)?;
-        let file = acquire_pid_lock(
-            &lock_path,
-            REGISTRY_LOCK_TIMEOUT,
-            REGISTRY_LOCK_RETRY,
-            "subsidiary registry",
-        )?;
-        Ok(Self {
-            path: lock_path,
-            _file: file,
-        })
-    }
-}
-
-impl Drop for SubsidiaryRegistryLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-fn lock_path(path: &Path) -> PathBuf {
-    let mut lock = path.as_os_str().to_os_string();
-    lock.push(".lock");
-    PathBuf::from(lock)
-}
-
-fn unique_temp_path(path: &Path) -> PathBuf {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let stem = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("subsidiaries.json");
-    parent.join(format!(".{}.{}.tmp", stem, uuid::Uuid::new_v4().simple()))
+fn temp_path(path: &Path) -> PathBuf {
+    path.with_extension("json.tmp")
 }
 
 fn ensure_parent_dir(path: &Path) -> Result<(), String> {

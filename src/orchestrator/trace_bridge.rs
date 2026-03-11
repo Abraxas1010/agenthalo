@@ -1,4 +1,9 @@
 use crate::cockpit::pty_manager::{PtySession, SessionEvent};
+use crate::halo::adapters::claude::ClaudeAdapter;
+use crate::halo::adapters::codex::CodexAdapter;
+use crate::halo::adapters::gemini::GeminiAdapter;
+use crate::halo::adapters::generic::GenericAdapter;
+use crate::halo::adapters::StreamAdapter;
 use crate::halo::schema::{
     EventType, SessionMetadata, SessionStatus as HaloSessionStatus, TraceEvent,
 };
@@ -18,6 +23,7 @@ pub struct TaskRunOutcome {
 }
 
 pub struct TraceBridge {
+    adapter: Box<dyn StreamAdapter>,
     writer: Option<TraceWriter>,
     line_buf: Vec<u8>,
     output_buf: Vec<u8>,
@@ -31,6 +37,12 @@ impl TraceBridge {
         prompt: &str,
         enabled: bool,
     ) -> Result<Self, String> {
+        let adapter = match agent_type {
+            "claude" => Box::new(ClaudeAdapter::new()) as Box<dyn StreamAdapter>,
+            "codex" => Box::new(CodexAdapter::new()) as Box<dyn StreamAdapter>,
+            "gemini" => Box::new(GeminiAdapter::new()) as Box<dyn StreamAdapter>,
+            other => Box::new(GenericAdapter::new(other.to_string())) as Box<dyn StreamAdapter>,
+        };
         let writer = if enabled {
             let mut writer = TraceWriter::new(trace_db_path)?;
             writer.start_session(SessionMetadata {
@@ -50,6 +62,7 @@ impl TraceBridge {
             None
         };
         Ok(Self {
+            adapter,
             writer,
             line_buf: Vec::new(),
             output_buf: Vec::new(),
@@ -64,20 +77,25 @@ impl TraceBridge {
     }
 
     fn process_line(&mut self, line: &str) -> Result<(), String> {
-        self.write_trace_event(TraceEvent {
-            seq: 0,
-            timestamp: crate::halo::trace::now_unix_secs(),
-            event_type: EventType::Raw,
-            content: serde_json::json!({ "line": line }),
-            input_tokens: None,
-            output_tokens: None,
-            cache_read_tokens: None,
-            tool_name: None,
-            tool_input: None,
-            tool_output: None,
-            file_path: None,
-            content_hash: String::new(),
-        })
+        if let Some(event) = self.adapter.parse_line(line) {
+            self.write_trace_event(event)?;
+        } else {
+            self.write_trace_event(TraceEvent {
+                seq: 0,
+                timestamp: crate::halo::trace::now_unix_secs(),
+                event_type: EventType::Raw,
+                content: serde_json::json!({ "line": line }),
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_tokens: None,
+                tool_name: None,
+                tool_input: None,
+                tool_output: None,
+                file_path: None,
+                content_hash: String::new(),
+            })?;
+        }
+        Ok(())
     }
 
     pub fn process_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
@@ -91,16 +109,25 @@ impl TraceBridge {
         Ok(())
     }
 
-    pub fn finalize(&mut self, status: HaloSessionStatus) -> Result<(), String> {
+    pub fn finalize(&mut self, status: HaloSessionStatus) -> Result<Option<String>, String> {
         if !self.line_buf.is_empty() {
             let line = String::from_utf8_lossy(&self.line_buf).to_string();
             self.line_buf.clear();
             self.process_line(&line)?;
         }
+        let tail = self.adapter.finalize();
+        for event in tail {
+            self.write_trace_event(event)?;
+        }
+        if let Some(model) = self.adapter.detected_model().map(str::to_string) {
+            if let Some(writer) = self.writer.as_mut() {
+                writer.update_session_model(&model);
+            }
+        }
         if let Some(writer) = self.writer.as_mut() {
             let _ = writer.end_session(status)?;
         }
-        Ok(())
+        Ok(self.adapter.detected_model().map(str::to_string))
     }
 
     pub fn output_text(&self) -> String {
@@ -149,13 +176,18 @@ pub async fn collect_task_output(
             bridge.finalize(HaloSessionStatus::Interrupted)?;
             return Err(format!("task timeout after {timeout_secs}s"));
         }
-        let wait_for = std::cmp::min(remain, std::time::Duration::from_millis(100));
+        let poll_slice = std::time::Duration::from_millis(100);
+        let wait_for = std::cmp::min(remain, poll_slice);
         if let Ok(event) = tokio::time::timeout(wait_for, rx.recv()).await {
             match event {
-                Ok(SessionEvent::Output(bytes)) => bridge.process_bytes(&bytes)?,
+                Ok(SessionEvent::Output(bytes)) => {
+                    bridge.process_bytes(&bytes)?;
+                }
                 Ok(SessionEvent::Status(crate::cockpit::session::SessionStatus::Done {
                     exit_code: code,
-                })) => break code,
+                })) => {
+                    break code;
+                }
                 Ok(SessionEvent::Status(crate::cockpit::session::SessionStatus::Error {
                     message,
                 })) => {
@@ -178,7 +210,7 @@ pub async fn collect_task_output(
     };
     bridge.finalize(final_status)?;
     let output = strip_ansi_sequences(&bridge.output_text());
-    let answer = extract_answer(&output);
+    let answer = extract_answer(agent_type, &output, exit_code);
     let telemetry = session.telemetry_snapshot();
     Ok(TaskRunOutcome {
         output,
@@ -230,7 +262,9 @@ fn strip_ansi_sequences(input: &str) -> String {
                         i += 1;
                     }
                 }
-                _ => i += 1,
+                _ => {
+                    i += 1;
+                }
             }
             continue;
         }
@@ -240,11 +274,233 @@ fn strip_ansi_sequences(input: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-fn extract_answer(output: &str) -> Option<String> {
+fn extract_answer(agent_type: &str, output: &str, exit_code: i32) -> Option<String> {
+    let parsed = match agent_type {
+        "claude" => extract_claude_answer(output),
+        _ => None,
+    };
+    if parsed.is_some() {
+        return parsed;
+    }
+    if exit_code != 0 {
+        return None;
+    }
+    output
+        .lines()
+        .map(str::trim)
+        .rev()
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_claude_answer(output: &str) -> Option<String> {
+    let mut last = None;
     let trimmed = output.trim();
-    if trimmed.is_empty() {
+    if !trimmed.is_empty() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            collect_claude_text_candidates(&value, &mut last);
+            if last.is_some() {
+                return last;
+            }
+        }
+    }
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        collect_claude_text_candidates(&value, &mut last);
+    }
+    last
+}
+
+fn collect_claude_text_candidates(value: &serde_json::Value, last: &mut Option<String>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_claude_text_candidates(item, last);
+            }
+        }
+        _ => {
+            if let Some(text) = extract_claude_text_from_value(value) {
+                let clean = text.trim();
+                if !clean.is_empty() {
+                    *last = Some(clean.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn extract_claude_text_from_value(value: &serde_json::Value) -> Option<String> {
+    if value
+        .get("type")
+        .and_then(|v| v.as_str())
+        .is_some_and(|t| t == "stream_event")
+    {
+        return value.get("event").and_then(extract_claude_text_from_value);
+    }
+
+    let t = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if t == "result" {
+        if let Some(result) = value.get("result").and_then(as_non_empty_str) {
+            return Some(result.to_string());
+        }
+    }
+
+    if let Some(message) = value.get("message") {
+        let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role == "assistant" {
+            if let Some(content) = message.get("content") {
+                if let Some(text) = extract_text_from_content(content) {
+                    return Some(text);
+                }
+            }
+            if let Some(text) = message.get("text").and_then(as_non_empty_str) {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    if t == "assistant" || t == "message" || t == "result" {
+        if let Some(content) = value.get("content") {
+            if let Some(text) = extract_text_from_content(content) {
+                return Some(text);
+            }
+        }
+        if let Some(text) = value.get("text").and_then(as_non_empty_str) {
+            return Some(text.to_string());
+        }
+    }
+    None
+}
+
+fn extract_text_from_content(content: &serde_json::Value) -> Option<String> {
+    match content {
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        serde_json::Value::Array(items) => {
+            let mut parts = Vec::new();
+            for item in items {
+                if let Some(text) = item.get("text").and_then(as_non_empty_str) {
+                    parts.push(text.to_string());
+                    continue;
+                }
+                if let Some(nested) = item.get("content") {
+                    if let Some(text) = extract_text_from_content(nested) {
+                        parts.push(text);
+                    }
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn as_non_empty_str(value: &serde_json::Value) -> Option<&str> {
+    let s = value.as_str()?;
+    if s.trim().is_empty() {
         None
     } else {
-        Some(trimmed.to_string())
+        Some(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cockpit::pty_manager::PtyManager;
+    use std::sync::Arc;
+
+    #[test]
+    fn strip_ansi_sequences_removes_control_codes() {
+        let raw = "\u{1b}[31mred\u{1b}[0m plain";
+        assert_eq!(strip_ansi_sequences(raw), "red plain");
+    }
+
+    #[test]
+    fn strip_ansi_sequences_removes_osc_sequences() {
+        let raw = "a\u{1b}]0;title\u{7}b";
+        assert_eq!(strip_ansi_sequences(raw), "ab");
+    }
+
+    #[test]
+    fn extract_claude_answer_prefers_final_assistant_message() {
+        let output = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"final answer"}]}}"#;
+        assert_eq!(
+            extract_answer("claude", output, 0).as_deref(),
+            Some("final answer")
+        );
+    }
+
+    #[test]
+    fn extract_claude_answer_ignores_non_result_result_fields() {
+        let output = r#"{"type":"result","result":"real answer"}
+{"type":"system","result":"initialized"}"#;
+        assert_eq!(
+            extract_answer("claude", output, 0).as_deref(),
+            Some("real answer")
+        );
+    }
+
+    #[test]
+    fn extract_claude_answer_supports_json_array_payloads() {
+        let output = r#"[{"type":"system","subtype":"init","cwd":"/tmp"},{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"4"}]}},{"type":"result","result":"4"}]"#;
+        assert_eq!(extract_answer("claude", output, 0).as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn extract_answer_does_not_fallback_for_failed_tasks() {
+        assert_eq!(
+            extract_answer("shell", "error: command not found", 127),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_task_output_handles_fast_exit_before_subscribe() {
+        let manager = PtyManager::new(1);
+        let id = manager
+            .create_session(
+                "/bin/sh",
+                &["-c".to_string(), "echo fast-shell".to_string()],
+                vec![],
+                None,
+                120,
+                24,
+                Some("shell".to_string()),
+            )
+            .expect("create session");
+        let session = manager.get_session(&id).expect("session exists");
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let outcome = collect_task_output(
+            Arc::clone(&session),
+            "shell",
+            std::path::Path::new("/tmp/trace_bridge_fast_exit_test.ndb"),
+            "trace-fast-exit",
+            "echo fast-shell",
+            false,
+            3,
+        )
+        .await
+        .expect("collect output");
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.output.contains("fast-shell"));
+        manager.destroy_session(&id).expect("destroy session");
     }
 }

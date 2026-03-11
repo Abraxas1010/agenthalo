@@ -1,8 +1,8 @@
-//! Local model discovery, cataloging, and managed serving for vLLM.
+//! Local model discovery, cataloging, and managed serving for Ollama/vLLM.
 //!
-//! NucleusDB treats local inference as a single HuggingFace-backed vLLM
-//! upstream. Ollama compatibility is preserved only as a config/CLI alias so
-//! existing installations do not crash on old settings.
+//! AgentHALO treats local inference as another upstream backend. This module
+//! owns the durable config/state, CLI-friendly orchestration, and lightweight
+//! discovery helpers used by the proxy, dashboard, and doctor surfaces.
 
 use crate::halo::config;
 use crate::halo::http_client;
@@ -16,6 +16,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+const DEFAULT_OLLAMA_PORT: u16 = 11434;
 const DEFAULT_VLLM_PORT: u16 = 8000;
 const HF_TOKEN_ENV: &str = "HF_TOKEN";
 const HF_FALLBACK_TOKEN_PATH: &str = ".cache/huggingface/token";
@@ -25,7 +26,6 @@ const LOCAL_MODEL_CACHE_TTL: Duration = Duration::from_secs(10);
 const LOCAL_MODEL_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCAL_MODEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const LOCAL_MODEL_STDERR_TAIL_BYTES: usize = 4096;
-const GPU_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Default)]
 struct InstalledModelCache {
@@ -36,17 +36,23 @@ struct InstalledModelCache {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum LocalBackendType {
-    #[serde(alias = "ollama")]
+    Ollama,
     Vllm,
 }
 
 impl LocalBackendType {
     pub fn as_str(self) -> &'static str {
-        "vllm"
+        match self {
+            Self::Ollama => "ollama",
+            Self::Vllm => "vllm",
+        }
     }
 
     pub fn display_name(self) -> &'static str {
-        "vLLM"
+        match self {
+            Self::Ollama => "Ollama",
+            Self::Vllm => "vLLM",
+        }
     }
 }
 
@@ -61,22 +67,16 @@ impl std::str::FromStr for LocalBackendType {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "vllm" | "hf" | "huggingface" | "ollama" => Ok(Self::Vllm),
-            other => Err(format!(
-                "unknown backend `{other}`; expected vllm (or legacy ollama alias)"
-            )),
+            "ollama" => Ok(Self::Ollama),
+            "vllm" => Ok(Self::Vllm),
+            other => Err(format!("unknown backend `{other}`; expected ollama|vllm")),
         }
     }
 }
 
-impl Default for LocalBackendType {
-    fn default() -> Self {
-        Self::Vllm
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ManagedServeState {
+    pub backend: LocalBackendType,
     pub port: u16,
     #[serde(default)]
     pub model: Option<String>,
@@ -87,6 +87,7 @@ pub struct ManagedServeState {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct InstalledModelHint {
+    pub backend: LocalBackendType,
     pub model: String,
 }
 
@@ -97,26 +98,28 @@ enum ManagedServeStateField {
     Many(Vec<ManagedServeState>),
 }
 
-fn deserialize_managed_state<'de, D>(deserializer: D) -> Result<Option<ManagedServeState>, D::Error>
+fn deserialize_managed_states<'de, D>(deserializer: D) -> Result<Vec<ManagedServeState>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = Option::<ManagedServeStateField>::deserialize(deserializer)?;
     Ok(match value {
-        Some(ManagedServeStateField::One(item)) => Some(item),
-        Some(ManagedServeStateField::Many(mut items)) => items.pop(),
-        None => None,
+        Some(ManagedServeStateField::One(item)) => vec![item],
+        Some(ManagedServeStateField::Many(items)) => items,
+        None => Vec::new(),
     })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LocalModelsConfig {
+    pub preferred_backend: LocalBackendType,
+    pub ollama_port: u16,
     pub vllm_port: u16,
     pub hf_token_path: String,
     #[serde(default)]
     pub vllm_default_model: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_managed_state")]
-    pub managed: Option<ManagedServeState>,
+    #[serde(default, deserialize_with = "deserialize_managed_states")]
+    pub managed: Vec<ManagedServeState>,
     #[serde(default)]
     pub installed_hints: Vec<InstalledModelHint>,
     #[serde(default)]
@@ -126,10 +129,12 @@ pub struct LocalModelsConfig {
 impl Default for LocalModelsConfig {
     fn default() -> Self {
         Self {
+            preferred_backend: LocalBackendType::Ollama,
+            ollama_port: DEFAULT_OLLAMA_PORT,
             vllm_port: DEFAULT_VLLM_PORT,
             hf_token_path: default_hf_token_path().display().to_string(),
             vllm_default_model: None,
-            managed: None,
+            managed: Vec::new(),
             installed_hints: Vec::new(),
             local_compute_cost_per_1k_tokens_usd: 0.0,
         }
@@ -160,6 +165,7 @@ pub struct InstalledLocalModel {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BackendStatus {
+    pub backend: LocalBackendType,
     pub cli_installed: bool,
     #[serde(default)]
     pub cli_path: Option<String>,
@@ -183,7 +189,8 @@ pub struct LocalModelsStatus {
     pub huggingface_token_configured: bool,
     #[serde(default)]
     pub gpu: Option<GpuInfo>,
-    pub backend: BackendStatus,
+    pub ollama: BackendStatus,
+    pub vllm: BackendStatus,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -195,32 +202,19 @@ pub struct ModelSearchResult {
     #[serde(default)]
     pub size: Option<String>,
     #[serde(default)]
-    pub size_bytes: Option<u64>,
-    #[serde(default)]
     pub quantization: Option<String>,
-    #[serde(default)]
-    pub quantizations: Vec<String>,
     #[serde(default)]
     pub downloads: Option<String>,
     #[serde(default)]
-    pub likes: Option<u64>,
-    #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub pipeline_tag: Option<String>,
-    #[serde(default)]
     pub fits_gpu: Option<bool>,
-    #[serde(default)]
-    pub installed: bool,
     #[serde(default)]
     pub source_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ServeRequest {
-    #[serde(default)]
     pub backend: LocalBackendType,
     #[serde(default)]
     pub port: Option<u16>,
@@ -262,6 +256,29 @@ pub struct ResolvedLocalRoute {
     pub backend: LocalBackendType,
     pub base_url: String,
     pub model: String,
+}
+
+#[derive(Deserialize)]
+struct OllamaTagsResponse {
+    #[serde(default)]
+    models: Vec<OllamaTag>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct OllamaTag {
+    name: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    details: Option<OllamaDetails>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct OllamaDetails {
+    #[serde(default)]
+    parameter_size: Option<String>,
+    #[serde(default)]
+    quantization_level: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -339,11 +356,16 @@ fn normalize_installed_hints(models: &[InstalledLocalModel]) -> Vec<InstalledMod
     let mut hints = models
         .iter()
         .map(|model| InstalledModelHint {
+            backend: model.backend,
             model: model.model.clone(),
         })
         .collect::<Vec<_>>();
-    hints.sort_by(|a, b| a.model.cmp(&b.model));
-    hints.dedup_by(|a, b| a.model == b.model);
+    hints.sort_by(|a, b| {
+        a.model
+            .cmp(&b.model)
+            .then(a.backend.as_str().cmp(b.backend.as_str()))
+    });
+    hints.dedup_by(|a, b| a.model == b.model && a.backend == b.backend);
     hints
 }
 
@@ -356,27 +378,75 @@ fn sync_installed_hints(cfg: &mut LocalModelsConfig, models: &[InstalledLocalMod
     true
 }
 
-fn upsert_installed_hint(cfg: &mut LocalModelsConfig, model: &str) -> bool {
-    if cfg.installed_hints.iter().any(|hint| hint.model == model) {
+fn backend_from_hints(model: &str, hints: &[InstalledModelHint]) -> Option<LocalBackendType> {
+    hints
+        .iter()
+        .find(|hint| hint.model == model)
+        .map(|hint| hint.backend)
+}
+
+fn upsert_installed_hint(cfg: &mut LocalModelsConfig, hint: InstalledModelHint) -> bool {
+    if let Some(existing) = cfg
+        .installed_hints
+        .iter_mut()
+        .find(|existing| existing.backend == hint.backend && existing.model == hint.model)
+    {
+        *existing = hint;
         return false;
     }
-    cfg.installed_hints.push(InstalledModelHint {
-        model: model.to_string(),
+    cfg.installed_hints.push(hint);
+    cfg.installed_hints.sort_by(|a, b| {
+        a.model
+            .cmp(&b.model)
+            .then(a.backend.as_str().cmp(b.backend.as_str()))
     });
-    cfg.installed_hints.sort_by(|a, b| a.model.cmp(&b.model));
     true
 }
 
-fn remove_installed_hint(cfg: &mut LocalModelsConfig, model: &str) -> bool {
+fn remove_installed_hint(
+    cfg: &mut LocalModelsConfig,
+    backend: LocalBackendType,
+    model: &str,
+) -> bool {
     let before = cfg.installed_hints.len();
-    cfg.installed_hints.retain(|hint| hint.model != model);
+    cfg.installed_hints
+        .retain(|hint| !(hint.backend == backend && hint.model == model));
     before != cfg.installed_hints.len()
 }
 
+fn managed_state(cfg: &LocalModelsConfig, backend: LocalBackendType) -> Option<&ManagedServeState> {
+    cfg.managed
+        .iter()
+        .find(|managed| managed.backend == backend)
+}
+
+fn upsert_managed_state(cfg: &mut LocalModelsConfig, state: ManagedServeState) {
+    if let Some(existing) = cfg
+        .managed
+        .iter_mut()
+        .find(|managed| managed.backend == state.backend)
+    {
+        *existing = state;
+        return;
+    }
+    cfg.managed.push(state);
+    cfg.managed
+        .sort_by(|a, b| a.backend.as_str().cmp(b.backend.as_str()));
+}
+
+fn remove_managed_state(cfg: &mut LocalModelsConfig, backend: LocalBackendType) -> bool {
+    let before = cfg.managed.len();
+    cfg.managed.retain(|managed| managed.backend != backend);
+    before != cfg.managed.len()
+}
+
 fn refresh_installed_models_snapshot(cfg: &LocalModelsConfig) -> Vec<InstalledLocalModel> {
+    let mut models = query_ollama_models(&base_url(LocalBackendType::Ollama, cfg.ollama_port))
+        .unwrap_or_default();
     let installed_hf = list_installed_hf_models();
-    let served_vllm = query_openai_models(&base_url(cfg.vllm_port)).unwrap_or_default();
-    let mut models = mark_served_hf_models(installed_hf, &served_vllm);
+    let served_vllm =
+        query_openai_models(&base_url(LocalBackendType::Vllm, cfg.vllm_port)).unwrap_or_default();
+    models.extend(mark_served_hf_models(installed_hf, &served_vllm));
     models.sort_by(|a, b| a.model.cmp(&b.model));
     models
 }
@@ -413,15 +483,12 @@ pub fn installed_backend_for_model(model: &str) -> Option<LocalBackendType> {
         return Some(LocalBackendType::Vllm);
     }
     if let Ok(cache) = installed_models_cache().lock() {
-        if cache.models.iter().any(|item| item.model == normalized) {
-            return Some(LocalBackendType::Vllm);
+        if let Some(item) = cache.models.iter().find(|item| item.model == normalized) {
+            return Some(item.backend);
         }
     }
     let cfg = load_or_default();
-    cfg.installed_hints
-        .iter()
-        .any(|hint| hint.model == normalized)
-        .then_some(LocalBackendType::Vllm)
+    backend_from_hints(normalized, &cfg.installed_hints)
 }
 
 pub fn detect_status() -> LocalModelsStatus {
@@ -429,25 +496,41 @@ pub fn detect_status() -> LocalModelsStatus {
     let hf_token = resolve_hf_token_with_config(&cfg).ok();
     let gpu = detect_gpu();
     let installed_hf = list_installed_hf_models();
-    let base_url = base_url(cfg.vllm_port);
-    let served_vllm = query_openai_models(&base_url);
-    let served_vllm_models = served_vllm.clone().unwrap_or_default();
-    let backend = BackendStatus {
+    let vllm_served = query_openai_models(&base_url(LocalBackendType::Vllm, cfg.vllm_port));
+    let ollama_served = query_ollama_models(&base_url(LocalBackendType::Ollama, cfg.ollama_port));
+
+    let ollama_error = ollama_served.as_ref().err().cloned();
+    let ollama = BackendStatus {
+        backend: LocalBackendType::Ollama,
+        cli_installed: which_path("ollama").is_some(),
+        cli_path: which_path("ollama"),
+        cli_version: command_version("ollama", &["--version"]),
+        base_url: base_url(LocalBackendType::Ollama, cfg.ollama_port),
+        healthy: ollama_served.is_ok(),
+        served_models: ollama_served
+            .as_ref()
+            .map(|items| items.iter().map(|item| item.model.clone()).collect())
+            .unwrap_or_default(),
+        installed_models: ollama_served.unwrap_or_default(),
+        managed: managed_state(&cfg, LocalBackendType::Ollama).cloned(),
+        error: ollama_error,
+    };
+    let served_vllm_models = vllm_served.unwrap_or_default();
+    let vllm = BackendStatus {
+        backend: LocalBackendType::Vllm,
         cli_installed: which_path("vllm").is_some(),
         cli_path: which_path("vllm"),
         cli_version: command_version("vllm", &["--version"]),
-        base_url,
-        healthy: served_vllm.is_ok() && !served_vllm_models.is_empty(),
+        base_url: base_url(LocalBackendType::Vllm, cfg.vllm_port),
+        healthy: !served_vllm_models.is_empty(),
         served_models: served_vllm_models.clone(),
         installed_models: mark_served_hf_models(installed_hf, &served_vllm_models),
-        managed: cfg.managed.clone(),
-        error: served_vllm.err().or_else(|| {
-            if served_vllm_models.is_empty() {
-                Some("vLLM API not responding at configured endpoint".to_string())
-            } else {
-                None
-            }
-        }),
+        managed: managed_state(&cfg, LocalBackendType::Vllm).cloned(),
+        error: if served_vllm_models.is_empty() {
+            Some("vLLM API not responding at configured endpoint".to_string())
+        } else {
+            None
+        },
     };
     LocalModelsStatus {
         config: cfg,
@@ -456,7 +539,8 @@ pub fn detect_status() -> LocalModelsStatus {
             .map(|token| !token.trim().is_empty())
             .unwrap_or(false),
         gpu,
-        backend,
+        ollama,
+        vllm,
     }
 }
 
@@ -467,7 +551,28 @@ pub fn search_models(query: &str, limit: usize) -> Result<Vec<ModelSearchResult>
     }
     let cfg = load_or_default();
     let gpu = detect_gpu();
-    let mut results = search_huggingface(query, limit, gpu.as_ref(), &cfg)?;
+    let ollama = search_ollama(query, limit)?;
+    let huggingface = search_huggingface(query, limit, gpu.as_ref(), &cfg)?;
+    let mut results = Vec::new();
+    let mut ollama_iter = ollama.into_iter();
+    let mut hf_iter = huggingface.into_iter();
+    while results.len() < limit {
+        let mut progressed = false;
+        if let Some(item) = ollama_iter.next() {
+            results.push(item);
+            progressed = true;
+            if results.len() >= limit {
+                break;
+            }
+        }
+        if let Some(item) = hf_iter.next() {
+            results.push(item);
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
+    }
     for (index, item) in results.iter_mut().enumerate() {
         item.index = index + 1;
     }
@@ -486,7 +591,7 @@ pub fn catalog_entries() -> Vec<Value> {
                 "id": format!("local/{}", model.model),
                 "object": "model",
                 "owned_by": "local",
-                "backend": LocalBackendType::Vllm.as_str(),
+                "backend": model.backend.as_str(),
                 "local_model": model.model,
                 "source": model.source,
                 "installed": true,
@@ -505,43 +610,91 @@ pub fn pull_model(
     if model.is_empty() {
         return Err("model name must not be empty".to_string());
     }
-    let _ = normalize_source(source)?;
     config::ensure_halo_dir()?;
-    let cfg = load_or_default();
-    let local_dir = hf_local_dir(model);
-    std::fs::create_dir_all(&local_dir)
-        .map_err(|e| format!("create HF model dir {}: {e}", local_dir.display()))?;
-    let token = resolve_hf_token_with_config(&cfg).ok();
-    let mut command = hf_download_command(model, &local_dir, token.as_deref())?;
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("start HF download for `{model}`: {e}"))?;
-    stream_child_output(&mut child, writer)?;
-    let metadata = HfLocalModelMetadata {
-        model_id: model.to_string(),
-        local_dir: local_dir.display().to_string(),
-        pulled_at_unix: now_unix_secs(),
-    };
-    let raw = serde_json::to_vec_pretty(&metadata)
-        .map_err(|e| format!("serialize HF model metadata: {e}"))?;
-    write_private_file(&local_dir.join(HF_METADATA_FILE), &raw)?;
-    invalidate_installed_models_cache();
-    let mut cfg = load_or_default();
-    if upsert_installed_hint(&mut cfg, model) {
-        save_config(&cfg)?;
+    let source = normalize_source(source, model)?;
+    match source {
+        LocalBackendType::Ollama => {
+            let mut child = Command::new("ollama")
+                .args(["pull", model])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("start `ollama pull {model}`: {e}"))?;
+            stream_child_output(&mut child, writer)?;
+            let installed = query_ollama_models(&base_url(
+                LocalBackendType::Ollama,
+                load_or_default().ollama_port,
+            ))
+            .unwrap_or_default()
+            .into_iter()
+            .find(|item| item.model == model)
+            .unwrap_or(InstalledLocalModel {
+                source: "ollama".to_string(),
+                backend: LocalBackendType::Ollama,
+                model: model.to_string(),
+                size: None,
+                quantization: None,
+                path: None,
+                served: false,
+            });
+            invalidate_installed_models_cache();
+            let mut cfg = load_or_default();
+            if upsert_installed_hint(
+                &mut cfg,
+                InstalledModelHint {
+                    backend: LocalBackendType::Ollama,
+                    model: installed.model.clone(),
+                },
+            ) {
+                save_config(&cfg)?;
+            }
+            Ok(installed)
+        }
+        LocalBackendType::Vllm => {
+            let cfg = load_or_default();
+            let local_dir = hf_local_dir(model);
+            std::fs::create_dir_all(&local_dir)
+                .map_err(|e| format!("create HF model dir {}: {e}", local_dir.display()))?;
+            let token = resolve_hf_token_with_config(&cfg).ok();
+            let mut command = hf_download_command(model, &local_dir, token.as_deref())?;
+            let mut child = command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("start HF download for `{model}`: {e}"))?;
+            stream_child_output(&mut child, writer)?;
+            let metadata = HfLocalModelMetadata {
+                model_id: model.to_string(),
+                local_dir: local_dir.display().to_string(),
+                pulled_at_unix: now_unix_secs(),
+            };
+            let raw = serde_json::to_vec_pretty(&metadata)
+                .map_err(|e| format!("serialize HF model metadata: {e}"))?;
+            write_private_file(&local_dir.join(HF_METADATA_FILE), &raw)?;
+            invalidate_installed_models_cache();
+            let mut cfg = load_or_default();
+            if upsert_installed_hint(
+                &mut cfg,
+                InstalledModelHint {
+                    backend: LocalBackendType::Vllm,
+                    model: model.to_string(),
+                },
+            ) {
+                save_config(&cfg)?;
+            }
+            Ok(InstalledLocalModel {
+                source: "huggingface".to_string(),
+                backend: LocalBackendType::Vllm,
+                model: model.to_string(),
+                size: dir_size_string(&local_dir),
+                quantization: None,
+                path: Some(local_dir.display().to_string()),
+                served: false,
+            })
+        }
     }
-    Ok(InstalledLocalModel {
-        source: "huggingface".to_string(),
-        backend: LocalBackendType::Vllm,
-        model: model.to_string(),
-        size: dir_size_string(&local_dir),
-        quantization: None,
-        path: Some(local_dir.display().to_string()),
-        served: false,
-    })
 }
 
 pub fn remove_model(model: &str, source: Option<&str>) -> Result<(), String> {
@@ -549,22 +702,44 @@ pub fn remove_model(model: &str, source: Option<&str>) -> Result<(), String> {
     if model.is_empty() {
         return Err("model name must not be empty".to_string());
     }
-    let _ = normalize_source(source)?;
-    let local_dir = hf_local_dir(model);
-    if !local_dir.exists() {
-        return Err(format!(
-            "HF model `{model}` is not installed at {}",
-            local_dir.display()
-        ));
+    let source = normalize_source(source, model)?;
+    match source {
+        LocalBackendType::Ollama => {
+            let status = Command::new("ollama")
+                .args(["rm", model])
+                .status()
+                .map_err(|e| format!("run `ollama rm {model}`: {e}"))?;
+            if !status.success() {
+                return Err(format!(
+                    "`ollama rm {model}` exited with {:?}",
+                    status.code()
+                ));
+            }
+            invalidate_installed_models_cache();
+            let mut cfg = load_or_default();
+            if remove_installed_hint(&mut cfg, LocalBackendType::Ollama, model) {
+                save_config(&cfg)?;
+            }
+            Ok(())
+        }
+        LocalBackendType::Vllm => {
+            let local_dir = hf_local_dir(model);
+            if !local_dir.exists() {
+                return Err(format!(
+                    "HF model `{model}` is not installed at {}",
+                    local_dir.display()
+                ));
+            }
+            std::fs::remove_dir_all(&local_dir)
+                .map_err(|e| format!("remove HF model {}: {e}", local_dir.display()))?;
+            invalidate_installed_models_cache();
+            let mut cfg = load_or_default();
+            if remove_installed_hint(&mut cfg, LocalBackendType::Vllm, model) {
+                save_config(&cfg)?;
+            }
+            Ok(())
+        }
     }
-    std::fs::remove_dir_all(&local_dir)
-        .map_err(|e| format!("remove HF model {}: {e}", local_dir.display()))?;
-    invalidate_installed_models_cache();
-    let mut cfg = load_or_default();
-    if remove_installed_hint(&mut cfg, model) {
-        save_config(&cfg)?;
-    }
-    Ok(())
 }
 
 pub fn login_huggingface(token: Option<&str>) -> Result<String, String> {
@@ -599,74 +774,97 @@ pub fn login_huggingface(token: Option<&str>) -> Result<String, String> {
 
 pub fn serve_backend(request: ServeRequest) -> Result<ServeResult, String> {
     let mut cfg = load_or_default();
-    let backend = request.backend;
-    let port = request.port.unwrap_or(cfg.vllm_port);
-    let base_url = base_url(port);
-    clear_stale_managed_state(&mut cfg, port, &base_url);
+    let port = request.port.unwrap_or(match request.backend {
+        LocalBackendType::Ollama => cfg.ollama_port,
+        LocalBackendType::Vllm => cfg.vllm_port,
+    });
+    let base_url = base_url(request.backend, port);
+    clear_stale_managed_state(&mut cfg, request.backend, port, &base_url);
     let mut served_model = request.model.clone();
 
-    if is_backend_healthy(&base_url) {
+    if is_backend_healthy(request.backend, &base_url) {
         return Ok(ServeResult {
-            backend,
+            backend: request.backend,
             base_url,
             port,
             model: served_model,
             already_running: true,
-            pid: cfg.managed.as_ref().and_then(|managed| {
-                if managed.port == port {
-                    managed.pid
-                } else {
-                    None
-                }
-            }),
+            pid: managed_state(&cfg, request.backend)
+                .filter(|managed| managed.port == port)
+                .and_then(|managed| managed.pid),
         });
     }
 
-    let model = request
-        .model
-        .clone()
-        .or_else(|| cfg.vllm_default_model.clone())
-        .ok_or_else(|| {
-            "vLLM serving requires --model <huggingface-model> or a configured default".to_string()
-        })?;
-    cfg.vllm_default_model = Some(model.clone());
-    served_model = Some(model.clone());
-    let model_arg = find_installed_hf_model_path(&model)
-        .unwrap_or_else(|| PathBuf::from(model.clone()))
-        .display()
-        .to_string();
-    let mut command = Command::new("vllm");
-    command.args([
-        "serve",
-        &model_arg,
-        "--host",
-        "127.0.0.1",
-        "--port",
-        &port.to_string(),
-    ]);
-    if let Ok(token) = resolve_hf_token_with_config(&cfg) {
-        command.env(HF_TOKEN_ENV, token);
-    }
+    let mut command = match request.backend {
+        LocalBackendType::Ollama => {
+            let mut cmd = Command::new("ollama");
+            cmd.arg("serve")
+                .env("OLLAMA_HOST", format!("127.0.0.1:{port}"));
+            cmd
+        }
+        LocalBackendType::Vllm => {
+            let model = request
+                .model
+                .clone()
+                .or_else(|| cfg.vllm_default_model.clone())
+                .ok_or_else(|| {
+                    "vLLM serving requires --model <huggingface-model> or a configured default"
+                        .to_string()
+                })?;
+            cfg.vllm_default_model = Some(model.clone());
+            served_model = Some(model.clone());
+            let model_arg = find_installed_hf_model_path(&model)
+                .unwrap_or_else(|| PathBuf::from(model.clone()))
+                .display()
+                .to_string();
+            let mut cmd = Command::new("vllm");
+            cmd.args([
+                "serve",
+                &model_arg,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &port.to_string(),
+            ]);
+            if let Ok(token) = resolve_hf_token_with_config(&cfg) {
+                cmd.env(HF_TOKEN_ENV, token);
+            }
+            cmd
+        }
+    };
 
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("spawn {} serve: {e}", backend.display_name()))?;
+        .map_err(|e| format!("spawn {} serve: {e}", request.backend.display_name()))?;
     let pid = Some(child.id());
-    wait_for_backend_start(&base_url, &mut child, LOCAL_MODEL_STARTUP_TIMEOUT)?;
+    wait_for_backend_start(
+        request.backend,
+        &base_url,
+        &mut child,
+        LOCAL_MODEL_STARTUP_TIMEOUT,
+    )?;
     drop(child);
-    cfg.vllm_port = port;
-    cfg.managed = Some(ManagedServeState {
-        port,
-        model: served_model.clone(),
-        pid,
-        started_at_unix: now_unix_secs(),
-    });
+    cfg.preferred_backend = request.backend;
+    match request.backend {
+        LocalBackendType::Ollama => cfg.ollama_port = port,
+        LocalBackendType::Vllm => cfg.vllm_port = port,
+    }
+    upsert_managed_state(
+        &mut cfg,
+        ManagedServeState {
+            backend: request.backend,
+            port,
+            model: served_model.clone(),
+            pid,
+            started_at_unix: now_unix_secs(),
+        },
+    );
     save_config(&cfg)?;
     Ok(ServeResult {
-        backend,
+        backend: request.backend,
         base_url,
         port,
         model: served_model,
@@ -677,30 +875,37 @@ pub fn serve_backend(request: ServeRequest) -> Result<ServeResult, String> {
 
 pub fn stop_backend(backend: LocalBackendType) -> Result<StopResult, String> {
     let mut cfg = load_or_default();
-    let port = cfg.vllm_port;
-    let base_url = base_url(port);
-    let cleared_stale = clear_stale_managed_state(&mut cfg, port, &base_url);
+    let port = match backend {
+        LocalBackendType::Ollama => cfg.ollama_port,
+        LocalBackendType::Vllm => cfg.vllm_port,
+    };
+    let base_url = base_url(backend, port);
+    let cleared_stale = clear_stale_managed_state(&mut cfg, backend, port, &base_url);
     if cleared_stale {
         save_config(&cfg)?;
     }
-    let managed = cfg.managed.clone().ok_or_else(|| {
-        "no managed vLLM process recorded; if it is still running, stop it externally".to_string()
+    let managed = managed_state(&cfg, backend).cloned().ok_or_else(|| {
+        format!(
+            "no managed {} process recorded; if it is still running, stop it externally",
+            backend.display_name()
+        )
     })?;
 
     if let Some(pid) = managed.pid {
         terminate_pid(pid)?;
-        wait_for_backend_stop(&base_url, Duration::from_secs(10))?;
+        wait_for_backend_stop(backend, &base_url, Duration::from_secs(10))?;
     }
 
-    cfg.managed = None;
-    save_config(&cfg)?;
+    if remove_managed_state(&mut cfg, backend) {
+        save_config(&cfg)?;
+    }
 
     Ok(StopResult {
         backend,
         stopped: true,
         pid: managed.pid,
         base_url,
-        message: "stopped managed vLLM".to_string(),
+        message: format!("stopped managed {}", backend.display_name()),
     })
 }
 
@@ -714,34 +919,48 @@ pub fn resolve_local_route(model: &str) -> Result<ResolvedLocalRoute, String> {
         .strip_prefix("local/")
         .unwrap_or(normalized)
         .trim();
-    let requested_model = stripped
-        .strip_prefix("vllm/")
-        .or_else(|| stripped.strip_prefix("ollama/"))
-        .unwrap_or(stripped)
-        .trim();
+    let (hint, requested_model) = if let Some(rest) = stripped.strip_prefix("ollama/") {
+        (Some(LocalBackendType::Ollama), rest.trim())
+    } else if let Some(rest) = stripped.strip_prefix("vllm/") {
+        (Some(LocalBackendType::Vllm), rest.trim())
+    } else {
+        (None, stripped)
+    };
     if requested_model.is_empty() {
         return Err("local model name must not be empty".to_string());
     }
 
-    let base_url = base_url(cfg.vllm_port);
-    if !is_backend_healthy(&base_url) {
+    let explicit_backend = installed_backend_for_model(requested_model);
+    let backend = hint.or(explicit_backend).unwrap_or(cfg.preferred_backend);
+    let base_url = base_url(
+        backend,
+        match backend {
+            LocalBackendType::Ollama => cfg.ollama_port,
+            LocalBackendType::Vllm => cfg.vllm_port,
+        },
+    );
+    if !is_backend_healthy(backend, &base_url) {
         return Err(format!(
-            "vLLM is not healthy at {}; run `nucleusdb` local model serve for `{requested_model}` first",
-            base_url
+            "{} is not healthy at {}; run `agenthalo models serve --backend {}` first",
+            backend.display_name(),
+            base_url,
+            backend.as_str()
         ));
     }
-    let served = query_openai_models(&base_url)?;
-    if !served
-        .iter()
-        .any(|served_model| served_model == requested_model)
-    {
-        return Err(format!(
-            "vLLM is serving [{}], not `{requested_model}`",
-            served.join(", ")
-        ));
+    if backend == LocalBackendType::Vllm {
+        let served = query_openai_models(&base_url)?;
+        if !served
+            .iter()
+            .any(|served_model| served_model == requested_model)
+        {
+            return Err(format!(
+                "vLLM is serving [{}], not `{requested_model}`",
+                served.join(", ")
+            ));
+        }
     }
     Ok(ResolvedLocalRoute {
-        backend: LocalBackendType::Vllm,
+        backend,
         base_url,
         model: requested_model.to_string(),
     })
@@ -765,30 +984,37 @@ fn resolve_hf_token_with_config(cfg: &LocalModelsConfig) -> Result<String, Strin
         .ok_or_else(|| "no Hugging Face token configured".to_string())
 }
 
-fn base_url(port: u16) -> String {
-    format!("http://127.0.0.1:{port}")
+fn base_url(backend: LocalBackendType, port: u16) -> String {
+    match backend {
+        LocalBackendType::Ollama => format!("http://127.0.0.1:{port}"),
+        LocalBackendType::Vllm => format!("http://127.0.0.1:{port}"),
+    }
 }
 
-fn is_backend_healthy(base_url: &str) -> bool {
-    query_openai_models(base_url)
-        .map(|models| !models.is_empty())
-        .unwrap_or(false)
+fn is_backend_healthy(backend: LocalBackendType, base_url: &str) -> bool {
+    match backend {
+        LocalBackendType::Ollama => query_ollama_models(base_url).is_ok(),
+        LocalBackendType::Vllm => query_openai_models(base_url)
+            .map(|models| !models.is_empty())
+            .unwrap_or(false),
+    }
 }
 
 fn wait_for_backend_start(
+    backend: LocalBackendType,
     base_url: &str,
     child: &mut std::process::Child,
     timeout: Duration,
 ) -> Result<(), String> {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if is_backend_healthy(base_url) {
+        if is_backend_healthy(backend, base_url) {
             invalidate_installed_models_cache();
             return Ok(());
         }
         if let Some(status) = child
             .try_wait()
-            .map_err(|e| format!("poll vLLM startup: {e}"))?
+            .map_err(|e| format!("poll {} startup: {e}", backend.display_name()))?
         {
             let stderr = read_pipe_tail(child.stderr.take());
             let code = status
@@ -796,9 +1022,16 @@ fn wait_for_backend_start(
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "signal".to_string());
             return Err(if stderr.is_empty() {
-                format!("vLLM exited before becoming healthy (exit {code})")
+                format!(
+                    "{} exited before becoming healthy (exit {code})",
+                    backend.display_name()
+                )
             } else {
-                format!("vLLM exited before becoming healthy (exit {code}): {stderr}")
+                format!(
+                    "{} exited before becoming healthy (exit {code}): {}",
+                    backend.display_name(),
+                    stderr
+                )
             });
         }
         std::thread::sleep(LOCAL_MODEL_POLL_INTERVAL);
@@ -806,30 +1039,43 @@ fn wait_for_backend_start(
     let _ = child.kill();
     let _ = child.wait();
     Err(format!(
-        "vLLM did not become healthy within {}s",
+        "{} did not become healthy within {}s",
+        backend.display_name(),
         timeout.as_secs()
     ))
 }
 
-fn wait_for_backend_stop(base_url: &str, timeout: Duration) -> Result<(), String> {
+fn wait_for_backend_stop(
+    backend: LocalBackendType,
+    base_url: &str,
+    timeout: Duration,
+) -> Result<(), String> {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if !is_backend_healthy(base_url) {
+        if !is_backend_healthy(backend, base_url) {
             invalidate_installed_models_cache();
             return Ok(());
         }
         std::thread::sleep(LOCAL_MODEL_POLL_INTERVAL);
     }
-    Err(format!("vLLM did not stop within {}s", timeout.as_secs()))
+    Err(format!(
+        "{} did not stop within {}s",
+        backend.display_name(),
+        timeout.as_secs()
+    ))
 }
 
-fn clear_stale_managed_state(cfg: &mut LocalModelsConfig, port: u16, base_url: &str) -> bool {
-    let Some(state) = cfg.managed.clone() else {
+fn clear_stale_managed_state(
+    cfg: &mut LocalModelsConfig,
+    backend: LocalBackendType,
+    port: u16,
+    base_url: &str,
+) -> bool {
+    let Some(state) = managed_state(cfg, backend).cloned() else {
         return false;
     };
-    if state.port == port && !is_backend_healthy(base_url) {
-        cfg.managed = None;
-        return true;
+    if state.port == port && !is_backend_healthy(backend, base_url) {
+        return remove_managed_state(cfg, backend);
     }
     false
 }
@@ -887,6 +1133,50 @@ fn read_pipe_tail(pipe: Option<std::process::ChildStderr>) -> String {
     String::from_utf8_lossy(&stderr).trim().to_string()
 }
 
+fn search_ollama(query: &str, limit: usize) -> Result<Vec<ModelSearchResult>, String> {
+    let url = format!("https://ollama.com/search?q={}", urlencoding(query));
+    let html = http_client::get_with_timeout(&url, LOCAL_MODEL_HTTP_TIMEOUT)?
+        .call()
+        .map_err(|e| format!("ollama search request failed: {e}"))?
+        .into_body()
+        .read_to_string()
+        .map_err(|e| format!("read Ollama search response: {e}"))?;
+    let mut results = Vec::new();
+    for block in extract_blocks(&html, "<li x-test-model", "</li>")
+        .into_iter()
+        .take(limit)
+    {
+        let model = extract_marker_text(&block, "x-test-search-response-title")
+            .or_else(|| extract_between(&block, "title=\"", "\""))
+            .unwrap_or_default();
+        if model.is_empty() {
+            continue;
+        }
+        let description = extract_first_paragraph(&block);
+        let sizes = extract_all_marker_text(&block, "x-test-size");
+        let downloads = extract_marker_text(&block, "x-test-pull-count");
+        let href = extract_between(&block, "href=\"", "\"")
+            .map(|path| format!("https://ollama.com{}", path));
+        results.push(ModelSearchResult {
+            index: 0,
+            source: "ollama".to_string(),
+            backend: LocalBackendType::Ollama,
+            model,
+            size: if sizes.is_empty() {
+                None
+            } else {
+                Some(sizes.join(", "))
+            },
+            quantization: Some("GGUF".to_string()),
+            downloads,
+            description,
+            fits_gpu: None,
+            source_url: href,
+        });
+    }
+    Ok(results)
+}
+
 fn search_huggingface(
     query: &str,
     limit: usize,
@@ -918,18 +1208,16 @@ fn search_huggingface(
             .and_then(|value| value.as_u64());
         let fits_gpu = match (gpu, size_bytes) {
             (Some(gpu), Some(size)) => {
-                let required_bytes = size.saturating_mul(2).saturating_add(GPU_HEADROOM_BYTES);
+                let required_bytes = size
+                    .saturating_mul(2)
+                    .saturating_add(2 * 1024 * 1024 * 1024);
                 Some(required_bytes as f64 <= gpu.total_memory_gib * 1024f64.powi(3))
             }
             _ => None,
         };
-        let quantizations = quantizations_from_tags(&item.tags);
-        let quantization = quantizations.first().cloned();
-        let installed = find_installed_hf_model_path(&item.model_id).is_some();
         let description = Some(format!(
             "{}{}{}",
             item.pipeline_tag
-                .clone()
                 .unwrap_or_else(|| "text-generation".to_string()),
             item.likes
                 .map(|likes| format!(" · {likes} likes"))
@@ -954,16 +1242,10 @@ fn search_huggingface(
             backend: LocalBackendType::Vllm,
             model: item.model_id.clone(),
             size: size_bytes.map(format_bytes),
-            size_bytes,
-            quantization,
-            quantizations,
+            quantization: quantization_from_tags(&item.tags),
             downloads: item.downloads.map(format_compact_u64),
-            likes: item.likes,
             description,
-            tags: item.tags,
-            pipeline_tag: item.pipeline_tag,
             fits_gpu,
-            installed,
             source_url: Some(format!("https://huggingface.co/{}", item.model_id)),
         });
     }
@@ -1000,6 +1282,38 @@ fn list_installed_hf_models() -> Vec<InstalledLocalModel> {
     models
 }
 
+fn query_ollama_models(base_url: &str) -> Result<Vec<InstalledLocalModel>, String> {
+    let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
+    let response: OllamaTagsResponse =
+        http_client::get_with_timeout(&url, LOCAL_MODEL_HTTP_TIMEOUT)?
+            .call()
+            .map_err(|e| format!("ollama tags request failed: {e}"))?
+            .into_body()
+            .read_json()
+            .map_err(|e| format!("parse Ollama tags response: {e}"))?;
+    Ok(response
+        .models
+        .into_iter()
+        .map(|model| InstalledLocalModel {
+            source: "ollama".to_string(),
+            backend: LocalBackendType::Ollama,
+            model: model.name.clone(),
+            size: model.size.map(format_bytes).or_else(|| {
+                model
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.parameter_size.clone())
+            }),
+            quantization: model
+                .details
+                .as_ref()
+                .and_then(|details| details.quantization_level.clone()),
+            path: None,
+            served: true,
+        })
+        .collect())
+}
+
 fn query_openai_models(base_url: &str) -> Result<Vec<String>, String> {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     let response: OpenAiModelsResponse =
@@ -1025,12 +1339,18 @@ fn mark_served_hf_models(
         .collect()
 }
 
-fn normalize_source(source: Option<&str>) -> Result<LocalBackendType, String> {
-    source
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("vllm")
-        .parse()
+fn normalize_source(source: Option<&str>, model: &str) -> Result<LocalBackendType, String> {
+    if let Some(source) = source {
+        if source.eq_ignore_ascii_case("hf") {
+            return Ok(LocalBackendType::Vllm);
+        }
+        return source.parse();
+    }
+    if model.contains('/') {
+        Ok(LocalBackendType::Vllm)
+    } else {
+        Ok(LocalBackendType::Ollama)
+    }
 }
 
 fn command_version(command: &str, args: &[&str]) -> Option<String> {
@@ -1265,35 +1585,94 @@ fn format_compact_u64(value: u64) -> String {
     }
 }
 
-fn quantizations_from_tags(tags: &[String]) -> Vec<String> {
-    let mut values = Vec::new();
+fn quantization_from_tags(tags: &[String]) -> Option<String> {
     for tag in tags {
         let normalized = tag.to_ascii_lowercase();
-        let value = if normalized.contains("4bit") {
-            Some("4-bit")
-        } else if normalized.contains("8bit") {
-            Some("8-bit")
-        } else if normalized.contains("awq") {
-            Some("AWQ")
-        } else if normalized.contains("gptq") {
-            Some("GPTQ")
-        } else if normalized.contains("gguf") {
-            Some("GGUF")
-        } else if normalized.contains("fp16") {
-            Some("FP16")
-        } else if normalized.contains("bf16") {
-            Some("BF16")
-        } else {
-            None
-        };
-        if let Some(value) = value {
-            let value = value.to_string();
-            if !values.contains(&value) {
-                values.push(value);
-            }
+        if normalized.contains("4bit") {
+            return Some("4-bit".to_string());
+        }
+        if normalized.contains("8bit") {
+            return Some("8-bit".to_string());
+        }
+        if normalized.contains("awq") {
+            return Some("AWQ".to_string());
+        }
+        if normalized.contains("gptq") {
+            return Some("GPTQ".to_string());
+        }
+        if normalized.contains("gguf") {
+            return Some("GGUF".to_string());
+        }
+        if normalized.contains("fp16") {
+            return Some("FP16".to_string());
         }
     }
+    None
+}
+
+fn extract_blocks(haystack: &str, start: &str, end: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut remainder = haystack;
+    while let Some(start_idx) = remainder.find(start) {
+        let chunk = &remainder[start_idx..];
+        if let Some(end_idx) = chunk.find(end) {
+            blocks.push(chunk[..end_idx + end.len()].to_string());
+            remainder = &chunk[end_idx + end.len()..];
+        } else {
+            break;
+        }
+    }
+    blocks
+}
+
+fn extract_marker_text(block: &str, marker: &str) -> Option<String> {
+    let search = format!("{marker}>");
+    let idx = block.find(&search)?;
+    let rest = &block[idx + search.len()..];
+    extract_html_text(rest).map(|text| text.trim().to_string())
+}
+
+fn extract_all_marker_text(block: &str, marker: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut rest = block;
+    let search = format!("{marker}>");
+    while let Some(idx) = rest.find(&search) {
+        let tail = &rest[idx + search.len()..];
+        if let Some(value) = extract_html_text(tail) {
+            values.push(value.trim().to_string());
+        }
+        rest = tail;
+    }
     values
+}
+
+fn extract_first_paragraph(block: &str) -> Option<String> {
+    let start = block.find("<p")?;
+    let rest = &block[start..];
+    let open_end = rest.find('>')?;
+    extract_html_text(&rest[open_end + 1..]).map(|value| value.trim().to_string())
+}
+
+fn extract_html_text(text: &str) -> Option<String> {
+    let end = text.find('<')?;
+    Some(html_unescape(&text[..end]))
+}
+
+fn extract_between(haystack: &str, start: &str, end: &str) -> Option<String> {
+    let start_idx = haystack.find(start)? + start.len();
+    let tail = &haystack[start_idx..];
+    let end_idx = tail.find(end)?;
+    Some(html_unescape(&tail[..end_idx]))
+}
+
+fn html_unescape(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
 }
 
 fn urlencoding(value: &str) -> String {
@@ -1312,17 +1691,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_source_accepts_legacy_aliases() {
+    fn html_search_parser_extracts_ollama_model_details() {
+        let html = r#"
+        <li x-test-model class="flex">
+          <a href="/library/qwen2.5-coder" class="group w-full">
+            <div><span x-test-search-response-title>qwen2.5-coder</span></div>
+            <p class="desc">Coding model.</p>
+            <span x-test-size>7b</span>
+            <span x-test-size>14b</span>
+            <span x-test-pull-count>1.2M</span>
+          </a>
+        </li>
+        "#;
+        let items = extract_blocks(html, "<li x-test-model", "</li>");
+        assert_eq!(items.len(), 1);
         assert_eq!(
-            normalize_source(None).expect("default"),
+            extract_marker_text(&items[0], "x-test-search-response-title").as_deref(),
+            Some("qwen2.5-coder")
+        );
+        assert_eq!(
+            extract_all_marker_text(&items[0], "x-test-size"),
+            vec!["7b", "14b"]
+        );
+        assert_eq!(
+            extract_marker_text(&items[0], "x-test-pull-count").as_deref(),
+            Some("1.2M")
+        );
+    }
+
+    #[test]
+    fn normalize_source_prefers_hf_for_repo_ids() {
+        assert_eq!(
+            normalize_source(None, "Qwen/Qwen2.5-Coder-7B").expect("hf source"),
             LocalBackendType::Vllm
         );
         assert_eq!(
-            normalize_source(Some("hf")).expect("hf alias"),
-            LocalBackendType::Vllm
+            normalize_source(None, "qwen2.5-coder:7b").expect("ollama source"),
+            LocalBackendType::Ollama
         );
+    }
+
+    #[test]
+    fn normalize_source_accepts_hf_alias() {
         assert_eq!(
-            normalize_source(Some("ollama")).expect("legacy alias"),
+            normalize_source(Some("hf"), "Qwen/Qwen2.5-Coder-7B").expect("hf alias"),
             LocalBackendType::Vllm
         );
     }
@@ -1334,7 +1746,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_single_managed_state_deserializes() {
+    fn legacy_single_managed_state_deserializes_into_vector() {
         let cfg: LocalModelsConfig = serde_json::from_str(
             r#"{
                 "preferred_backend": "ollama",
@@ -1350,18 +1762,21 @@ mod tests {
             }"#,
         )
         .expect("deserialize config");
-        assert_eq!(cfg.vllm_port, 8000);
-        assert_eq!(cfg.managed.as_ref().and_then(|state| state.pid), Some(1234));
+        assert_eq!(cfg.managed.len(), 1);
+        assert_eq!(cfg.managed[0].backend, LocalBackendType::Ollama);
+        assert_eq!(cfg.managed[0].pid, Some(1234));
     }
 
     #[test]
-    fn quantizations_collect_unique_markers() {
-        let tags = vec![
-            "4bit".to_string(),
-            "awq".to_string(),
-            "awq".to_string(),
-            "fp16".to_string(),
-        ];
-        assert_eq!(quantizations_from_tags(&tags), vec!["4-bit", "AWQ", "FP16"]);
+    fn backend_from_hints_matches_persisted_hint_without_probe() {
+        let hints = vec![InstalledModelHint {
+            backend: LocalBackendType::Ollama,
+            model: "llama3.1".to_string(),
+        }];
+        assert_eq!(
+            backend_from_hints("llama3.1", &hints),
+            Some(LocalBackendType::Ollama)
+        );
+        assert_eq!(backend_from_hints("missing", &hints), None);
     }
 }

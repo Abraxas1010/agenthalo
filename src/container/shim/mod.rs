@@ -16,7 +16,7 @@ pub fn make_event(
     SidecarEvent {
         channel: channel.to_string(),
         seq,
-        timestamp: crate::util::now_unix_secs(),
+        timestamp: crate::puf::core::now_unix_secs(),
         puf_digest,
         payload,
     }

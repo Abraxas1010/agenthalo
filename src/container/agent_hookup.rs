@@ -857,16 +857,16 @@ impl AgentHookup for LocalModelHookup {
             ready: if self.base_url_override.is_some() {
                 true
             } else {
-                status.backend.healthy
+                status.vllm.healthy
             },
             status: if self.trace.runtime().active {
                 "running".to_string()
-            } else if status.backend.healthy {
+            } else if status.vllm.healthy {
                 "ready".to_string()
             } else {
                 "unhealthy".to_string()
             },
-            detail: status.backend.error,
+            detail: status.vllm.error,
             agent_id: self.trace.runtime().agent_id,
             model: Some(self.model_id.clone()),
         }
