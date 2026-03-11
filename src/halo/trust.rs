@@ -21,6 +21,14 @@ pub fn epistemic_trust_formal_provenance() -> (&'static str, &'static str) {
     )
 }
 
+pub fn epistemic_trust_formal_basis() -> &'static str {
+    EPISTEMIC_TRUST_FORMAL_BASIS
+}
+
+pub fn epistemic_trust_formal_basis_local() -> &'static str {
+    EPISTEMIC_TRUST_FORMAL_BASIS_LOCAL
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TrustScoreResult {
     pub score: f64,
@@ -70,15 +78,6 @@ impl EpistemicTrust {
 
     pub fn floor(&self) -> f64 {
         self.floor
-    }
-
-    pub fn formal_basis(&self) -> &'static str {
-        EPISTEMIC_TRUST_FORMAL_BASIS
-    }
-
-    /// Runtime-local mirror theorem for the concrete arithmetic implementation.
-    pub fn formal_basis_local(&self) -> &'static str {
-        EPISTEMIC_TRUST_FORMAL_BASIS_LOCAL
     }
 
     /// Nucleus operator N(x)=max(x,floor).

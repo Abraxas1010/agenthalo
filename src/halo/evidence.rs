@@ -18,6 +18,14 @@ pub fn evidence_combination_formal_provenance() -> (&'static str, &'static str) 
     )
 }
 
+pub fn evidence_combination_formal_basis() -> &'static str {
+    EVIDENCE_COMBINATION_FORMAL_BASIS
+}
+
+pub fn evidence_combination_formal_basis_local() -> &'static str {
+    EVIDENCE_COMBINATION_FORMAL_BASIS_LOCAL
+}
+
 /// Tool-provided evidence for a hypothesis.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ToolEvidence {
@@ -49,18 +57,6 @@ pub struct EvidenceCombination {
     pub posterior_odds_false_over_true: f64,
     pub posterior_probability_true: f64,
     pub steps: Vec<EvidenceStep>,
-}
-
-impl EvidenceCombination {
-    /// Canonical theorem path for the abstract Bayesian updating argument.
-    pub fn formal_basis() -> &'static str {
-        EVIDENCE_COMBINATION_FORMAL_BASIS
-    }
-
-    /// Runtime-local arithmetic mirror of the same order-independence property.
-    pub fn formal_basis_local() -> &'static str {
-        EVIDENCE_COMBINATION_FORMAL_BASIS_LOCAL
-    }
 }
 
 /// Odds update in false-over-true orientation:

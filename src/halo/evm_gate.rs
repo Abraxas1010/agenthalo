@@ -21,6 +21,14 @@ pub fn evm_gate_formal_provenance() -> (&'static str, &'static str) {
     (EVM_GATE_FORMAL_BASIS, EVM_GATE_FORMAL_BASIS_LOCAL)
 }
 
+pub fn evm_gate_formal_basis() -> &'static str {
+    EVM_GATE_FORMAL_BASIS
+}
+
+pub fn evm_gate_formal_basis_local() -> &'static str {
+    EVM_GATE_FORMAL_BASIS_LOCAL
+}
+
 /// Authorization request — the agent intends to sign this EVM payload.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvmSigningRequest {
