@@ -1,0 +1,400 @@
+use crate::container::coordination::{
+    mesh_auth_token, prepare_bind_mount_dir, prepare_named_volume, registry_volume_is_named,
+    DEFAULT_MESH_REGISTRY_VOLUME,
+};
+use crate::container::mesh;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Channel {
+    Everything,
+    Chat,
+    Payments,
+    Tools,
+    State,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorConfig {
+    pub channels: Vec<Channel>,
+    pub agent_id: String,
+    pub max_nesting_depth: u32,
+}
+
+impl MonitorConfig {
+    pub fn channels_csv(&self) -> String {
+        self.channels
+            .iter()
+            .map(|c| match c {
+                Channel::Everything => "everything",
+                Channel::Chat => "chat",
+                Channel::Payments => "payments",
+                Channel::Tools => "tools",
+                Channel::State => "state",
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+/// Mesh network configuration for inter-container communication.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MeshConfig {
+    /// Enable mesh networking for this container.
+    pub enabled: bool,
+    /// MCP port to expose on the mesh network.
+    pub mcp_port: u16,
+    /// Shared peer registry mount source. Absolute paths are bind mounts;
+    /// relative names are treated as Docker-managed named volumes.
+    pub registry_volume: PathBuf,
+    /// Agent DID URI (populated at launch from genesis seed).
+    pub agent_did: Option<String>,
+}
+
+impl Default for MeshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mcp_port: std::env::var("NUCLEUSDB_CONTAINER_MCP_PORT")
+                .ok()
+                .and_then(|v| v.parse::<u16>().ok())
+                .or_else(|| {
+                    std::env::var("AGENTHALO_CONTAINER_MCP_PORT")
+                        .ok()
+                        .and_then(|v| v.parse::<u16>().ok())
+                })
+                .unwrap_or(mesh::DEFAULT_MCP_PORT),
+            registry_volume: std::env::var("NUCLEUSDB_CONTAINER_REGISTRY_VOLUME")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var("AGENTHALO_CONTAINER_REGISTRY_VOLUME")
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .map(PathBuf::from)
+                })
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_MESH_REGISTRY_VOLUME)),
+            agent_did: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RunConfig {
+    pub image: String,
+    pub agent_id: String,
+    pub command: Vec<String>,
+    pub use_gvisor: bool,
+    pub host_sock: Option<PathBuf>,
+    #[serde(default)]
+    pub env_vars: Vec<(String, String)>,
+    /// Mesh network configuration. When set and enabled, the container
+    /// joins the `halo-mesh` Docker network with MCP port exposed.
+    #[serde(default)]
+    pub mesh: Option<MeshConfig>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub container_id: String,
+    pub image: String,
+    pub agent_id: String,
+    pub host_sock: PathBuf,
+    pub started_at_unix: u64,
+    /// MCP port on the mesh network (if mesh-enabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_port: Option<u16>,
+}
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn make_session_id() -> String {
+    format!("sess-{}", uuid::Uuid::new_v4())
+}
+
+fn run_dir() -> PathBuf {
+    std::env::temp_dir().join("nucleusdb-container")
+}
+
+fn env_contains(env_vars: &[(String, String)], key: &str) -> bool {
+    env_vars.iter().any(|(existing, _)| existing == key)
+}
+
+fn direct_mcp_server_command(command: &[String]) -> bool {
+    command
+        .first()
+        .map(|value| {
+            value == "nucleusdb-mcp"
+                || value.ends_with("/nucleusdb-mcp")
+                || value.ends_with("\\nucleusdb-mcp")
+                || value == "agenthalo-mcp-server"
+                || value.ends_with("/agenthalo-mcp-server")
+                || value.ends_with("\\agenthalo-mcp-server")
+        })
+        .unwrap_or(false)
+}
+
+pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
+    let session_id = make_session_id();
+    let run_dir = run_dir();
+    std::fs::create_dir_all(&run_dir)
+        .map_err(|e| format!("failed to create run dir {}: {e}", run_dir.display()))?;
+    let host_sock = cfg
+        .host_sock
+        .unwrap_or_else(|| run_dir.join(format!("{session_id}.sock")));
+    if host_sock.exists() {
+        let _ = std::fs::remove_file(&host_sock);
+    }
+
+    let mut cmd = Command::new("docker");
+    cmd.arg("run")
+        .arg("-d")
+        .arg("--name")
+        .arg(&session_id)
+        .arg("-v")
+        .arg(format!("{}:/run/nucleusdb.sock", host_sock.display()));
+    if cfg.use_gvisor {
+        cmd.arg("--runtime").arg("runsc");
+    }
+
+    let mut env_vars = cfg.env_vars.clone();
+    if direct_mcp_server_command(&cfg.command) {
+        if !env_contains(&env_vars, "NUCLEUSDB_MCP_HOST") {
+            env_vars.push(("NUCLEUSDB_MCP_HOST".to_string(), "0.0.0.0".to_string()));
+        }
+        if !env_contains(&env_vars, "AGENTHALO_MCP_HOST") {
+            env_vars.push(("AGENTHALO_MCP_HOST".to_string(), "0.0.0.0".to_string()));
+        }
+        let shared_secret = mesh_auth_token();
+        if let Some(secret) = shared_secret {
+            if !env_contains(&env_vars, "NUCLEUSDB_MCP_SECRET") {
+                env_vars.push(("NUCLEUSDB_MCP_SECRET".to_string(), secret.clone()));
+            }
+            if !env_contains(&env_vars, "AGENTHALO_MCP_SECRET") {
+                env_vars.push(("AGENTHALO_MCP_SECRET".to_string(), secret.clone()));
+            }
+            if !env_contains(&env_vars, "NUCLEUSDB_MESH_AUTH_TOKEN") {
+                env_vars.push(("NUCLEUSDB_MESH_AUTH_TOKEN".to_string(), secret));
+            }
+        }
+    }
+
+    // Mesh networking: shared Docker network + MCP port exposure
+    let mut mesh_port_out: Option<u16> = None;
+    if let Some(mesh_cfg) = &cfg.mesh {
+        if mesh_cfg.enabled {
+            mesh::ensure_mesh_network()?;
+
+            cmd.arg("--network").arg(mesh::MESH_NETWORK_NAME);
+            cmd.arg("--hostname").arg(&cfg.agent_id);
+            cmd.arg("--expose").arg(mesh_cfg.mcp_port.to_string());
+
+            cmd.arg("-e")
+                .arg(format!("NUCLEUSDB_MESH_PORT={}", mesh_cfg.mcp_port));
+            cmd.arg("-e")
+                .arg(format!("NUCLEUSDB_MESH_AGENT_ID={}", cfg.agent_id));
+            cmd.arg("-e").arg(format!(
+                "NUCLEUSDB_CONTAINER_MCP_PORT={}",
+                mesh_cfg.mcp_port
+            ));
+            cmd.arg("-e")
+                .arg(format!("AGENTHALO_MCP_PORT={}", mesh_cfg.mcp_port));
+            cmd.arg("-e")
+                .arg(format!("NUCLEUSDB_MCP_PORT={}", mesh_cfg.mcp_port));
+            cmd.arg("-e")
+                .arg("NUCLEUSDB_MESH_REGISTRY=/data/mesh/peers.json");
+            if let Some(did) = &mesh_cfg.agent_did {
+                cmd.arg("-e").arg(format!("NUCLEUSDB_MESH_DID={did}"));
+            }
+
+            if registry_volume_is_named(&mesh_cfg.registry_volume) {
+                prepare_named_volume(
+                    &mesh_cfg.registry_volume,
+                    &cfg.image,
+                    "mesh registry volume",
+                )?;
+            } else {
+                prepare_bind_mount_dir(&mesh_cfg.registry_volume, "mesh registry dir")?;
+            }
+            cmd.arg("-v")
+                .arg(format!("{}:/data/mesh", mesh_cfg.registry_volume.display()));
+
+            mesh_port_out = Some(mesh_cfg.mcp_port);
+        }
+    }
+
+    for (key, value) in &env_vars {
+        cmd.arg("-e").arg(format!("{key}={value}"));
+    }
+    if let Some((entrypoint, args)) = cfg.command.split_first() {
+        cmd.arg("--entrypoint").arg(entrypoint);
+        cmd.arg(&cfg.image);
+        for arg in args {
+            cmd.arg(arg);
+        }
+    } else {
+        cmd.arg(&cfg.image);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to run docker: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "docker run failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let container_id = String::from_utf8(out.stdout)
+        .map_err(|e| format!("invalid docker output: {e}"))?
+        .trim()
+        .to_string();
+    let info = SessionInfo {
+        session_id: session_id.clone(),
+        container_id,
+        image: cfg.image,
+        agent_id: cfg.agent_id,
+        host_sock,
+        started_at_unix: now_unix_secs(),
+        mesh_port: mesh_port_out,
+    };
+    let meta = run_dir.join(format!("{session_id}.json"));
+    std::fs::write(
+        &meta,
+        serde_json::to_vec_pretty(&info).map_err(|e| format!("failed to encode session: {e}"))?,
+    )
+    .map_err(|e| format!("failed to persist {}: {e}", meta.display()))?;
+    Ok(info)
+}
+
+pub fn container_status(session_id: &str) -> Result<String, String> {
+    let out = Command::new("docker")
+        .arg("inspect")
+        .arg("--format")
+        .arg("{{.State.Status}}")
+        .arg(session_id)
+        .output()
+        .map_err(|e| format!("failed to run docker inspect: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "docker inspect failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+pub fn stop_container(session_id: &str) -> Result<(), String> {
+    let out = Command::new("docker")
+        .arg("stop")
+        .arg(session_id)
+        .output()
+        .map_err(|e| format!("failed to run docker stop: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "docker stop failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+pub fn destroy_container(session_id: &str) -> Result<(), String> {
+    let out = Command::new("docker")
+        .arg("rm")
+        .arg("-f")
+        .arg(session_id)
+        .output()
+        .map_err(|e| format!("failed to run docker rm -f: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let missing = stderr.contains("No such container") || stderr.contains("No such object");
+        if !missing {
+            return Err(format!("docker rm -f failed: {}", stderr));
+        }
+    }
+    let meta = run_dir().join(format!("{session_id}.json"));
+    let _ = std::fs::remove_file(meta);
+    Ok(())
+}
+
+pub fn container_logs(session_id: &str, follow: bool) -> Result<String, String> {
+    let mut cmd = Command::new("docker");
+    cmd.arg("logs");
+    if follow {
+        cmd.arg("-f");
+    }
+    cmd.arg(session_id);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to run docker logs: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "docker logs failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+pub fn load_session(session_id: &str) -> Result<SessionInfo, String> {
+    let path = run_dir().join(format!("{session_id}.json"));
+    let data =
+        std::fs::read(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    serde_json::from_slice(&data).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+}
+
+pub fn list_sessions() -> Result<Vec<SessionInfo>, String> {
+    let mut sessions = Vec::new();
+    let dir = run_dir();
+    if !dir.exists() {
+        return Ok(sessions);
+    }
+    let entries = std::fs::read_dir(&dir)
+        .map_err(|e| format!("failed to read run dir {}: {e}", dir.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let data = match std::fs::read(&path) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Ok(info) = serde_json::from_slice::<SessionInfo>(&data) {
+            sessions.push(info);
+        }
+    }
+    Ok(sessions)
+}
+
+pub fn ensure_sidecar_binary(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    Err(format!(
+        "sidecar binary missing at {} (build it before container build)",
+        path.display()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::make_session_id;
+    use std::collections::HashSet;
+
+    #[test]
+    fn make_session_id_is_unique_across_back_to_back_calls() {
+        let ids: HashSet<_> = (0..16).map(|_| make_session_id()).collect();
+        assert_eq!(ids.len(), 16);
+    }
+}

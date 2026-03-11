@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NucleusDB Dashboard</title>
-  <meta name="description" content="NucleusDB dashboard for genesis ceremony, identity, security, immutable records, and Discord capture status." />
+  <meta name="description" content="NucleusDB dashboard for identity, security, local models, containers, orchestrator control, and immutable records." />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -14,6 +14,10 @@
       <img src="/img/nucleus_db_logo.png" alt="NucleusDB logo" class="logo" />
       <nav>
         <button data-page="overview">Overview</button>
+        <button data-page="deploy">Deploy</button>
+        <button data-page="models">Local Models</button>
+        <button data-page="containers">Containers</button>
+        <button data-page="orchestrator">Orchestrator</button>
         <button data-page="genesis">Genesis</button>
         <button data-page="identity">Identity</button>
         <button data-page="security">Security</button>
@@ -23,10 +27,13 @@
       </nav>
     </aside>
     <section class="content">
-      <header><h1>NucleusDB Dashboard</h1><p>Verifiable database, immutable seal chain, proof-gate provenance, and Discord capture.</p></header>
-      <div id="page"></div>
+      <header><h1>NucleusDB Dashboard</h1><p>Verifiable database, immutable seal chain, local model serving, and container-orchestrated agent operations.</p></header>
+      <div id="content"></div>
     </section>
   </main>
+  <script src="/deploy.js"></script>
+  <script src="/containers.js"></script>
+  <script src="/orchestrator.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

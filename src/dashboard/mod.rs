@@ -22,6 +22,9 @@ pub struct DashboardState {
     pub discord_db_path: PathBuf,
     pub db_lock: Arc<Mutex<()>>,
     pub crypto: Arc<StdMutex<CryptoSession>>,
+    pub pty_manager: Arc<crate::cockpit::pty_manager::PtyManager>,
+    pub orchestrator: Arc<crate::orchestrator::Orchestrator>,
+    pub mcp_service: Arc<crate::mcp::tools::NucleusDbMcpService>,
 }
 
 pub fn build_state(db_path: PathBuf) -> DashboardState {
@@ -29,11 +32,43 @@ pub fn build_state(db_path: PathBuf) -> DashboardState {
         .ok()
         .map(PathBuf::from)
         .unwrap_or_else(|| db_path.clone());
+    let vault = crate::halo::vault::Vault::open(
+        &crate::halo::config::pq_wallet_path(),
+        &crate::halo::config::vault_path(),
+    )
+    .ok()
+    .map(Arc::new);
+    let governor_registry = crate::halo::governor_registry::build_default_registry();
+    crate::halo::governor_registry::install_global_registry(governor_registry.clone());
+    let pty_manager = Arc::new(
+        crate::cockpit::pty_manager::PtyManager::with_governor_registry(
+            24,
+            Some(governor_registry.clone()),
+        ),
+    );
+    let orchestrator = Arc::new(crate::orchestrator::Orchestrator::new(
+        pty_manager.clone(),
+        vault.clone(),
+        db_path.clone(),
+    ));
+    let mcp_service = Arc::new(
+        crate::mcp::tools::NucleusDbMcpService::new_with_runtime(
+            &db_path,
+            vault,
+            pty_manager.clone(),
+            governor_registry,
+            (*orchestrator).clone(),
+        )
+        .expect("dashboard-local MCP service should initialize"),
+    );
     DashboardState {
         db_path,
         discord_db_path,
         db_lock: Arc::new(Mutex::new(())),
         crypto: Arc::new(StdMutex::new(CryptoSession::default())),
+        pty_manager,
+        orchestrator,
+        mcp_service,
     }
 }
 

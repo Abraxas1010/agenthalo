@@ -1,9 +1,24 @@
+# WARNING: mounting /var/run/docker.sock gives this container host-level Docker control.
+# This is required for the operator-subsidiary container pattern.
+# Keep this deployment on trusted machines only.
 services:
   nucleusdb:
     build: .
     env_file: deploy/discord.env
+    environment:
+      NUCLEUSDB_HOME: /data
+      AGENTHALO_HOME: /data
+      NUCLEUSDB_CONTAINER_IMAGE: ${NUCLEUSDB_CONTAINER_IMAGE:-nucleusdb:latest}
+      NUCLEUSDB_CONTAINER_REGISTRY_VOLUME: ${NUCLEUSDB_CONTAINER_REGISTRY_VOLUME:-nucleusdb-mesh}
+      NUCLEUSDB_MCP_PORT: ${MCP_PORT:-3000}
+      NUCLEUSDB_DASHBOARD_PORT: ${DASHBOARD_PORT:-3100}
+      NUCLEUSDB_API_PORT: ${API_PORT:-8088}
     volumes:
       - nucleusdb-data:/data
+      - nucleusdb-mesh:/data/mesh
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-0}"
     ports:
       - "${MCP_PORT:-3000}:3000"
       - "${DASHBOARD_PORT:-3100}:3100"
@@ -12,9 +27,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=50M
+      - /run:size=10M
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+
 volumes:
   nucleusdb-data:
+  nucleusdb-mesh:
