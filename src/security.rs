@@ -4,6 +4,8 @@ use crate::vc::kzg::TrustedSetupError;
 use crate::witness::WitnessConfig;
 use serde::{Deserialize, Serialize};
 
+pub type FormalProvenance = (&'static str, &'static str, Option<&'static str>);
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VcProfile {
     Ipa,
@@ -310,4 +312,45 @@ pub fn verify_post_commit_refinement(
         });
     }
     Ok(())
+}
+
+/// Formal provenance for the security-parameter, reduction, and refinement layer.
+pub fn formal_provenance() -> Vec<FormalProvenance> {
+    vec![
+        (
+            "nucleus_combine_floor_bound",
+            "HeytingLean.EpistemicCalculus.nucleus_combine_floor_bound",
+            Some("HeytingLean.NucleusDB.Core.NucleusBridge.nucleus_combine_floor_bound"),
+        ),
+        (
+            "vUpdate_chain_comm",
+            "HeytingLean.EpistemicCalculus.Updating.vUpdate_chain_comm",
+            Some("HeytingLean.NucleusDB.Core.NucleusBridge.vUpdate_chain_comm"),
+        ),
+        (
+            "validFor_of_bounds",
+            "HeytingLean.NucleusDB.Security.Parameters.validFor_of_bounds",
+            Some("HeytingLean.NucleusDB.Security.Parameters.validFor_of_bounds"),
+        ),
+        (
+            "validFor_kzg_requires_setup_id",
+            "HeytingLean.NucleusDB.Security.Parameters.validFor_kzg_requires_setup_id",
+            Some("HeytingLean.NucleusDB.Security.Parameters.validFor_kzg_requires_setup_id"),
+        ),
+        (
+            "singleton_bundle_valid",
+            "HeytingLean.NucleusDB.Security.Reductions.singleton_bundle_valid",
+            Some("HeytingLean.NucleusDB.Security.Reductions.singleton_bundle_valid"),
+        ),
+        (
+            "bundle_member_valid",
+            "HeytingLean.NucleusDB.Security.Reductions.bundle_member_valid",
+            Some("HeytingLean.NucleusDB.Security.Reductions.bundle_member_valid"),
+        ),
+        (
+            "certificate_to_refinement",
+            "HeytingLean.NucleusDB.Security.Refinement.certificate_to_refinement",
+            Some("HeytingLean.NucleusDB.Security.Refinement.certificate_to_refinement"),
+        ),
+    ]
 }

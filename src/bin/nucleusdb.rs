@@ -38,6 +38,8 @@ fn run(cli: Cli) -> Result<(), String> {
         Commands::Sql { db, file } => cmd_sql(&db, file.as_deref()),
         Commands::Status { db } => cmd_status(&db),
         Commands::Export { db } => cmd_export(&db),
+        Commands::VerifyCertificate { path } => cmd_verify_certificate(&path),
+        Commands::SubmitCertificate { path } => cmd_submit_certificate(&path),
     }
 }
 
@@ -167,6 +169,22 @@ fn cmd_export(db_path: &str) -> Result<(), String> {
         .map_err(|e| format!("failed to load snapshot {}: {e:?}", db_path.display()))?;
     let mut exec = nucleusdb::sql::executor::SqlExecutor::new(&mut db);
     render_sql_result(exec.execute("EXPORT;"));
+    Ok(())
+}
+
+fn cmd_verify_certificate(path: &str) -> Result<(), String> {
+    let result = nucleusdb::verifier::gate::verify_certificate(PathBuf::from(path).as_path())?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result)
+            .map_err(|e| format!("serialize verification result: {e}"))?
+    );
+    Ok(())
+}
+
+fn cmd_submit_certificate(path: &str) -> Result<(), String> {
+    let dest = nucleusdb::verifier::gate::submit_certificate(PathBuf::from(path).as_path())?;
+    println!("{}", dest.display());
     Ok(())
 }
 

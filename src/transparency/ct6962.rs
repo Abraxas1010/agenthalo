@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::security::FormalProvenance;
+
 pub type NodeHash = [u8; 32];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +267,34 @@ pub fn hex_encode(bytes: &[u8]) -> String {
         out.push_str(&format!("{b:02x}"));
     }
     out
+}
+
+/// Formal provenance for the RFC6962 transparency layer.
+pub fn formal_provenance() -> Vec<FormalProvenance> {
+    vec![
+        (
+            "verifyInclusionProof_sound",
+            "HeytingLean.NucleusDB.Transparency.CT6962.verifyInclusionProof_sound",
+            Some("HeytingLean.NucleusDB.Transparency.RFC6962.verifyInclusionProof_sound"),
+        ),
+        (
+            "verifyAppendOnlyConsistencyProof_implies_size_extension",
+            "HeytingLean.NucleusDB.Transparency.CT6962.verifyAppendOnlyConsistencyProof_implies_size_extension",
+            Some(
+                "HeytingLean.NucleusDB.Transparency.RFC6962.verifyAppendOnlyConsistencyProof_implies_size_extension",
+            ),
+        ),
+        (
+            "leafChainRoot_injective",
+            "HeytingLean.NucleusDB.Transparency.CT6962.leafChainRoot_injective",
+            Some("HeytingLean.NucleusDB.Transparency.RFC6962.leafChainRoot_injective"),
+        ),
+        (
+            "consistency_implies_prefix",
+            "HeytingLean.NucleusDB.Transparency.CT6962.consistency_implies_prefix",
+            Some("HeytingLean.NucleusDB.Transparency.RFC6962.consistency_implies_prefix"),
+        ),
+    ]
 }
 
 #[cfg(test)]

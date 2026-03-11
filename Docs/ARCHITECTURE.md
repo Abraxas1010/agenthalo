@@ -87,4 +87,21 @@ The intended production shape is one shared database file with multiple cooperat
 
 ## Formal Layer
 
-`lean/NucleusDB/` contains the formal NucleusDB proof surface kept with the standalone repo.
+`lean/NucleusDB/` contains the formal NucleusDB proof surface kept with the standalone repo. Runtime-critical theorems are mirrored locally and linked back to the canonical Heyting proofs through dual provenance strings exposed from Rust.
+
+### Provenance Surfaces
+
+- `src/security.rs`
+- `src/transparency/ct6962.rs`
+- `src/vc/ipa.rs`
+- `src/sheaf/coherence.rs`
+- `src/protocol.rs`
+
+These surfaces feed the advisory proof gate (`configs/proof_gate.json`), the verifier pipeline under `src/verifier/`, and the dashboard endpoint `/api/formal-proofs`.
+
+### Certificate Flow
+
+1. Validate theorem references with `scripts/validate_formal_provenance.sh`.
+2. Generate `.lean4export` certificates with `scripts/generate_proof_certificates.sh`.
+3. Submit certificates through the existing CLI / verifier gate.
+4. Keep `enabled: false` in the proof gate until operators are ready to enforce theorem requirements in production.

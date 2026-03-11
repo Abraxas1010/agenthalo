@@ -59,6 +59,19 @@ cargo test
 
 If dashboard assets change, rebuild the binary before claiming the frontend changed.
 
+### Formal Verification Workflow
+
+When editing `lean/NucleusDB/` or Rust provenance surfaces:
+
+```bash
+./scripts/validate_formal_provenance.sh
+./scripts/generate_proof_certificates.sh   # when theorem surfaces or gate requirements change
+(cd lean && lake build NucleusDB)
+cargo test --test formal_integration_tests
+```
+
+Use the Heyting repo only as the read-only canonical theorem source. Do not import Heyting Lean modules into this repo.
+
 ## Product Expectations
 
 - Discord recording is append-only by default

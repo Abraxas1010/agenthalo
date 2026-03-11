@@ -1,4 +1,5 @@
 use super::{FieldElem, RootDigest, VC};
+use crate::security::FormalProvenance;
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use sha2::{Digest, Sha512};
@@ -81,4 +82,39 @@ impl VC for DemoIpa {
     fn digest(c: &Self::Commitment) -> RootDigest {
         point_digest(&c.encoded)
     }
+}
+
+/// Formal provenance for the Pedersen-shaped IPA commitment surface.
+pub fn formal_provenance() -> Vec<FormalProvenance> {
+    vec![
+        (
+            "openCorrect",
+            "HeytingLean.Crypto.Commit.IPAInstance.openCorrect",
+            Some("HeytingLean.NucleusDB.Crypto.Commit.IPAInstance.openCorrect"),
+        ),
+        (
+            "openSound_of_binding",
+            "HeytingLean.Crypto.Commit.IPAInstance.openSound_of_binding",
+            Some("HeytingLean.NucleusDB.Crypto.Commit.IPAInstance.openSound_of_binding"),
+        ),
+        (
+            "verificationConsistencyAt_of_openCorrect",
+            "HeytingLean.Crypto.Commit.Spec.verificationConsistencyAt_of_openCorrect",
+            Some(
+                "HeytingLean.NucleusDB.Crypto.Commit.IPAInstance.verificationConsistencyAt_of_openCorrect",
+            ),
+        ),
+        (
+            "computationalHiding_of_dlog",
+            "HeytingLean.Crypto.Commit.PedersenAssumptions.computationalHiding_of_dlog",
+            Some("HeytingLean.NucleusDB.Crypto.Commit.IPAInstance.computationalHiding_of_dlog"),
+        ),
+        (
+            "computationalHiding_of_dlogReduction",
+            "HeytingLean.Crypto.Commit.IPAInstance.computationalHiding_of_dlogReduction",
+            Some(
+                "HeytingLean.NucleusDB.Crypto.Commit.IPAInstance.computationalHiding_of_dlogReduction",
+            ),
+        ),
+    ]
 }

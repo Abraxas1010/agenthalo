@@ -1,21 +1,101 @@
 {
-  "_note": "Phase-0 advisory mode: enabled=false means no tool calls are blocked. Set enabled=true and enforced=true on individual requirements to activate enforcement.",
+  "_note": "Phase-0 advisory mode: enabled=false means no tool calls are blocked. Populate certificate metadata now; enable enforcement only after certificate generation and operator sign-off.",
   "certificate_dir": "~/.nucleusdb/proof_certificates",
   "enabled": false,
   "requirements": {
     "nucleusdb_execute_sql": [
       {
         "tool_name": "nucleusdb_execute_sql",
-        "required_theorem": "HeytingLean.NucleusDB.Comms.AccessControl.broken_chain_rejects_did",
-        "description": "Authorization chain rejects requests with invalid DID identity",
+        "required_theorem": "HeytingLean.NucleusDB.Core.Certificates.verifyCommitCertificate_sound",
+        "description": "Commit certificate verification is sound",
+        "enforced": false
+      },
+      {
+        "tool_name": "nucleusdb_execute_sql",
+        "required_theorem": "HeytingLean.NucleusDB.Sheaf.Coherence.verifyCoherence_sound",
+        "description": "Sheaf coherence witnesses are accepted only when amalgamation holds",
+        "enforced": false
+      },
+      {
+        "tool_name": "nucleusdb_execute_sql",
+        "required_theorem": "HeytingLean.Crypto.Commit.IPAInstance.openCorrect",
+        "description": "Vector-commitment openings round-trip at the committed index",
         "enforced": false
       }
     ],
     "nucleusdb_container_launch": [
       {
         "tool_name": "nucleusdb_container_launch",
-        "required_theorem": "HeytingLean.NucleusDB.Core.replay_preserves",
-        "description": "Container state transitions preserve system invariants",
+        "required_theorem": "HeytingLean.NucleusDB.Core.NucleusSystem.step_eq_apply",
+        "description": "Core nucleus steps are the runtime apply relation",
+        "enforced": false
+      },
+      {
+        "tool_name": "nucleusdb_container_launch",
+        "required_theorem": "HeytingLean.NucleusDB.Security.Refinement.certificate_to_refinement",
+        "description": "Verified certificates refine runtime commit records",
+        "enforced": false
+      }
+    ],
+    "nucleusdb_commit": [
+      {
+        "tool_name": "nucleusdb_commit",
+        "required_theorem": "HeytingLean.NucleusDB.Transparency.CT6962.consistency_implies_prefix",
+        "description": "Consistency proofs imply append-only prefix relation",
+        "enforced": false
+      },
+      {
+        "tool_name": "nucleusdb_commit",
+        "required_theorem": "HeytingLean.NucleusDB.Transparency.CT6962.verifyInclusionProof_sound",
+        "description": "Inclusion proofs replay to the claimed root",
+        "enforced": false
+      },
+      {
+        "tool_name": "nucleusdb_commit",
+        "required_theorem": "HeytingLean.Crypto.Commit.IPAInstance.openSound_of_binding",
+        "description": "Commitment openings are sound under binding",
+        "enforced": false
+      }
+    ],
+    "nucleusdb_evm_sign": [
+      {
+        "tool_name": "nucleusdb_evm_sign",
+        "required_theorem": "HeytingLean.NucleusDB.Crypto.EVMGate.evm_sign_requires_dual_auth",
+        "description": "EVM signing requires dual authorization",
+        "enforced": false
+      },
+      {
+        "tool_name": "nucleusdb_evm_sign",
+        "required_theorem": "HeytingLean.NucleusDB.Crypto.EVMGate.authorization_composable",
+        "description": "Authorization steps compose to unlock signing",
+        "enforced": false
+      }
+    ],
+    "nucleusdb_kem_encapsulate": [
+      {
+        "tool_name": "nucleusdb_kem_encapsulate",
+        "required_theorem": "HeytingLean.Crypto.KEM.HybridKEM.hybrid_security_of_documentedAssumptions",
+        "description": "Hybrid KEM security is exported only through documented reduction assumptions",
+        "enforced": false
+      }
+    ],
+    "nucleusdb_trace_analysis": [
+      {
+        "tool_name": "nucleusdb_trace_analysis",
+        "required_theorem": "HeytingLean.NucleusDB.Sheaf.TraceTopology.refines_preserves_connected",
+        "description": "Trace refinement preserves connectivity",
+        "enforced": false
+      },
+      {
+        "tool_name": "nucleusdb_trace_analysis",
+        "required_theorem": "HeytingLean.NucleusDB.Sheaf.TraceTopology.componentConstant_iff_exists_lift",
+        "description": "Component-constant observables factor through the quotient",
+        "enforced": false
+      },
+      {
+        "tool_name": "nucleusdb_trace_analysis",
+        "required_theorem": "HeytingLean.NucleusDB.Sheaf.TraceTopology.componentCount_mono_of_refines",
+        "description": "Refining the metric can only merge connected components",
         "enforced": false
       }
     ]

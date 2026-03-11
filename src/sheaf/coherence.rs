@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::security::FormalProvenance;
 use crate::state::State;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,4 +54,30 @@ pub fn verify_sheaf_coherence(_global: &State, pf: &SheafCoherenceProof) -> bool
     // P1.2: extend this verifier to check local sections against global state
     // using an explicit key->index model.
     pf.coherent && pf.conflicts.is_empty()
+}
+
+/// Formal provenance for the sheaf-coherence and trace-topology layer.
+pub fn formal_provenance() -> Vec<FormalProvenance> {
+    vec![
+        (
+            "verifyCoherence_sound",
+            "HeytingLean.NucleusDB.Sheaf.Coherence.verifyCoherence_sound",
+            Some("HeytingLean.NucleusDB.Sheaf.Coherence.verifyCoherence_sound"),
+        ),
+        (
+            "refines_preserves_connected",
+            "HeytingLean.NucleusDB.Sheaf.TraceTopology.refines_preserves_connected",
+            Some("HeytingLean.NucleusDB.Sheaf.TraceTopology.refines_preserves_connected"),
+        ),
+        (
+            "componentConstant_iff_exists_lift",
+            "HeytingLean.NucleusDB.Sheaf.TraceTopology.componentConstant_iff_exists_lift",
+            Some("HeytingLean.NucleusDB.Sheaf.TraceTopology.componentConstant_iff_exists_lift"),
+        ),
+        (
+            "componentCount_mono_of_refines",
+            "HeytingLean.NucleusDB.Sheaf.TraceTopology.componentCount_mono_of_refines",
+            Some("HeytingLean.NucleusDB.Sheaf.TraceTopology.componentCount_mono_of_refines"),
+        ),
+    ]
 }

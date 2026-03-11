@@ -68,6 +68,12 @@ pub enum Commands {
         #[arg(long, default_value = "nucleusdb.ndb")]
         db: String,
     },
+    VerifyCertificate {
+        path: String,
+    },
+    SubmitCertificate {
+        path: String,
+    },
 }
 
 pub fn parse_backend(backend: &str) -> Result<VcBackend, String> {

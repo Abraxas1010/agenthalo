@@ -9,7 +9,9 @@ use crate::identity::{
     load as load_identity, save as save_identity, DeviceIdentity, NetworkIdentity,
 };
 use crate::protocol::NucleusDb;
+use crate::security::FormalProvenance;
 use crate::sql::executor::SqlExecutor;
+use crate::verifier::gate::{load_gate_config, ProofGateConfig};
 use axum::extract::{Path, Query, State as AxumState};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -18,6 +20,60 @@ use serde_json::json;
 
 fn discord_recorder(state: &DashboardState) -> DiscordRecorder {
     DiscordRecorder::new(state.discord_db_path.clone())
+}
+
+fn provenance_json(module: &'static str, entries: Vec<FormalProvenance>) -> Vec<serde_json::Value> {
+    entries
+        .into_iter()
+        .map(|(name, formal_basis, formal_basis_local)| {
+            json!({
+                "module": module,
+                "theorem": name,
+                "formal_basis": formal_basis,
+                "formal_basis_local": formal_basis_local,
+            })
+        })
+        .collect()
+}
+
+fn collect_all_provenance() -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    out.extend(provenance_json(
+        "security",
+        crate::security::formal_provenance(),
+    ));
+    out.extend(provenance_json(
+        "transparency.ct6962",
+        crate::transparency::ct6962::formal_provenance(),
+    ));
+    out.extend(provenance_json(
+        "vc.ipa",
+        crate::vc::ipa::formal_provenance(),
+    ));
+    out.extend(provenance_json(
+        "sheaf.coherence",
+        crate::sheaf::coherence::formal_provenance(),
+    ));
+    out.extend(provenance_json(
+        "protocol",
+        crate::protocol::formal_provenance(),
+    ));
+    out
+}
+
+fn advisory_gate_config(cfg: &ProofGateConfig) -> ProofGateConfig {
+    let mut clone = cfg.clone();
+    clone.enabled = true;
+    clone
+}
+
+fn certificate_count(cfg: &ProofGateConfig) -> usize {
+    std::fs::read_dir(&cfg.certificate_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .filter(|entry| entry.path().extension().and_then(|s| s.to_str()) == Some("lean4export"))
+        .count()
 }
 
 pub fn api_router(state: DashboardState) -> Router<DashboardState> {
@@ -36,6 +92,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/nucleusdb/status", get(api_nucleusdb_status))
         .route("/nucleusdb/history", get(api_nucleusdb_history))
         .route("/nucleusdb/sql", post(api_nucleusdb_sql))
+        .route("/formal-proofs", get(api_formal_proofs))
         .route("/discord/status", get(api_discord_status))
         .route("/discord/channels", get(api_discord_channels))
         .route("/discord/search", get(api_discord_search))
@@ -267,6 +324,34 @@ async fn api_nucleusdb_sql(
         }
         Err(e) => Json(json!({"ok": false, "error": format!("{e:?}")})),
     }
+}
+
+async fn api_formal_proofs() -> Json<serde_json::Value> {
+    let gate = load_gate_config().unwrap_or_default();
+    let advisory = advisory_gate_config(&gate);
+    let mut tools: Vec<String> = advisory.requirements.keys().cloned().collect();
+    tools.sort();
+    let tool_status: Vec<_> = tools
+        .into_iter()
+        .map(|tool| {
+            let result = advisory.evaluate(&tool);
+            json!({
+                "tool": tool,
+                "passed": result.passed,
+                "requirements_checked": result.requirements_checked,
+                "requirements_met": result.requirements_met,
+                "trust_tier": result.achieved_trust_tier,
+                "details": result.verification_results,
+            })
+        })
+        .collect();
+    Json(json!({
+        "gate_enabled": gate.enabled,
+        "certificate_dir": gate.certificate_dir,
+        "certificate_count": certificate_count(&gate),
+        "tools": tool_status,
+        "provenance": collect_all_provenance(),
+    }))
 }
 
 async fn api_discord_status() -> Json<serde_json::Value> {

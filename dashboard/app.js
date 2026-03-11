@@ -104,6 +104,34 @@ async function renderNucleusdb() {
   };
 }
 
+async function renderFormalProofs() {
+  const status = await api('/formal-proofs');
+  const toolRows = (status.tools || []).map(tool => `
+    <tr>
+      <td><code>${tool.tool}</code></td>
+      <td>${tool.requirements_met}/${tool.requirements_checked}</td>
+      <td>${tool.trust_tier || 'none'}</td>
+      <td>${tool.passed}</td>
+    </tr>
+  `).join('');
+  pageEl.innerHTML = section('Formal Proofs', `
+    <div class="stack">
+      <div class="grid two">
+        <div><strong>Gate enabled</strong><div>${status.gate_enabled}</div></div>
+        <div><strong>Certificates</strong><div>${status.certificate_count}</div></div>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Tool</th><th>Met</th><th>Trust Tier</th><th>Pass</th></tr>
+        </thead>
+        <tbody>${toolRows}</tbody>
+      </table>
+      <h3>Formal Provenance</h3>
+      <pre>${JSON.stringify(status.provenance, null, 2)}</pre>
+    </div>
+  `);
+}
+
 async function renderDiscord() {
   const [status, recent] = await Promise.all([api('/discord/status'), api('/discord/recent')]);
   pageEl.innerHTML = section('Discord', `
@@ -132,6 +160,7 @@ async function render() {
   if (state.page === 'identity') return renderIdentity();
   if (state.page === 'security') return renderSecurity();
   if (state.page === 'nucleusdb') return renderNucleusdb();
+  if (state.page === 'formal') return renderFormalProofs();
   if (state.page === 'discord') return renderDiscord();
 }
 
