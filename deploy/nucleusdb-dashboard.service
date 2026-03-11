@@ -1,0 +1,19 @@
+[Unit]
+Description=NucleusDB Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nucleusdb
+Group=nucleusdb
+EnvironmentFile=/etc/nucleusdb/discord.env
+ExecStart=/usr/local/bin/nucleusdb dashboard --port 3100 --no-open
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nucleusdb /etc/nucleusdb
+
+[Install]
+WantedBy=multi-user.target

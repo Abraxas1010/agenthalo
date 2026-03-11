@@ -255,7 +255,7 @@ mod tests {
             "proof_checker_{}_{}_{}.lean4export",
             name,
             std::process::id(),
-            crate::halo::util::now_unix_secs()
+            crate::util::now_unix_secs()
         ));
         std::fs::write(&path, body).expect("write export fixture");
         path

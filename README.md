@@ -1,808 +1,256 @@
 <img src="assets/Apoth3osis.webp" alt="Apoth3osis Logo" width="140"/>
 
-<sub><strong>Our tech stack is ontological:</strong><br>
-<strong>Hardware — Physics</strong><br>
-<strong>Software — Mathematics</strong><br><br>
-<strong>Our engineering workflow is simple:</strong> discover, build, grow, learn & teach</sub>
-
----
-
-<sub>
-<strong>Acknowledgment</strong><br>
-We humbly thank the collective intelligence of humanity for providing the technology and culture we cherish. We do our best to properly reference the authors of the works utilized herein, though we may occasionally fall short. Our formalization acts as a reciprocal validation—confirming the structural integrity of their original insights while securing the foundation upon which we build. In truth, all creative work is derivative; we stand on the shoulders of those who came before, and our contributions are simply the next link in an unbroken chain of human ingenuity.
-</sub>
+<sub>Our tech stack is ontological: <strong>Hardware — Physics</strong>, <strong>Software — Mathematics</strong></sub>
 
 ---
 
 <p align="center">
-  <img src="assets/agent_halo_logo.png" alt="Agent H.A.L.O." width="300"/>
+  <img src="assets/nucleus_db_logo.png" alt="NucleusDB" width="300"/>
 </p>
 
 <p align="center">
-  <strong>Agent H.A.L.O.</strong> — <strong>H</strong>uman-AI <strong>A</strong>gent <strong>L</strong>ifecycle <strong>O</strong>rchestrator<br>
-  <em>Tamper-proof observability for AI agents.</em>
+  <strong>NucleusDB</strong> — Verifiable Database Engine<br>
+  <em>Every write is a cryptographic commitment. Every query comes with a proof. Append-only mode makes deletion mathematically visible.</em>
 </p>
-
-<br>
-
-<table>
-<tr>
-<td width="25%" align="center"><strong>H</strong><br><sub>Human-AI</sub><br><em>The Interface</em></td>
-<td width="25%" align="center"><strong>A</strong><br><sub>Agent</sub><br><em>The Identity</em></td>
-<td width="25%" align="center"><strong>L</strong><br><sub>Lifecycle</sub><br><em>The Continuity</em></td>
-<td width="25%" align="center"><strong>O</strong><br><sub>Orchestrator</sub><br><em>The Conductor</em></td>
-</tr>
-<tr>
-<td align="center"><sub>The human-AI boundary — sovereign observation, cryptographic trust anchoring, PUF-bound hardware identity</sub></td>
-<td align="center"><sub>Wallet identity, cryptographic keypair, the self that persists across sessions</sub></td>
-<td align="center"><sub>Traces, tool calls, decisions, costs — the full causal history from launch to completion</sub></td>
-<td align="center"><sub>Multi-agent coordination — budget enforcement, mesh networking, task DAGs, container management</sub></td>
-</tr>
-</table>
-
-<br>
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-![Tests](https://img.shields.io/badge/tests-960%2B%20passing-brightgreen.svg)
-![Lean 4](https://img.shields.io/badge/Lean%204-141%20modules-blue.svg)
-![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
+![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)
+![Lean 4](https://img.shields.io/badge/Lean%204-formal%20proofs-blue.svg)
 
-[The Problem](#the-problem) · [Quick Start](#quick-start) · [Web Dashboard](#web-dashboard) · [Orchestrator](#orchestrator) · [Sovereign Identity](#sovereign-identity) · [The Algebraic Foundation](#the-algebraic-foundation) · [NucleusDB](#nucleusdb) · [Architecture](#architecture) · [Contributing](CONTRIBUTING.md)
+[Quick Start](#quick-start) · [Discord Bot](#discord-bot) · [SQL Interface](#sql-interface) · [MCP Server](#mcp-server) · [Dashboard](#dashboard) · [Architecture](#architecture) · [Security](#security)
 
-<sub>Part of the <a href="https://www.apoth3osis.io/projects"><strong>MENTAT</strong></a> stack — Layer 2 (Trust & Containment). Built on <a href="https://github.com/Abraxas1010/heyting">HeytingLean</a> (Layer 1: Verification Foundation).</sub>
-
----
-
-## The Problem
-
-An AI agent runs for eight minutes. It reads 30 files, rewrites an authentication module, executes shell commands, and calls external APIs. It costs $14. When it finishes, you ask a simple question: *what exactly did it do?*
-
-The honest answer, today, is that you don't know. Not really.
-
-Every major agent framework — Claude Code, Codex CLI, Gemini CLI — produces a stream of output that scrolls past your terminal and vanishes. If you're disciplined, you scroll back. If you're busy, you trust it. If something breaks two days later, you have nothing to audit except your memory and whatever the terminal buffer retained.
-
-This is not an edge case. This is the default experience for everyone using AI agents in production. And it gets worse:
-
-- **There is no proof.** When an agent claims it ran a test and it passed, there is no independent record. When it says it didn't modify a file, there is no cryptographic evidence. The agent's output is self-reported, mutable, and ephemeral.
-
-- **There is no accountability.** If an agent introduces a security vulnerability, exfiltrates data, or silently drops an important step, there is no tamper-evident log that can prove when the failure occurred or whether the record itself was altered after the fact.
-
-- **There is no sovereignty.** The observability tools that do exist — and there are many — solve the problem by sending your agent's every thought, every file read, every API call, to someone else's cloud. Your proprietary code, your credentials, your architectural decisions, streamed to a third-party analytics platform. The watchers themselves become the risk.
-
-This is the gap H.A.L.O. exists to close.
-
-### Explore the Proof Corpus
-
-<p align="center">
-  <a href="https://www.apoth3osis.io/projects#proof-explorer">
-    <img src="assets/proof-explorer.gif" alt="AgentHALO Proof Explorer — 962 declarations across 15 families" width="720"/>
-  </a>
-</p>
-
-<p align="center">
-  <strong>962 declarations</strong> &middot; <strong>286 theorems</strong> &middot; <strong>36 lemmas</strong> &middot; <strong>134 structures</strong> &middot; <strong>141 files</strong> &middot; <strong>15 families</strong><br>
-  <sub>Every claim below is machine-checked. Neural firing visualizes the proof dependency lattice.</sub>
-</p>
+<sub>Part of the <a href="https://www.apoth3osis.io/projects"><strong>MENTAT</strong></a> stack — Layer 1 foundation. Also powers <a href="https://github.com/Abraxas1010/agenthalo">Agent H.A.L.O.</a>.</sub>
 
 ---
 
-## The Solution
+## What Is NucleusDB
 
-Agent H.A.L.O. wraps any AI coding agent — Claude, Codex, Gemini, or your own — and records **every event** into a local, cryptographically sealed trace store. One command. Nothing else changes.
+NucleusDB is a verifiable database with three properties that are usually split across separate systems:
 
-```bash
-# Wrap your agent — it works exactly as before
-agenthalo run claude -p "refactor the auth module"
+- a mutable working database with SQL, typed values, blob storage, vector search, and multi-tenant HTTP access
+- a proof surface where exact queries come with commitment proofs
+- an immutable append-only mode with monotone seal chaining for audit logs and permanent records
 
-# What happened?
-agenthalo traces
-# Session ID    | Agent  | Model           | Tokens   | Cost    | Duration | Status
-# sess-17...    | claude | claude-opus-4-6 | 142,800  | $14.82  | 8m 32s   | completed
-
-# Full event timeline
-agenthalo traces sess-17...
-#   1  AssistantMessage  {"text":"I'll start by reading..."}
-#   2  McpToolCall       {"tool":"Read","input":{"file_path":"/src/auth.rs"}}
-#   3  McpToolResult     {"result":"..."}
-#   ...
-
-# Monthly cost rollup
-agenthalo costs --month
-# February 2026 | 23 sessions | 1,284,000 tokens | $148.20
-```
-
-Every event is stored in `~/.agenthalo/traces.ndb` — a content-addressed blob with a SHA-256 Merkle proof. If anyone modifies a record after the fact, the proof chain breaks. This isn't a feature toggle. It's the architecture.
-
-The four layers of the H.A.L.O. model map directly to what gets recorded:
-
-- **H** (Human-AI) — The trust boundary between human and AI. PUF fingerprints anchor traces to the physical machine. Sovereign observation without third-party custody.
-- **A** (Agent) — The agent's wallet identity and session metadata. Which agent, which model, which credentials — cryptographically bound to the trace.
-- **L** (Lifecycle) — Every reasoning step, tool call, file edit, and shell command. The full causal history from launch to completion, with token counts and cost attribution.
-- **O** (Orchestrator) — Multi-agent coordination. Budget enforcement, mesh networking, task DAGs, and container management. The conductor that keeps agents accountable.
-
-### What It Captures
-
-| Event Type | Data Recorded |
-|------------|---------------|
-| `AssistantMessage` | Full text of every agent response |
-| `UserMessage` | Prompts and follow-ups |
-| `McpToolCall` | Tool name, input parameters, timestamps |
-| `McpToolResult` | Tool output, including file contents |
-| `FileChange` | Files created, modified, or read (with path) |
-| `BashCommand` | Shell commands the agent executed |
-| `Error` | Stderr output, failures |
-
-Every event includes token counts (input/output/cache-read) parsed from the agent's structured output stream. Cost is computed per-event using model-specific pricing tables.
-
-### Design Principles
-
-- **Zero telemetry.** No usage analytics, no phone-home, no tracking. Your traces stay on your machine.
-- **Zero config.** `agenthalo run claude` just works. Flags are auto-injected for structured output.
-- **Agent-native.** First-class adapters for Claude (`stream-json`), Codex (`--json`), and Gemini (`stream-json`). Each adapter parses the agent's native output format.
-- **Tamper-evident.** Every trace event is a content-addressed blob backed by cryptographic commitments. The Merkle root changes if any event is modified.
-- **Free tier.** Claude, Codex, and Gemini wrapping is free. Custom/generic agents require paid tier.
-
-> For the complete reference (configuration, environment variables, adapter details, cloud sync roadmap), see **[Docs/AGENTHALO.md](Docs/AGENTHALO.md)**.
-
-### Epistemic Calculi — Formal Reasoning About Agent Trust
-
-H.A.L.O. integrates five epistemic calculi from the [Heyting formal mathematics project](https://github.com/Abraxas1010/heyting), providing mathematically grounded reasoning about agent behavior, trust, and uncertainty:
-
-| Calculus | Module | What It Does |
-|----------|--------|-------------|
-| **Tsallis Diversity** | `halo::metrics::diversity` | Measures tool-usage diversity via Tsallis 2-entropy (Gini impurity). A high diversity score indicates the agent explores a broad tool repertoire rather than hammering one tool repeatedly. Exposed as a real-time gauge in the Cockpit. |
-| **Epistemic Trust Nucleus** | `halo::trust` | Models trust as a Heyting algebra nucleus: `N(x) = max(x, floor)`. The nucleus is extensive, idempotent, and meet-preserving — guaranteeing a well-defined trust floor below which no agent can fall. Fuses multiple trust signals via product, with residuated implication for "if Y then Z" reasoning. |
-| **Bayesian Evidence Combiner** | `halo::evidence` | Iterative Bayesian odds-update: each tool observation shifts the posterior via `P(E\|H)` / `P(E\|~H)` likelihood ratios. Correctly oriented as false-over-true odds for stable iterative composition. Available as an MCP tool (`agenthalo_evidence_combine`). |
-| **Uncertainty Translation** | `halo::uncertainty` | Hub-and-spoke conversion between four uncertainty frameworks: Probability, Certainty Factor, Possibility, and Binary. Tools can report confidence in their native framework; H.A.L.O. translates to a common probabilistic scale. Available as an MCP tool (`agenthalo_uncertainty_translate`). |
-| **Trace Topology (H0 Persistence)** | `halo::trace_topology` | Computes H0 persistence (connected components over time) from agent tool-transition graphs via Vietoris-Rips filtration with union-find. Reveals whether an agent's behavior is episodic (many disconnected clusters) or coherent (one persistent connected component). |
-
-These are not heuristics — they are implementations of formally specified mathematical structures whose core properties (nucleus laws, Bayesian consistency, translation roundtrips) are verified by the Lean 4 kernel in the companion Heyting repository.
+This standalone repository extracts that core from AgentHALO and ships a first concrete application on top of it: a Discord recorder that stores every message, edit, and delete event as append-only database entries.
 
 ## Quick Start
 
-```bash
-# One-line install (clones and builds from source; requires Rust toolchain + repo access)
-curl -fsSL https://raw.githubusercontent.com/Abraxas1010/agenthalo/master/install.sh | bash
-
-# Or clone and build manually
-git clone https://github.com/Abraxas1010/agenthalo.git && cd agenthalo
-cargo install --path . --bin agenthalo
-
-# Interactive first-run wizard
-agenthalo setup
-
-# Check everything is working
-agenthalo doctor
-
-# Launch the web dashboard
-agenthalo dashboard
-```
-
-### After Setup
+### Build
 
 ```bash
-# Run any supported agent
-agenthalo run claude -p "explain this codebase"
-agenthalo run codex exec "write tests for auth.rs"
-agenthalo run gemini -p "find security bugs"
-
-# Wrap all three permanently (shell aliases)
-agenthalo wrap --all         # adds aliases to ~/.bashrc or ~/.zshrc
-agenthalo unwrap --all       # removes them cleanly
-
-# View everything in the browser
-agenthalo dashboard          # opens http://localhost:3100
+cargo build --release \
+  --bin nucleusdb \
+  --bin nucleusdb-server \
+  --bin nucleusdb-mcp \
+  --bin nucleusdb-tui \
+  --bin nucleusdb-discord
 ```
 
-No external dependencies, no cloud service, no account required. The entire system — CLI, web dashboard, embedded assets — compiles to a single statically-linked binary.
-
-### Identity Category (CLI + MCP)
+### Create a Database
 
 ```bash
-# Inspect full identity state
-agenthalo identity status --json
-
-# Social provider lifecycle (immutable ledger-backed)
-agenthalo identity social connect google <token> --expires-days 30
-agenthalo identity social revoke google --reason rotate_token
-
-# Super-secure controls
-agenthalo identity super-secure set passkey true
-agenthalo identity super-secure set totp true --label "My Authenticator"
+./target/release/nucleusdb create --db ./records.ndb --backend merkle
+printf 'SET MODE APPEND_ONLY;\n' | ./target/release/nucleusdb sql --db ./records.ndb
 ```
 
-These actions are recorded in an append-only hash-chained ledger at
-`~/.agenthalo/identity_social_ledger.jsonl`. The same identity surface is
-available to agents through MCP tools: `identity_status`,
-`identity_social_connect`, `identity_social_revoke`, and
-`identity_super_secure_set`.
-
----
-
-## Web Dashboard
+### Start the Dashboard
 
 ```bash
-agenthalo dashboard          # opens http://localhost:3100
-agenthalo dashboard --port 8080 --no-open  # custom port, no auto-open
+NUCLEUSDB_DB_PATH=./records.ndb ./target/release/nucleusdb dashboard --port 3100
 ```
 
-A real-time observability dashboard embedded in the binary — no npm, no CDN, no external dependencies. All assets are compiled in via `rust-embed`.
-
-| Page | What It Shows |
-|------|---------------|
-| **Overview** | Live KPIs (sessions, tokens, cost, active agents), recent sessions, epistemic trust status |
-| **Sessions** | Filterable list, drill-down to full event timeline, export, attest |
-| **Costs** | Daily cost chart, agent distribution, model comparison, paid operations |
-| **Configuration** | Toggle agent wrapping, tool proxy, and provider settings from the browser |
-| **Trust** | Attestation list, one-click verify, create attestations |
-| **NucleusDB** | Browse the verifiable store, execute SQL, view commit history |
-| **Cockpit** | Launch and manage agent sessions in browser-based xterm.js terminals, diversity gauge, trace topology |
-| **Deploy** | Agent catalog cards, preflight checks, one-click agent deployment |
-| **Networking** | P2P mesh status, Bitswap runtime stats, swarm chunk/manifest inventory |
-
-Dark/light theme toggle. SSE live updates. Chart.js analytics. Responsive layout.
-
-### Cockpit — Browser Terminal Orchestration
-
-The Cockpit transforms the dashboard into a full agent orchestration terminal. Launch Claude, Codex, Gemini, OpenClaw, or Shell sessions directly in the browser — each in its own xterm.js panel with CRT terminal aesthetics.
-
-- **PTY bridge** — real pseudo-terminal sessions via WebSocket, not simulated output
-- **Multi-panel layout** — run multiple agents side-by-side with tab management
-- **Deploy page** — agent catalog with preflight checks (CLI detection, auth status, vault keys)
-- **Mesh sidebar** — live P2P peer topology with online/offline status and latency
-- **Diversity gauge** — real-time Tsallis 2-entropy tool diversity score with doughnut chart
-- **Trace topology** — H0 persistence visualization showing behavioral coherence over time
-
-> Full API reference: **[Docs/AGENTHALO.md](Docs/AGENTHALO.md#web-dashboard)**
-
----
-
-## Orchestrator
-
-H.A.L.O. manages multiple AI agents as a unified fleet. The orchestrator provides lifecycle control, budget enforcement, and task coordination — all exposed via MCP tools that any controlling agent can call.
+### Start the MCP Server
 
 ```bash
-# Launch agents
-agenthalo orchestrate launch --agent claude --name reviewer --timeout 120
-agenthalo orchestrate launch --agent shell --name builder
-
-# Submit tasks
-agenthalo orchestrate send-task --agent-id orch-abc --task "review auth.rs for vulnerabilities"
-agenthalo orchestrate send-task --agent-id orch-def --task "cargo test --release"
-
-# Pipe outputs between agents (task DAG)
-agenthalo orchestrate pipe --from task-123 --to agent-id orch-ghi --task "summarize the review"
+./target/release/nucleusdb mcp --db ./records.ndb
+./target/release/nucleusdb mcp --transport http --host 127.0.0.1 --port 3000 --db ./records.ndb
 ```
 
-### Multi-Agent Budget Control
+## Discord Bot
 
-Per-instance resource limits prevent runaway agent spawning:
+`nucleusdb-discord` connects to Discord, records messages into an append-only NucleusDB instance, and exposes verification/search commands.
 
-| Constraint | Default | Description |
-|------------|---------|-------------|
-| `max_agents` | 64 | Total managed agents across all kinds |
-| `max_concurrent_busy` | 10 | Maximum agents executing tasks simultaneously |
-| `allowed_kinds` | all | Restrict to specific agent types |
-
-Budget enforcement is atomic — check-and-insert under a single lock with no TOCTOU window.
-
-### Agent Kinds
-
-| Kind | CLI | Use Case |
-|------|-----|----------|
-| `claude` | `claude --print --output-format json` | Code review, analysis, generation |
-| `codex` | `codex exec --full-auto --json` | Autonomous coding tasks |
-| `gemini` | `gemini --yolo` | Large-context analysis |
-| `openclaw` | `openclaw run --non-interactive` | Decentralized agent workflows |
-| `shell` | `sh -c` | Build scripts, system commands |
-
-### P2P Mesh Networking
-
-Agents discover each other via a peer registry and exchange status over a libp2p mesh. The cockpit renders live peer topology — which agents are online, their latency, and reachability.
-
-### Bitswap Distribution Layer
-
-Content-addressed asset distribution over the P2P mesh. Agents publish binary assets (models, datasets, container layers) which are BLAKE3-chunked, Merkle-committed, and exchanged peer-to-peer via the Bitswap protocol.
+### Environment
 
 ```bash
-# Publish an asset — returns a manifest ID
-agenthalo swarm publish --file model.bin --type model
-
-# Fetch locally — reassemble from local chunk store
-agenthalo swarm fetch --manifest <id>
-
-# Check swarm inventory
-agenthalo swarm status
+export NUCLEUSDB_DISCORD_TOKEN=...
+export NUCLEUSDB_DISCORD_DB_PATH=./discord_records.ndb
+export NUCLEUSDB_DISCORD_CHANNELS=all
+export NUCLEUSDB_DISCORD_BATCH_SIZE=10
+export NUCLEUSDB_DISCORD_BATCH_TIMEOUT_SECS=5
+export NUCLEUSDB_DISCORD_RECORD_BOTS=false
+export NUCLEUSDB_DISCORD_RECORD_EDITS=true
+export NUCLEUSDB_DISCORD_RECORD_DELETES=true
 ```
 
-| Component | What It Does |
-|-----------|-------------|
-| **Chunk Engine** | Splits data into 256 KiB BLAKE3-hashed chunks. Verification recomputes the hash from payload — tampered chunks are rejected. |
-| **Manifest System** | Multi-chunk asset descriptors with a BLAKE3 root hash and a durable ProofEnvelope. Manifests and proofs are stored as sibling NucleusDB records and reattached on reload. |
-| **Bitswap Protocol** | libp2p request-response codec (`/agenthalo/bitswap/1.0.0`) for Want/Have/Block exchange. 4 MiB frame cap. Inbound blocks are hash-verified before insertion. |
-| **Grant Enforcement** | Per-chunk ACL via `GrantStore`. When `HALO_BITSWAP_REQUIRE_GRANTS=1`, empty grants deny all reads (fail-closed). Without grants, access is open by default. |
-| **PCN Settlement** | Chunk transfers are settled via payment channel state updates. The leecher's balance is debited and the seeder's credited — conservation-proof. |
-| **Startup Hydration** | On boot, `hydrate_bitswap_runtime` loads persisted chunks from NucleusDB and grants from `*.pod_grants.json` into the live Bitswap runtime. |
-
-4 MCP tools: `swarm_publish`, `swarm_fetch` (local reassembly), `swarm_remote_fetch` (reserved stub for future outbound peer fetch), `swarm_status`.
-
-### MCP Orchestration Tools
-
-9 tools available to any MCP-capable controlling agent: `orchestrator_launch`, `orchestrator_send_task`, `orchestrator_get_result`, `orchestrator_pipe`, `orchestrator_list`, `orchestrator_tasks`, `orchestrator_graph`, `orchestrator_mesh_status`, `orchestrator_stop`.
-
----
-
-## Sovereign Identity
-
-Every H.A.L.O. agent derives a DID (Decentralized Identifier) from a genesis seed ceremony. The DID document carries both classical and post-quantum key pairs — side by side.
+### Run
 
 ```bash
-# Generate sovereign identity
-agenthalo keygen
-
-# Inspect identity state
-agenthalo identity status --json
+./target/release/nucleusdb-discord
 ```
 
-### Post-Quantum Cryptography
+### Record Schema
 
-All agent-controlled cryptographic surfaces are PQ-hardened:
+- messages: `msg:<channel_id>:<message_id>`
+- edits: `edit:<channel_id>:<message_id>:<timestamp>`
+- deletes: `del:<channel_id>:<message_id>:<timestamp>`
 
-| Surface | Classical | Post-Quantum | Combined |
-|---------|-----------|-------------|----------|
-| DIDComm encryption | X25519 ECDH | ML-KEM-768 (FIPS 203) | Hybrid KEM |
-| Identity signatures | Ed25519 | ML-DSA-65 (FIPS 204) | Dual-signed |
-| EVM transaction signing | secp256k1 | PQ-gated (Ed25519 + ML-DSA-65) | Two-cryptosystem barrier |
-| Key derivation | — | HKDF-SHA-512 | 256-bit PQ security |
-| Integrity chains | — | SHA-512 | 256-bit PQ collision resistance |
+Each stored message includes author metadata, timestamps, attachment metadata, mention/reaction summaries, and a deterministic `record_seal` hash.
 
-### DIDComm v2 Messaging
+### Slash Commands
 
-Agents exchange encrypted messages using hybrid KEM (X25519 + ML-KEM-768). Messages are routed over the libp2p P2P mesh or through the Nym mixnet for network-layer anonymity.
+- `/status`
+- `/verify`
+- `/search`
+- `/history`
+- `/export`
+- `/channels`
+- `/integrity`
 
-### EVM Wallet
+### Recovery Model
 
-Each agent holds a BIP-32 derived secp256k1 wallet for on-chain operations. Transaction signing requires dual-signature authorization (Ed25519 + ML-DSA-65) — an attacker must break both the EVM key AND the agent's post-quantum DID identity.
+The bot batches writes by message count or timeout. On startup it backfills channel history from the last recorded message id, then resumes live recording. The database itself stays in append-only mode, so edits and deletes are logged as new facts rather than overwriting prior state.
 
----
+## SQL Interface
 
-## The Observation Gap
+NucleusDB ships a focused SQL dialect over the verifiable key-value core.
 
-There is a growing ecosystem of AI observability platforms: LangSmith, Helicone, Braintrust, AgentOps, Langfuse, Datadog LLM, Arize Phoenix, Lunary, and others. They offer dashboards, cost tracking, trace visualization, and evaluation frameworks. Some are excellent at what they do.
-
-But they all share a common architectural assumption: **your agent's data leaves your machine.**
-
-Every prompt, every tool call, every file your agent reads, every line of code it writes — streamed to a cloud endpoint, stored on infrastructure you don't control, governed by terms of service that can change. These platforms observe your agents by becoming another party in the chain of trust. They solve the visibility problem by creating a custody problem.
-
-And none of them answer the harder question: *how do you know the record itself hasn't been changed?*
-
-A cloud dashboard can show you what it claims happened. It cannot prove the log is complete. It cannot prove no events were removed. It cannot prove the trace you're reading today is the same trace that was written yesterday. The audit trail lives on someone else's server, and trust is a policy decision — not a mathematical property.
-
-| | Cloud Observability | Agent H.A.L.O. |
-|---|---|---|
-| **Where traces live** | Vendor's cloud | Your machine |
-| **Who can read them** | You + the vendor (+ their infra partners) | You |
-| **Tamper evidence** | Trust the vendor's integrity | SHA-256 Merkle proofs — verify yourself |
-| **Proof of completeness** | None | Monotone extension proofs (deletion is detectable) |
-| **Data sovereignty** | Governed by vendor ToS | You own the bits |
-| **Cryptographic seals** | None | Hash chain — each commit binds to all prior commits |
-| **Works offline** | No | Yes |
-| **Agent support** | Framework-specific SDKs | Wraps any CLI agent directly |
-| **MCP native** | No | Yes — 24 native + proxied tools over HTTP, 11 tools over stdio |
-| **Formal verification** | No | 141 Lean 4 modules with sheaf-theoretic proofs — backed by [HeytingLean](https://github.com/Abraxas1010/heyting) |
-
-H.A.L.O. doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.
-
----
-
-## The Cypherpunk Thesis
-
-On February 22, 2026, Vitalik Buterin published *"Reclaiming the Cypherpunk Soul of the World Computer"* — a direct challenge to the direction of the blockchain industry and, more broadly, the emerging agentic economy.
-
-His argument: the crypto ecosystem spent too long optimizing for speculation and institutional compliance while abandoning its founding mission — building open, private, decentralized infrastructure. Now, as AI agents begin managing the majority of digital transactions, the stakes are higher. If the agentic economy is built on proprietary, closed-source foundations, it becomes a new form of surveillance capitalism. The watchers accumulate power. The watched lose sovereignty.
-
-Buterin's prescription is concrete: privacy by default through zero-knowledge proofs and fully homomorphic encryption. Censorship resistance at the protocol level (FOCIL). Account abstraction for quantum-resistant wallets. Open-source AI. And a five-year plan to rebuild Ethereum's core as a *"cypherpunk principled, non-ugly"* system — potentially accelerated by AI-assisted coding and verification.
-
-**This is the world H.A.L.O. is built for.**
-
-When Buterin warns about the agentic economy, he's describing a future where AI agents operate autonomously — managing finances, writing code, executing transactions, making decisions. In that world, the question isn't just *"what did the agent do?"* It's *"can you prove it, and can you prove no one changed the record?"*
-
-H.A.L.O. answers that question with mathematics, not policy:
-
-- **Privacy by default** — traces never leave your machine. No telemetry. No cloud dependency.
-- **Cryptographic proof** — every event is Merkle-committed. Tampering breaks the chain.
-- **Zero-knowledge compatible** — the NucleusDB engine includes Groth16 SNARK verification and on-chain trust attestation on Base L2. Agent identity can be verified without revealing private state.
-- **Post-quantum ready** — ML-DSA-65 (FIPS 204, NIST Level 3) witness signatures protect against future quantum attacks.
-- **Open source** — the full implementation, the formal specification, and the smart contracts are here in this repository.
-
-### Where We're Going
-
-We see H.A.L.O. as infrastructure for the cypherpunk agentic economy — not just an observability tool. The roadmap includes deeper integration with on-chain identity systems, decentralized agent trust networks, and privacy-preserving audit protocols that let agents prove compliance without exposing their operational history.
-
-We are actively seeking community input on:
-
-- **Decentralized trace anchoring** — publishing Merkle roots to on-chain transparency logs so third parties can verify trace integrity without accessing the traces themselves.
-- **Agent-to-agent trust** — how should Agent B verify Agent A's operational history? What's the right trust protocol for autonomous agent collaboration?
-- **Privacy-preserving audits** — ZK proofs that an agent's session met specific compliance criteria (cost bounds, no data exfiltration, no unauthorized file access) without revealing the session content.
-- **Hardware-anchored identity** — PUF-based agent identity that binds an agent's cryptographic identity to the physical hardware it runs on, making identity theft computationally infeasible.
-
-If these problems matter to you, [open an issue](https://github.com/Abraxas1010/agenthalo/issues), start a discussion, or reach out directly. The cypherpunk thesis only works if the community builds it together.
-
----
-
-## AgentPMT Integration — Unified Tool Surface
-
-<p align="center">
-  <img src="assets/agentpmt_logo.svg" alt="AgentPMT" width="260"/>
-</p>
-
-[AgentPMT](https://www.agentpmt.com) is an MCP-native tool infrastructure platform providing budget-controlled access to 100+ third-party tools — Gmail, Stripe, Google Workspace, blockchain scanners, and more. H.A.L.O. integrates AgentPMT as a **tool proxy**, not a payment gateway.
-
-### How It Works
-
-**Agents see one unified tool surface.** When tool proxy is enabled, AgentPMT's tools appear alongside H.A.L.O.'s native tools in a single MCP `tools/list` response. Native tools appear as-is (`attest`, `audit_contract`, etc.). AgentPMT tools appear with an `agentpmt/` prefix (`agentpmt/gmail_send`, `agentpmt/stripe_charge`). The agent doesn't need to know which tools are native and which are proxied.
-
-**Budget controls live on the AgentPMT side.** The human configures spending limits, credentials, and workflow permissions via the [AgentPMT dashboard](https://www.agentpmt.com). H.A.L.O. records every proxied tool call in its tamper-evident trace for cost tracking and auditability.
-
-**AgentPMT evolves independently.** The tool catalog is stored as a separate JSON file (`~/.agenthalo/agentpmt_tools.json`) and can be refreshed without touching H.A.L.O.'s core. New tools appear in the agent's surface with a single `agenthalo config tool-proxy refresh`.
-
-```bash
-# Enable tool proxy
-agenthalo config tool-proxy enable
-
-# Set AgentPMT bearer token (or use AGENTPMT_BEARER_TOKEN env var)
-agenthalo config set-agentpmt-key <token>
-
-# Optional: set explicit AgentPMT MCP endpoint
-agenthalo config tool-proxy endpoint https://testnet.api.agentpmt.com/mcp
-
-# Refresh available tools from AgentPMT
-agenthalo config tool-proxy refresh
-
-# Check status
-agenthalo config tool-proxy status
+```sql
+INSERT INTO data (key, value) VALUES ('temperature', 42);
+COMMIT;
+SELECT key, value FROM data WHERE key = 'temperature';
+SHOW STATUS;
+SHOW HISTORY;
+VERIFY 'temperature';
+EXPORT;
 ```
 
----
+Key properties:
 
-## The Algebraic Foundation
+- exact keys map deterministically to commitment indices
+- typed values preserve JSON, bytes, vectors, and scalar forms
+- `COMMIT` is the cryptographic boundary where witnesses, CT heads, and monotone seals advance
 
-Most databases describe their correctness properties in English. NucleusDB proves them in Lean 4 using the mathematics of sheaf theory — the same framework algebraic geometers use to describe how local observations compose into global structure.
+## MCP Server
 
-This is not a marketing claim. It is 141 Lean 4 modules, type-checked by the Lean kernel, that formally prove the properties NucleusDB relies on. The formal specifications draw on the broader [HeytingLean](https://github.com/Abraxas1010/heyting) framework — a 3,300+ file, 760,000+ line Lean 4 formalization covering nucleus algebra, category theory, cryptography, and cross-kernel translation across six proof assistants. We are not aware of any other database — verifiable or otherwise — that provides this level of mathematical foundation.
+The standalone MCP surface exposes 16 tools:
 
-### Why Sheaves
+### Core database tools
 
-The core problem of multi-agent trust is a *local-to-global* problem. Each agent observes a local slice of reality: its own chain, its own traces, its own view of state. The question is: **can these local views be consistently assembled into a single global picture?**
+- `help`
+- `create_database`
+- `open_database`
+- `execute_sql`
+- `query`
+- `query_range`
+- `verify`
+- `status`
+- `history`
+- `export`
+- `checkpoint`
 
-This is exactly the question sheaf theory was invented to answer.
+### Discord tools
 
-A *presheaf* assigns data to each "open set" (in our case, each chain or agent view) with restriction maps between them. A *sheaf* is a presheaf that satisfies a gluing condition: if local sections agree on overlaps, they can be assembled into a unique global section. If they can't — if the gluing condition fails — then someone's local view is inconsistent with the others. The sheaf condition is a tamper detector built from pure mathematics.
+- `discord_status`
+- `discord_search`
+- `discord_verify`
+- `discord_integrity`
+- `discord_export`
 
-### What's Proved
+Both `stdio` and streamable HTTP transports are supported.
 
-**Sheaf coherence** — Local views of state compose into a globally consistent picture via amalgamation witnesses. A `CoherenceWitness` carries a matching family plus proof that amalgamation holds. If verification passes, the local views are mathematically consistent. If it fails, the state has been tampered with. (`lean/NucleusDB/Sheaf/Coherence.lean`)
+## Dashboard
 
-**Chain transport** — Round-trip contracts between different chain representations. If you project a chain-local value to the shared space and decode it back, you get the original value (RT-1). If you decode a shared value and re-project, you get the original shared value (RT-2). These are proved, not assumed. Forward and backward transport between any two chains composes to the identity — `backward_forward` is a theorem, not a test. (`lean/NucleusDB/Sheaf/ChainTransport.lean`)
+The standalone dashboard keeps the NucleusDB/identity surfaces that matter and removes HALO orchestration layers.
 
-**Gluing conditions** — Two chain-local sections can be glued when their projections to the shared space agree. The glue operation is defined and its specification is proved: the glued value equals the shared projection of either local section. (`lean/NucleusDB/Sheaf/ChainGluing.lean`)
+Sections:
 
-**Materialization functors** — The abstract relationship between protocol state and concrete vector representation satisfies naturality: if two states are related by transport, their materializations are equal. This ensures the commitment backends faithfully represent the abstract protocol. (`lean/NucleusDB/Sheaf/MaterializationFunctor.lean`)
+- Overview
+- Genesis
+- Identity
+- Security
+- NucleusDB
+- Discord
 
-**Multi-chain compliance presheaves** — Per-chain compliance sections modeled as a presheaf over the chain topology, with restriction maps that constrain sections to sub-topologies. Global compliance is assembled from local chain sections via the sheaf gluing machinery. (`lean/NucleusDB/TrustLayer/CompositeCab/Presheaf.lean`)
-
-**Fork evidence** — Adversarial models formalized as mathematical objects. A fork is two signed checkpoints at the same height with the same predecessor but different state roots. Fork symmetry is a theorem: if `(a, b)` is a fork, then `(b, a)` is a fork. This sounds trivial — until you realize it means the fork detection protocol is order-independent, which is exactly what you need for decentralized verification. (`lean/NucleusDB/Adversarial/ForkEvidence.lean`)
-
-### Why This Matters
-
-Every other observability tool asks you to trust their implementation. Trust that the hash function was called. Trust that the Merkle tree was built correctly. Trust that the immutable mode actually rejects writes.
-
-H.A.L.O. asks you to trust the Lean 4 kernel — a small, independently auditable proof checker — which has verified that the mathematical properties hold by construction. The implementation can have bugs. The proofs cannot. If the sheaf coherence theorem type-checks, then local views that pass verification are mathematically guaranteed to be globally consistent. This is not a claim. It is a proof.
-
-```bash
-# Verify the proofs yourself (requires Lean 4 toolchain)
-lake build NucleusDB
-```
-
----
-
-## NucleusDB
-
-<p align="center">
-  <img src="assets/nucleus_db_logo.png" alt="NucleusDB" width="260"/>
-</p>
-
-<p align="center">
-  <strong>The verifiable database engine powering H.A.L.O.</strong><br>
-  <em>Every write is a cryptographic commitment. Every query comes with a proof. Deletion can be made mathematically impossible.</em>
-</p>
-
-NucleusDB is the storage layer beneath H.A.L.O. — and a standalone verifiable database in its own right. It provides the cryptographic primitives that make tamper-evident traces possible: Merkle commitments, monotone seals, certificate transparency, and mathematically enforced immutability.
-
-```bash
-# Create a database
-nucleusdb create --db agent_records.ndb --backend merkle
-
-# Write data with SQL you already know
-echo "INSERT INTO data (key, value) VALUES ('decision_42', 1); COMMIT;" \
-  | nucleusdb sql --db agent_records.ndb
-
-# Lock it — permanently. No UPDATE, no DELETE, ever again.
-echo "SET MODE APPEND_ONLY;" | nucleusdb sql --db agent_records.ndb
-
-# Every record now has a mathematical proof of integrity
-echo "VERIFY 'decision_42';" | nucleusdb sql --db agent_records.ndb
-```
-
-Once `APPEND_ONLY` mode is activated, it is a **one-way lock**. The database will reject any UPDATE or DELETE operation. Every commit produces a cryptographic seal proving that no prior record was altered. This guarantee is not enforced by access control — it is enforced by mathematics.
-
-### Why NucleusDB Exists
-
-H.A.L.O. needs more than a database. It needs a database where the storage layer itself provides cryptographic guarantees:
-
-1. **Monotone Extension Proofs** — Every commit constructively proves that all prior records are preserved. Deletion is detected instantly.
-2. **SHA-256 Seal Chain** — Each commit's seal binds to every previous seal. Forging a seal after deletion requires breaking SHA-256 preimage resistance (2^128 operations).
-3. **Certificate Transparency** — An RFC 6962 append-only Merkle tree provides independent consistency proofs that any third party can verify.
-
-No existing database provides all three. So we built one.
-
-### Commitment Backends
-
-Three backends are available, each with different tradeoff profiles:
-
-- `merkle` — SHA-256 Merkle tree (recommended, post-quantum safe)
-- `ipa` — Pedersen-style vector commitments
-- `kzg` — Pairing-based commitments with trusted setup
-
-### SQL Interface
-
-| Statement | Example |
-|-----------|---------|
-| INSERT | `INSERT INTO data (key, value) VALUES ('k', 42);` |
-| SELECT | `SELECT * FROM data WHERE key = 'k';` |
-| SELECT LIKE | `SELECT * FROM data WHERE key LIKE 'prefix%';` |
-| UPDATE | `UPDATE data SET value = 99 WHERE key = 'k';` |
-| DELETE | `DELETE FROM data WHERE key = 'k';` |
-| COMMIT | `COMMIT;` |
-| VERIFY | `VERIFY 'k';` |
-| SHOW STATUS | `SHOW STATUS;` |
-| SHOW HISTORY | `SHOW HISTORY;` / `SHOW HISTORY 'k';` |
-| SHOW MODE | `SHOW MODE;` |
-| SET MODE | `SET MODE APPEND_ONLY;` |
-| EXPORT | `EXPORT;` |
-| CHECKPOINT | `CHECKPOINT;` |
-
-UPDATE and DELETE are permanently disabled after `SET MODE APPEND_ONLY`.
-
-### Vector Search
-
-NucleusDB includes built-in kNN vector search — store embeddings alongside structured data and query by similarity:
-
-- **Distance metrics**: cosine, L2 (Euclidean), inner product
-- **Use case**: semantic memory recall for agents — store conversation embeddings, retrieve relevant context by meaning rather than keyword
-
-### MCP Server (AI Agents)
-
-```bash
-nucleusdb mcp --db my_records.ndb
-```
-
-11 tools over stdio via the [Model Context Protocol](https://modelcontextprotocol.io): `create_database`, `open_database`, `execute_sql`, `query`, `query_range`, `verify`, `status`, `history`, `export`, `checkpoint`, `help`.
-
-Add to your Claude Code MCP config, Cursor, or any MCP-compatible client.
-
-### HTTP Server (Multi-Tenant)
-
-```bash
-nucleusdb-server 127.0.0.1:8088 production
-```
-
-Multi-tenant REST API with RBAC: tenant registration, commit, query, snapshot, checkpoint. See `src/api.rs` for full route list.
-
-### Remote MCP Server (Agent Interop)
-
-Any MCP-capable agent can connect to NucleusDB over the network using MCP Streamable HTTP transport:
-
-```bash
-# Dev mode
-nucleusdb-mcp --transport http --port 3000
-
-# Production with dual authentication
-nucleusdb-mcp --transport http --host 0.0.0.0 --port 8443 --auth --jwt-secret $SECRET
-```
-
-**Streamable HTTP requirements (important):**
-- Client `Accept` header must include **both** `application/json` and `text/event-stream`
-- Client must persist and replay `mcp-session-id` from `initialize` on subsequent calls
-- Typical flow: `initialize` -> `tools/list` / `tools/call` (same session id)
-
-For automation and audits, use the built-in helper:
-
-```bash
-# 1) Initialize session and persist mcp-session-id
-python3 scripts/mcp_streamable_http.py \
-  --endpoint http://127.0.0.1:3000/mcp \
-  init --session-file /tmp/mcp.session
-
-# 2) List tools using the same session
-python3 scripts/mcp_streamable_http.py \
-  --endpoint http://127.0.0.1:3000/mcp \
-  tools-list --session-file /tmp/mcp.session
-
-# 3) Call a tool
-python3 scripts/mcp_streamable_http.py \
-  --endpoint http://127.0.0.1:3000/mcp \
-  tools-call --session-file /tmp/mcp.session \
-  --tool status
-```
-
-For a full orchestrator smoke run over real MCP HTTP:
-
-```bash
-scripts/orchestrator_mcp_smoke.sh
-```
-
-See `src/mcp/server/remote.rs` for transport implementation details.
-
-**Dual authentication** (CAB + OAuth 2.1):
-- **CAB-as-bearer-token**: Hardware-anchored agent identity verified on-chain
-- **OAuth 2.1 JWT**: Standard bearer tokens for non-attested agents
-
-**Per-tool scope enforcement** — 31 tools across 5 security tiers:
-
-| Scope | Tools | Auth Required |
-|-------|-------|---------------|
-| `read` | help, status, query, verify, export, history, evidence_combine, uncertainty_translate, swarm_status | Basic token |
-| `trust:verify` | verify_agent, verify_agent_multichain, list_chains | Basic token |
-| `write` | execute_sql, create_database, checkpoint, channels, swarm_publish, swarm_fetch, swarm_remote_fetch | CAB tier 3+ or JWT |
-| `trust:attest` | agent_register, register_chain, submit_attestation | CAB tier 4 or JWT |
-| `container` | container_launch | CAB tier 4 or JWT |
-
-### Terminal UI
-
-```bash
-nucleusdb tui --db my_records.ndb
-```
-
-Five-tab interface: Status, Browse, Execute, History, Transparency. Navigate with `F1`-`F5` or `Tab`.
-
-### On-Chain Trust Verification
-
-Solidity smart contracts for on-chain agent trust attestation and payment routing on Base (Coinbase L2):
-
-- **TrustVerifier** — ZK proof verification, agent identity registration, USDC payment routing, monotone replay protection
-- **TrustVerifierMultiChain** — composite multi-chain attestation (up to 8 chains), tiered per-chain fees
-- **Groth16VerifierAdapter** — production ZK proof bridge adapting snarkjs-generated verifiers to the trust interface
-
-Contracts are deployed on Base Sepolia. See `contracts/scripts/README.md` for deployment docs.
-Phase 5 hardening runbook: `Docs/AGENTHALO_ONCHAIN_PHASE5.md`.
-Phase 5 scripts:
-- `contracts/scripts/deploy_agenthalo_trust_base_sepolia.sh`
-- `contracts/scripts/e2e_agenthalo_attestation_base_sepolia.sh`
-- `contracts/scripts/verify_agenthalo_phase5_artifacts.py`
-
----
+The CRT visual language is retained intentionally: scanlines, grain, rough borders, and terminal color contrast are part of the product identity rather than leftover styling.
 
 ## Architecture
 
-```
-                          Agent H.A.L.O. + NucleusDB
-  ┌─────────────────────────────────────────────────────────────┐
-  │                                                             │
-  │   H ─ Human-AI (trust boundary)   NucleusDB Core           │
-  │     PUF fingerprint ──────────────▶ protocol.rs             │
-  │     Hardware entropy ──────────────▶ immutable.rs            │
-  │                                     sql/executor             │
-  │   A ─ Agent (identity)              keymap.rs                │
-  │     DID / Genesis seed ────────────▶ witness.rs (ML-DSA-65)  │
-  │     EVM wallet (secp256k1) ────────▶ ct6962.rs (RFC 6962)   │
-  │     Hybrid KEM (X25519+ML-KEM) ───▶ security.rs             │
-  │                                     persistence (redb WAL)   │
-  │   L ─ Lifecycle (traces)                                     │
-  │     Claude ─────────────┐        Commitment Backends         │
-  │     Codex ──────────────┤          vc/binary_merkle.rs       │
-  │     Gemini ─────────────┼─ L ──▶   vc/ipa.rs                │
-  │     OpenClaw ───────────┤          vc/kzg.rs                 │
-  │     Shell ──────────────┘                                    │
-  │                                                              │
-  │   O ─ Orchestrator (coordination)                            │
-  │     Agent pool ─────────┐        Client Surfaces             │
-  │     Task DAG ───────────┤          CLI / REPL                │
-  │     Budget enforcement ─┤          Web Dashboard + Cockpit   │
-  │     Mesh networking ────┤          Terminal UI                │
-  │     DIDComm v2 ─────────┘          MCP Server (stdio + HTTP) │
-  │                                                              │
-  │   Swarm Distribution Layer                                   │
-  │     Chunk engine (BLAKE3) ────▶ swarm/chunk_engine.rs        │
-  │     Manifest + ProofEnvelope ─▶ swarm/manifest.rs            │
-  │     Bitswap P2P exchange ─────▶ swarm/bitswap.rs             │
-  │     Grant enforcement ────────▶ pod/acl.rs                   │
-  │     PCN settlement ───────────▶ pcn/adapter.rs               │
-  │                                                              │
-  │   Epistemic Calculi                                          │
-  │     Tsallis diversity ──────────▶ metrics/diversity.rs       │
-  │     Trust nucleus ──────────────▶ trust.rs (EpistemicTrust)  │
-  │     Bayesian evidence ──────────▶ evidence.rs (vUpdate)      │
-  │     Uncertainty translation ────▶ uncertainty.rs             │
-  │     Trace topology (H0) ────────▶ trace_topology.rs          │
-  │                                                              │
-  ├──────────────────────────────────────────────────────────────┤
-  │                                                              │
-  │   On-Chain Trust (Base L2)       Formal Spec (Lean 4)        │
-  │     TrustVerifier.sol              141 modules               │
-  │     TrustVerifierMultiChain.sol    Sheaf coherence,          │
-  │     Groth16VerifierAdapter.sol     Chain transport/gluing,   │
-  │     circuits/ (circom)             Fork evidence, Identity,  │
-  │                                    Comms, PaymentChannels    │
-  │                                                              │
-  └──────────────────────────────────────────────────────────────┘
+```text
+Discord Gateway ───────────────┐
+                               │
+                               ▼
+                        nucleusdb-discord
+                               │
+                               ▼
+                    append-only NucleusDB core
+                               │
+          ┌────────────────────┼────────────────────┐
+          ▼                    ▼                    ▼
+     nucleusdb CLI        nucleusdb-mcp       nucleusdb-server
+          │                    │                    │
+          └────────────── dashboard/API/browser ───┘
 ```
 
-**211 Rust source files** | **100,000+ lines** | **9,200+ lines of tests** | **20 Solidity contracts** | **141 Lean 4 modules**
+Core subsystems:
+
+- `src/protocol.rs` — commits, proofs, witness signatures, seal chaining
+- `src/sql/` — parser and executor
+- `src/persistence.rs` — snapshots plus WAL
+- `src/blob_store.rs` / `src/vector_index.rs` — content-addressed blobs and embeddings
+- `src/mcp/` — agent control surface
+- `src/dashboard/` — web dashboard
+- `src/discord/` — recorder, recovery, slash commands
+- `src/genesis.rs`, `src/identity.rs`, `src/vault.rs` — extracted standalone identity/security modules
+
+A fuller module map is in [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md).
 
 ## Security
 
-### Cryptographic Primitives
+Cryptographic and operational surfaces currently in use:
 
-| Layer | Primitive | Security Level |
-|-------|-----------|---------------|
-| State commitments | SHA-256 Merkle tree | 128-bit classical, post-quantum safe |
-| Witness signatures | ML-DSA-65 (FIPS 204) | NIST PQ Level 3 |
-| DIDComm encryption | X25519 + ML-KEM-768 (FIPS 203) | Hybrid classical + PQ |
-| Identity signatures | Ed25519 + ML-DSA-65 | Dual classical + PQ |
-| Key derivation | HKDF-SHA-512 | 256-bit PQ security |
-| Integrity chains | SHA-512 | 256-bit PQ collision resistance |
-| Monotone seals | SHA-256 hash chain | 128-bit preimage resistance |
-| Transparency proofs | RFC 6962 (SHA-256) | 128-bit collision resistance |
-| License verification | Groth16 over BN254 | 128-bit classical pairing security |
-| EVM signing | secp256k1 (PQ-gated) | Two-cryptosystem barrier |
+- SHA-256 content sealing for Discord message records
+- certificate-transparency style roots for commit history
+- witness signatures on commits
+- append-only seal chaining via `immutable.rs`
+- AES-GCM encrypted local files for identity/genesis/vault state
+- Argon2-based password-derived master keys
 
-### Immutable Mode Guarantees
+Operational guidance:
 
-When `APPEND_ONLY` is active:
-
-- **SQL layer**: UPDATE and DELETE are rejected before execution.
-- **Protocol layer**: Every commit verifies that no existing non-zero value was changed (raw index check) and no named key was removed (keymap check).
-- **Seal chain**: Each commit appends `seal_n = SHA-256("NucleusDB.MonotoneSeal|" || seal_{n-1} || kv_digest_n)`. The chain is unforgeable.
-- **CT tree**: The append-only Merkle tree independently records every commit.
-- **Persistence**: The AppendOnly lock and seal chain survive snapshot save/load and WAL replay.
+- keep Discord tokens only in environment files, never source
+- run the bot under a dedicated `nucleusdb` system user
+- use `deploy/nucleusdb-discord.service`, `deploy/nucleusdb-mcp.service`, and `deploy/nucleusdb-dashboard.service` for restart-on-crash behavior
+- use the unified `Dockerfile` and `docker-compose.yml` when you want a single-container deployment
 
 ## Testing
 
-960+ tests (2026-03-10 snapshot):
+Core regression suites retained in this standalone repo:
+
+- `tests/end_to_end.rs`
+- `tests/sql_tests.rs`
+- `tests/keymap_tests.rs`
+- `tests/persistence_compat_tests.rs`
+- `tests/cli_smoke_tests.rs`
+
+Run them with:
 
 ```bash
-cargo test                        # 924 Rust tests
-cd contracts && forge test        # 39 Solidity tests
+cargo test
 ```
 
-| Suite | Tests |
-|-------|-------|
-| Rust (unit + integration + binary tests) | 924 |
-| Solidity (Foundry) | 39 |
-| **Total** | **963** |
+## Repository Layout
 
-## Known Limitations
-
-- NucleusDB's SQL surface is a focused subset (single virtual table `data` with `key`/`value` columns), not a general-purpose SQL engine.
-- The `ipa` backend carries full-vector opening payloads (not logarithmic-size IPA arguments).
-- The KZG backend's default trusted setup is for development/demo use. Production KZG deployments require externally managed ceremony artifacts.
-- Sheaf coherence checks are local-view oriented, not full global-state reconciliation.
-- `swarm_fetch` is local-only reassembly; outbound peer-to-peer fetch (`swarm_remote_fetch`) is stubbed pending live P2P node injection into MCP service state.
-- H.A.L.O. cloud sync is planned but not yet implemented; traces are currently local-only.
+- `src/` — Rust implementation
+- `dashboard/` — embedded frontend assets
+- `deploy/` — systemd units, Docker entrypoint, environment templates
+- `lean/NucleusDB/` — formal proof surfaces
+- `artifacts/` — shipped trusted setup artifacts
 
 ## License
 
-[Apoth3osis License Stack v1](LICENSE.md)
+This repository is released under the Apoth3osis License Stack v1. See [LICENSE.md](LICENSE.md) and [licenses/](licenses/).
 
 ## Citation
 
-```bibtex
-@software{agenthalo,
-  title = {Agent H.A.L.O.},
-  author = {Apoth3osis},
-  year = {2025--2026},
-  url = {https://github.com/Abraxas1010/agenthalo},
-  license = {Apoth3osis License Stack v1}
-}
-```
+See [CITATION.cff](CITATION.cff).

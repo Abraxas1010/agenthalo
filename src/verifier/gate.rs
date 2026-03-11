@@ -31,7 +31,7 @@ pub struct ProofGateConfig {
 impl Default for ProofGateConfig {
     fn default() -> Self {
         Self {
-            certificate_dir: crate::halo::config::proof_certificates_dir(),
+            certificate_dir: crate::config::proof_certificates_dir(),
             requirements: HashMap::new(),
             enabled: false,
         }
@@ -335,19 +335,17 @@ impl ProofGateConfig {
 }
 
 fn local_did() -> Option<String> {
-    let seed = crate::halo::genesis_seed::load_seed_bytes()
-        .ok()
-        .flatten()?;
-    crate::halo::did::did_from_genesis_seed(&seed)
+    let seed = crate::genesis::load_seed_bytes().ok().flatten()?;
+    crate::did::did_from_genesis_seed(&seed)
         .ok()
         .map(|id| id.did)
 }
 
 pub fn load_gate_config() -> Result<ProofGateConfig, String> {
-    let env_path = std::env::var("AGENTHALO_PROOF_GATE_CONFIG")
+    let env_path = std::env::var("NUCLEUSDB_PROOF_GATE_CONFIG")
         .ok()
         .map(PathBuf::from)
-        .unwrap_or_else(crate::halo::config::proof_gate_config_path);
+        .unwrap_or_else(crate::config::proof_gate_config_path);
     if env_path.exists() {
         return ProofGateConfig::load(&env_path);
     }
@@ -399,13 +397,13 @@ pub fn submit_certificate(path: &Path) -> Result<PathBuf, String> {
         }
     }
 
-    crate::halo::config::ensure_proof_certificates_dir()?;
+    crate::config::ensure_proof_certificates_dir()?;
     let base = path
         .file_name()
         .and_then(|s| s.to_str())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("certificate.lean4export");
-    let dest = crate::halo::config::proof_certificates_dir().join(base);
+    let dest = crate::config::proof_certificates_dir().join(base);
     std::fs::copy(path, &dest).map_err(|e| {
         format!(
             "copy certificate {} -> {}: {e}",
@@ -453,7 +451,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "proof_gate_{}_{}",
             std::process::id(),
-            crate::halo::util::now_unix_secs()
+            crate::util::now_unix_secs()
         ));
         let _ = std::fs::remove_dir_all(&dir);
         write_cert(
@@ -488,7 +486,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "proof_gate_hash_{}_{}",
             std::process::id(),
-            crate::halo::util::now_unix_secs()
+            crate::util::now_unix_secs()
         ));
         let _ = std::fs::remove_dir_all(&dir);
         write_cert(
@@ -522,7 +520,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "proof_gate_miss_{}_{}",
             std::process::id(),
-            crate::halo::util::now_unix_secs()
+            crate::util::now_unix_secs()
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create dir");
@@ -548,7 +546,7 @@ mod tests {
         let src = std::env::temp_dir().join(format!(
             "proof_gate_submit_bad_{}_{}.lean4export",
             std::process::id(),
-            crate::halo::util::now_unix_secs()
+            crate::util::now_unix_secs()
         ));
         std::fs::write(
             &src,

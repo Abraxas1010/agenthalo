@@ -1,6 +1,6 @@
 {
   "_note": "Phase-0 advisory mode: enabled=false means no tool calls are blocked. Set enabled=true and enforced=true on individual requirements to activate enforcement.",
-  "certificate_dir": "~/.agenthalo/proof_certificates",
+  "certificate_dir": "~/.nucleusdb/proof_certificates",
   "enabled": false,
   "requirements": {
     "nucleusdb_execute_sql": [

@@ -4,8 +4,8 @@
 //! embeddings stored in the blob store.  Supports cosine similarity,
 //! L2 (Euclidean) distance, and inner-product metrics.
 
-use crate::halo::chebyshev_evictor::ChebyshevEvictor;
-use crate::halo::governor::{GovernorConfig, GovernorState};
+use crate::chebyshev_evictor::ChebyshevEvictor;
+use crate::governor::{GovernorConfig, GovernorState};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -196,7 +196,7 @@ impl VectorIndex {
     }
 
     /// Search and record liveness on returned neighbors. This is the storage
-    /// runtime path used by AgentHALO; the immutable `search()` method remains
+    /// runtime path used by the standalone NucleusDB product; the immutable `search()` method remains
     /// available for callers that need a read-only query.
     pub fn search_with_access(
         &mut self,

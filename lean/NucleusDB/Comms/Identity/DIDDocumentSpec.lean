@@ -68,7 +68,7 @@ abbrev DIDSeed64 := Fin 64 → Nat
 
 /-- Phase 0 identity seed projection (abstracted). -/
 def deriveIdentity (_ : DIDSeed64) : String :=
-  "did:key:z6Mk-agenthalo-phase0"
+  "did:key:z6Mk-nucleusdb-phase0"
 
 /-- Runtime-shape DID document builder with dual classical + post-quantum methods. -/
 def buildDIDDocument (subject : String) : DIDDocumentSpec :=

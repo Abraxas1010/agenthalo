@@ -3,7 +3,7 @@ namespace NucleusDB
 namespace Comms
 namespace Protocol
 
-def topicPrefix : String := "/agenthalo/capabilities/"
+def topicPrefix : String := "/nucleusdb/capabilities/"
 
 def allowedTopicSuffixes : List String :=
   ["general", "coding", "research", "financial", "blockchain", "privacy"]

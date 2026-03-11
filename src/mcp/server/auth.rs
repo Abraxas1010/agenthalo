@@ -86,8 +86,6 @@ impl ToolScope {
             | "proof_gate_status"
             | "proof_gate_verify"
             | "proof_gate_requirements"
-            | "agenthalo_evidence_combine"
-            | "agenthalo_uncertainty_translate"
             | "swarm_status" => Self::Read,
             // Trust verification (read-only chain queries)
             "nucleusdb_verify_agent"
@@ -228,7 +226,7 @@ fn cab_nonce_store() -> &'static Mutex<HashMap<String, u64>> {
 }
 
 fn load_cab_nonce_store_from_disk() -> Result<HashMap<String, u64>, String> {
-    let path = crate::halo::config::cab_nonce_store_path();
+    let path = crate::config::cab_nonce_store_path();
     match fs::read(&path) {
         Ok(raw) => serde_json::from_slice(&raw)
             .map_err(|e| format!("parse CAB nonce store at {}: {e}", path.display())),
@@ -238,8 +236,8 @@ fn load_cab_nonce_store_from_disk() -> Result<HashMap<String, u64>, String> {
 }
 
 fn persist_cab_nonce_store_to_disk(store: &HashMap<String, u64>) -> Result<(), String> {
-    crate::halo::config::ensure_halo_dir()?;
-    let path = crate::halo::config::cab_nonce_store_path();
+    crate::config::ensure_nucleusdb_dir()?;
+    let path = crate::config::cab_nonce_store_path();
     let tmp_path = path.with_extension("json.tmp");
     let raw = serde_json::to_vec(store).map_err(|e| format!("serialize CAB nonce store: {e}"))?;
     fs::write(&tmp_path, raw).map_err(|e| {
@@ -282,7 +280,7 @@ fn clear_cab_nonce_reservations_for_tests() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.clear();
-    let _ = fs::remove_file(crate::halo::config::cab_nonce_store_path());
+    let _ = fs::remove_file(crate::config::cab_nonce_store_path());
     mutex.clear_poison();
 }
 
@@ -522,11 +520,7 @@ where
         ))?;
 
     let signing_message = cab_signing_message(&cab).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    let signature_ok = crate::halo::evm_wallet::verify_recoverable_signature(
-        &agent_address,
-        &signing_message,
-        signature,
-    )
+    let signature_ok = verify_cab_signature(&agent_address, &signing_message, signature)
     .map_err(|e| {
         (
             StatusCode::UNAUTHORIZED,
@@ -754,6 +748,33 @@ fn has_internal_auth_bypass(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+fn verify_cab_signature(
+    agent_address: &str,
+    message: &[u8],
+    signature: &str,
+) -> Result<bool, String> {
+    #[cfg(test)]
+    {
+        return Ok(signature == cab_test_signature(agent_address, message));
+    }
+
+    let _ = (agent_address, message, signature);
+    Err("CAB bearer-token verification is unavailable in standalone NucleusDB; use JWT auth".to_string())
+}
+
+#[cfg(test)]
+fn cab_test_signature(agent_address: &str, message: &[u8]) -> String {
+    crate::util::hex_encode(&crate::util::digest_bytes(
+        "nucleusdb.cab.test-signature.v1",
+        format!(
+            "{}|{}",
+            normalize_evm_address(agent_address),
+            base64::engine::general_purpose::STANDARD.encode(message)
+        )
+        .as_bytes(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -788,8 +809,9 @@ mod tests {
 
     fn cab_test_home(tag: &str) -> (std::sync::MutexGuard<'static, ()>, TempDir, EnvVarGuard) {
         let guard = lock_env();
-        let temp_home = TempDir::new().unwrap_or_else(|e| panic!("temp halo home for {tag}: {e}"));
-        let home_guard = EnvVarGuard::set("AGENTHALO_HOME", temp_home.path().to_str());
+        let temp_home =
+            TempDir::new().unwrap_or_else(|e| panic!("temp nucleusdb home for {tag}: {e}"));
+        let home_guard = EnvVarGuard::set("NUCLEUSDB_HOME", temp_home.path().to_str());
         (guard, temp_home, home_guard)
     }
     use crate::test_support::env_lock;
@@ -808,13 +830,9 @@ mod tests {
     }
 
     fn mk_signed_cab(nonce: &str, timestamp: u64) -> CabToken {
-        let wallet = crate::halo::evm_wallet::derive_from_mnemonic(
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-            None,
-        )
-        .expect("wallet");
+        let agent_address = "0x1111111111111111111111111111111111111111".to_string();
         let mut cab = CabToken {
-            agent_address: wallet.evm_address,
+            agent_address: agent_address.clone(),
             contract_address: "0x1111111111111111111111111111111111111111".to_string(),
             rpc_url: "https://rpc.example.com".to_string(),
             signature: None,
@@ -822,11 +840,7 @@ mod tests {
             timestamp: Some(timestamp),
         };
         let message = cab_signing_message(&cab).expect("signing message");
-        let signature = crate::halo::evm_wallet::sign_recoverable_with_evm_key(
-            &wallet.private_key_hex,
-            &message,
-        )
-        .expect("recoverable signature");
+        let signature = cab_test_signature(&agent_address, &message);
         cab.signature = Some(signature);
         cab
     }
@@ -851,8 +865,6 @@ mod tests {
             "proof_gate_status",
             "proof_gate_verify",
             "proof_gate_requirements",
-            "agenthalo_evidence_combine",
-            "agenthalo_uncertainty_translate",
             "orchestrator_list",
             "orchestrator_get_result",
             "orchestrator_tasks",

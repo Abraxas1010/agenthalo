@@ -5,8 +5,8 @@
 //! user-facing key name (not content hash) so that each key→blob mapping is
 //! unique and retrievable.
 
-use crate::halo::chebyshev_evictor::ChebyshevEvictor;
-use crate::halo::governor::{GovernorConfig, GovernorState};
+use crate::chebyshev_evictor::ChebyshevEvictor;
+use crate::governor::{GovernorConfig, GovernorState};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};

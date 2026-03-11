@@ -1,9 +1,10 @@
 cff-version: 1.2.0
-title: AgentHALO
+title: NucleusDB
 message: "If you use this software, please cite it as below."
 type: software
 authors:
   - name: "Apoth3osis"
     email: "rgoodman@apoth3osis.io"
-repository-code: "https://github.com/Abraxas1010/agenthalo"
+repository-code: "https://github.com/Abraxas1010/nucleusdb"
 license: "Apoth3osis License Stack v1"
+abstract: "Verifiable database engine with cryptographic commitments, append-only monotone seals, and a Discord recorder for tamper-evident chat history."

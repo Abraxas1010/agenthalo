@@ -8,79 +8,65 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "nucleusdb",
     version,
-    about = "Verifiable database with vector commitments"
+    about = "Verifiable database with immutable append-only mode"
 )]
 pub struct Cli {
-    /// Path to CAB license certificate (enables Pro features).
-    #[arg(long, global = true)]
-    pub license: Option<String>,
-
     #[command(subcommand)]
     pub command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Create a new database
     Create {
         #[arg(long, default_value = "nucleusdb.ndb")]
         db: String,
-        #[arg(
-            long,
-            default_value = "merkle",
-            help = "VC backend: merkle|binary_merkle|binary-merkle|ipa|kzg"
-        )]
+        #[arg(long, default_value = "merkle")]
         backend: String,
         #[arg(long)]
         wal: Option<String>,
     },
-    /// Open database and enter REPL
     Open {
         #[arg(long, default_value = "nucleusdb.ndb")]
         db: String,
     },
-    /// Start HTTP API server
     Server {
         #[arg(long, default_value = "127.0.0.1:8088")]
         addr: String,
-        #[arg(
-            long,
-            default_value = "permissive",
-            help = "Policy profile: permissive|production"
-        )]
+        #[arg(long, default_value = "production")]
         policy: String,
     },
-    /// Start terminal UI
     Tui {
         #[arg(long, default_value = "nucleusdb.ndb")]
         db: String,
     },
-    /// Start MCP server (stdio transport)
     Mcp {
         #[arg(long, default_value = "nucleusdb.ndb")]
         db: String,
+        #[arg(long, default_value = "stdio")]
+        transport: String,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 3000)]
+        port: u16,
     },
-    /// Execute SQL from file or stdin
+    Dashboard {
+        #[arg(long, default_value_t = 3100)]
+        port: u16,
+        #[arg(long)]
+        no_open: bool,
+    },
     Sql {
         #[arg(long, default_value = "nucleusdb.ndb")]
         db: String,
-        /// SQL file to execute (reads from stdin if not specified)
         file: Option<String>,
     },
-    /// Show database status
     Status {
         #[arg(long, default_value = "nucleusdb.ndb")]
         db: String,
     },
-    /// Export state as JSON
     Export {
         #[arg(long, default_value = "nucleusdb.ndb")]
         db: String,
-    },
-    /// Verify a CAB license certificate
-    License {
-        /// Path to the certificate JSON file
-        cert: String,
     },
 }
 
@@ -89,9 +75,7 @@ pub fn parse_backend(backend: &str) -> Result<VcBackend, String> {
         "ipa" => Ok(VcBackend::Ipa),
         "kzg" => Ok(VcBackend::Kzg),
         "binary_merkle" | "binary-merkle" | "merkle" => Ok(VcBackend::BinaryMerkle),
-        other => Err(format!(
-            "invalid backend '{other}', expected one of: merkle|binary_merkle|binary-merkle|ipa|kzg"
-        )),
+        other => Err(format!("invalid backend '{other}', expected one of: merkle|binary_merkle|binary-merkle|ipa|kzg")),
     }
 }
 
@@ -117,21 +101,18 @@ pub fn print_table(columns: &[String], rows: &[Vec<String>]) {
             }
         }
     }
-
     let sep = widths
         .iter()
         .map(|w| "-".repeat(*w + 2))
         .collect::<Vec<_>>()
         .join("+");
-
     let header = columns
         .iter()
         .enumerate()
         .map(|(i, c)| format!(" {:width$} ", c, width = widths[i]))
         .collect::<Vec<_>>()
         .join("|");
-    println!("{header}");
-    println!("{sep}");
+    println!("{header}\n{sep}");
     for row in rows {
         let line = widths
             .iter()

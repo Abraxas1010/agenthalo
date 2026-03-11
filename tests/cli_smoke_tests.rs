@@ -23,10 +23,6 @@ fn resolve_bin(env_key: &str, fallback_name: &str) -> PathBuf {
     candidate
 }
 
-fn agenthalo_bin() -> PathBuf {
-    resolve_bin("CARGO_BIN_EXE_agenthalo", "agenthalo")
-}
-
 fn server_bin() -> PathBuf {
     resolve_bin("CARGO_BIN_EXE_nucleusdb_server", "nucleusdb-server")
 }
@@ -45,14 +41,14 @@ fn cli_help_smoke() {
 }
 
 #[test]
-fn agenthalo_dashboard_help_smoke() {
-    let out = Command::new(agenthalo_bin())
+fn nucleusdb_dashboard_help_smoke() {
+    let out = Command::new(bin())
         .args(["dashboard", "--help"])
         .output()
-        .expect("run agenthalo dashboard --help");
+        .expect("run nucleusdb dashboard --help");
     assert!(out.status.success(), "{out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("agenthalo dashboard"));
+    assert!(stdout.contains("dashboard"));
     assert!(stdout.contains("--port"));
 }
 

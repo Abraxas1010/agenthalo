@@ -5,8 +5,6 @@
 //! the binary re-derives the Merkle root over the licensed feature set
 //! and checks it against a baked-in foundation commitment.  No phone-home.
 
-use crate::pcn::PcnComplianceWitness;
-use crate::puf::collect_auto;
 use crate::transparency::ct6962::sha256;
 use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G2Affine};
 use ark_groth16::{prepare_verifying_key, Groth16, Proof as Groth16Proof, VerifyingKey};
@@ -35,6 +33,24 @@ const DOMAIN_LICENSE_V1: &[u8] = b"NucleusDB.License|";
 const DOMAIN_LICENSE_V2: &[u8] = b"NucleusDB.License.v2|";
 const DOMAIN_FOUNDATION: &[u8] = b"NucleusDB.CAB.Foundation|";
 const DOMAIN_COMPLIANCE: &[u8] = b"NucleusDB.License.Compliance|";
+
+/// Minimal standalone compliance witness used by the license path.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PcnComplianceWitness {
+    pub feasibility_root: [u8; 32],
+    pub replay_seq: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalPufEvidence {
+    fingerprint: [u8; 32],
+}
+
+fn collect_local_puf_evidence() -> Option<LocalPufEvidence> {
+    let raw = std::env::var("NUCLEUSDB_PUF_DIGEST").ok()?;
+    let fingerprint = hex_to_32(raw.trim())?;
+    Some(LocalPufEvidence { fingerprint })
+}
 
 /// Poseidon hash of "NucleusDB.CAB.Foundation.v1" — ZK public signal root-of-trust.
 /// The first public signal in any valid SNARK proof must equal this value.
@@ -801,7 +817,7 @@ pub fn verify_certificate(cert: &LicenseCertificate) -> Result<LicenseLevel, Lic
             return Err(LicenseError::PufDigestMismatch);
         }
         let expected = hex_to_32(puf_digest_hex).ok_or(LicenseError::PufDigestMismatch)?;
-        let current = collect_auto().ok_or(LicenseError::PufUnavailable)?;
+        let current = collect_local_puf_evidence().ok_or(LicenseError::PufUnavailable)?;
         if current.fingerprint != expected {
             return Err(LicenseError::PufDigestMismatch);
         }

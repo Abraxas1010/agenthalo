@@ -2,7 +2,7 @@ use clap::Parser;
 use nucleusdb::api::serve_multitenant;
 use nucleusdb::cli::repl::{execute_sql_text, run_repl};
 use nucleusdb::cli::{default_witness_cfg, parse_backend, print_table, Cli, Commands};
-use nucleusdb::license::{load_and_verify, verification_report, LicenseLevel};
+use nucleusdb::mcp::server::remote::{run_remote_mcp_server, RemoteServerConfig};
 use nucleusdb::mcp::server::run_mcp_server;
 use nucleusdb::multitenant::MultiTenantPolicy;
 use nucleusdb::persistence::{default_wal_path, init_wal};
@@ -22,41 +22,22 @@ fn main() {
     }
 }
 
-/// Load the license level from the `--license` flag, falling back to Community.
-fn resolve_license(license_path: Option<&str>) -> LicenseLevel {
-    match license_path {
-        Some(p) => {
-            let path = PathBuf::from(p);
-            match load_and_verify(&path) {
-                Ok(level) => {
-                    if let LicenseLevel::Pro { licensee, .. } = &level {
-                        eprintln!("License: Pro (licensee: {licensee})");
-                    }
-                    level
-                }
-                Err(e) => {
-                    eprintln!("License warning: {e} — falling back to Community edition");
-                    LicenseLevel::Community
-                }
-            }
-        }
-        None => LicenseLevel::Community,
-    }
-}
-
 fn run(cli: Cli) -> Result<(), String> {
-    let _license = resolve_license(cli.license.as_deref());
-
     match cli.command {
         Commands::Create { db, backend, wal } => cmd_create(&db, &backend, wal.as_deref()),
         Commands::Open { db } => cmd_open(&db),
         Commands::Server { addr, policy } => cmd_server(&addr, &policy),
         Commands::Tui { db } => cmd_tui(&db),
-        Commands::Mcp { db } => cmd_mcp(&db),
+        Commands::Mcp {
+            db,
+            transport,
+            host,
+            port,
+        } => cmd_mcp(&db, &transport, &host, port),
+        Commands::Dashboard { port, no_open } => cmd_dashboard(port, !no_open),
         Commands::Sql { db, file } => cmd_sql(&db, file.as_deref()),
         Commands::Status { db } => cmd_status(&db),
         Commands::Export { db } => cmd_export(&db),
-        Commands::License { cert } => cmd_license(&cert),
     }
 }
 
@@ -67,15 +48,16 @@ fn cmd_create(db_path: &str, backend: &str, wal_path: Option<&str>) -> Result<()
     let db_path = PathBuf::from(db_path);
     db.save_persistent(&db_path)
         .map_err(|e| format!("failed to save snapshot {}: {e:?}", db_path.display()))?;
-
     let wal = wal_path
         .map(PathBuf::from)
         .unwrap_or_else(|| default_wal_path(&db_path));
     init_wal(&wal, &db)
         .map_err(|e| format!("failed to initialize WAL {}: {e:?}", wal.display()))?;
-
-    println!("Created database: {}", db_path.display());
-    println!("Initialized WAL: {}", wal.display());
+    println!(
+        "Created database: {}\nInitialized WAL: {}",
+        db_path.display(),
+        wal.display()
+    );
     Ok(())
 }
 
@@ -90,8 +72,7 @@ fn cmd_open(db_path: &str) -> Result<(), String> {
     let cfg = default_witness_cfg();
     let mut db = NucleusDb::load_persistent(&db_path, cfg)
         .map_err(|e| format!("failed to load snapshot {}: {e:?}", db_path.display()))?;
-    run_repl(&mut db, &db_path).map_err(|e| format!("REPL failed: {e}"))?;
-    Ok(())
+    run_repl(&mut db, &db_path).map_err(|e| format!("REPL failed: {e}"))
 }
 
 fn cmd_server(addr: &str, policy: &str) -> Result<(), String> {
@@ -104,7 +85,7 @@ fn cmd_server(addr: &str, policy: &str) -> Result<(), String> {
         other => {
             return Err(format!(
                 "invalid policy profile '{other}', expected production|permissive"
-            ));
+            ))
         }
     };
     let rt = tokio::runtime::Runtime::new()
@@ -113,10 +94,27 @@ fn cmd_server(addr: &str, policy: &str) -> Result<(), String> {
         .map_err(|e| format!("server failed: {e}"))
 }
 
-fn cmd_mcp(db_path: &str) -> Result<(), String> {
+fn cmd_mcp(db_path: &str, transport: &str, host: &str, port: u16) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| format!("failed to start tokio runtime: {e}"))?;
-    rt.block_on(run_mcp_server(db_path))
+    if transport == "http" {
+        let listen_addr: SocketAddr = format!("{host}:{port}")
+            .parse()
+            .map_err(|e| format!("invalid listen addr: {e}"))?;
+        rt.block_on(run_remote_mcp_server(RemoteServerConfig {
+            db_path: db_path.to_string(),
+            listen_addr,
+            endpoint_path: "/mcp".to_string(),
+        }))
+    } else {
+        rt.block_on(run_mcp_server(db_path))
+    }
+}
+
+fn cmd_dashboard(port: u16, open_browser: bool) -> Result<(), String> {
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("failed to start tokio runtime: {e}"))?;
+    rt.block_on(nucleusdb::dashboard::serve(port, open_browser))
 }
 
 fn cmd_tui(db_path: &str) -> Result<(), String> {
@@ -132,7 +130,6 @@ fn cmd_sql(db_path: &str, file: Option<&str>) -> Result<(), String> {
     } else {
         NucleusDb::new(State::new(vec![]), parse_backend("merkle")?, cfg)
     };
-
     let sql_text = if let Some(path) = file {
         std::fs::read_to_string(path).map_err(|e| format!("failed to read SQL file {path}: {e}"))?
     } else {
@@ -145,11 +142,9 @@ fn cmd_sql(db_path: &str, file: Option<&str>) -> Result<(), String> {
     let summary = execute_sql_text(&mut db, &db_path, &sql_text)
         .map_err(|e| format!("SQL execution failed: {e}"))?;
     if summary.pending_writes > 0 {
-        let source = if file.is_some() { "file" } else { "stdin" };
         eprintln!(
-            "WARNING: {count} pending write(s) were not committed ({source} mode). \
-             No data was persisted. Add an explicit COMMIT; to persist changes.",
-            count = summary.pending_writes,
+            "WARNING: {} pending write(s) were not committed.",
+            summary.pending_writes
         );
     }
     Ok(())
@@ -172,19 +167,6 @@ fn cmd_export(db_path: &str) -> Result<(), String> {
         .map_err(|e| format!("failed to load snapshot {}: {e:?}", db_path.display()))?;
     let mut exec = nucleusdb::sql::executor::SqlExecutor::new(&mut db);
     render_sql_result(exec.execute("EXPORT;"));
-    Ok(())
-}
-
-fn cmd_license(cert_path: &str) -> Result<(), String> {
-    let path = PathBuf::from(cert_path);
-    if !path.exists() {
-        return Err(format!("certificate file not found: {}", path.display()));
-    }
-    let raw =
-        std::fs::read_to_string(&path).map_err(|e| format!("failed to read certificate: {e}"))?;
-    let cert: nucleusdb::license::LicenseCertificate =
-        serde_json::from_str(&raw).map_err(|e| format!("failed to parse certificate JSON: {e}"))?;
-    println!("{}", verification_report(&cert));
     Ok(())
 }
 

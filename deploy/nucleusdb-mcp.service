@@ -1,0 +1,19 @@
+[Unit]
+Description=NucleusDB MCP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nucleusdb
+Group=nucleusdb
+EnvironmentFile=/etc/nucleusdb/discord.env
+ExecStart=/usr/local/bin/nucleusdb mcp --transport http --host 127.0.0.1 --port 3000 --db ${NUCLEUSDB_DISCORD_DB_PATH}
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nucleusdb /etc/nucleusdb
+
+[Install]
+WantedBy=multi-user.target

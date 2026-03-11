@@ -1,4 +1,4 @@
-use crate::halo::config::halo_dir;
+use crate::config::nucleusdb_dir;
 use ndarray::Array2;
 use ort::session::Session;
 use ort::value::Tensor;
@@ -9,7 +9,7 @@ use tokenizers::Tokenizer;
 
 pub const DEFAULT_EMBEDDING_DIMS: usize = 768;
 pub const DEFAULT_MODEL_NAME: &str = "nomic-embed-text-v1.5";
-const HASH_BACKEND_ENV: &str = "AGENTHALO_EMBEDDING_BACKEND";
+const HASH_BACKEND_ENV: &str = "NUCLEUSDB_EMBEDDING_BACKEND";
 const HASH_BACKEND_VALUE: &str = "hash-test";
 
 #[derive(Debug)]
@@ -39,7 +39,7 @@ impl EmbeddingModel {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| halo_dir().join("models").join("nomic-embed-text"));
+            .unwrap_or_else(|| nucleusdb_dir().join("models").join("nomic-embed-text"));
         Self {
             model_name: model_name.to_string(),
             dims,
@@ -273,7 +273,7 @@ impl EmbeddingModel {
         }
 
         // Deterministic fallback for isolated tests that explicitly opt in via
-        // AGENTHALO_EMBEDDING_BACKEND=hash-test.
+        // NUCLEUSDB_EMBEDDING_BACKEND=hash-test.
         // Deterministic local embedding with nomic-style task prefixes.
         let mut vec = vec![0.0_f64; self.dims];
         let normalized = normalize_text(input);

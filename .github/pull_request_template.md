@@ -8,10 +8,9 @@
 - [ ] Core (protocol, immutable, persistence)
 - [ ] SQL
 - [ ] MCP server
-- [ ] AgentHALO
+- [ ] Discord bot
 - [ ] Dashboard (web UI / API)
-- [ ] Contracts (Solidity)
-- [ ] Formal spec (Lean 4)
+- [ ] Deployment / packaging
 - [ ] Docs / CI
 
 ## Verification
@@ -19,7 +18,7 @@
 - [ ] `cargo fmt --check`
 - [ ] `cargo clippy --all-targets`
 - [ ] `cargo test`
-- [ ] Contract tests pass (if applicable): `cd contracts && forge test`
+- [ ] Binary smoke checks run (if applicable)
 
 ## Safety Checklist
 
