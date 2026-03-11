@@ -87,7 +87,7 @@ async function generateCodeChallenge(verifier) {
 const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
   identification: renderIdentificationPage, communication: renderCommunicationPage, 'nucleusdb-docs': renderNucleusDBDocsPage,
-  networking: renderNetworkingPage,
+  networking: renderNetworkingPage, p2pclaw: renderP2PClawHub,
   trust: renderTrust, nucleusdb: renderNucleusDB, orchestrator: renderOrchestrator, cockpit: renderCockpit, deploy: renderDeploy, models: renderModels };
 
 const NETWORKS = [
@@ -346,6 +346,208 @@ async function renderNetworkingPage() {
     });
   }
 }
+// ---------------------------------------------------------------------------
+// P2PCLAW Hub — unified papers, verification, chat, mempool
+// ---------------------------------------------------------------------------
+let _p2pclawTab = 'papers';
+async function renderP2PClawHub() {
+  const tabs = [
+    { id: 'papers', label: 'Papers' },
+    { id: 'mempool', label: 'Mempool' },
+    { id: 'publish', label: 'Publish' },
+    { id: 'verify', label: 'Verify' },
+    { id: 'chat', label: 'Chat' },
+    { id: 'investigations', label: 'Investigations' },
+  ];
+  const tabsHtml = tabs.map(t =>
+    `<button class="btn btn-sm${_p2pclawTab === t.id ? ' btn-primary' : ''}" data-p2tab="${t.id}">${t.label}</button>`
+  ).join(' ');
+
+  let bodyHtml = '';
+  try {
+    if (_p2pclawTab === 'papers') {
+      const res = await api('/p2pclaw/papers?limit=50');
+      const papers = (res && res.papers) || [];
+      if (!papers.length) {
+        bodyHtml = '<div class="muted">No papers found. Connect to a P2PCLAW hive in Networking settings.</div>';
+      } else {
+        bodyHtml = '<table class="data-table"><thead><tr><th>Title</th><th>Authors</th><th>Status</th><th>Actions</th></tr></thead><tbody>' +
+          papers.map(p => `<tr>
+            <td>${esc(p.title || p.id || '-')}</td>
+            <td>${esc((p.authors || []).join(', ') || '-')}</td>
+            <td><span class="badge ${p.status === 'validated' ? 'badge-ok' : ''}">${esc(p.status || '-')}</span></td>
+            <td><button class="btn btn-sm p2-validate-btn" data-paper-id="${esc(p.id || '')}">Validate</button></td>
+          </tr>`).join('') + '</tbody></table>';
+      }
+    } else if (_p2pclawTab === 'mempool') {
+      const res = await api('/p2pclaw/mempool');
+      const items = (res && res.mempool) || [];
+      if (!items.length) {
+        bodyHtml = '<div class="muted">Mempool is empty.</div>';
+      } else {
+        bodyHtml = '<table class="data-table"><thead><tr><th>Title</th><th>Authors</th><th>Submitted</th></tr></thead><tbody>' +
+          items.map(p => `<tr>
+            <td>${esc(p.title || p.id || '-')}</td>
+            <td>${esc((p.authors || []).join(', ') || '-')}</td>
+            <td>${esc(p.submitted_at || '-')}</td>
+          </tr>`).join('') + '</tbody></table>';
+      }
+    } else if (_p2pclawTab === 'publish') {
+      bodyHtml = `
+        <div class="card" style="max-width:640px">
+          <div class="card-label">Publish Paper</div>
+          <div class="card-sub">Author identity is set from your P2PCLAW agent configuration.</div>
+          <div class="network-form-row"><label for="p2h-pub-title">Title</label>
+            <input class="input" id="p2h-pub-title" placeholder="Paper title"></div>
+          <div class="network-form-row"><label for="p2h-pub-content">Content (Markdown)</label>
+            <textarea class="input" id="p2h-pub-content" rows="12" placeholder="# Introduction&#10;..."></textarea></div>
+          <div class="network-form-actions">
+            <button class="btn btn-primary" id="p2h-pub-submit">Publish</button>
+          </div>
+          <div id="p2h-pub-msg" class="networking-msg"></div>
+        </div>`;
+    } else if (_p2pclawTab === 'verify') {
+      bodyHtml = `
+        <div class="card" style="max-width:640px">
+          <div class="card-label">Structural Verification</div>
+          <div class="card-sub">Analyze a paper's structural integrity — sections, claims, consistency, and Merkle proof hash.</div>
+          <div class="network-form-row"><label for="p2h-ver-title">Title</label>
+            <input class="input" id="p2h-ver-title" placeholder="Paper title"></div>
+          <div class="network-form-row"><label for="p2h-ver-content">Content</label>
+            <textarea class="input" id="p2h-ver-content" rows="12" placeholder="Paste paper content here..."></textarea></div>
+          <div class="network-form-actions">
+            <button class="btn btn-primary" id="p2h-ver-submit">Verify</button>
+          </div>
+          <div id="p2h-ver-msg" class="networking-msg"></div>
+          <pre id="p2h-ver-result" class="network-briefing" style="display:none"></pre>
+        </div>`;
+    } else if (_p2pclawTab === 'chat') {
+      bodyHtml = `
+        <div class="card" style="max-width:640px">
+          <div class="card-label">Hive Chat</div>
+          <div class="network-form-row"><label for="p2h-chat-channel">Channel</label>
+            <input class="input" id="p2h-chat-channel" value="general" placeholder="general"></div>
+          <div class="network-form-row"><label for="p2h-chat-msg">Message</label>
+            <textarea class="input" id="p2h-chat-msg" rows="4" placeholder="Type your message..."></textarea></div>
+          <div class="network-form-actions">
+            <button class="btn btn-primary" id="p2h-chat-send">Send</button>
+          </div>
+          <div id="p2h-chat-status" class="networking-msg"></div>
+        </div>`;
+    } else if (_p2pclawTab === 'investigations') {
+      const res = await api('/p2pclaw/investigations');
+      const items = (res && res.investigations) || [];
+      if (!items.length) {
+        bodyHtml = '<div class="muted">No active investigations.</div>';
+      } else {
+        bodyHtml = '<table class="data-table"><thead><tr><th>ID</th><th>Topic</th><th>Status</th><th>Participants</th></tr></thead><tbody>' +
+          items.map(inv => `<tr>
+            <td>${esc(inv.id || '-')}</td>
+            <td>${esc(inv.topic || inv.title || '-')}</td>
+            <td><span class="badge">${esc(inv.status || '-')}</span></td>
+            <td>${esc(String(inv.participants || inv.participant_count || '-'))}</td>
+          </tr>`).join('') + '</tbody></table>';
+      }
+    }
+  } catch (err) {
+    bodyHtml = `<div class="card"><div class="card-label" style="color:var(--red)">Error</div><div class="card-sub">${esc(String(err && err.message || err))}</div>
+      <div class="muted" style="margin-top:8px">Make sure P2PCLAW is configured in <a href="#/networking" class="nav-link" data-page="networking">Networking</a>.</div></div>`;
+  }
+
+  content.innerHTML = `
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px">
+      <img src="img/p2pclaw.png" alt="P2PCLAW" style="width:48px;height:48px;border-radius:8px" onerror="this.style.display='none'">
+      <div><h1 style="margin:0">P2PCLAW Hub</h1>
+        <p class="muted" style="margin:2px 0 0">Decentralized research collaboration &amp; peer validation</p></div>
+    </div>
+    <div class="p2pclaw-tabs" style="display:flex;gap:6px;margin-bottom:16px">${tabsHtml}</div>
+    <section class="p2pclaw-body">${bodyHtml}</section>
+  `;
+
+  // Tab switching
+  $$('[data-p2tab]').forEach(btn => {
+    btn.addEventListener('click', () => { _p2pclawTab = btn.dataset.p2tab; renderP2PClawHub(); });
+  });
+
+  // Publish handler
+  const pubBtn = $('#p2h-pub-submit');
+  if (pubBtn) {
+    pubBtn.addEventListener('click', async () => {
+      const title = ($('#p2h-pub-title')?.value || '').trim();
+      const contentVal = ($('#p2h-pub-content')?.value || '').trim();
+      const msgEl = $('#p2h-pub-msg');
+      if (!title || !contentVal) { if (msgEl) { msgEl.textContent = 'Title and content required.'; msgEl.className = 'networking-msg err'; } return; }
+      try {
+        if (msgEl) { msgEl.textContent = 'Publishing...'; msgEl.className = 'networking-msg ok'; }
+        await apiPost('/p2pclaw/papers/publish', { title, content: contentVal });
+        if (msgEl) { msgEl.textContent = 'Published successfully.'; msgEl.className = 'networking-msg ok'; }
+      } catch (err) {
+        if (msgEl) { msgEl.textContent = String(err && err.message || err); msgEl.className = 'networking-msg err'; }
+      }
+    });
+  }
+
+  // Verify handler
+  const verBtn = $('#p2h-ver-submit');
+  if (verBtn) {
+    verBtn.addEventListener('click', async () => {
+      const title = ($('#p2h-ver-title')?.value || '').trim();
+      const contentVal = ($('#p2h-ver-content')?.value || '').trim();
+      const msgEl = $('#p2h-ver-msg');
+      const resultEl = $('#p2h-ver-result');
+      if (!title || !contentVal) { if (msgEl) { msgEl.textContent = 'Title and content required.'; msgEl.className = 'networking-msg err'; } return; }
+      try {
+        if (msgEl) { msgEl.textContent = 'Verifying...'; msgEl.className = 'networking-msg ok'; }
+        const res = await apiPost('/p2pclaw/verify', { title, content: contentVal });
+        const r = res && res.result;
+        if (msgEl) {
+          msgEl.textContent = r && r.valid ? `VALID (confidence: ${(r.confidence * 100).toFixed(1)}%)` : `INVALID${r ? ' (confidence: ' + (r.confidence * 100).toFixed(1) + '%)' : ''}`;
+          msgEl.className = 'networking-msg ' + (r && r.valid ? 'ok' : 'err');
+        }
+        if (resultEl) { resultEl.style.display = 'block'; resultEl.textContent = JSON.stringify(r, null, 2); }
+      } catch (err) {
+        if (msgEl) { msgEl.textContent = String(err && err.message || err); msgEl.className = 'networking-msg err'; }
+      }
+    });
+  }
+
+  // Chat handler
+  const chatBtn = $('#p2h-chat-send');
+  if (chatBtn) {
+    chatBtn.addEventListener('click', async () => {
+      const message = ($('#p2h-chat-msg')?.value || '').trim();
+      const channel = ($('#p2h-chat-channel')?.value || '').trim() || undefined;
+      const msgEl = $('#p2h-chat-status');
+      if (!message) { if (msgEl) { msgEl.textContent = 'Message cannot be empty.'; msgEl.className = 'networking-msg err'; } return; }
+      try {
+        if (msgEl) { msgEl.textContent = 'Sending...'; msgEl.className = 'networking-msg ok'; }
+        await apiPost('/p2pclaw/chat', { message, channel });
+        if (msgEl) { msgEl.textContent = 'Message sent.'; msgEl.className = 'networking-msg ok'; }
+        const input = $('#p2h-chat-msg'); if (input) input.value = '';
+      } catch (err) {
+        if (msgEl) { msgEl.textContent = String(err && err.message || err); msgEl.className = 'networking-msg err'; }
+      }
+    });
+  }
+
+  // Validate buttons (papers tab)
+  $$('.p2-validate-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const paperId = btn.dataset.paperId;
+      if (!paperId) return;
+      btn.disabled = true; btn.textContent = 'Validating...';
+      try {
+        await apiPost('/p2pclaw/papers/validate', { paper_id: paperId, approve: true, comments: 'Validated via AgentHALO dashboard' });
+        btn.textContent = 'Validated';
+        btn.className = 'btn btn-sm badge-ok';
+      } catch (err) {
+        btn.textContent = 'Failed';
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
 function renderOverviewHub() {
   if (typeof renderDocsOverview === 'function') renderDocsOverview();
   else content.innerHTML = '<div class="loading">Overview module not loaded.</div>';

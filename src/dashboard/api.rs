@@ -118,6 +118,15 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/p2pclaw/configure", post(api_p2pclaw_configure))
         .route("/p2pclaw/status", get(api_p2pclaw_status))
         .route("/p2pclaw/briefing", get(api_p2pclaw_briefing))
+        .route("/p2pclaw/papers", get(api_p2pclaw_papers))
+        .route("/p2pclaw/mempool", get(api_p2pclaw_mempool))
+        .route("/p2pclaw/papers/publish", post(api_p2pclaw_publish))
+        .route("/p2pclaw/papers/validate", post(api_p2pclaw_validate))
+        .route("/p2pclaw/verify", post(api_p2pclaw_verify))
+        .route("/p2pclaw/events", get(api_p2pclaw_events))
+        .route("/p2pclaw/chat", post(api_p2pclaw_chat))
+        .route("/p2pclaw/wheel", get(api_p2pclaw_wheel))
+        .route("/p2pclaw/investigations", get(api_p2pclaw_investigations))
         // Config
         .route("/config", get(api_config))
         .route("/config/wrap", post(api_config_wrap))
@@ -396,6 +405,31 @@ struct P2PClawConfigureRequest {
     agent_name: Option<String>,
     auth_secret: Option<String>,
     tier: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct P2PClawPublishRequest {
+    title: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct P2PClawValidateRequest {
+    paper_id: String,
+    approve: bool,
+    occam_score: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct P2PClawVerifyRequest {
+    title: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct P2PClawChatRequest {
+    message: String,
+    channel: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -4853,6 +4887,120 @@ async fn api_p2pclaw_briefing(AxumState(state): AxumState<DashboardState>) -> Ap
         "ok": true,
         "briefing_markdown": briefing
     })))
+}
+
+async fn api_p2pclaw_papers(
+    AxumState(state): AxumState<DashboardState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<u64>().ok());
+    let papers =
+        p2pclaw::list_papers(&cfg, limit).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({ "ok": true, "papers": papers })))
+}
+
+async fn api_p2pclaw_mempool(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let mempool =
+        p2pclaw::list_mempool(&cfg).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({ "ok": true, "mempool": mempool })))
+}
+
+async fn api_p2pclaw_publish(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawPublishRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    if req.title.trim().is_empty() || req.content.trim().is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "title and content are required"));
+    }
+    let result = p2pclaw::publish_paper(&cfg, &req.title, &req.content)
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({ "ok": true, "result": result })))
+}
+
+async fn api_p2pclaw_validate(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawValidateRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let result = p2pclaw::validate_paper(
+        &cfg,
+        &req.paper_id,
+        req.approve,
+        req.occam_score,
+    )
+    .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({ "ok": true, "result": result })))
+}
+
+async fn api_p2pclaw_verify(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawVerifyRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if req.title.trim().is_empty() || req.content.trim().is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "title and content are required"));
+    }
+    let result = crate::halo::p2pclaw_verify::verify_paper(&req.title, &req.content);
+    Ok(Json(json!({ "ok": true, "result": result })))
+}
+
+async fn api_p2pclaw_events(
+    AxumState(state): AxumState<DashboardState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let since = params.get("since").and_then(|v| v.parse::<u64>().ok());
+    let limit = params.get("limit").and_then(|v| v.parse::<u64>().ok());
+    let events =
+        p2pclaw::poll_events(&cfg, since, limit).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({ "ok": true, "events": events })))
+}
+
+async fn api_p2pclaw_chat(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawChatRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    if req.message.trim().is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "message must not be empty"));
+    }
+    p2pclaw::send_chat(&cfg, &req.message, req.channel.as_deref())
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn api_p2pclaw_wheel(
+    AxumState(state): AxumState<DashboardState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let query = params.get("q").map(|s| s.as_str()).unwrap_or("");
+    if query.is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "query parameter 'q' is required"));
+    }
+    let result =
+        p2pclaw::search_wheel(&cfg, query).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({ "ok": true, "result": result })))
+}
+
+async fn api_p2pclaw_investigations(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let investigations = p2pclaw::list_investigations(&cfg)
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({ "ok": true, "investigations": investigations })))
 }
 
 async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
