@@ -13,8 +13,7 @@ use super::mcp_bridge;
 use super::DashboardState;
 use crate::cli::default_witness_cfg;
 use crate::cockpit::deploy::{self, LaunchRequest};
-use crate::container::backend::ContainerBackend;
-use crate::container::{current_container_id, ContainerAgentLock, ReusePolicy};
+use crate::container::{current_container_id, ContainerAgentLock};
 use crate::halo::addons;
 use crate::halo::agent_auth;
 use crate::halo::agentpmt;
@@ -25,17 +24,13 @@ use crate::halo::auth::{
     dashboard_auth_required, is_authenticated, is_dashboard_authenticated, load_credentials,
     save_credentials,
 };
-use crate::halo::compile_dispatch;
-use crate::halo::compile_workflow::{self, CompileResult, CompileStatus, CompileTask};
 use crate::halo::config;
 use crate::halo::crypto_scope::CryptoScope;
 use crate::halo::encrypted_file;
 use crate::halo::http_client;
 use crate::halo::metrics::diversity::{build_snapshot, extract_tool_counts};
-use crate::halo::nym;
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::p2pclaw;
-use crate::halo::p2pclaw_bridge;
 use crate::halo::p2pclaw_verify;
 use crate::halo::pq::has_wallet;
 use crate::halo::schema::{
@@ -61,12 +56,13 @@ use crate::state::State;
 use crate::verifier::gate as proof_gate;
 use crate::witness::WitnessSignatureAlgorithm;
 use crate::VcBackend;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State as AxumState};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use bip39::{Language, Mnemonic};
 use futures_util::SinkExt;
@@ -88,10 +84,20 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         // Status
         .route("/status", get(api_status))
         .route("/container/lock-status", get(api_container_lock_status))
-        .route("/compile/submit", post(api_compile_submit))
-        .route("/compile/poll", get(api_compile_poll))
-        .route("/compile/{id}/result", post(api_compile_result))
-        .route("/compile/{id}/status", get(api_compile_status))
+        .route("/container/initialize", post(api_container_initialize))
+        .route("/container/deinitialize", post(api_container_deinitialize))
+        .route("/containers", get(api_containers))
+        .route("/containers/provision", post(api_containers_provision))
+        .route("/containers/initialize", post(api_containers_initialize))
+        .route(
+            "/containers/deinitialize",
+            post(api_containers_deinitialize),
+        )
+        .route(
+            "/containers/{session_id}",
+            axum::routing::delete(api_containers_destroy),
+        )
+        .route("/containers/{session_id}/logs", get(api_containers_logs))
         // Crypto lock/session
         .route("/crypto/status", get(api_crypto_status))
         .route("/crypto/create-password", post(api_crypto_create_password))
@@ -115,8 +121,6 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/costs/by-model", get(api_costs_by_model))
         .route("/costs/paid", get(api_costs_paid))
         .route("/networking/available", get(api_networking_available))
-        .route("/nym/status", get(api_nym_status))
-        .route("/didcomm/status", get(api_didcomm_status))
         .route("/metrics/diversity", get(api_metrics_diversity))
         .route("/metrics/trace-topology", get(api_metrics_trace_topology))
         .route("/orchestrator/agents", get(api_orch_agents))
@@ -125,16 +129,13 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/orchestrator/mesh", get(api_orch_mesh))
         .route("/orchestrator/launch", post(api_orch_launch))
         .route("/orchestrator/task", post(api_orch_task))
-        .route("/orchestrator/schedule", post(api_orch_schedule))
         .route("/orchestrator/pipe", post(api_orch_pipe))
         .route("/orchestrator/stop", post(api_orch_stop))
         .route("/orchestrator/agents/{id}/ws", get(ws_orch_agent_output))
         .route("/addons", get(api_addons_get).post(api_addons_post))
         .route("/p2pclaw/configure", post(api_p2pclaw_configure))
         .route("/p2pclaw/status", get(api_p2pclaw_status))
-        .route("/p2pclaw/rank", get(api_p2pclaw_rank))
         .route("/p2pclaw/briefing", get(api_p2pclaw_briefing))
-        .route("/p2pclaw/agent-briefing", get(api_p2pclaw_agent_briefing))
         .route("/p2pclaw/papers", get(api_p2pclaw_papers))
         .route("/p2pclaw/mempool", get(api_p2pclaw_mempool))
         .route("/p2pclaw/papers/publish", post(api_p2pclaw_publish))
@@ -143,15 +144,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/p2pclaw/events", get(api_p2pclaw_events))
         .route("/p2pclaw/chat", post(api_p2pclaw_chat))
         .route("/p2pclaw/wheel", get(api_p2pclaw_wheel))
-        .route(
-            "/p2pclaw/investigations",
-            get(api_p2pclaw_investigations).post(api_p2pclaw_create_investigation),
-        )
-        .route("/p2pclaw/bridge/status", get(api_p2pclaw_bridge_status))
-        .route(
-            "/p2pclaw/bridge/run-once",
-            post(api_p2pclaw_bridge_run_once),
-        )
+        .route("/p2pclaw/investigations", get(api_p2pclaw_investigations))
         .route("/mcp/tools", get(api_mcp_tools))
         .route("/mcp/tools/{name}", get(api_mcp_tool_detail))
         .route("/mcp/invoke", post(api_mcp_invoke))
@@ -224,19 +217,6 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
             "/agentpmt/anonymous-wallet",
             post(api_agentpmt_anonymous_wallet),
         )
-        .route(
-            "/embed/{*rest}",
-            get(api_agentpmt_embed_api_proxy)
-                .post(api_agentpmt_embed_api_proxy)
-                .put(api_agentpmt_embed_api_proxy)
-                .patch(api_agentpmt_embed_api_proxy)
-                .delete(api_agentpmt_embed_api_proxy),
-        )
-        .route("/public-errors", post(api_agentpmt_public_errors_proxy))
-        .route(
-            "/agentpmt/embed-proxy/{*rest}",
-            get(api_agentpmt_embed_proxy).post(api_agentpmt_embed_proxy),
-        )
         .route("/agentaddress/status", get(api_agentaddress_status))
         .route("/agentaddress/chains", get(api_agentaddress_chains))
         .route("/agentaddress/generate", post(api_agentaddress_generate))
@@ -293,28 +273,20 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/cli/detect/{agent}", get(api_cli_detect))
         .route("/cli/install/{agent}", post(api_cli_install))
         .route("/cli/auth/{agent}", post(api_cli_auth))
+        // OpenClaw harness
+        .route("/openclaw/gateway-status", get(api_openclaw_gateway_status))
+        .route("/openclaw/wire-mcp", post(api_openclaw_wire_mcp))
         // Deploy
         .route("/deploy/catalog", get(api_deploy_catalog))
         .route("/deploy/preflight", post(api_deploy_preflight))
         .route("/deploy/launch", post(api_deploy_launch))
         .route("/deploy/status/{id}", get(api_deploy_status))
-        .route("/containers", get(api_containers_list))
-        .route("/containers/provision", post(api_containers_provision))
-        .route("/containers/initialize", post(api_containers_initialize))
-        .route(
-            "/containers/deinitialize",
-            post(api_containers_deinitialize),
-        )
-        .route("/containers/{id}", delete(api_containers_destroy))
-        .route("/containers/{id}/logs", get(api_containers_logs))
         .route("/models/status", get(api_models_status))
         .route("/models/search", get(api_models_search))
         .route("/models/pull", post(api_models_pull))
         .route("/models/rm", post(api_models_rm))
         .route("/models/serve", post(api_models_serve))
         .route("/models/stop", post(api_models_stop))
-        .route("/models/choose-local", post(api_models_choose_local))
-        .route("/models/unchoose-local", post(api_models_unchoose_local))
         .route(
             "/models/login/huggingface",
             post(api_models_login_huggingface),
@@ -430,11 +402,6 @@ pub struct TraceTopologyQuery {
 }
 
 #[derive(Deserialize)]
-struct CompilePollQuery {
-    worker_did: String,
-}
-
-#[derive(Deserialize)]
 pub struct WrapRequest {
     agent: String,
     enable: bool,
@@ -468,16 +435,6 @@ struct P2PClawListQuery {
     since: Option<u64>,
 }
 
-#[derive(Deserialize, Default)]
-struct P2PClawRankQuery {
-    agent: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-struct P2PClawAgentBriefingQuery {
-    agent_id: Option<String>,
-}
-
 #[derive(Deserialize)]
 struct P2PClawPublishRequest {
     title: String,
@@ -507,30 +464,6 @@ struct P2PClawWheelQuery {
 struct P2PClawVerifyRequest {
     title: String,
     content: String,
-}
-
-#[derive(Deserialize)]
-struct P2PClawCreateInvestigationRequest {
-    title: String,
-    description: String,
-}
-
-#[derive(Deserialize, Default)]
-struct P2PClawBridgeStatusQuery {
-    include_mcp_tools: Option<bool>,
-}
-
-#[derive(Deserialize, Default)]
-struct P2PClawBridgeRunRequest {
-    dry_run: Option<bool>,
-    include_mcp_tools: Option<bool>,
-    publish_summary: Option<bool>,
-    force_repeat_actions: Option<bool>,
-    validate_paper_id: Option<String>,
-    validate_approve: Option<bool>,
-    occam_score: Option<f64>,
-    chat_message: Option<String>,
-    chat_channel: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -673,36 +606,6 @@ pub struct CockpitResizeRequest {
     rows: u16,
 }
 
-#[derive(Deserialize, Default)]
-pub struct ContainersProvisionRequest {
-    #[serde(default)]
-    image: Option<String>,
-    #[serde(default)]
-    agent_id: Option<String>,
-    #[serde(default)]
-    admission_mode: Option<String>,
-    #[serde(default)]
-    bootstrap_mode: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct ContainersInitializeRequest {
-    session_id: String,
-    hookup: crate::orchestrator::ContainerHookupRequest,
-    #[serde(default)]
-    reuse_policy: Option<ReusePolicy>,
-}
-
-#[derive(Deserialize)]
-pub struct ContainersDeinitializeRequest {
-    session_id: String,
-}
-
-#[derive(Deserialize, Default)]
-pub struct ContainerLogsQuery {
-    follow: Option<bool>,
-}
-
 #[derive(Deserialize)]
 pub struct DeployPreflightRequest {
     agent_id: String,
@@ -725,23 +628,52 @@ pub struct LocalModelActionRequest {
 #[derive(Deserialize, Default)]
 pub struct LocalModelServeRequest {
     #[serde(default)]
-    backend: Option<String>,
-    #[serde(default)]
     port: Option<u16>,
     #[serde(default)]
     model: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
-pub struct LocalModelStopRequest {
-    #[serde(default)]
-    backend: Option<String>,
-}
+pub struct LocalModelStopRequest {}
 
 #[derive(Deserialize, Default)]
 pub struct HuggingFaceLoginRequest {
     #[serde(default)]
     token: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct DashboardContainerProvisionRequest {
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    command: Option<Vec<String>>,
+    #[serde(default)]
+    runtime_runsc: Option<bool>,
+    #[serde(default)]
+    admission_mode: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DashboardContainerInitializeRequest {
+    session_id: String,
+    hookup: crate::orchestrator::ContainerHookupRequest,
+    #[serde(default)]
+    reuse_policy: Option<crate::container::agent_lock::ReusePolicy>,
+}
+
+#[derive(Deserialize)]
+struct DashboardContainerSelfInitializeRequest {
+    hookup: crate::orchestrator::ContainerHookupRequest,
+    #[serde(default)]
+    reuse_policy: Option<crate::container::agent_lock::ReusePolicy>,
+}
+
+#[derive(Deserialize)]
+struct DashboardContainerDeinitializeRequest {
+    session_id: String,
 }
 
 #[derive(Deserialize)]
@@ -996,14 +928,6 @@ struct OrchestratorTaskApiRequest {
 }
 
 #[derive(Deserialize)]
-struct OrchestratorScheduleApiRequest {
-    agent_id: String,
-    task: String,
-    timeout_secs: Option<u64>,
-    delay_secs: Option<u64>,
-}
-
-#[derive(Deserialize)]
 struct OrchestratorPipeApiRequest {
     source_task_id: String,
     target_agent_id: String,
@@ -1031,13 +955,103 @@ fn internal_err(msg: String) -> (StatusCode, Json<Value>) {
     api_err(StatusCode::INTERNAL_SERVER_ERROR, &msg)
 }
 
-fn bad_request_err(msg: impl Into<String>) -> (StatusCode, Json<Value>) {
-    let msg = msg.into();
-    api_err(StatusCode::BAD_REQUEST, &msg)
-}
-
 fn orchestrator_mcp_proxy_enabled() -> bool {
     crate::halo::orchestrator_proxy::orchestrator_proxy_enabled()
+}
+
+const DASHBOARD_CONTAINER_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn default_dashboard_container_image() -> String {
+    std::env::var("AGENTHALO_CONTAINER_IMAGE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "agenthalo:latest".to_string())
+}
+
+fn mcp_structured_or_err(result: mcp_bridge::McpInvokeResult) -> Result<Value, String> {
+    if result.is_error {
+        return Err(if result.content.is_empty() {
+            format!("MCP tool {} returned an error", result.tool)
+        } else {
+            result.content.join("\n")
+        });
+    }
+    result
+        .structured_content
+        .ok_or_else(|| format!("MCP tool {} returned no structured content", result.tool))
+}
+
+fn map_container_tool_error(message: String) -> (StatusCode, Json<Value>) {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("already locked")
+        || lower.contains("is not empty")
+        || lower.contains("deinitializing")
+    {
+        api_err(StatusCode::CONFLICT, &message)
+    } else if lower.contains("empty") || lower.contains("invalid params") {
+        api_err(StatusCode::BAD_REQUEST, &message)
+    } else {
+        internal_err(message)
+    }
+}
+
+fn dashboard_container_peer(
+    session_id: &str,
+) -> Result<
+    (
+        crate::container::launcher::SessionInfo,
+        crate::container::mesh::PeerInfo,
+    ),
+    String,
+> {
+    let session = crate::container::launcher::load_session(session_id)?;
+    let registry = crate::container::PeerRegistry::load(&crate::container::mesh_registry_path())
+        .unwrap_or_default();
+    let peer = registry.find(&session.agent_id).cloned().or_else(|| {
+        session
+            .mesh_port
+            .map(|port| crate::container::mesh::PeerInfo {
+                agent_id: session.agent_id.clone(),
+                container_name: session.session_id.clone(),
+                did_uri: None,
+                mcp_endpoint: format!("http://{}:{port}/mcp", session.agent_id),
+                discovery_endpoint: format!(
+                    "http://{}:{port}/.well-known/nucleus-pod",
+                    session.agent_id
+                ),
+                registered_at: session.started_at_unix,
+                last_seen: session.started_at_unix,
+            })
+    });
+    let peer = peer.ok_or_else(|| {
+        format!(
+            "container session {} is not registered on the mesh yet",
+            session_id
+        )
+    })?;
+    Ok((session, peer))
+}
+
+async fn call_dashboard_container_tool(
+    session_id: &str,
+    tool_name: &'static str,
+    arguments: Value,
+) -> Result<Value, (StatusCode, Json<Value>)> {
+    let (session, peer) = dashboard_container_peer(session_id).map_err(internal_err)?;
+    tokio::task::spawn_blocking(move || {
+        crate::container::call_remote_tool_with_timeout(
+            &peer,
+            tool_name,
+            arguments,
+            None,
+            DASHBOARD_CONTAINER_RPC_TIMEOUT,
+        )
+        .map_err(|e| format!("{} via {}: {e}", tool_name, session.session_id))
+    })
+    .await
+    .map_err(|e| internal_err(format!("container tool task join: {e}")))?
+    .map_err(internal_err)
 }
 
 async fn call_orchestrator_tool_via_mcp(
@@ -1866,7 +1880,7 @@ fn provider_test_request(provider: &str, api_key: &str) -> Result<(), String> {
                 ))
             }
         }
-        "openai" => {
+        "openai" | "openclaw" => {
             let resp = http_client::get("https://api.openai.com/v1/models")?
                 .header("Authorization", &format!("Bearer {api_key}"))
                 .call()
@@ -2254,311 +2268,137 @@ async fn api_container_lock_status(_: AxumState<DashboardState>) -> ApiResult {
     })))
 }
 
-async fn fetch_container_lock_status_view(
-    peer: crate::container::PeerInfo,
-) -> (Option<String>, Option<String>) {
-    let timeout = Duration::from_secs(5);
-    let result = tokio::task::spawn_blocking(move || {
-        crate::container::mesh::call_remote_tool_with_timeout(
-            &peer,
-            "nucleusdb_container_lock_status",
-            json!({}),
-            None,
-            timeout,
-        )
-    })
-    .await;
-    match result {
-        Ok(Ok(value)) => (
-            value
-                .get("state")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-            value
-                .get("reuse_policy")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        ),
-        _ => (None, None),
-    }
-}
-
-fn container_identity_payload(
-    session_id: &str,
-    registry: &crate::container::PeerRegistry,
-    peer_agent_id: &str,
-) -> Option<Value> {
-    if let Ok(Some(value)) =
-        crate::orchestrator::container_dispatch::load_identity_record(session_id)
-    {
-        return Some(value);
-    }
-    registry
-        .find(peer_agent_id)
-        .and_then(|peer| peer.did_uri.clone())
-        .map(|did_uri| json!({ "did_uri": did_uri }))
-}
-
-async fn api_containers_list(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+async fn api_container_initialize(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<DashboardContainerSelfInitializeRequest>,
+) -> ApiResult {
     require_sensitive_access(&state)?;
-    let sessions = crate::container::launcher::list_sessions().map_err(internal_err)?;
-    let registry = crate::container::PeerRegistry::load(&crate::container::mesh_registry_path())
-        .unwrap_or_default();
-    let mut views = Vec::with_capacity(sessions.len());
-    for session in sessions {
-        let peer = registry.find(&session.agent_id).cloned();
-        let (lock_state, reuse_policy) = match peer {
-            Some(peer) => fetch_container_lock_status_view(peer).await,
-            None => (None, None),
-        };
-        let identity =
-            container_identity_payload(&session.session_id, &registry, &session.agent_id);
-        views.push(json!({
-            "session_id": session.session_id,
-            "container_id": session.container_id,
-            "image": session.image,
-            "agent_id": session.agent_id,
-            "host_sock": session.host_sock.display().to_string(),
-            "started_at_unix": session.started_at_unix,
-            "mesh_port": session.mesh_port,
-            "lock_state": lock_state,
-            "reuse_policy": reuse_policy,
-            "identity": identity,
-        }));
-    }
-    Ok(Json(json!({
-        "count": views.len(),
-        "sessions": views,
-    })))
+    let service = state.mcp_service.clone();
+    let init_req = crate::mcp::tools::ContainerInitializeRequest {
+        hookup: req.hookup,
+        reuse_policy: req.reuse_policy,
+    };
+    let rmcp::handler::server::wrapper::Json(payload) = service
+        .container_initialize(rmcp::handler::server::wrapper::Parameters(init_req))
+        .await
+        .map_err(|e| map_container_tool_error(e.to_string()))?;
+    Ok(Json(json!(payload)))
+}
+
+async fn api_container_deinitialize(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let service = state.mcp_service.clone();
+    let rmcp::handler::server::wrapper::Json(payload) = service
+        .container_deinitialize(rmcp::handler::server::wrapper::Parameters(
+            crate::mcp::tools::ContainerDeinitializeRequest {},
+        ))
+        .await
+        .map_err(|e| map_container_tool_error(e.to_string()))?;
+    Ok(Json(json!(payload)))
+}
+
+async fn api_containers(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let result = if should_invoke_dashboard_local_mcp_tool(&state, "nucleusdb_container_list") {
+        invoke_dashboard_local_mcp_tool(&state, "nucleusdb_container_list", json!({}))
+            .await
+            .map_err(internal_err)?
+    } else {
+        mcp_bridge::invoke_tool("nucleusdb_container_list", json!({}))
+            .await
+            .map_err(internal_err)?
+    };
+    Ok(Json(mcp_structured_or_err(result).map_err(internal_err)?))
 }
 
 async fn api_containers_provision(
     AxumState(state): AxumState<DashboardState>,
-    Json(req): Json<ContainersProvisionRequest>,
+    Json(req): Json<DashboardContainerProvisionRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let admission_mode =
-        crate::halo::admission::AdmissionMode::parse(req.admission_mode.as_deref())
-            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let admission = crate::halo::admission::evaluate_launch_admission(
-        admission_mode,
-        Some(&state.governor_registry),
-        None,
-    );
-    if !admission.allowed {
-        let reason = admission
-            .issues
-            .iter()
-            .map(|issue| issue.message.clone())
-            .collect::<Vec<_>>()
-            .join(" | ");
-        return Err(api_err(
-            StatusCode::BAD_REQUEST,
-            &format!("AETHER admission policy blocked container provision: {reason}"),
-        ));
-    }
-    let dispatch = state.container_dispatch.clone();
-    let defaults = dispatch.provision_defaults();
-    let peer_agent_id = req
-        .agent_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            format!(
-                "container-{}-{}",
-                crate::pod::now_unix(),
-                &uuid::Uuid::new_v4().simple().to_string()[..8]
-            )
-        });
-    let provisioned = dispatch
-        .provision(
-            crate::orchestrator::container_dispatch::ContainerProvisionSpec {
-                image: req.image.unwrap_or(defaults.image),
-                peer_agent_id,
-                mcp_port: defaults.mcp_port,
-                registry_volume: defaults.registry_volume,
-                env: {
-                    let mut env = std::collections::BTreeMap::new();
-                    if let Some(mode) = req
-                        .bootstrap_mode
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                    {
-                        let parsed = config::PasswordBootstrapMode::parse(mode).ok_or_else(|| {
-                            api_err(
-                                StatusCode::BAD_REQUEST,
-                                "bootstrap_mode must be one of: required, optional, disabled",
-                            )
-                        })?;
-                        env.insert(
-                            "AGENTHALO_PASSWORD_BOOTSTRAP_MODE".to_string(),
-                            parsed.as_str().to_string(),
-                        );
-                    }
-                    env
-                },
-            },
+    let image = req
+        .image
+        .clone()
+        .unwrap_or_else(default_dashboard_container_image);
+    let agent_id = req.agent_id.clone().unwrap_or_else(|| {
+        format!(
+            "container-{}-{}",
+            crate::pod::now_unix(),
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
         )
-        .await
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let identity =
-        crate::orchestrator::container_dispatch::load_identity_record(&provisioned.session_id)
-            .map_err(internal_err)?;
-    Ok(Json(json!({
-        "session_id": provisioned.session_id,
-        "container_id": provisioned.container_id,
-        "image": provisioned.image,
-        "agent_id": provisioned.peer_agent_id,
-        "mesh_port": provisioned.mesh_port,
-        "did_uri": provisioned.did_uri,
-        "identity": identity,
-        "admission": admission,
-    })))
+    });
+    let result = mcp_bridge::invoke_tool(
+        "nucleusdb_container_provision",
+        json!({
+            "image": image,
+            "agent_id": agent_id,
+            "command": req.command.unwrap_or_else(|| vec!["agenthalo-mcp-server".to_string()]),
+            "runtime_runsc": req.runtime_runsc,
+            "env": {},
+            "mesh": {
+                "enabled": true
+            },
+            "admission_mode": req.admission_mode,
+        }),
+    )
+    .await
+    .map_err(internal_err)?;
+    Ok(Json(mcp_structured_or_err(result).map_err(internal_err)?))
 }
 
 async fn api_containers_initialize(
     AxumState(state): AxumState<DashboardState>,
-    Json(req): Json<ContainersInitializeRequest>,
+    Json(req): Json<DashboardContainerInitializeRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let session = crate::container::launcher::load_session(&req.session_id)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let dispatch = state.container_dispatch.clone();
-    let initialized = dispatch
-        .initialize(
-            crate::orchestrator::container_dispatch::ContainerInitializeSpec {
-                peer_agent_id: session.agent_id,
-                reuse_policy: req.reuse_policy.unwrap_or(ReusePolicy::Reusable),
-                hookup: req.hookup,
-            },
-        )
-        .await
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    Ok(Json(json!({
-        "session_id": req.session_id,
-        "container_id": initialized.container_id,
-        "state": initialized.state,
-        "agent_id": initialized.agent_id,
-        "trace_session_id": initialized.trace_session_id,
-        "reuse_policy": initialized.reuse_policy,
-    })))
+    let payload = call_dashboard_container_tool(
+        &req.session_id,
+        "nucleusdb_container_initialize",
+        json!({
+            "hookup": req.hookup,
+            "reuse_policy": req.reuse_policy,
+        }),
+    )
+    .await?;
+    Ok(Json(payload))
 }
 
 async fn api_containers_deinitialize(
     AxumState(state): AxumState<DashboardState>,
-    Json(req): Json<ContainersDeinitializeRequest>,
+    Json(req): Json<DashboardContainerDeinitializeRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let session = crate::container::launcher::load_session(&req.session_id)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let dispatch = state.container_dispatch.clone();
-    let deinitialized = dispatch
-        .deinitialize(
-            crate::orchestrator::container_dispatch::ContainerDeinitializeSpec {
-                peer_agent_id: session.agent_id,
-            },
-        )
-        .await
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    Ok(Json(json!({
-        "session_id": req.session_id,
-        "container_id": deinitialized.container_id,
-        "state": deinitialized.state,
-        "trace_session_id": deinitialized.trace_session_id,
-        "reuse_policy": deinitialized.reuse_policy,
-    })))
+    let payload = call_dashboard_container_tool(
+        &req.session_id,
+        "nucleusdb_container_deinitialize",
+        json!({}),
+    )
+    .await?;
+    Ok(Json(payload))
 }
 
 async fn api_containers_destroy(
     AxumState(state): AxumState<DashboardState>,
-    Path(id): Path<String>,
+    Path(session_id): Path<String>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let dispatch = state.container_dispatch.clone();
-    dispatch
-        .destroy(&id)
-        .await
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    crate::container::destroy_container(&session_id).map_err(internal_err)?;
     Ok(Json(json!({
-        "session_id": id,
+        "session_id": session_id,
         "destroyed": true,
     })))
 }
 
 async fn api_containers_logs(
     AxumState(state): AxumState<DashboardState>,
-    Path(id): Path<String>,
-    Query(query): Query<ContainerLogsQuery>,
+    Path(session_id): Path<String>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let logs = crate::container::launcher::container_logs(&id, query.follow.unwrap_or(false))
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let logs = crate::container::container_logs(&session_id, false).map_err(internal_err)?;
     Ok(Json(json!({
-        "session_id": id,
-        "follow": query.follow.unwrap_or(false),
+        "session_id": session_id,
         "logs": logs,
     })))
-}
-
-async fn api_compile_submit(
-    AxumState(state): AxumState<DashboardState>,
-    Json(task): Json<CompileTask>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let task = compile_workflow::prepare_compile_task(task);
-    let task_id = task.task_id.clone();
-    tokio::spawn(async move {
-        let _ = compile_dispatch::dispatch_compilation(&task).await;
-    });
-    Ok(Json(json!({
-        "task_id": task_id,
-        "status": "submitted",
-    })))
-}
-
-async fn api_compile_poll(
-    AxumState(state): AxumState<DashboardState>,
-    Query(query): Query<CompilePollQuery>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let tasks = compile_workflow::poll_compile_tasks(&query.worker_did).map_err(bad_request_err)?;
-    Ok(Json(json!({ "tasks": tasks })))
-}
-
-async fn api_compile_result(
-    AxumState(state): AxumState<DashboardState>,
-    Path(task_id): Path<String>,
-    Json(result): Json<CompileResult>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    if result.task_id != task_id {
-        return Err(bad_request_err("task id mismatch"));
-    }
-    compile_workflow::submit_compile_result(&result).map_err(bad_request_err)?;
-    Ok(Json(json!({
-        "task_id": task_id,
-        "status": "recorded",
-    })))
-}
-
-async fn api_compile_status(
-    AxumState(state): AxumState<DashboardState>,
-    Path(task_id): Path<String>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let value = match compile_workflow::get_compile_status(&task_id).map_err(bad_request_err)? {
-        Some(result) => json!({ "task_id": task_id, "result": result }),
-        None => json!({
-            "task_id": task_id,
-            "result": {
-                "status": CompileStatus::Pending,
-            }
-        }),
-    };
-    Ok(Json(value))
 }
 
 async fn api_governor_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
@@ -2658,10 +2498,9 @@ async fn api_fallback_not_found(uri: axum::http::Uri) -> impl axum::response::In
 
 async fn api_crypto_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let password_protected = encrypted_file::header_exists();
-    let bootstrap_mode = config::password_bootstrap_mode();
     let mut crypto = lock_crypto_state(&state)?;
     crypto.session.reap_expired();
-    let locked = password_protected && !crypto.session.is_unlocked();
+    let locked = !crypto.session.is_unlocked();
     let mut active_scopes = crypto
         .session
         .active_scopes()
@@ -2688,7 +2527,6 @@ async fn api_crypto_status(AxumState(state): AxumState<DashboardState>) -> ApiRe
         "migration_status": migration_status_name(&status),
         "active_scopes": active_scopes,
         "password_protected": password_protected,
-        "bootstrap_mode": bootstrap_mode.as_str(),
         "failed_attempts": crypto.session.failed_attempts(),
         "retry_after_secs": retry_after_secs,
     })))
@@ -4735,14 +4573,6 @@ fn p2pclaw_load_config_for_api() -> Result<p2pclaw::P2PClawConfig, (StatusCode, 
 
 async fn api_networking_available(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let addons_cfg = addons::load_or_default();
-    let nym_status = nym::status();
-    let nym_healthy = nym_status.healthy;
-    let identity = crate::halo::identity::load();
-    let has_did = identity
-        .network
-        .as_ref()
-        .map(crate::halo::identity::network_is_configured)
-        .unwrap_or(false);
     Ok(Json(json!({
         "networks": [
             {
@@ -4756,69 +4586,19 @@ async fn api_networking_available(AxumState(_state): AxumState<DashboardState>) 
             {
                 "id": "nym-mesh",
                 "name": "Nym Mixnet Mesh",
-                "description": "Privacy-preserving agent communication via SOCKS5 or native nym-sdk transport",
-                "enabled": nym_healthy,
-                "configurable": true,
-                "coming_soon": false
+                "description": "Privacy-preserving agent communication",
+                "enabled": false,
+                "configurable": false,
+                "coming_soon": true
             },
             {
                 "id": "didcomm-federation",
                 "name": "DIDComm Federation",
-                "description": "Hybrid post-quantum encrypted agent messaging (X25519 + ML-KEM-768)",
-                "enabled": has_did,
-                "configurable": true,
-                "coming_soon": false
+                "description": "Cross-organization agent identity mesh",
+                "enabled": false,
+                "configurable": false,
+                "coming_soon": true
             }
-        ]
-    })))
-}
-
-async fn api_nym_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let status = nym::status();
-    Ok(Json(json!({
-        "mode": status.mode,
-        "socks5_proxy": status.socks5_proxy,
-        "healthy": status.healthy,
-        "fail_closed": status.fail_closed,
-        "native_enabled": status.native_enabled,
-        "native_connected": status.native_connected,
-        "native_address": status.native_address,
-        "inbound_registered": status.inbound_registered,
-        "cover_traffic_active": status.cover_traffic_active,
-        "note": status.note
-    })))
-}
-
-async fn api_didcomm_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let identity = crate::halo::identity::load();
-    let has_did = identity
-        .network
-        .as_ref()
-        .map(crate::halo::identity::network_is_configured)
-        .unwrap_or(false);
-    let nym_status = nym::status();
-    Ok(Json(json!({
-        "identity_configured": has_did,
-        "transport_available": nym_status.healthy,
-        "transport_mode": nym_status.mode,
-        "fail_closed": nym_status.fail_closed,
-        "supported_message_types": [
-            "ping", "ack", "error",
-            "agent-card-request", "agent-card-response",
-            "task-send", "task-status", "task-artifact", "task-cancel",
-            "credential-offer", "credential-request", "credential-issue"
-        ],
-        "encryption": {
-            "classical": "X25519 ECDH-ES + AES-256-GCM",
-            "post_quantum": "ML-KEM-768 hybrid KEM",
-            "signatures": "Ed25519 + ML-DSA-65 dual signing"
-        },
-        "mesh_message_types": [
-            "mcp_tool_call", "mcp_tool_response",
-            "envelope_exchange", "capability_grant", "capability_accept",
-            "peer_announce", "heartbeat"
         ]
     })))
 }
@@ -4834,6 +4614,7 @@ fn epistemic_trust_floor() -> f64 {
 fn base_agent_trust(agent_type: &str) -> f64 {
     match agent_type.trim().to_ascii_lowercase().as_str() {
         "claude" | "codex" | "gemini" => 0.9,
+        "openclaw" => 0.8,
         "shell" => 0.6,
         _ => 0.5,
     }
@@ -4875,36 +4656,19 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
 
     let orchestrator = local_orchestrator(&state)?;
     let trust_model = EpistemicTrust::new(epistemic_trust_floor());
-    let registry = crate::container::PeerRegistry::load(&crate::container::mesh_registry_path())
-        .unwrap_or_default();
     let agents = orchestrator.list_agents().await;
-    let mut payload_agents = Vec::with_capacity(agents.len());
+    let mut rows = Vec::with_capacity(agents.len());
     for a in agents {
-        let container_meta = orchestrator.container_agent_metadata(&a.agent_id).await;
-        let container_session_id = container_meta.as_ref().map(|meta| meta.0.clone());
-        let container_id = container_meta.as_ref().map(|meta| meta.1.clone());
-        let lock_state = container_meta.as_ref().map(|meta| meta.2.clone());
-        let did_uri = container_session_id
-            .as_deref()
-            .and_then(|session_id| {
-                crate::orchestrator::container_dispatch::load_identity_record(session_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|identity| {
-                        identity
-                            .get("did_uri")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_string)
-                    })
-            })
-            .or_else(|| {
-                registry
-                    .find(&a.agent_id)
-                    .and_then(|peer| peer.did_uri.clone())
-            });
         let base_trust = base_agent_trust(&a.agent_type);
         let trust = trust_model.nucleus(base_trust);
-        payload_agents.push(json!({
+        let (container_session_id, container_id, lock_state) = orchestrator
+            .container_agent_metadata(&a.agent_id)
+            .await
+            .map(|(session_id, container_id, lock_state)| {
+                (Some(session_id), Some(container_id), Some(lock_state))
+            })
+            .unwrap_or((None, None, None));
+        rows.push(json!({
             "agent_id": a.agent_id,
             "agent_name": a.agent_name,
             "agent_type": a.agent_type,
@@ -4923,11 +4687,10 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
             "container_session_id": container_session_id,
             "container_id": container_id,
             "lock_state": lock_state,
-            "did_uri": did_uri,
         }));
     }
     Ok(Json(json!({
-        "agents": payload_agents,
+        "agents": rows
     })))
 }
 
@@ -5076,49 +4839,6 @@ async fn api_orch_task(
         .await
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     Ok(Json(json!({ "task": task })))
-}
-
-async fn api_orch_schedule(
-    AxumState(state): AxumState<DashboardState>,
-    Json(req): Json<OrchestratorScheduleApiRequest>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let delay_secs = req.delay_secs.unwrap_or(0);
-    if delay_secs == 0 {
-        return Err(api_err(
-            StatusCode::BAD_REQUEST,
-            "delay_secs must be > 0 for scheduled tasks",
-        ));
-    }
-    if orchestrator_mcp_proxy_enabled() {
-        let payload = call_orchestrator_tool_via_mcp(
-            "orchestrator_schedule_task",
-            json!({
-                "agent_id": req.agent_id,
-                "task": req.task,
-                "timeout_secs": req.timeout_secs,
-                "delay_secs": delay_secs,
-            }),
-        )
-        .await?;
-        return Ok(Json(payload));
-    }
-    let orchestrator = local_orchestrator(&state)?;
-    let task = orchestrator
-        .schedule_task(
-            crate::orchestrator::SendTaskRequest {
-                agent_id: req.agent_id,
-                task: req.task,
-                timeout_secs: req.timeout_secs,
-                wait: false,
-            },
-            delay_secs,
-        )
-        .await
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    Ok(Json(
-        json!({ "task": task, "scheduled": true, "delay_secs": delay_secs }),
-    ))
 }
 
 async fn api_orch_pipe(
@@ -5492,20 +5212,6 @@ async fn api_p2pclaw_status(AxumState(state): AxumState<DashboardState>) -> ApiR
     })))
 }
 
-async fn api_p2pclaw_rank(
-    AxumState(state): AxumState<DashboardState>,
-    Query(query): Query<P2PClawRankQuery>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let cfg = p2pclaw_load_config_for_api()?;
-    let rank = p2pclaw::get_agent_rank(&cfg, query.agent.as_deref())
-        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
-    Ok(Json(json!({
-        "ok": true,
-        "rank": rank
-    })))
-}
-
 async fn api_p2pclaw_briefing(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
     let cfg = p2pclaw_load_config_for_api()?;
@@ -5513,20 +5219,6 @@ async fn api_p2pclaw_briefing(AxumState(state): AxumState<DashboardState>) -> Ap
     Ok(Json(json!({
         "ok": true,
         "briefing_markdown": briefing
-    })))
-}
-
-async fn api_p2pclaw_agent_briefing(
-    AxumState(state): AxumState<DashboardState>,
-    Query(query): Query<P2PClawAgentBriefingQuery>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let cfg = p2pclaw_load_config_for_api()?;
-    let briefing = p2pclaw::get_agent_briefing(&cfg, query.agent_id.as_deref())
-        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
-    Ok(Json(json!({
-        "ok": true,
-        "briefing": briefing
     })))
 }
 
@@ -5609,50 +5301,10 @@ async fn api_p2pclaw_verify(
             "title and content are required",
         ));
     }
-    let bridge_cfg = p2pclaw_bridge::load_config()
-        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
-    let script_path = p2pclaw_bridge::discover_verify_script(&bridge_cfg);
-    let verification = p2pclaw_verify::verify_paper_full(
-        &p2pclaw_verify::VerificationRequest {
-            title: title.to_string(),
-            content: content.to_string(),
-            claims: vec![],
-            agent_id: None,
-        },
-        script_path.as_deref(),
-        bridge_cfg
-            .heyting_verify_python
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("python3"),
-        bridge_cfg.heyting_verify_timeout_secs.unwrap_or(120),
-    );
-    let verification_json = serde_json::json!({
-        "verified": verification.verified,
-        "valid": verification.verified,
-        "proof_hash": verification.proof_hash,
-        "verification_level": verification.verification_level,
-        "structural_score": verification.structural_score,
-        "consistency_score": verification.consistency_score,
-        "completeness_score": verification.completeness_score,
-        "word_count": verification.word_count,
-        "sections_found": verification.sections_found,
-        "claims_extracted": verification.claims_extracted,
-        "violations": verification.violations,
-        "lean_blocks_found": verification.lean_blocks_found,
-        "lean_blocks_checked": verification.lean_blocks_checked,
-        "semantic_score": verification.semantic_score,
-        "semantic_passed": verification.semantic_passed,
-        "formal_score": verification.formal_score,
-        "formal_passed": verification.formal_passed,
-        "composite_score": verification.composite_score,
-        "external_report_path": verification.external_report_path,
-        "elapsed_ms": verification.elapsed_ms,
-        "engine": verification.engine,
-    });
+    let verification = p2pclaw_verify::verify_paper(title, content);
     Ok(Json(json!({
         "ok": true,
-        "verification": verification_json
+        "verification": verification
     })))
 }
 
@@ -5728,69 +5380,6 @@ async fn api_p2pclaw_investigations(AxumState(state): AxumState<DashboardState>)
     })))
 }
 
-async fn api_p2pclaw_create_investigation(
-    AxumState(state): AxumState<DashboardState>,
-    Json(req): Json<P2PClawCreateInvestigationRequest>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let cfg = p2pclaw_load_config_for_api()?;
-    let title = req.title.trim();
-    let description = req.description.trim();
-    if title.is_empty() || description.is_empty() {
-        return Err(api_err(
-            StatusCode::BAD_REQUEST,
-            "title and description are required",
-        ));
-    }
-    let result = p2pclaw::create_investigation(&cfg, title, description)
-        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
-    Ok(Json(json!({
-        "ok": true,
-        "result": result
-    })))
-}
-
-async fn api_p2pclaw_bridge_status(
-    AxumState(state): AxumState<DashboardState>,
-    Query(query): Query<P2PClawBridgeStatusQuery>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let cfg = p2pclaw::load_config().ok();
-    let status = p2pclaw_bridge::status(cfg.as_ref(), query.include_mcp_tools.unwrap_or(false))
-        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
-    Ok(Json(json!({
-        "ok": true,
-        "bridge": status
-    })))
-}
-
-async fn api_p2pclaw_bridge_run_once(
-    AxumState(state): AxumState<DashboardState>,
-    Json(req): Json<P2PClawBridgeRunRequest>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let cfg = p2pclaw_load_config_for_api()?;
-    let report = p2pclaw_bridge::run_once(
-        &cfg,
-        p2pclaw_bridge::BridgeRunOptions {
-            dry_run: req.dry_run.unwrap_or(true),
-            include_mcp_tools: req.include_mcp_tools.unwrap_or(false),
-            publish_summary: req.publish_summary.unwrap_or(false),
-            force_repeat_actions: req.force_repeat_actions.unwrap_or(false),
-            validate_paper_id: req.validate_paper_id,
-            validate_approve: req.validate_approve.unwrap_or(true),
-            validate_occam_score: req.occam_score,
-            chat_message: req.chat_message,
-            chat_channel: req.chat_channel,
-        },
-    )
-    .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
-    Ok(Json(json!({
-        "ok": true,
-        "report": report
-    })))
-}
-
 async fn api_mcp_tools(
     AxumState(state): AxumState<DashboardState>,
     Query(query): Query<McpToolsQuery>,
@@ -5843,13 +5432,231 @@ async fn api_mcp_invoke(
     if tool.is_empty() {
         return Err(api_err(StatusCode::BAD_REQUEST, "tool is required"));
     }
-    let result = mcp_bridge::invoke_tool(tool, req.params)
-        .await
-        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    let result = if should_invoke_dashboard_local_mcp_tool(&state, tool) {
+        invoke_dashboard_local_mcp_tool(&state, tool, req.params)
+            .await
+            .map_err(internal_err)?
+    } else {
+        mcp_bridge::invoke_tool(tool, req.params)
+            .await
+            .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?
+    };
     Ok(Json(json!({
         "ok": true,
         "result": result
     })))
+}
+
+fn should_invoke_dashboard_local_mcp_tool(state: &DashboardState, tool: &str) -> bool {
+    state.orchestrator.is_some()
+        && matches!(
+            tool,
+            "nucleusdb_status"
+                | "nucleusdb_container_list"
+                | "nucleusdb_container_lock_status"
+                | "nucleusdb_container_initialize"
+                | "nucleusdb_container_agent_prompt"
+                | "nucleusdb_container_deinitialize"
+                | "nucleusdb_subsidiary_provision"
+                | "nucleusdb_subsidiary_initialize"
+                | "nucleusdb_subsidiary_send_task"
+                | "nucleusdb_subsidiary_get_result"
+                | "nucleusdb_subsidiary_deinitialize"
+                | "nucleusdb_subsidiary_destroy"
+                | "nucleusdb_subsidiary_list"
+        )
+}
+
+fn local_mcp_success(
+    tool: &str,
+    structured_content: serde_json::Value,
+) -> crate::dashboard::mcp_bridge::McpInvokeResult {
+    crate::dashboard::mcp_bridge::McpInvokeResult {
+        tool: tool.to_string(),
+        is_error: false,
+        content: vec![structured_content.to_string()],
+        structured_content: Some(structured_content),
+    }
+}
+
+fn local_mcp_error(tool: &str, message: String) -> crate::dashboard::mcp_bridge::McpInvokeResult {
+    crate::dashboard::mcp_bridge::McpInvokeResult {
+        tool: tool.to_string(),
+        is_error: true,
+        content: vec![json!({"status":"error","message":message}).to_string()],
+        structured_content: Some(json!({
+            "status": "error",
+            "message": message,
+        })),
+    }
+}
+
+async fn invoke_dashboard_local_mcp_tool(
+    state: &DashboardState,
+    tool: &str,
+    params: serde_json::Value,
+) -> Result<crate::dashboard::mcp_bridge::McpInvokeResult, String> {
+    use crate::mcp::tools::{
+        ContainerAgentPromptRequest, ContainerDeinitializeRequest, ContainerInitializeRequest,
+        ContainerLockStatusRequest, SubsidiaryDeinitializeRequest, SubsidiaryDestroyRequest,
+        SubsidiaryGetResultRequest, SubsidiaryInitializeRequest, SubsidiaryListRequest,
+        SubsidiaryProvisionRequest, SubsidiarySendTaskRequest,
+    };
+    use rmcp::handler::server::wrapper::{Json as McpJson, Parameters};
+
+    let service = state.mcp_service.clone();
+    let result = match tool {
+        "nucleusdb_status" => match service.status().await {
+            Ok(McpJson(payload)) => local_mcp_success(
+                tool,
+                serde_json::to_value(payload)
+                    .map_err(|e| format!("serialize local MCP result: {e}"))?,
+            ),
+            Err(error) => local_mcp_error(tool, error.to_string()),
+        },
+        "nucleusdb_container_list" => match service.container_list().await {
+            Ok(McpJson(payload)) => local_mcp_success(
+                tool,
+                serde_json::to_value(payload)
+                    .map_err(|e| format!("serialize local MCP result: {e}"))?,
+            ),
+            Err(error) => local_mcp_error(tool, error.to_string()),
+        },
+        "nucleusdb_container_lock_status" => {
+            let req: ContainerLockStatusRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.container_lock_status(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "nucleusdb_container_initialize" => {
+            let req: ContainerInitializeRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.container_initialize(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "nucleusdb_container_agent_prompt" => {
+            let req: ContainerAgentPromptRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.container_agent_prompt(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "nucleusdb_container_deinitialize" => {
+            let req: ContainerDeinitializeRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.container_deinitialize(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "nucleusdb_subsidiary_provision" => {
+            let req: SubsidiaryProvisionRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.subsidiary_provision(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "nucleusdb_subsidiary_initialize" => {
+            let req: SubsidiaryInitializeRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.subsidiary_initialize(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "nucleusdb_subsidiary_send_task" => {
+            let req: SubsidiarySendTaskRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.subsidiary_send_task(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "nucleusdb_subsidiary_get_result" => {
+            let req: SubsidiaryGetResultRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.subsidiary_get_result(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "nucleusdb_subsidiary_deinitialize" => {
+            let req: SubsidiaryDeinitializeRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.subsidiary_deinitialize(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "nucleusdb_subsidiary_destroy" => {
+            let req: SubsidiaryDestroyRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.subsidiary_destroy(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "nucleusdb_subsidiary_list" => {
+            let req: SubsidiaryListRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.subsidiary_list(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        other => return Err(format!("unsupported local dashboard MCP tool `{other}`")),
+    };
+    Ok(result)
 }
 
 async fn api_mcp_categories(AxumState(state): AxumState<DashboardState>) -> ApiResult {
@@ -5896,7 +5703,6 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let local_model_status = tokio::task::spawn_blocking(crate::halo::local_models::detect_status)
         .await
         .map_err(|e| internal_err(format!("local model status task join: {e}")))?;
-    let container_runtime = ContainerBackend::detect_available();
     let llm_ok = state
         .vault
         .as_ref()
@@ -5913,9 +5719,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .is_some()
-        || local_model_status.ollama.healthy
-        || local_model_status.vllm.healthy
-        || local_model_status.config.local_models_chosen;
+        || local_model_status.backend.healthy;
     let setup_complete = identity_ok && wallet_complete && llm_ok;
 
     Ok(Json(json!({
@@ -5978,10 +5782,6 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "home": path_display_hint(&config::halo_dir()),
             "db": path_display_hint(&state.db_path),
             "credentials": path_display_hint(&state.credentials_path),
-        },
-        "container_runtime": {
-            "available": container_runtime.is_some(),
-            "engine": container_runtime.map(|b| b.binary()),
         },
     })))
 }
@@ -6135,253 +5935,6 @@ async fn api_agentpmt_anonymous_wallet(
         "token_saved": token_saved,
         "result": result,
     })))
-}
-
-/// Shared proxy logic for AgentPMT reverse proxy routes.
-///
-/// Fetches `upstream_url` using a direct ureq agent (bypassing privacy controller /
-/// Nym mixnet — the user explicitly opted into AgentPMT). For HTML responses,
-/// injects a pre-hydration pathname fix so Next.js sees `/embed/dashboard`
-/// instead of `/__pmt/embed/dashboard`, while all network traffic stays
-/// same-origin through the proxy routes.
-fn pmt_proxy_blocking(
-    upstream_url: &str,
-    method: &str,
-    content_type: &str,
-    body: &[u8],
-    cookie_header: &str,
-) -> Result<Response, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(30)))
-        .build()
-        .into();
-
-    let resp = if method == "POST" || method == "PUT" || method == "PATCH" {
-        let mut req = agent.post(upstream_url);
-        req = req.header("Content-Type", content_type);
-        if !cookie_header.is_empty() {
-            req = req.header("Cookie", cookie_header);
-        }
-        req.send(body).map_err(|e| format!("proxy POST: {e}"))?
-    } else {
-        let mut req = agent.get(upstream_url);
-        if !cookie_header.is_empty() {
-            req = req.header("Cookie", cookie_header);
-        }
-        req.call().map_err(|e| format!("proxy GET: {e}"))?
-    };
-
-    let status = resp.status();
-    let resp_ct = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "application/octet-stream".to_string());
-
-    // Collect Set-Cookie headers from upstream — essential for auth flows.
-    // Strip Domain, Secure, and SameSite attributes so the browser stores
-    // them as host-only cookies for localhost (our proxy origin).
-    let set_cookies: Vec<String> = resp
-        .headers()
-        .get_all("set-cookie")
-        .into_iter()
-        .filter_map(|v| v.to_str().ok())
-        .map(|raw: &str| {
-            raw.split(';')
-                .filter(|part: &&str| {
-                    let lower = part.trim().to_ascii_lowercase();
-                    !lower.starts_with("domain=")
-                        && !lower.starts_with("secure")
-                        && !lower.starts_with("samesite=")
-                })
-                .collect::<Vec<&str>>()
-                .join(";")
-        })
-        .collect();
-
-    let resp_body = resp
-        .into_body()
-        .read_to_vec()
-        .map_err(|e| format!("proxy read body: {e}"))?;
-
-    // For HTML responses, inject a pathname fix before any Next.js code runs.
-    let final_body = if resp_ct.contains("text/html") {
-        let html = String::from_utf8_lossy(&resp_body);
-        // Inject a pathname fix before any Next.js code runs:
-        //
-        // 1. history.replaceState — strip the /__pmt prefix from the pathname.
-        //    Next.js App Router uses window.location.pathname for client-side
-        //    routing.  Without this, the router sees "/__pmt/embed/dashboard"
-        //    and can't match any route, leaving the page stuck on the Suspense
-        //    loading fallback forever.
-        //
-        let interceptor = r#"<script>(function(){var P='/__pmt';if(location.pathname.startsWith(P)){history.replaceState(null,'',location.pathname.slice(6)+location.search+location.hash);}})()</script>"#;
-        let final_html = if html.contains("<head>") {
-            html.replacen("<head>", &format!("<head>{interceptor}"), 1)
-        } else {
-            html.to_string()
-        };
-        final_html.into_bytes()
-    } else {
-        resp_body
-    };
-
-    let mut builder = Response::builder()
-        .status(status)
-        .header("content-type", &resp_ct)
-        .header("cache-control", "no-store");
-    for cookie in &set_cookies {
-        builder = builder.header("set-cookie", cookie);
-    }
-    Ok(builder
-        .body(axum::body::Body::from(final_body))
-        .unwrap_or_else(|_| {
-            Response::builder()
-                .status(502)
-                .body(axum::body::Body::from("proxy response build error"))
-                .unwrap()
-        }))
-}
-
-fn pmt_error_response(msg: String) -> Response {
-    Response::builder()
-        .status(502)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(
-            serde_json::json!({"error": msg}).to_string(),
-        ))
-        .unwrap()
-}
-
-fn pmt_upstream_base() -> String {
-    std::env::var("AGENTHALO_AGENTPMT_BASE")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "https://www.agentpmt.com".to_string())
-}
-
-/// Reverse proxy for AgentPMT embed API paths under `/api/embed/*`.
-async fn api_agentpmt_embed_api_proxy(
-    method: axum::http::Method,
-    Path(rest): Path<String>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    pmt_proxy_path_handler(method.as_str(), format!("api/embed/{rest}"), headers, body).await
-}
-
-/// Proxy telemetry/error posts emitted by the embedded AgentPMT app.
-async fn api_agentpmt_public_errors_proxy(
-    method: axum::http::Method,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    pmt_proxy_path_handler(method.as_str(), "api/public-errors".to_string(), headers, body).await
-}
-
-/// Reverse proxy for the AgentPMT embed page (legacy path under /api/).
-async fn api_agentpmt_embed_proxy(
-    method: axum::http::Method,
-    Path(rest): Path<String>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    pmt_proxy_path_handler(method.as_str(), rest, headers, body).await
-}
-
-/// Top-level AgentPMT reverse proxy at `/__pmt/{*rest}`.
-///
-/// This is the primary proxy route. The iframe loads `/__pmt/embed/dashboard?theme=dark`
-/// and ALL sub-requests (assets, API calls, data fetches) route through here, keeping
-/// everything same-origin so cookies, CSRF tokens, and auth flows work correctly.
-pub async fn pmt_top_proxy(
-    method: axum::http::Method,
-    Path(rest): Path<String>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    pmt_proxy_path_handler(method.as_str(), rest, headers, body).await
-}
-
-/// Top-level catch-all for `/_next/{*rest}` — handles dynamic imports and runtime
-/// asset loads that Next.js JS initiates with path-absolute URLs.
-pub async fn pmt_next_proxy(
-    Path(rest): Path<String>,
-    headers: HeaderMap,
-) -> Response {
-    pmt_proxy_path_handler(
-        "GET",
-        format!("_next/{rest}"),
-        headers,
-        axum::body::Bytes::new(),
-    )
-    .await
-}
-
-/// Proxy Vercel analytics/runtime assets used by the embedded AgentPMT page.
-pub async fn pmt_vercel_proxy(Path(rest): Path<String>, headers: HeaderMap) -> Response {
-    pmt_proxy_path_handler(
-        "GET",
-        format!("_vercel/{rest}"),
-        headers,
-        axum::body::Bytes::new(),
-    )
-    .await
-}
-
-/// Proxy exact root-level assets requested by the embedded AgentPMT app.
-pub async fn pmt_logo_proxy(headers: HeaderMap) -> Response {
-    pmt_proxy_path_handler(
-        "GET",
-        "logo-w-text.svg".to_string(),
-        headers,
-        axum::body::Bytes::new(),
-    )
-    .await
-}
-
-pub async fn pmt_manifest_proxy(headers: HeaderMap) -> Response {
-    pmt_proxy_path_handler(
-        "GET",
-        "site.webmanifest".to_string(),
-        headers,
-        axum::body::Bytes::new(),
-    )
-    .await
-}
-
-fn extract_cookie_header(headers: &HeaderMap) -> String {
-    headers
-        .get("cookie")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string()
-}
-
-async fn pmt_proxy_path_handler(
-    method_str: &str,
-    upstream_path: String,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let base = pmt_upstream_base();
-    let upstream_url = format!("{}/{}", base.trim_end_matches('/'), upstream_path);
-    let method = method_str.to_ascii_uppercase();
-    let content_type = headers
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/octet-stream")
-        .to_string();
-    let cookie = extract_cookie_header(&headers);
-    let body_vec = body.to_vec();
-
-    let result = tokio::task::spawn_blocking(move || {
-        pmt_proxy_blocking(&upstream_url, &method, &content_type, &body_vec, &cookie)
-    })
-    .await
-    .unwrap_or_else(|e| Err(format!("proxy task join: {e}")));
-    result.unwrap_or_else(pmt_error_response)
 }
 
 async fn api_agentaddress_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
@@ -7627,15 +7180,9 @@ async fn api_models_serve(
     Json(req): Json<LocalModelServeRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let backend = req
-        .backend
-        .clone()
-        .unwrap_or_else(|| "ollama".to_string())
-        .parse::<crate::halo::local_models::LocalBackendType>()
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     let result = tokio::task::spawn_blocking(move || {
         crate::halo::local_models::serve_backend(crate::halo::local_models::ServeRequest {
-            backend,
+            backend: crate::halo::local_models::LocalBackendType::Vllm,
             port: req.port,
             model: req.model,
         })
@@ -7648,43 +7195,16 @@ async fn api_models_serve(
 
 async fn api_models_stop(
     AxumState(state): AxumState<DashboardState>,
-    Json(req): Json<LocalModelStopRequest>,
+    Json(_req): Json<LocalModelStopRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let backend = req
-        .backend
-        .clone()
-        .unwrap_or_else(|| "ollama".to_string())
-        .parse::<crate::halo::local_models::LocalBackendType>()
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let result =
-        tokio::task::spawn_blocking(move || crate::halo::local_models::stop_backend(backend))
-            .await
-            .map_err(|e| internal_err(format!("local model stop task join: {e}")))?
-            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    Ok(Json(json!(result)))
-}
-
-async fn api_models_choose_local(AxumState(state): AxumState<DashboardState>) -> ApiResult {
-    require_sensitive_access(&state)?;
-    tokio::task::spawn_blocking(crate::halo::local_models::mark_local_models_chosen)
-        .await
-        .map_err(|e| internal_err(format!("choose local task join: {e}")))?
-        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
-    Ok(Json(json!({ "ok": true, "local_models_chosen": true })))
-}
-
-async fn api_models_unchoose_local(AxumState(state): AxumState<DashboardState>) -> ApiResult {
-    require_sensitive_access(&state)?;
-    tokio::task::spawn_blocking(|| {
-        let mut cfg = crate::halo::local_models::load_or_default();
-        cfg.local_models_chosen = false;
-        crate::halo::local_models::save_config(&cfg)
+    let result = tokio::task::spawn_blocking(move || {
+        crate::halo::local_models::stop_backend(crate::halo::local_models::LocalBackendType::Vllm)
     })
     .await
-    .map_err(|e| internal_err(format!("unchoose local task join: {e}")))?
-    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
-    Ok(Json(json!({ "ok": true, "local_models_chosen": false })))
+    .map_err(|e| internal_err(format!("local model stop task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!(result)))
 }
 
 async fn api_models_login_huggingface(
@@ -9713,6 +9233,13 @@ fn cli_agent_meta(agent: &str) -> Option<CliAgentMeta> {
             auth_args: &[],
             detect_cmd: "gemini",
         }),
+        "openclaw" => Some(CliAgentMeta {
+            npm_package: "openclaw@latest",
+            // Onboard wizard handles auth, gateway setup, and daemon install.
+            auth_cmd: "openclaw",
+            auth_args: &["onboard", "--install-daemon"],
+            detect_cmd: "openclaw",
+        }),
         _ => None,
     }
 }
@@ -9764,8 +9291,8 @@ async fn api_cli_detect(Path(agent): Path<String>) -> ApiResult {
 }
 
 /// POST /api/cli/install/{agent} — install a CLI agent via npm to the writable
-/// /data/npm-global prefix. This is an explicit on-demand action; the dashboard
-/// does not spawn background CLI installs at boot.
+/// /data/npm-global prefix. CLIs are also background-installed at boot; this
+/// endpoint lets the frontend trigger or retry on demand.
 async fn api_cli_install(
     AxumState(state): AxumState<DashboardState>,
     Path(agent): Path<String>,
@@ -9858,7 +9385,7 @@ async fn api_cli_auth(
         .create_session(
             &cmd,
             &args,
-            deploy::cli_session_env(),
+            vec![],
             None,
             120,
             24,
@@ -9877,82 +9404,177 @@ async fn api_cli_auth(
     })))
 }
 
+// ---------------------------------------------------------------------------
+// OpenClaw harness — gateway status & MCP wiring
+// ---------------------------------------------------------------------------
+
+/// GET /api/openclaw/gateway-status — check if the OpenClaw gateway daemon is running.
+async fn api_openclaw_gateway_status() -> ApiResult {
+    let installed = tokio::task::spawn_blocking(|| {
+        std::process::Command::new("which")
+            .arg("openclaw")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
+
+    if !installed {
+        return Ok(Json(json!({
+            "installed": false,
+            "gateway_running": false,
+            "detail": "openclaw CLI not found on PATH",
+        })));
+    }
+
+    let status_output = tokio::task::spawn_blocking(|| {
+        std::process::Command::new("openclaw")
+            .args(["gateway", "status"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+    })
+    .await
+    .map_err(|e| {
+        api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("join error: {e}"),
+        )
+    })?
+    .map_err(|e| {
+        api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("status check failed: {e}"),
+        )
+    })?;
+
+    let stdout = String::from_utf8_lossy(&status_output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&status_output.stderr).to_string();
+    let running = status_output.status.success();
+
+    Ok(Json(json!({
+        "installed": true,
+        "gateway_running": running,
+        "stdout": stdout.trim(),
+        "stderr": stderr.trim(),
+    })))
+}
+
+/// POST /api/openclaw/wire-mcp — inject NucleusDB + HALO MCP server configs
+/// into the user's `~/.openclaw/openclaw.json` so OpenClaw agents can call
+/// all NucleusDB tools via stdio transport.
+async fn api_openclaw_wire_mcp(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+
+    let result = tokio::task::spawn_blocking(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let config_path = std::path::Path::new(&home)
+            .join(".openclaw")
+            .join("openclaw.json");
+
+        // Read existing config or start fresh
+        let mut config: serde_json::Value = if config_path.exists() {
+            let contents = std::fs::read_to_string(&config_path)
+                .map_err(|e| format!("failed to read {}: {e}", config_path.display()))?;
+            serde_json::from_str(&contents)
+                .map_err(|e| format!("failed to parse {}: {e}", config_path.display()))?
+        } else {
+            // Create parent dir if needed
+            if let Some(parent) = config_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+            }
+            serde_json::json!({})
+        };
+
+        // Resolve paths to our MCP server binaries
+        let nucleusdb_mcp_path = resolve_binary("nucleusdb-mcp");
+        let agenthalo_mcp_path = resolve_binary("agenthalo-mcp-server");
+
+        // Build MCP server entries
+        let nucleusdb_entry = serde_json::json!({
+            "command": nucleusdb_mcp_path.as_deref().unwrap_or("nucleusdb-mcp"),
+            "args": []
+        });
+        let agenthalo_entry = serde_json::json!({
+            "command": agenthalo_mcp_path.as_deref().unwrap_or("agenthalo-mcp-server"),
+            "args": []
+        });
+
+        // Navigate to agents.defaults.mcpServers (create path if missing)
+        let agents = config
+            .as_object_mut()
+            .ok_or_else(|| "config root is not an object".to_string())?
+            .entry("agents")
+            .or_insert_with(|| serde_json::json!({}));
+        let defaults = agents
+            .as_object_mut()
+            .ok_or_else(|| "agents is not an object".to_string())?
+            .entry("defaults")
+            .or_insert_with(|| serde_json::json!({}));
+        let mcp_servers = defaults
+            .as_object_mut()
+            .ok_or_else(|| "defaults is not an object".to_string())?
+            .entry("mcpServers")
+            .or_insert_with(|| serde_json::json!({}));
+        let servers_map = mcp_servers
+            .as_object_mut()
+            .ok_or_else(|| "mcpServers is not an object".to_string())?;
+
+        servers_map.insert("nucleusdb".to_string(), nucleusdb_entry);
+        servers_map.insert("agenthalo".to_string(), agenthalo_entry);
+
+        // Write back with pretty formatting
+        let serialized = serde_json::to_string_pretty(&config)
+            .map_err(|e| format!("serialization failed: {e}"))?;
+
+        // Atomic write: temp file + rename
+        let tmp_path = config_path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &serialized)
+            .map_err(|e| format!("failed to write {}: {e}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, &config_path)
+            .map_err(|e| format!("failed to rename to {}: {e}", config_path.display()))?;
+
+        Ok::<_, String>(serde_json::json!({
+            "config_path": config_path.display().to_string(),
+            "nucleusdb_mcp": nucleusdb_mcp_path,
+            "agenthalo_mcp": agenthalo_mcp_path,
+            "tools_wired": ["nucleusdb", "agenthalo"],
+        }))
+    })
+    .await
+    .map_err(|e| {
+        api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("join error: {e}"),
+        )
+    })?
+    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+
+    Ok(Json(json!({
+        "success": true,
+        "detail": result,
+    })))
+}
+
+/// Try to find a binary on PATH, returning the absolute path if found.
+fn resolve_binary(name: &str) -> Option<String> {
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{lock_env, EnvVarGuard};
     use axum::extract::Query;
-    use std::sync::{Mutex, OnceLock};
-    use tempfile::TempDir;
-
-    fn dashboard_auth_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    struct DashboardAuthRequirementGuard {
-        previous: Option<String>,
-    }
-
-    impl DashboardAuthRequirementGuard {
-        fn enforced() -> Self {
-            let previous = std::env::var("AGENTHALO_REQUIRE_DASHBOARD_AUTH").ok();
-            unsafe {
-                std::env::set_var("AGENTHALO_REQUIRE_DASHBOARD_AUTH", "1");
-            }
-            Self { previous }
-        }
-    }
-
-    impl Drop for DashboardAuthRequirementGuard {
-        fn drop(&mut self) {
-            if let Some(previous) = &self.previous {
-                unsafe {
-                    std::env::set_var("AGENTHALO_REQUIRE_DASHBOARD_AUTH", previous);
-                }
-            } else {
-                unsafe {
-                    std::env::remove_var("AGENTHALO_REQUIRE_DASHBOARD_AUTH");
-                }
-            }
-        }
-    }
-
-    fn unauthenticated_dashboard_state() -> (DashboardState, TempDir) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = crate::dashboard::build_state(
-            dir.path().join("dashboard.redb"),
-            dir.path().join("credentials.json"),
-        );
-        (state, dir)
-    }
-
-    fn sample_compile_task() -> CompileTask {
-        CompileTask {
-            task_id: "task-1".to_string(),
-            artifact_id: "artifact-1".to_string(),
-            lean_source: "def x := True".to_string(),
-            lakefile: "package demo".to_string(),
-            dependencies: Vec::new(),
-            output_type: compile_workflow::CompileOutputType::LeanBuild,
-            requester_did: Some("did:example:submitter".to_string()),
-            submitted_at: 1,
-            timeout_ms: 1000,
-        }
-    }
-
-    fn sample_compile_result(task_id: &str) -> CompileResult {
-        CompileResult {
-            task_id: task_id.to_string(),
-            status: CompileStatus::Success,
-            build_log: "ok".to_string(),
-            lean_hash: "deadbeef".to_string(),
-            lambda_ir: None,
-            c_source: None,
-            acsl_annotations: None,
-            timing_ms: 10.0,
-            worker_did: "did:example:worker".to_string(),
-        }
-    }
 
     #[test]
     fn stream_trace_response_includes_billing_and_stream_metadata() {
@@ -10056,109 +9678,6 @@ mod tests {
         assert!(html.contains("\\u003e"));
     }
 
-    #[tokio::test]
-    async fn compile_endpoints_require_sensitive_access() {
-        let _env_lock = dashboard_auth_env_lock().lock().expect("env lock");
-        let _auth_guard = DashboardAuthRequirementGuard::enforced();
-        let (state, _dir) = unauthenticated_dashboard_state();
-
-        let submit_err = api_compile_submit(AxumState(state.clone()), Json(sample_compile_task()))
-            .await
-            .expect_err("submit should require auth");
-        assert_eq!(submit_err.0, StatusCode::UNAUTHORIZED);
-
-        let poll_err = api_compile_poll(
-            AxumState(state.clone()),
-            Query(CompilePollQuery {
-                worker_did: "did:example:worker".to_string(),
-            }),
-        )
-        .await
-        .expect_err("poll should require auth");
-        assert_eq!(poll_err.0, StatusCode::UNAUTHORIZED);
-
-        let result_err = api_compile_result(
-            AxumState(state.clone()),
-            Path("task-1".to_string()),
-            Json(sample_compile_result("task-1")),
-        )
-        .await
-        .expect_err("result should require auth");
-        assert_eq!(result_err.0, StatusCode::UNAUTHORIZED);
-
-        let status_err = api_compile_status(AxumState(state), Path("task-1".to_string()))
-            .await
-            .expect_err("status should require auth");
-        assert_eq!(status_err.0, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn container_endpoints_require_sensitive_access() {
-        let _env_lock = dashboard_auth_env_lock().lock().expect("env lock");
-        let _auth_guard = DashboardAuthRequirementGuard::enforced();
-        let (state, _dir) = unauthenticated_dashboard_state();
-
-        let list_err = api_containers_list(AxumState(state.clone()))
-            .await
-            .expect_err("list should require auth");
-        assert_eq!(list_err.0, StatusCode::UNAUTHORIZED);
-
-        let provision_err = api_containers_provision(
-            AxumState(state.clone()),
-            Json(ContainersProvisionRequest {
-                image: None,
-                agent_id: None,
-                admission_mode: None,
-                bootstrap_mode: None,
-            }),
-        )
-        .await
-        .expect_err("provision should require auth");
-        assert_eq!(provision_err.0, StatusCode::UNAUTHORIZED);
-
-        let initialize_err = api_containers_initialize(
-            AxumState(state.clone()),
-            Json(ContainersInitializeRequest {
-                session_id: "sess-test".to_string(),
-                reuse_policy: None,
-                hookup: crate::orchestrator::dispatch::ContainerHookupRequest::Cli {
-                    cli_name: "shell".to_string(),
-                    model: None,
-                },
-            }),
-        )
-        .await
-        .expect_err("initialize should require auth");
-        assert_eq!(initialize_err.0, StatusCode::UNAUTHORIZED);
-
-        let deinitialize_err = api_containers_deinitialize(
-            AxumState(state.clone()),
-            Json(ContainersDeinitializeRequest {
-                session_id: "sess-test".to_string(),
-            }),
-        )
-        .await
-        .expect_err("deinitialize should require auth");
-        assert_eq!(deinitialize_err.0, StatusCode::UNAUTHORIZED);
-
-        let destroy_err =
-            api_containers_destroy(AxumState(state.clone()), Path("sess-test".to_string()))
-                .await
-                .expect_err("destroy should require auth");
-        assert_eq!(destroy_err.0, StatusCode::UNAUTHORIZED);
-
-        let logs_err = api_containers_logs(
-            AxumState(state),
-            Path("sess-test".to_string()),
-            Query(ContainerLogsQuery {
-                follow: Some(false),
-            }),
-        )
-        .await
-        .expect_err("logs should require auth");
-        assert_eq!(logs_err.0, StatusCode::UNAUTHORIZED);
-    }
-
     #[test]
     fn normalize_openrouter_exchange_inputs_rejects_empty_verifier() {
         let req = OpenRouterExchangeRequest {
@@ -10179,5 +9698,32 @@ mod tests {
             normalize_openrouter_exchange_inputs(&req).expect("expected trimmed values");
         assert_eq!(code, "code-123");
         assert_eq!(verifier, "verifier-xyz");
+    }
+
+    #[test]
+    fn local_dashboard_mcp_dispatch_disables_in_proxy_mode() {
+        let _guard = lock_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let db_path = home.path().join("dashboard.ndb");
+        let credentials_path = home.path().join("credentials.json");
+        let _home_guard =
+            EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+        let _secret_guard = EnvVarGuard::set("AGENTHALO_MCP_SECRET", Some("dev-secret"));
+
+        let proxy_state = crate::dashboard::build_state(db_path.clone(), credentials_path.clone());
+        assert!(proxy_state.orchestrator.is_none());
+        assert!(!should_invoke_dashboard_local_mcp_tool(
+            &proxy_state,
+            "nucleusdb_subsidiary_provision"
+        ));
+
+        drop(_secret_guard);
+
+        let local_state = crate::dashboard::build_state(db_path, credentials_path);
+        assert!(local_state.orchestrator.is_some());
+        assert!(should_invoke_dashboard_local_mcp_tool(
+            &local_state,
+            "nucleusdb_subsidiary_provision"
+        ));
     }
 }

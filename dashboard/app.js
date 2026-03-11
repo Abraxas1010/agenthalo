@@ -83,71 +83,13 @@ async function generateCodeChallenge(verifier) {
   return base64urlEncode(hash);
 }
 
-function renderMcpToolsPageRoute() {
-  if (typeof window.renderMcpToolsPage === 'function') {
-    window.renderMcpToolsPage();
-  } else {
-    content.innerHTML = '<div class="loading">MCP Tools module not loaded.</div>';
-  }
-}
-
-async function renderAgentPmt() {
-  const content = $('#content');
-  let cfg = null;
-  try {
-    cfg = await api('/config');
-  } catch (_e) {}
-  const walletStatus = (cfg && cfg.wallet_status) || {};
-  const agentpmtConnected = !!walletStatus.agentpmt_connected;
-
-  content.innerHTML = `
-    <div style="display:flex;flex-direction:column;height:100%;padding:0">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border);flex-shrink:0">
-        <div style="display:flex;align-items:center;gap:12px">
-          <img src="img/agentpmt-192.png" alt="AgentPMT" style="height:32px;width:32px;border-radius:6px" onerror="this.style.display='none'">
-          <div>
-            <div style="font-size:18px;font-weight:700">AgentPMT Dashboard</div>
-            <div style="font-size:12px;color:var(--text-dim)">Manage your agents, tools, wallets, and budget</div>
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;gap:10px">
-          ${agentpmtConnected
-            ? '<span style="color:var(--green);font-size:13px">&#10003; Connected</span>'
-            : '<span style="color:var(--text-dim);font-size:13px">Not connected</span>'}
-          <a class="btn btn-sm" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" style="font-size:12px">
-            Open in New Tab &#8599;
-          </a>
-        </div>
-      </div>
-      <div style="flex:1;min-height:0">
-        <iframe
-          src="/__pmt/embed/dashboard?theme=dark"
-          title="AgentPMT Dashboard"
-          style="width:100%;height:100%;border:none;display:block"
-          allow="storage-access"
-          loading="lazy"
-        ></iframe>
-      </div>
-    </div>
-  `;
-}
-
 // -- Routing ------------------------------------------------------------------
-const pages = { overview: renderOverviewHub, sessions: renderSessions,
-  config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
+const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
+  costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
   identification: renderIdentificationPage, communication: renderCommunicationPage, 'nucleusdb-docs': renderNucleusDBDocsPage,
   networking: renderNetworkingPage,
-  trust: renderTrust, nucleusdb: renderNucleusDB, cockpit: renderCockpit, 'mcp-tools': renderMcpToolsPageRoute,
-  agentpmt: renderAgentPmt };
-
-const REMOVED_PAGE_REDIRECTS = {
-  dashboard: 'overview',
-  costs: 'overview',
-  models: 'config',
-  deploy: 'cockpit',
-  containers: 'cockpit',
-  orchestrator: 'cockpit',
-};
+  'mcp-tools': renderMcpToolsPage,
+  trust: renderTrust, nucleusdb: renderNucleusDB, orchestrator: renderOrchestrator, cockpit: renderCockpit, deploy: renderDeploy, models: renderModels, containers: renderContainers };
 
 const NETWORKS = [
   {
@@ -163,19 +105,67 @@ const NETWORKS = [
     name: 'Nym Mixnet Mesh',
     icon: '&#128274;',
     description: 'Privacy-preserving agent communication',
-    configurable: true,
-    comingSoon: false,
+    configurable: false,
+    comingSoon: true,
   },
   {
     id: 'didcomm-federation',
     name: 'DIDComm Federation',
     icon: '&#127760;',
     description: 'Cross-organization agent identity mesh',
-    configurable: true,
-    comingSoon: false,
+    configurable: false,
+    comingSoon: true,
   },
 ];
 let _networkingSelected = 'p2pclaw';
+let _p2pclawTab = 'config';
+
+const P2PCLAW_TABS = [
+  { id: 'config', label: 'Config' },
+  { id: 'status', label: 'Status' },
+  { id: 'papers', label: 'Papers' },
+  { id: 'mempool', label: 'Mempool' },
+  { id: 'events', label: 'Events' },
+  { id: 'investigations', label: 'Investigations' },
+  { id: 'docs', label: 'Docs' },
+];
+
+const P2PCLAW_DOC_ROUTES = [
+  ['GET', '/api/p2pclaw/status', 'Live hive metrics and connection status.'],
+  ['GET', '/api/p2pclaw/briefing', 'Markdown briefing feed from the hive.'],
+  ['POST', '/api/p2pclaw/configure', 'Persist endpoint, identity, auth secret, and tier.'],
+  ['GET', '/api/p2pclaw/papers', 'Verified paper feed from La Rueda.'],
+  ['POST', '/api/p2pclaw/papers/publish', 'Publish a draft into the hive.'],
+  ['POST', '/api/p2pclaw/verify', 'Local structural verification bridge for drafts.'],
+  ['GET', '/api/p2pclaw/mempool', 'Unvalidated drafts awaiting votes.'],
+  ['POST', '/api/p2pclaw/papers/validate', 'Submit approve/reject with optional Occam score.'],
+  ['GET', '/api/p2pclaw/events', 'Recent chat/publication/validation event stream.'],
+  ['POST', '/api/p2pclaw/chat', 'Send a message into the research hive.'],
+  ['GET', '/api/p2pclaw/wheel', 'Similarity check against prior work.'],
+  ['GET', '/api/p2pclaw/investigations', 'Current investigation queue snapshot.'],
+];
+
+function p2pList(items, emptyLabel) {
+  const rows = Array.isArray(items) ? items : [];
+  if (!rows.length) {
+    return `<div class="card-sub">${esc(emptyLabel)}</div>`;
+  }
+  return `
+    <div class="p2p-list">
+      ${rows.map((item) => `
+        <article class="p2p-list-item">
+          <div class="p2p-list-title">${esc(item.title || item.paper_id || item.id || item.kind || 'untitled')}</div>
+          <div class="p2p-list-meta">
+            ${(item.status ? `status=${esc(item.status)}` : '')}
+            ${(item.author ? ` | author=${esc(item.author)}` : '')}
+            ${(item.timestamp ? ` | ts=${esc(String(item.timestamp))}` : '')}
+          </div>
+          <pre class="network-briefing p2p-list-json">${esc(JSON.stringify(item, null, 2))}</pre>
+        </article>
+      `).join('')}
+    </div>
+  `;
+}
 
 // Genesis + Overview hub + Identification pages — rendering logic in genesis-docs.js (loaded after app.js)
 function renderGenesisPage() {
@@ -222,27 +212,10 @@ async function renderNetworkingPage() {
 
   let p2status = null;
   let p2error = '';
-  let nymStatus = null;
-  let nymError = '';
-  let didcommStatus = null;
-  let didcommError = '';
   try {
     p2status = await api('/p2pclaw/status');
   } catch (err) {
     p2error = String(err && err.message || err || '');
-  }
-  let bridgePayload = null;
-  let bridgeError = '';
-  try {
-    bridgePayload = await api('/p2pclaw/bridge/status?include_mcp_tools=true');
-  } catch (err) {
-    bridgeError = String(err && err.message || err || '');
-  }
-  if (_networkingSelected === 'nym-mesh') {
-    try { nymStatus = await api('/nym/status'); } catch (err) { nymError = String(err && err.message || err || ''); }
-  }
-  if (_networkingSelected === 'didcomm-federation') {
-    try { didcommStatus = await api('/didcomm/status'); } catch (err) { didcommError = String(err && err.message || err || ''); }
   }
   const p2cfg = (p2status && p2status.config) || {
     endpoint_url: 'https://p2pclaw.com',
@@ -252,9 +225,19 @@ async function renderNetworkingPage() {
   };
   const p2enabled = !!(cards.find((n) => n.id === 'p2pclaw') || {}).enabled;
   const swarm = (p2status && p2status.swarm) || {};
-  const bridge = (bridgePayload && bridgePayload.bridge) || {};
-  const bridgeState = bridge.state || {};
-  const bridgeCaps = Array.isArray(bridge.capabilities) ? bridge.capabilities : [];
+
+  let tabPayload = null;
+  let tabError = '';
+  if (_networkingSelected === 'p2pclaw') {
+    try {
+      if (_p2pclawTab === 'papers') tabPayload = await api('/p2pclaw/papers?limit=20');
+      if (_p2pclawTab === 'mempool') tabPayload = await api('/p2pclaw/mempool');
+      if (_p2pclawTab === 'events') tabPayload = await api('/p2pclaw/events?limit=20');
+      if (_p2pclawTab === 'investigations') tabPayload = await api('/p2pclaw/investigations');
+    } catch (err) {
+      tabError = String(err && err.message || err || 'failed to load tab');
+    }
+  }
 
   const cardsHtml = cards.map((n) => {
     const selected = _networkingSelected === n.id;
@@ -273,159 +256,199 @@ async function renderNetworkingPage() {
     </button>`;
   }).join('');
 
-  let detailsHtml = '';
-  if (_networkingSelected === 'nym-mesh') {
-    const ns = nymStatus || {};
-    const nymHealthy = !!ns.healthy;
-    const nymMode = ns.mode || 'disabled';
-    const proxy = ns.socks5_proxy || 'None detected';
-    const failClosed = ns.fail_closed !== false;
-    const nativeConn = !!ns.native_connected;
-    const nativeAddr = ns.native_address || '-';
-    const inbound = !!ns.inbound_registered;
-    const cover = !!ns.cover_traffic_active;
-    const healthDot = nymHealthy
-      ? '<span style="color:var(--green)">&#9679;</span> Healthy'
-      : '<span style="color:var(--red)">&#9679;</span> No transport';
-    detailsHtml = '<div class="networking-detail-grid">'
-      + '<section class="card networking-config-card">'
-      + '<div class="card-label">Nym Mixnet Status</div>'
-      + '<div class="card-sub">Privacy-preserving transport layer for external traffic.</div>'
-      + '<div class="network-stat-grid">'
-      + '<div class="network-stat"><span>Health</span><strong>' + healthDot + '</strong></div>'
-      + '<div class="network-stat"><span>Mode</span><strong>' + esc(String(nymMode)) + '</strong></div>'
-      + '<div class="network-stat"><span>SOCKS5 Proxy</span><strong>' + esc(String(proxy)) + '</strong></div>'
-      + '<div class="network-stat"><span>Fail-Closed</span><strong>' + (failClosed ? 'Yes (secure)' : 'No (fail-open)') + '</strong></div>'
-      + '</div>'
-      + '</section>'
-      + '<section class="card networking-status-card">'
-      + '<div class="card-label">Native Mixnet (nym-sdk)</div>'
-      + '<div class="card-sub">Direct mixnet integration via the Nym SDK client.</div>'
-      + '<div class="network-stat-grid">'
-      + '<div class="network-stat"><span>Connected</span><strong>' + (nativeConn ? '<span style="color:var(--green)">Yes</span>' : 'No') + '</strong></div>'
-      + '<div class="network-stat"><span>Address</span><strong style="font-size:11px;word-break:break-all">' + esc(String(nativeAddr)) + '</strong></div>'
-      + '<div class="network-stat"><span>Inbound Registered</span><strong>' + (inbound ? 'Yes' : 'No') + '</strong></div>'
-      + '<div class="network-stat"><span>Cover Traffic</span><strong>' + (cover ? '<span style="color:var(--green)">Active</span>' : 'Inactive') + '</strong></div>'
-      + '</div>'
-      + '</section>'
-      + '<section class="card networking-bridge-card">'
-      + '<div class="card-label">Configuration</div>'
-      + '<div class="card-sub">Environment variables control Nym transport behavior.</div>'
-      + '<div class="network-form-row"><label>SOCKS5_PROXY</label><div class="network-inline-note">Set to override auto-detection (e.g. 127.0.0.1:1080)</div></div>'
-      + '<div class="network-form-row"><label>NYM_FAIL_OPEN</label><div class="network-inline-note">Set to "true" to allow direct fallback when no proxy is available</div></div>'
-      + '<div class="network-form-row"><label>NYM_NATIVE_ENABLED</label><div class="network-inline-note">Set to "true" to enable native nym-sdk transport</div></div>'
-      + '<div class="network-form-row"><label>NYM_COVER_TRAFFIC_SECS</label><div class="network-inline-note">Interval in seconds for cover traffic (0 = disabled)</div></div>'
-      + '<div class="network-form-actions"><button class="btn" id="nym-refresh-btn">Refresh Status</button></div>'
-      + '<div id="nym-msg" class="networking-msg">' + (nymError ? esc(nymError) : (ns.note ? esc(String(ns.note)) : '')) + '</div>'
-      + '</section>'
-      + '</div>';
-  } else if (_networkingSelected === 'didcomm-federation') {
-    const dc = didcommStatus || {};
-    const identOk = !!dc.identity_configured;
-    const transportOk = !!dc.transport_available;
-    const transportMode = dc.transport_mode || 'disabled';
-    const failClosed = dc.fail_closed !== false;
-    const enc = dc.encryption || {};
-    const msgTypes = Array.isArray(dc.supported_message_types) ? dc.supported_message_types : [];
-    const meshTypes = Array.isArray(dc.mesh_message_types) ? dc.mesh_message_types : [];
-    const identDot = identOk
-      ? '<span style="color:var(--green)">&#9679;</span> Configured'
-      : '<span style="color:var(--amber)">&#9679;</span> Not configured';
-    const transportDot = transportOk
-      ? '<span style="color:var(--green)">&#9679;</span> Available'
-      : '<span style="color:var(--amber)">&#9679;</span> No transport';
-    detailsHtml = '<div class="networking-detail-grid">'
-      + '<section class="card networking-config-card">'
-      + '<div class="card-label">DIDComm Federation Status</div>'
-      + '<div class="card-sub">Hybrid post-quantum encrypted messaging between agents.</div>'
-      + '<div class="network-stat-grid">'
-      + '<div class="network-stat"><span>DID Identity</span><strong>' + identDot + '</strong></div>'
-      + '<div class="network-stat"><span>Transport</span><strong>' + transportDot + '</strong></div>'
-      + '<div class="network-stat"><span>Transport Mode</span><strong>' + esc(String(transportMode)) + '</strong></div>'
-      + '<div class="network-stat"><span>Fail-Closed</span><strong>' + (failClosed ? 'Yes' : 'No') + '</strong></div>'
-      + '</div>'
-      + '</section>'
-      + '<section class="card networking-status-card">'
-      + '<div class="card-label">Cryptographic Stack</div>'
-      + '<div class="card-sub">Post-quantum hybrid encryption with dual signing.</div>'
-      + '<div class="network-stat-grid">'
-      + '<div class="network-stat"><span>Classical KEM</span><strong style="font-size:11px">' + esc(String(enc.classical || 'X25519 + AES-256-GCM')) + '</strong></div>'
-      + '<div class="network-stat"><span>Post-Quantum KEM</span><strong style="font-size:11px">' + esc(String(enc.post_quantum || 'ML-KEM-768')) + '</strong></div>'
-      + '<div class="network-stat"><span>Signatures</span><strong style="font-size:11px">' + esc(String(enc.signatures || 'Ed25519 + ML-DSA-65')) + '</strong></div>'
-      + '</div>'
-      + '</section>'
-      + '<section class="card networking-bridge-card">'
-      + '<div class="card-label">Message Types</div>'
-      + '<div class="card-sub">Supported DIDComm v2 and mesh communication protocols.</div>'
-      + '<div class="network-form-row"><label>DIDComm v2</label>'
-      + '<div class="network-cap-list">' + (msgTypes.length ? msgTypes.map(function(t) { return '<span class="network-cap-pill">' + esc(String(t)) + '</span>'; }).join('') : '<span class="muted">No types reported.</span>') + '</div></div>'
-      + '<div class="network-form-row"><label>Mesh Protocol</label>'
-      + '<div class="network-cap-list">' + (meshTypes.length ? meshTypes.map(function(t) { return '<span class="network-cap-pill">' + esc(String(t)) + '</span>'; }).join('') : '<span class="muted">No types reported.</span>') + '</div></div>'
-      + '<div class="network-form-actions"><button class="btn" id="didcomm-refresh-btn">Refresh Status</button></div>'
-      + '<div id="didcomm-msg" class="networking-msg">' + (didcommError ? esc(didcommError) : '') + '</div>'
-      + '</section>'
-      + '</div>';
-  } else {
-    detailsHtml = '<div class="networking-detail-grid">'
-      + '<section class="card networking-config-card">'
-      + '<div class="card-label">P2PCLAW Configuration</div>'
-      + '<div class="card-sub">Enable integration and configure endpoint + agent identity.</div>'
-      + '<div class="network-form-row network-toggle-row">'
-      + '<label class="network-toggle-label">Enable P2PCLAW</label>'
-      + '<label class="switch">'
-      + '<input type="checkbox" id="p2pclaw-enabled-toggle" ' + (p2enabled ? 'checked' : '') + '>'
-      + '<span class="slider"></span>'
-      + '</label></div>'
-      + '<div class="network-form-row"><label for="p2-endpoint-url">Endpoint URL</label>'
-      + '<input class="input" id="p2-endpoint-url" value="' + esc(p2cfg.endpoint_url || 'https://p2pclaw.com') + '" placeholder="https://p2pclaw.com"></div>'
-      + '<div class="network-form-row"><label for="p2-agent-name">Agent Name</label>'
-      + '<input class="input" id="p2-agent-name" value="' + esc(p2cfg.agent_name || 'AgentHALO') + '" placeholder="AgentHALO"></div>'
-      + '<div class="network-form-row"><label for="p2-agent-id">Agent ID</label>'
-      + '<input class="input" id="p2-agent-id" value="' + esc(p2cfg.agent_id || 'agenthalo') + '" placeholder="agenthalo-alice"></div>'
-      + '<div class="network-form-row"><label for="p2-auth-secret">Auth Secret (optional)</label>'
-      + '<input class="input" id="p2-auth-secret" type="password" placeholder="Shared HMAC secret"></div>'
-      + '<div class="network-form-row"><label>Tier</label><div class="network-tier-row">'
-      + '<label><input type="radio" name="p2-tier" value="tier1" ' + ((p2cfg.tier || 'tier1') === 'tier1' ? 'checked' : '') + '> Tier 1 (Free)</label>'
-      + '<label><input type="radio" name="p2-tier" value="tier2" ' + ((p2cfg.tier || 'tier1') === 'tier2' ? 'checked' : '') + '> Tier 2 (Prepaid)</label>'
-      + '</div></div>'
-      + '<div class="network-form-actions">'
-      + '<button class="btn" id="p2-test-btn">Test Connection</button>'
-      + '<button class="btn btn-primary" id="p2-save-btn">Save</button></div>'
-      + '<div id="p2-config-msg" class="networking-msg">' + (p2error ? esc(p2error) : '') + '</div>'
-      + '</section>'
-      + '<section class="card networking-status-card">'
-      + '<div class="card-label">Hive Status</div>'
-      + '<div class="card-sub">Real-time metrics from /api/p2pclaw/status</div>'
-      + '<div class="network-stat-grid">'
-      + '<div class="network-stat"><span>Active Agents</span><strong id="p2-stat-agents">' + Number(swarm.agents || 0) + '</strong></div>'
-      + '<div class="network-stat"><span>Papers</span><strong id="p2-stat-papers">' + Number(swarm.papers || 0) + '</strong></div>'
-      + '<div class="network-stat"><span>Mempool</span><strong id="p2-stat-mempool">' + Number(swarm.mempool || 0) + '</strong></div>'
-      + '<div class="network-stat"><span>Last Event</span><strong id="p2-stat-last">' + esc(String(swarm.last_event_ts || '-')) + '</strong></div>'
-      + '</div>'
-      + '<div class="network-form-actions" style="margin-top:10px"><button class="btn btn-sm" id="p2-briefing-btn">Load Briefing</button></div>'
-      + '<pre id="p2-briefing" class="network-briefing">No briefing loaded.</pre>'
-      + '</section>'
-      + '<section class="card networking-bridge-card">'
-      + '<div class="card-label">Bridge Worker</div>'
-      + '<div class="card-sub">Persistent bridge state, compute split, and detected capabilities.</div>'
-      + '<div class="network-stat-grid">'
-      + '<div class="network-stat"><span>Configured</span><strong>' + (bridge.configured ? 'Yes' : 'No') + '</strong></div>'
-      + '<div class="network-stat"><span>Enabled</span><strong>' + (bridge.enabled ? 'Yes' : 'No') + '</strong></div>'
-      + '<div class="network-stat"><span>Last Poll</span><strong>' + esc(String(bridgeState.last_success_at || bridgeState.last_run_at || '-')) + '</strong></div>'
-      + '<div class="network-stat"><span>Next Poll</span><strong>' + esc(String(bridgeState.next_poll_not_before || '-')) + '</strong></div>'
-      + '<div class="network-stat"><span>Compute Split</span><strong>' + (typeof bridge.compute_split_ratio === 'number' ? (bridge.compute_split_ratio * 100).toFixed(1) + '% hive' : '-') + '</strong></div>'
-      + '<div class="network-stat"><span>Nash</span><strong>' + (bridge.nash_compliant ? 'Compliant' : 'Not yet') + '</strong></div>'
-      + '<div class="network-stat"><span>Polls</span><strong>' + Number(bridgeState.polls_total || 0) + '</strong></div>'
-      + '<div class="network-stat"><span>Failures</span><strong>' + Number(bridgeState.consecutive_failures || 0) + '</strong></div>'
-      + '</div>'
-      + '<div class="network-form-row"><label>Capabilities</label>'
-      + '<div class="network-cap-list">' + (bridgeCaps.length ? bridgeCaps.map(function(cap) { return '<span class="network-cap-pill">' + esc(String(cap)) + '</span>'; }).join('') : '<span class="muted">No capabilities reported.</span>') + '</div></div>'
-      + '<div class="network-form-row"><label>Bridge Config Path</label>'
-      + '<div class="network-inline-note">' + esc(String(bridge.config_path || '~/.agenthalo/p2pclaw_bridge.json')) + '</div></div>'
-      + '<div class="network-form-row"><label>Last Error</label>'
-      + '<div class="network-inline-note">' + esc(String(bridgeState.last_error || bridgeError || 'None')) + '</div></div>'
-      + '</section></div>';
-  }
+  const detailsHtml = _networkingSelected !== 'p2pclaw'
+    ? '<div class="card"><div class="card-label">Coming Soon</div><div class="card-sub">This network integration is reserved for a future release.</div></div>'
+    : `
+      <div class="p2p-tabs">
+        ${P2PCLAW_TABS.map((tab) => `
+          <button class="p2p-tab${tab.id === _p2pclawTab ? ' is-active' : ''}" data-p2-tab="${esc(tab.id)}">${esc(tab.label)}</button>
+        `).join('')}
+      </div>
+      <div class="networking-detail-grid">
+        ${_p2pclawTab === 'config' ? `
+          <section class="card networking-config-card">
+            <div class="card-label">P2PCLAW Configuration</div>
+            <div class="card-sub">Enable integration and configure endpoint + agent identity.</div>
+            <div class="network-form-row network-toggle-row">
+              <label class="network-toggle-label">Enable P2PCLAW</label>
+              <label class="switch">
+                <input type="checkbox" id="p2pclaw-enabled-toggle" ${p2enabled ? 'checked' : ''}>
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="network-form-row">
+              <label for="p2-endpoint-url">Endpoint URL</label>
+              <input class="input" id="p2-endpoint-url" value="${esc(p2cfg.endpoint_url || 'https://p2pclaw.com')}" placeholder="https://p2pclaw.com">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-agent-name">Agent Name</label>
+              <input class="input" id="p2-agent-name" value="${esc(p2cfg.agent_name || 'AgentHALO')}" placeholder="AgentHALO">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-agent-id">Agent ID</label>
+              <input class="input" id="p2-agent-id" value="${esc(p2cfg.agent_id || 'agenthalo')}" placeholder="agenthalo-alice">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-auth-secret">Auth Secret (optional)</label>
+              <input class="input" id="p2-auth-secret" type="password" placeholder="Shared HMAC secret">
+            </div>
+            <div class="network-form-row">
+              <label>Tier</label>
+              <div class="network-tier-row">
+                <label><input type="radio" name="p2-tier" value="tier1" ${(p2cfg.tier || 'tier1') === 'tier1' ? 'checked' : ''}> Tier 1 (Free)</label>
+                <label><input type="radio" name="p2-tier" value="tier2" ${(p2cfg.tier || 'tier1') === 'tier2' ? 'checked' : ''}> Tier 2 (Prepaid)</label>
+              </div>
+            </div>
+            <div class="network-form-actions">
+              <button class="btn" id="p2-test-btn">Test Connection</button>
+              <button class="btn btn-primary" id="p2-save-btn">Save</button>
+            </div>
+            <div id="p2-config-msg" class="networking-msg">${p2error ? esc(p2error) : ''}</div>
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'status' ? `
+          <section class="card networking-status-card">
+            <div class="card-label">Hive Status</div>
+            <div class="card-sub">Real-time metrics from /api/p2pclaw/status</div>
+            <div class="network-stat-grid">
+              <div class="network-stat"><span>Active Agents</span><strong id="p2-stat-agents">${Number(swarm.agents || 0)}</strong></div>
+              <div class="network-stat"><span>Papers</span><strong id="p2-stat-papers">${Number(swarm.papers || 0)}</strong></div>
+              <div class="network-stat"><span>Mempool</span><strong id="p2-stat-mempool">${Number(swarm.mempool || 0)}</strong></div>
+              <div class="network-stat"><span>Last Event</span><strong id="p2-stat-last">${esc(String(swarm.last_event_ts || '-'))}</strong></div>
+            </div>
+            <div class="network-form-actions" style="margin-top:10px">
+              <button class="btn btn-sm" id="p2-briefing-btn">Load Briefing</button>
+            </div>
+            <pre id="p2-briefing" class="network-briefing">No briefing loaded.</pre>
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'papers' ? `
+          <section class="card">
+            <div class="card-label">Verified Papers</div>
+            <div class="card-sub">Backed by /api/p2pclaw/papers.</div>
+            ${tabError ? `<div class="networking-msg err">${esc(tabError)}</div>` : p2pList(tabPayload && tabPayload.papers, 'No papers returned.')}
+          </section>
+          <section class="card">
+            <div class="card-label">Draft Bridge</div>
+            <div class="card-sub">Verify locally before you publish into the hive.</div>
+            <div class="network-form-row">
+              <label for="p2-paper-title">Title</label>
+              <input class="input" id="p2-paper-title" placeholder="A theorem-ready title">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-paper-content">Content</label>
+              <textarea class="input p2-large-textarea" id="p2-paper-content" placeholder="Structured paper draft"></textarea>
+            </div>
+            <div class="network-form-actions">
+              <button class="btn" id="p2-verify-draft-btn">Verify Draft</button>
+              <button class="btn btn-primary" id="p2-publish-btn">Publish</button>
+            </div>
+            <pre id="p2-paper-result" class="network-briefing">No draft verification run yet.</pre>
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'mempool' ? `
+          <section class="card">
+            <div class="card-label">Mempool</div>
+            <div class="card-sub">Papers awaiting validation.</div>
+            ${tabError ? `<div class="networking-msg err">${esc(tabError)}</div>` : p2pList(tabPayload && tabPayload.papers, 'Mempool is empty.')}
+          </section>
+          <section class="card">
+            <div class="card-label">Validation Bridge</div>
+            <div class="card-sub">Submit a real validation decision through /api/p2pclaw/papers/validate.</div>
+            <div class="network-form-row">
+              <label for="p2-validate-id">Paper ID</label>
+              <input class="input" id="p2-validate-id" placeholder="paper id">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-validate-approve">Decision</label>
+              <select class="input" id="p2-validate-approve">
+                <option value="true">Approve</option>
+                <option value="false">Reject</option>
+              </select>
+            </div>
+            <div class="network-form-row">
+              <label for="p2-occam-score">Occam Score (optional)</label>
+              <input class="input" id="p2-occam-score" type="number" step="0.01" placeholder="0.85">
+            </div>
+            <div class="network-form-actions">
+              <button class="btn btn-primary" id="p2-validate-btn">Submit Validation</button>
+            </div>
+            <pre id="p2-validate-result" class="network-briefing">No validation submitted yet.</pre>
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'events' ? `
+          <section class="card">
+            <div class="card-label">Event Stream</div>
+            <div class="card-sub">Recent hive activity, plus chat and wheel lookups.</div>
+            ${tabError ? `<div class="networking-msg err">${esc(tabError)}</div>` : p2pList(tabPayload && tabPayload.events, 'No recent events returned.')}
+          </section>
+          <section class="card">
+            <div class="card-label">Chat + Similarity</div>
+            <div class="network-form-row">
+              <label for="p2-chat-message">Chat Message</label>
+              <input class="input" id="p2-chat-message" placeholder="Message to the research hive">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-chat-channel">Channel</label>
+              <input class="input" id="p2-chat-channel" value="research" placeholder="research">
+            </div>
+            <div class="network-form-actions">
+              <button class="btn" id="p2-chat-btn">Send Chat</button>
+            </div>
+            <div class="network-form-row">
+              <label for="p2-wheel-query">Wheel Query</label>
+              <input class="input" id="p2-wheel-query" placeholder="Related work query">
+            </div>
+            <div class="network-form-actions">
+              <button class="btn btn-primary" id="p2-wheel-btn">Check Wheel</button>
+            </div>
+            <pre id="p2-events-result" class="network-briefing">No chat or wheel action yet.</pre>
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'investigations' ? `
+          <section class="card">
+            <div class="card-label">Investigations</div>
+            <div class="card-sub">Current investigation queue.</div>
+            ${tabError ? `<div class="networking-msg err">${esc(tabError)}</div>` : p2pList(tabPayload && tabPayload.investigations, 'No investigations returned.')}
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'docs' ? `
+          <section class="card p2p-docs-card">
+            <div class="card-label">P2PCLAW Hub Docs</div>
+            <div class="card-sub">This tab documents the implemented dashboard routes and the local verification bridge.</div>
+            <pre class="p2p-architecture">Browser Dashboard
+      |
+      +-- /api/p2pclaw/* --------------> AgentHALO dashboard backend
+      |                                      |
+      |                                      +-- local verify bridge (/api/p2pclaw/verify)
+      |                                      +-- remote hive gateway (status, papers, mempool, events)
+      |
+      +-- /api/mcp/* ------------------> live child-process MCP bridge
+                                             |
+                                             +-- agenthalo-mcp-server (stdio)
+                                             +-- p2pclaw_* / nucleusdb_* / orchestrator_* tools</pre>
+            <div class="p2p-route-grid">
+              ${P2PCLAW_DOC_ROUTES.map(([method, route, desc]) => `
+                <article class="p2p-route-card">
+                  <div class="p2p-route-head"><span class="badge">${esc(method)}</span><code>${esc(route)}</code></div>
+                  <div class="card-sub">${esc(desc)}</div>
+                </article>
+              `).join('')}
+            </div>
+            <div class="p2p-doc-grid">
+              <div class="card">
+                <div class="card-label">Verification Bridge</div>
+                <div class="card-sub">Drafts are checked locally for structure, claim extraction, completeness, consistency, and a deterministic proof hash before they are pushed into the remote hive.</div>
+              </div>
+              <div class="card">
+                <div class="card-label">MCP Reference</div>
+                <div class="card-sub">The dashboard MCP catalog talks to the real <code>agenthalo-mcp-server</code>, not a static registry snapshot.</div>
+                <div class="network-form-actions"><a class="btn btn-primary" href="#/mcp-tools/p2pclaw">Open P2PCLAW MCP Tools</a></div>
+              </div>
+            </div>
+          </section>
+        ` : ''}
+      </div>`;
 
   content.innerHTML = `
     <h1>Networking Integrations</h1>
@@ -442,19 +465,14 @@ async function renderNetworkingPage() {
       renderNetworkingPage();
     });
   });
-
-  // Nym refresh handler
-  const nymRefreshBtn = $('#nym-refresh-btn');
-  if (nymRefreshBtn) {
-    nymRefreshBtn.addEventListener('click', () => renderNetworkingPage());
-  }
-  // DIDComm refresh handler
-  const didcommRefreshBtn = $('#didcomm-refresh-btn');
-  if (didcommRefreshBtn) {
-    didcommRefreshBtn.addEventListener('click', () => renderNetworkingPage());
-  }
-
   if (_networkingSelected !== 'p2pclaw') return;
+
+  $$('[data-p2-tab]').forEach((el) => {
+    el.addEventListener('click', () => {
+      _p2pclawTab = el.dataset.p2Tab || 'config';
+      renderNetworkingPage();
+    });
+  });
 
   const msgEl = $('#p2-config-msg');
   const setMsg = (text, ok) => {
@@ -531,72 +549,99 @@ async function renderNetworkingPage() {
       }
     });
   }
+
+  const verifyBtn = $('#p2-verify-draft-btn');
+  if (verifyBtn) {
+    verifyBtn.addEventListener('click', async () => {
+      const target = $('#p2-paper-result');
+      const payload = {
+        title: ($('#p2-paper-title')?.value || '').trim(),
+        content: ($('#p2-paper-content')?.value || '').trim(),
+      };
+      if (target) target.textContent = 'Verifying draft...';
+      try {
+        const res = await apiPost('/p2pclaw/verify', payload);
+        if (target) target.textContent = JSON.stringify(res.verification || res, null, 2);
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'verification failed');
+      }
+    });
+  }
+
+  const publishBtn = $('#p2-publish-btn');
+  if (publishBtn) {
+    publishBtn.addEventListener('click', async () => {
+      const target = $('#p2-paper-result');
+      const payload = {
+        title: ($('#p2-paper-title')?.value || '').trim(),
+        content: ($('#p2-paper-content')?.value || '').trim(),
+      };
+      if (target) target.textContent = 'Publishing paper...';
+      try {
+        const res = await apiPost('/p2pclaw/papers/publish', payload);
+        if (target) target.textContent = JSON.stringify(res.result || res, null, 2);
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'publish failed');
+      }
+    });
+  }
+
+  const validateBtn = $('#p2-validate-btn');
+  if (validateBtn) {
+    validateBtn.addEventListener('click', async () => {
+      const target = $('#p2-validate-result');
+      const occam = ($('#p2-occam-score')?.value || '').trim();
+      const payload = {
+        paper_id: ($('#p2-validate-id')?.value || '').trim(),
+        approve: ($('#p2-validate-approve')?.value || 'true') === 'true',
+      };
+      if (occam) payload.occam_score = Number(occam);
+      if (target) target.textContent = 'Submitting validation...';
+      try {
+        const res = await apiPost('/p2pclaw/papers/validate', payload);
+        if (target) target.textContent = JSON.stringify(res.result || res, null, 2);
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'validation failed');
+      }
+    });
+  }
+
+  const chatBtn = $('#p2-chat-btn');
+  if (chatBtn) {
+    chatBtn.addEventListener('click', async () => {
+      const target = $('#p2-events-result');
+      const payload = {
+        message: ($('#p2-chat-message')?.value || '').trim(),
+        channel: ($('#p2-chat-channel')?.value || '').trim() || 'research',
+      };
+      if (target) target.textContent = 'Sending chat...';
+      try {
+        const res = await apiPost('/p2pclaw/chat', payload);
+        if (target) target.textContent = JSON.stringify(res, null, 2);
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'chat failed');
+      }
+    });
+  }
+
+  const wheelBtn = $('#p2-wheel-btn');
+  if (wheelBtn) {
+    wheelBtn.addEventListener('click', async () => {
+      const target = $('#p2-events-result');
+      const query = ($('#p2-wheel-query')?.value || '').trim();
+      if (target) target.textContent = 'Checking wheel...';
+      try {
+        const res = await api(`/p2pclaw/wheel?query=${encodeURIComponent(query)}`);
+        if (target) target.textContent = JSON.stringify(res.result || res, null, 2);
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'wheel lookup failed');
+      }
+    });
+  }
 }
 function renderOverviewHub() {
-  if (typeof renderDocsOverview === 'function') {
-    renderDocsOverview();
-    renderOverviewOperationalSummary().catch(() => {});
-  } else {
-    content.innerHTML = '<div class="loading">Overview module not loaded.</div>';
-  }
-}
-
-async function renderOverviewOperationalSummary() {
-  const mount = document.createElement('section');
-  mount.className = 'card';
-  mount.style.marginTop = '16px';
-  mount.innerHTML = '<div class="loading">Loading operational overview...</div>';
-  content.appendChild(mount);
-  try {
-    const [status, sessions, costs] = await Promise.all([
-      api('/status'),
-      api('/sessions?limit=5'),
-      api('/costs?monthly=true'),
-    ]);
-    const recentSessions = (sessions.sessions || []).slice(0, 5);
-    const monthly = Array.isArray(costs.buckets) ? costs.buckets : [];
-    mount.innerHTML = `
-      <div class="section-header">Operational Overview</div>
-      <div class="card-grid">
-        <div class="card">
-          <div class="card-label">Live Sessions</div>
-          <div class="card-value">${Number(status.session_count || 0)}</div>
-          <div class="card-sub">Cockpit, orchestration, and deploy activity</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Total Cost</div>
-          <div class="card-value">${fmtCost(Number(status.total_cost_usd || 0))}</div>
-          <div class="card-sub">${fmtTokens(Number(status.total_tokens || 0))} tokens tracked</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Monthly Cost</div>
-          <div class="card-value">${fmtCost(monthly.reduce((sum, bucket) => sum + Number(bucket.cost_usd || 0), 0))}</div>
-          <div class="card-sub">${monthly.length} bucket${monthly.length === 1 ? '' : 's'} in current window</div>
-        </div>
-      </div>
-      <div class="section-header">Recent Sessions</div>
-      ${recentSessions.length ? `
-        <div class="table-wrap"><table>
-          <thead><tr><th>Session</th><th>Agent</th><th>Model</th><th>Cost</th><th>Status</th></tr></thead>
-          <tbody>
-            ${recentSessions.map(item => {
-              const ss = item.session;
-              const sm = item.summary || {};
-              return `<tr class="clickable" onclick="location.hash='#/sessions/${encodeURIComponent(ss.session_id)}'">
-                <td style="font-size:11px">${esc(truncate(ss.session_id, 24))}</td>
-                <td>${esc(ss.agent)}</td>
-                <td>${esc(truncate(ss.model || 'unknown', 20))}</td>
-                <td>${fmtCost(Number(sm.estimated_cost_usd || 0))}</td>
-                <td>${statusBadge(ss.status)}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table></div>
-      ` : '<div class="muted">No sessions recorded yet.</div>'}
-    `;
-  } catch (e) {
-    mount.innerHTML = `<div class="config-desc" style="color:var(--amber)">Operational summary unavailable: ${esc(String(e.message || e))}</div>`;
-  }
+  if (typeof renderDocsOverview === 'function') renderDocsOverview();
+  else content.innerHTML = '<div class="loading">Overview module not loaded.</div>';
 }
 
 // Setup-first gate: cached setup state
@@ -757,7 +802,6 @@ async function fetchCryptoStatus(force) {
       password_protected: false,
       migration_status: 'unknown',
       active_scopes: [],
-      bootstrap_mode: 'required',
       retry_after_secs: 0,
       error: String(e && e.message || e),
     };
@@ -771,26 +815,15 @@ function hideCryptoOverlay() {
   if (overlay) overlay.style.display = 'none';
 }
 
-function cryptoBootstrapMode(status) {
-  return String(status?.bootstrap_mode || 'required').toLowerCase();
-}
-
-function cryptoNeedsPasswordCreation(status) {
-  return !status?.password_protected && (
-    status?.migration_status === 'needs_password_creation' ||
-    status?.migration_status === 'fresh'
-  );
-}
-
 function lockTitle(status) {
-  if (cryptoNeedsPasswordCreation(status)) {
+  if (!status.password_protected || status.migration_status === 'needs_password_creation' || status.migration_status === 'fresh') {
     return 'Create a password to protect your identity';
   }
   return 'Enter password to unlock';
 }
 
 function lockHint(status) {
-  if (cryptoNeedsPasswordCreation(status)) {
+  if (!status.password_protected || status.migration_status === 'needs_password_creation' || status.migration_status === 'fresh') {
     return 'This password protects local cryptographic scopes (sign, vault, wallet, identity, genesis).';
   }
   if (Number(status.retry_after_secs || 0) > 0) {
@@ -802,7 +835,7 @@ function lockHint(status) {
 function renderCryptoOverlay(status) {
   const overlay = $('#crypto-lock-overlay');
   if (!overlay) return;
-  const needsCreate = cryptoNeedsPasswordCreation(status);
+  const needsCreate = !status.password_protected || status.migration_status === 'needs_password_creation' || status.migration_status === 'fresh';
   overlay.style.display = 'flex';
   overlay.innerHTML = `
     <div class="crypto-lock-card">
@@ -849,7 +882,6 @@ function renderCryptoOverlay(status) {
           createBtn.disabled = true;
           await apiPost('/crypto/create-password', { password, confirm });
           _cryptoStatus = null;
-          window._setupCryptoPromptDone = true; // password just created — skip re-lock guard
           const ok = await ensureCryptoUnlocked(true);
           if (ok) { route(); }
         } catch (e) {
@@ -891,10 +923,6 @@ function renderCryptoOverlay(status) {
 
 async function ensureCryptoUnlocked(force) {
   const status = await fetchCryptoStatus(force);
-  if (cryptoNeedsPasswordCreation(status) && cryptoBootstrapMode(status) === 'required') {
-    renderCryptoOverlay(status);
-    return false;
-  }
   if (status && status.locked) {
     renderCryptoOverlay(status);
     return false;
@@ -1052,9 +1080,8 @@ async function showGenesisCeremony() {
         ${esc(String(result.sources_count || sources.length || 0))} entropy sources combined
         ${result.curby_pulse_id ? ` · CURBy pulse #${esc(String(result.curby_pulse_id))}` : ''}
       </div>
+      <button class="genesis-continue-btn" onclick="completeGenesis()">Continue →</button>
     `;
-    // Auto-advance to setup after a brief pause
-    setTimeout(() => completeGenesis(), 1800);
   } catch (err) {
     const payload = (err && err.body && typeof err.body === 'object') ? err.body : err;
     const code = payload && payload.error_code;
@@ -1106,7 +1133,7 @@ function updateNavLockState() {
   if (!_setupState) return;
   const complete = _setupState.complete;
   const justUnlocked = _lastSetupComplete === false && complete === true;
-  const NAV_EXEMPT = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs', 'agentpmt', 'cockpit'];
+  const NAV_EXEMPT = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs'];
   $$('.nav-link').forEach(a => {
     const page = a.dataset.page;
     if (page === 'setup') {
@@ -1114,7 +1141,7 @@ function updateNavLockState() {
       a.classList.toggle('setup-incomplete', !complete);
       a.classList.remove('nav-unlocked');
     } else if (NAV_EXEMPT.includes(page)) {
-      // Documentation/setup-adjacent pages are always accessible
+      // Documentation pages are always accessible
       a.classList.remove('nav-locked');
       a.classList.remove('setup-incomplete');
     } else {
@@ -1156,31 +1183,6 @@ window._invalidateSetupState = function() {
   _setupStateFetchedAt = 0;
 };
 
-async function maybeAutoLaunchAfterSetup(setupState) {
-  const ss = setupState || await fetchSetupState();
-  if (!ss || !ss.complete) return false;
-  if (sessionStorage.getItem('setup_autolaunch_done')) return false;
-  const currentPage = (location.hash.replace('#/', '') || 'setup').split('/')[0];
-  if (currentPage !== 'setup') return false;
-  try {
-    const catalog = await api('/deploy/catalog');
-    const agents = Array.isArray(catalog.agents) ? catalog.agents : [];
-    for (const agent of agents) {
-      if (!agent || agent.id === 'shell') continue;
-      const pre = await apiPost('/deploy/preflight', { agent_id: agent.id });
-      if (pre && pre.cli_installed && pre.keys_configured) {
-        sessionStorage.setItem('setup_autolaunch_done', '1');
-        localStorage.setItem('cockpit_autolaunch_agent', agent.id);
-        location.hash = '#/cockpit';
-        return true;
-      }
-    }
-  } catch (_e) {
-    return false;
-  }
-  return false;
-}
-
 async function route() {
   // Clean up particle animation when leaving NucleusDB page
   if (window._destroyHeroParticles) window._destroyHeroParticles();
@@ -1192,26 +1194,6 @@ async function route() {
   const hash = location.hash.replace('#/', '') || 'setup';
   const page = hash.split('/')[0];
   const arg = hash.split('/').slice(1).join('/');
-  if (REMOVED_PAGE_REDIRECTS[page]) {
-    location.hash = `#/${REMOVED_PAGE_REDIRECTS[page]}`;
-    return;
-  }
-
-  if (page === 'setup' && !window._setupCryptoPromptDone) {
-    const cryptoStatus = await fetchCryptoStatus(true);
-    if (cryptoStatus && cryptoStatus.password_protected) {
-      window._setupCryptoPromptDone = true;
-      if (!cryptoStatus.locked) {
-        try {
-          await apiPost('/crypto/lock', {});
-        } catch (_e) {}
-        _cryptoStatus = null;
-        _cryptoStatusFetchedAt = 0;
-        const relocked = await ensureCryptoUnlocked(true);
-        if (!relocked) return;
-      }
-    }
-  }
 
   // Genesis ceremony: always show the visual ceremony if genesis hasn't been done yet.
   // The ceremony handles the harvest POST + staged animation so the user sees
@@ -1225,14 +1207,11 @@ async function route() {
   if (overlay) overlay.style.display = 'none';
 
   // Fetch setup state and gate navigation.
-  // Documentation/setup-adjacent pages are always accessible — setup gate only blocks operational pages.
-  const SETUP_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs', 'agentpmt', 'cockpit'];
+  // Documentation/overview pages are always accessible — setup gate only blocks operational pages.
+  const SETUP_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs'];
   const ss = await fetchSetupState();
   if (!ss.complete && !SETUP_EXEMPT_PAGES.includes(page)) {
     location.hash = '#/setup';
-    return;
-  }
-  if (await maybeAutoLaunchAfterSetup(ss)) {
     return;
   }
 
@@ -1992,7 +1971,7 @@ async function renderConfig() {
   content.innerHTML = '<div class="loading">Loading config...</div>';
   try {
     const cfg = await api('/config');
-    let crypto = { locked: false, migration_status: 'unknown', active_scopes: [], password_protected: false, bootstrap_mode: 'required' };
+    let crypto = { locked: false, migration_status: 'unknown', active_scopes: [], password_protected: false };
     try {
       crypto = await api('/crypto/status');
     } catch (_e) {}
@@ -2040,15 +2019,12 @@ async function renderConfig() {
             <div class="config-desc">
               ${crypto.locked ? 'Locked' : 'Unlocked'}
               · status: ${esc(String(crypto.migration_status || 'unknown'))}
-              · bootstrap: ${esc(String(crypto.bootstrap_mode || 'required'))}
               · scopes: ${esc((crypto.active_scopes || []).join(', ') || 'none')}
             </div>
           </div>
           <div style="display:flex;gap:6px;align-items:center">
             <button class="btn btn-sm" onclick="forceCryptoLock()">Lock Now</button>
-            ${!crypto.password_protected
-              ? '<button class="btn btn-sm btn-primary" onclick="showCryptoSetupPrompt()">Set Password</button>'
-              : '<button class="btn btn-sm btn-primary" onclick="ensureCryptoUnlocked(true)">Unlock</button>'}
+            <button class="btn btn-sm btn-primary" onclick="ensureCryptoUnlocked(true)">Unlock</button>
           </div>
         </div>
       </div>
@@ -2289,64 +2265,179 @@ async function renderConfig() {
         openVaultModal(providerEntry.provider, providerEntry.env_var || providerDefaultEnv(providerEntry.provider));
       }
     }
-    await injectConfigModelsSection();
   } catch (e) {
     content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
 }
 
-async function injectConfigModelsSection() {
+let _modelsSearchQuery = '';
+
+function modelBackendBadge(backend) {
+  const normalized = String(backend || '').toLowerCase();
+  if (normalized === 'vllm') return '<span class="badge badge-info">vLLM</span>';
+  return `<span class="badge badge-muted">${esc(backend || 'unknown')}</span>`;
+}
+
+function summarizeModelCounts(status) {
+  return Array.isArray(status?.backend?.installed_models) ? status.backend.installed_models.length : 0;
+}
+
+function installedModelsTableRows(status) {
+  const models = Array.isArray(status?.backend?.installed_models) ? status.backend.installed_models : [];
+  if (!models.length) {
+    return `<tr><td colspan="6" class="muted">No local models installed.</td></tr>`;
+  }
+  return models.sort((a, b) => String(a.model || '').localeCompare(String(b.model || ''))).map(model => `
+    <tr>
+      <td>${esc(model.model || '')}</td>
+      <td>${esc(model.source || '-')}</td>
+      <td>${modelBackendBadge(model.backend)}</td>
+      <td>${esc(model.size || '-')}</td>
+      <td>${esc(model.quantization || '-')}</td>
+      <td>
+        ${model.served ? '<span class="badge badge-ok">Serving</span>' : '<span class="badge badge-muted">Idle</span>'}
+        <button class="btn btn-sm" style="margin-left:6px" onclick='modelsRemove(${JSON.stringify(String(model.model || ''))})'>Remove</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function searchResultsRows(results) {
+  if (!results.length) {
+    return `<tr><td colspan="8" class="muted">Run a search to see Hugging Face candidates.</td></tr>`;
+  }
+  return results.map(item => `
+    <tr>
+      <td>${Number(item.index || 0)}</td>
+      <td>${esc(item.source || '-')}</td>
+      <td>${esc(item.model || '')}</td>
+      <td>${esc(item.size || '-')}</td>
+      <td>${esc((item.quantizations || []).join(', ') || item.quantization || '-')}</td>
+      <td>${esc(item.downloads || '-')}</td>
+      <td>${item.fits_gpu === true ? '<span class="badge badge-ok">Fits</span>' : item.fits_gpu === false ? '<span class="badge badge-warn">Too large</span>' : '<span class="badge badge-muted">Unknown</span>'}</td>
+      <td>
+        ${item.installed ? '<span class="badge badge-ok">Installed</span>' : `<button class="btn btn-sm btn-primary" onclick='modelsPull(${JSON.stringify(String(item.model || ''))})'>Pull</button>`}
+      </td>
+    </tr>
+  `).join('');
+}
+
+function backendCard(status) {
+  const installedCount = Array.isArray(status?.installed_models) ? status.installed_models.length : 0;
+  const served = Array.isArray(status?.served_models) && status.served_models.length
+    ? status.served_models.map(esc).join(', ')
+    : 'none';
+  return `
+    <div class="card">
+      <div class="card-label">vLLM</div>
+      <div class="card-value" style="font-size:15px">${status?.healthy ? 'Healthy' : 'Unavailable'}</div>
+      <div class="card-sub">${status?.cli_installed ? 'CLI installed' : 'CLI missing'}${status?.cli_version ? ` · ${esc(status.cli_version)}` : ''}</div>
+      <div class="card-sub">endpoint: ${esc(status?.base_url || '-')}</div>
+      <div class="card-sub">installed: ${installedCount} · served: ${served}</div>
+      ${status?.error ? `<div class="card-sub" style="color:var(--amber)">${esc(status.error)}</div>` : ''}
+      <div style="margin-top:10px">
+        <button class="btn btn-sm btn-primary" onclick="modelsServe()">Serve vLLM</button>
+        <button class="btn btn-sm" style="margin-left:6px" onclick="modelsStop()">Stop</button>
+      </div>
+    </div>
+  `;
+}
+
+function summarizeManagedBackends(config) {
+  return config?.managed ? 'vllm' : 'none';
+}
+
+async function renderModels() {
+  content.innerHTML = '<div class="loading">Loading local models...</div>';
   try {
     const status = await api('/models/status');
-    const mount = document.createElement('div');
-    mount.innerHTML = `
-      <div class="section-header">Local Models</div>
+    const results = _modelsSearchQuery
+      ? ((await api(`/models/search?q=${encodeURIComponent(_modelsSearchQuery)}`)).results || [])
+      : [];
+
+    content.innerHTML = `
+      <div class="page-title">Models</div>
       <div class="card-grid">
         <div class="card">
-          <div class="card-label">Backend</div>
+          <div class="card-label">Local Models</div>
           <div class="card-value" style="font-size:15px">vLLM</div>
           <div class="card-sub">managed: ${esc(summarizeManagedBackends(status?.config))}</div>
         </div>
         <div class="card">
           <div class="card-label">Installed Models</div>
           <div class="card-value">${summarizeModelCounts(status)}</div>
-          <div class="card-sub">served: ${esc((status?.vllm?.served_models || []).join(', ') || 'none')}</div>
+          <div class="card-sub">catalog appears under /v1/models automatically</div>
         </div>
         <div class="card">
           <div class="card-label">GPU</div>
           <div class="card-value" style="font-size:15px">${esc(status?.gpu?.name || 'Not detected')}</div>
-          <div class="card-sub">${status?.huggingface_token_configured ? 'HF token configured' : 'HF token missing'}</div>
+          <div class="card-sub">${status?.gpu ? `${Number(status.gpu.total_memory_gib || 0).toFixed(1)} GiB ${esc(status.gpu.vendor || '')}` : 'Search still works without GPU detection'}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Hugging Face Token</div>
+          <div class="card-value" style="font-size:15px">${status?.huggingface_token_configured ? 'Configured' : 'Missing'}</div>
+          <div class="card-sub">used for gated Hub access and vLLM-backed downloads</div>
         </div>
       </div>
+
+      <div class="section-header">Backend Health</div>
+      <div class="card-grid">
+        ${backendCard(status?.backend)}
+      </div>
+
+      <div class="section-header">Controls</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         <div class="config-row">
           <div>
-            <div class="config-label">Model Operations</div>
-            <div class="config-desc">Serve, stop, pull, and remove models directly from Configuration.</div>
+            <div class="config-label">Search Local Models</div>
+            <div class="config-desc">Search Hugging Face Hub with GPU-fit hints for the unified vLLM backend.</div>
           </div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <button class="btn btn-sm btn-primary" onclick="modelsServe('vllm')">Serve vLLM</button>
-            <button class="btn btn-sm" onclick="modelsStop('vllm')">Stop</button>
-            <button class="btn btn-sm" onclick="modelsLoginHuggingFace()">Set HF Token</button>
+            <input class="input" id="models-search-query" style="min-width:280px" placeholder="code assistant 7b" value="${esc(_modelsSearchQuery)}">
+            <button class="btn btn-primary" id="models-search-btn">Search</button>
+          </div>
+        </div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">Hugging Face Login</div>
+            <div class="config-desc">Stores HF token in the encrypted vault when available.</div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="btn btn-sm" onclick="window.open('https://huggingface.co/settings/tokens','_blank')">Open Tokens</button>
+            <button class="btn btn-sm btn-primary" onclick="modelsLoginHuggingFace()">Set Token</button>
           </div>
         </div>
       </div>
+
+      <div class="section-header">Installed</div>
+      <div class="table-wrap"><table>
+        <thead>
+          <tr><th>Model</th><th>Source</th><th>Backend</th><th>Size</th><th>Quant</th><th>Status</th></tr>
+        </thead>
+        <tbody>${installedModelsTableRows(status)}</tbody>
+      </table></div>
+
+      <div class="section-header">Search Results${_modelsSearchQuery ? ` for "${esc(_modelsSearchQuery)}"` : ''}</div>
+      <div class="table-wrap"><table>
+        <thead>
+          <tr><th>#</th><th>Source</th><th>Model</th><th>Size</th><th>Quant</th><th>Downloads</th><th>GPU</th><th>Action</th></tr>
+        </thead>
+        <tbody>${searchResultsRows(results)}</tbody>
+      </table></div>
     `;
-    content.appendChild(mount);
-  } catch (_e) {
-    // Model controls are supplementary inside Configuration.
+
+    const input = $('#models-search-query');
+    const runSearch = () => {
+      _modelsSearchQuery = String(input?.value || '').trim();
+      renderModels();
+    };
+    $('#models-search-btn')?.addEventListener('click', runSearch);
+    input?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') runSearch();
+    });
+  } catch (e) {
+    content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
-}
-
-function summarizeModelCounts(status) {
-  const vllmCount = Array.isArray(status?.vllm?.installed_models) ? status.vllm.installed_models.length : 0;
-  return vllmCount;
-}
-
-function summarizeManagedBackends(config) {
-  const managed = Array.isArray(config?.managed) ? config.managed : [];
-  if (!managed.length) return 'none';
-  return managed.map(item => String(item?.backend || '')).filter(Boolean).join(', ') || 'none';
 }
 
 window.modelsLoginHuggingFace = async function modelsLoginHuggingFace() {
@@ -2355,38 +2446,47 @@ window.modelsLoginHuggingFace = async function modelsLoginHuggingFace() {
   try {
     await apiPost('/models/login/huggingface', { token: String(token).trim() });
     alert('Hugging Face token saved.');
-    await renderConfig();
+    await renderModels();
   } catch (e) {
     alert(`Hugging Face login failed: ${String(e && e.message || e)}`);
   }
 };
 
-window.modelsServe = async function modelsServe(backend) {
+window.modelsServe = async function modelsServe() {
   try {
-    const payload = { backend };
+    const payload = {};
     const model = window.prompt('vLLM model to serve (installed HF repo id or path)', '');
     if (model && String(model).trim()) payload.model = String(model).trim();
     await apiPost('/models/serve', payload);
-    await renderConfig();
+    await renderModels();
   } catch (e) {
     alert(`Serve failed: ${String(e && e.message || e)}`);
   }
 };
 
-window.modelsStop = async function modelsStop(backend) {
+window.modelsStop = async function modelsStop() {
   try {
-    await apiPost('/models/stop', { backend });
-    await renderConfig();
+    await apiPost('/models/stop', {});
+    await renderModels();
   } catch (e) {
     alert(`Stop failed: ${String(e && e.message || e)}`);
   }
 };
 
-window.modelsRemove = async function modelsRemove(model, source) {
+window.modelsPull = async function modelsPull(model) {
+  try {
+    await apiPost('/models/pull', { model, source: 'vllm' });
+    await renderModels();
+  } catch (e) {
+    alert(`Pull failed: ${String(e && e.message || e)}`);
+  }
+};
+
+window.modelsRemove = async function modelsRemove(model) {
   if (!window.confirm(`Remove local model ${model}?`)) return;
   try {
-    await apiPost('/models/rm', { model, source });
-    await renderConfig();
+    await apiPost('/models/rm', { model, source: 'vllm' });
+    await renderModels();
   } catch (e) {
     alert(`Remove failed: ${String(e && e.message || e)}`);
   }
@@ -2411,11 +2511,6 @@ window.forceCryptoLock = async function forceCryptoLock() {
   } catch (e) {
     alert(`Lock failed: ${String(e && e.message || e)}`);
   }
-};
-
-window.showCryptoSetupPrompt = async function showCryptoSetupPrompt() {
-  const status = await fetchCryptoStatus(true);
-  renderCryptoOverlay(status);
 };
 
 window.authorizeAgentPrompt = async function authorizeAgentPrompt() {
@@ -2579,6 +2674,7 @@ async function renderSetup() {
   const localIdentityDone = !!isAuthenticated || !!hasWallet;
   const allDone = ss.complete || (identityDone && walletComplete && step2Done);
 
+  const pmtAuth = cfg && cfg.agentpmt && cfg.agentpmt.auth_configured;
   const pmtToolCount = (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) || 0;
   const agentpmtConnected = !!walletStatus.agentpmt_connected;
   const agentaddressConnected = !!walletStatus.agentaddress_connected;
@@ -2631,51 +2727,7 @@ async function renderSetup() {
     try { localStorage.setItem('halo_identity_security_tier', serverTier); } catch (_e) {}
   }
   const identityConfigured = !!(identityCfg.device_configured && identityCfg.network_configured);
-  const willAutoApply = !identityCfg.anonymous_mode && !identityConfigured
-    && !tierCfg.configured && initialSecurityTier === 'max-safe';
-  const hideSafetyUI = identityCfg.anonymous_mode || identityConfigured || tierCfg.configured || willAutoApply;
-
-  // Pre-compute LLM step done-state HTML (cannot use IIFE inside template literals)
-  const _step2DoneHtml = (() => {
-    if (!step2Done) return '';
-    const lmChosen = cfg && cfg.local_models && cfg.local_models.config && cfg.local_models.config.local_models_chosen;
-    const lm = cfg && cfg.local_models || {};
-    const ollamaUp = lm.ollama && lm.ollama.healthy;
-    const vllmUp = lm.vllm && lm.vllm.healthy;
-    const anyBackendUp = ollamaUp || vllmUp;
-    const servedModels = [
-      ...(ollamaUp && lm.ollama.served_models || []),
-      ...(vllmUp && lm.vllm.served_models || []),
-    ];
-    if (lmChosen) {
-      const statusLine = anyBackendUp
-        ? '<span style="color:var(--green)">&#9679;</span> Connected &mdash; '
-          + (servedModels.length
-            ? esc(servedModels.slice(0,3).join(', ')) + (servedModels.length > 3 ? ' (+' + (servedModels.length - 3) + ')' : '')
-            : (ollamaUp ? 'Ollama' : 'vLLM') + ' ready')
-        : '<span style="color:var(--amber)">&#9679;</span> No backend running &mdash; start a model from the Models tab';
-      return '<div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">'
-        + '<div style="font-size:28px">&#128421;</div>'
-        + '<div>'
-        + '<div style="font-size:14px;font-weight:600">Local Models</div>'
-        + '<div style="font-size:12px;color:var(--text-dim)">' + statusLine + '</div>'
-        + '</div></div>'
-        + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
-        + '<a href="#/config" class="btn btn-sm btn-primary" style="border-radius:6px">Open Configuration</a>'
-        + '<button class="btn btn-sm setup-disconnect-local-models-btn" style="border-color:var(--red);color:var(--red);border-radius:6px">Disconnect</button>'
-        + '</div>';
-    }
-    const orLabel = orStatus.tested ? 'OpenRouter <strong>verified</strong>' : 'OpenRouter connected';
-    return '<div class="setup-success-banner"><span class="success-icon">&#10003;</span><span>'
-      + orLabel + ' &mdash; LLM inference ready</span></div>'
-      + '<div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
-      + (orStatus.configured
-        ? '<button class="btn btn-sm setup-provider-config-btn" data-provider="openrouter" style="border-radius:6px">Change Key</button>'
-          + '<button class="btn btn-sm setup-provider-test-btn" data-provider="openrouter" style="border-radius:6px">Re-test</button>'
-          + '<button class="btn btn-sm setup-provider-disconnect-btn" data-provider="openrouter" style="border-color:var(--red);color:var(--red);border-radius:6px">Disconnect</button>'
-        : '')
-      + '</div>';
-  })();
+  const hideSafetyUI = identityCfg.anonymous_mode || identityConfigured;
 
   content.innerHTML = `
   <div class="setup-page-wrap">
@@ -2691,9 +2743,8 @@ async function renderSetup() {
       <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Quick Start</div>
       <ol class="setup-steps-friendly" style="margin:0">
         <li><span class="step-circle">1</span><span>Set your agents identity &amp; safety level</span></li>
-        <li><span class="step-circle">2</span><span>Detect your agent CLIs</span></li>
+        <li><span class="step-circle">2</span><span>Setup your agents wallet</span></li>
         <li><span class="step-circle">3</span><span>Connect your agent to an LLM</span></li>
-        <li><span class="step-circle">4</span><span>Set up your AgentPMT wallet</span></li>
       </ol>
     </div>
 
@@ -2988,13 +3039,152 @@ async function renderSetup() {
       ` : ''}
     </div>
 
-    <!-- SECTION 2: CLI Agents -->
+    <!-- SECTION 2: Wallet -->
+    <div class="setup-card-v2 ${c1c}" id="setup-wallet">
+      <div class="card-header">
+        ${agentpmtConnected
+          ? '<img class="card-icon-logo" src="img/agentpmt-192.png" alt="AgentPMT" title="AgentPMT" onerror="this.outerHTML=\'<div class=\\\'card-icon\\\'>&#9883;</div>\'">'
+          : '<div class="card-icon">&#9883;</div>'}
+        <div>
+          <div class="card-title">
+            Your Wallet
+            ${step1Done
+              ? (agentpmtConnected
+                ? '<span class="setup-inline-status status-done">&#10003; AgentPMT Connected</span>'
+                : (agentaddressConnected
+                  ? '<span class="setup-inline-status status-done">&#10003; Agent Wallet Connected</span>'
+                  : '<span class="setup-inline-status status-done">&#10003; Connected</span>'))
+              : '<span class="setup-inline-status status-missing">&#10007; Not Connected</span>'}
+          </div>
+          <div class="card-desc">${walletCardDesc}</div>
+          <div class="setup-wallet-summary">
+            <span class="setup-wallet-chip ${hasAnyWallet ? 'ok' : 'bad'}">
+              ${hasAnyWallet ? '&#10003;' : '&#10007;'} Wallet Presence
+            </span>
+            <span class="setup-wallet-chip ${agentpmtConnected ? 'ok' : 'bad'}">
+              ${agentpmtConnected ? '&#10003;' : '&#10007;'} AgentPMT
+            </span>
+            <span class="setup-wallet-chip ${agentaddressConnected ? 'ok' : 'bad'}">
+              ${agentaddressConnected ? '&#10003;' : '&#10007;'} Agent Wallet
+            </span>
+          </div>
+        </div>
+      </div>
+
+      ${step1Done ? `
+        <!-- Connected state -->
+        <div class="setup-success-banner">
+          <span class="success-icon">&#10003;</span>
+          <span>
+            ${walletPath === 'agentpmt'
+              ? `AgentPMT connected${pmtToolCount > 0 ? ' &mdash; <strong>' + pmtToolCount + ' tools</strong> ready to use' : ''}`
+              : `Agent wallet connected${agentaddressAddress ? ` &mdash; <code>${esc(agentaddressAddress)}</code>` : ''}`}
+          </span>
+        </div>
+        ${walletPath === 'agentpmt' ? `
+          <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-sm" id="setup-disconnect-agentpmt" style="border-color:var(--red);color:var(--red)">
+              Disconnect My Account
+            </button>
+            <span style="font-size:11px;color:var(--text-dim)">Removes your token and disables the tool proxy</span>
+          </div>
+        ` : ''}
+      ` : `
+        <!-- Not connected — three paths -->
+
+        <!-- Path A: Sign up or sign in at AgentPMT -->
+        <div class="setup-recommended">
+          <div class="setup-recommended-label">Recommended</div>
+          <p style="font-size:14px;color:var(--text-muted);line-height:1.6;margin-bottom:16px">
+            AgentPMT is your gateway to 100+ third-party tools, budget controls, and workflow automation.
+            Create a free account (or sign in), then grab your Bearer Token.
+          </p>
+          <div class="setup-info-box" style="margin-top:0;margin-bottom:12px">
+            <span class="info-icon">&#9432;</span>
+            <span>Dashboard quick-connect uses a Bearer Token. Fully autonomous mode uses wallet signatures + credits (see <a href="https://www.agentpmt.com/autonomous-agents" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Autonomous Agents</a>).</span>
+          </div>
+
+          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
+            <a class="setup-cta-big" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" id="setup-agentpmt-signup">
+              Create Free Account &#8599;
+            </a>
+            <a class="setup-cta-big" href="https://www.agentpmt.com/login" target="_blank" rel="noopener noreferrer" style="background:transparent;border-color:var(--border);color:var(--text-muted)">
+              I Already Have an Account &#8599;
+            </a>
+          </div>
+
+          <!-- Embedded signup iframe (opens when user clicks) -->
+          <div id="setup-agentpmt-iframe-wrap" style="display:none;margin-bottom:18px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <span style="font-size:12px;color:var(--text-muted)">AgentPMT &mdash; complete signup, then grab your Bearer Token below</span>
+              <button class="btn btn-sm" id="setup-close-iframe" style="font-size:11px">Close</button>
+            </div>
+            <iframe id="setup-agentpmt-iframe" style="width:100%;height:560px;border:1px solid var(--border);border-radius:8px;background:#fff" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+          </div>
+
+          <div style="border:1px solid var(--border);border-radius:8px;padding:18px 20px;margin-bottom:16px;background:rgba(255,106,0,0.02)">
+            <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:12px">How to get your Bearer Token:</div>
+            <ol class="setup-steps-friendly" style="margin:0">
+              <li>
+                <span class="step-circle">1</span>
+                <span>Sign in at <a href="https://www.agentpmt.com/login" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">agentpmt.com</a></span>
+              </li>
+              <li>
+                <span class="step-circle">2</span>
+                <span>Click <strong>Dashboard</strong> at the top (defaults to AU Budgets tab)</span>
+              </li>
+              <li>
+                <span class="step-circle">3</span>
+                <span>Click the <strong>Display Bearer Token</strong> button</span>
+              </li>
+              <li>
+                <span class="step-circle">4</span>
+                <span>Copy the token and paste it below</span>
+              </li>
+            </ol>
+          </div>
+
+          <div class="setup-token-area" style="border-top:none;padding-top:0">
+            <label for="setup-agentpmt-token">Your AgentPMT Bearer Token</label>
+            <div class="setup-token-row">
+              <input id="setup-agentpmt-token" type="password" placeholder="Paste your bearer token here..."
+                     autocomplete="off" spellcheck="false">
+              <button class="btn btn-primary" id="setup-save-agentpmt" style="padding:10px 20px;font-size:13px;border-radius:6px">Save &amp; Connect</button>
+              <button class="btn" id="setup-test-agentpmt" style="padding:10px 16px;font-size:13px;border-radius:6px" ${!pmtAuth ? 'disabled' : ''}>
+                Test
+              </button>
+            </div>
+            <div id="setup-agentpmt-status" class="setup-token-status"></div>
+          </div>
+        </div>
+
+        <!-- Path B: Quick connect without signup -->
+        <details class="setup-alt-path" style="margin-top:16px">
+          <summary>Skip signup &mdash; connect without an account</summary>
+          <div class="alt-body">
+            <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
+              Don't want to create an account right now? We can request an API token directly &mdash;
+              no email or signup required. Limited budget; can be upgraded later.
+            </p>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <button class="btn btn-primary" id="setup-create-anon-wallet" style="border-radius:6px;padding:10px 20px;font-size:13px">
+                Connect Without Account
+              </button>
+              <span id="setup-anon-wallet-status" style="font-size:12px;color:var(--text-dim)"></span>
+            </div>
+          </div>
+        </details>
+      `}
+
+    </div>
+
+    <!-- CLI Agent Setup (above OpenRouter) -->
     <div class="setup-card-v2" id="setup-cli-agents" style="margin-bottom:0;border-bottom:none;border-radius:10px 10px 0 0">
       <div class="card-header">
         <div class="card-icon">&#9000;</div>
         <div>
           <div class="card-title">Agent CLIs</div>
-          <div class="card-desc">Detect agent CLIs on your system &mdash; authenticate each via browser OAuth</div>
+          <div class="card-desc">Agent CLIs install in the background at startup &mdash; authenticate each via browser OAuth</div>
         </div>
       </div>
       <div class="cli-agents-grid" id="cli-agents-grid">
@@ -3003,7 +3193,7 @@ async function renderSetup() {
             <div class="cli-agent-name">Claude Code</div>
             <div class="cli-agent-provider">Anthropic</div>
           </div>
-          <div class="cli-agent-status" id="cli-status-claude">Detecting...</div>
+          <div class="cli-agent-status" id="cli-status-claude">Installing...</div>
           <div class="cli-agent-actions">
             <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="claude" disabled>Authenticate</button>
           </div>
@@ -3013,7 +3203,7 @@ async function renderSetup() {
             <div class="cli-agent-name">Codex</div>
             <div class="cli-agent-provider">OpenAI</div>
           </div>
-          <div class="cli-agent-status" id="cli-status-codex">Detecting...</div>
+          <div class="cli-agent-status" id="cli-status-codex">Installing...</div>
           <div class="cli-agent-actions">
             <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="codex" disabled>Authenticate</button>
           </div>
@@ -3023,26 +3213,12 @@ async function renderSetup() {
             <div class="cli-agent-name">Gemini CLI</div>
             <div class="cli-agent-provider">Google</div>
           </div>
-          <div class="cli-agent-status" id="cli-status-gemini">Detecting...</div>
+          <div class="cli-agent-status" id="cli-status-gemini">Installing...</div>
           <div class="cli-agent-actions">
             <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="gemini" disabled>Authenticate</button>
           </div>
         </div>
       </div>
-      ${!(cfg && cfg.container_runtime && cfg.container_runtime.available) ? `
-        <div style="margin-top:12px;padding:10px 14px;border:1px solid var(--yellow);border-radius:6px;background:rgba(255,200,0,0.06)">
-          <span style="color:var(--yellow);font-weight:600">&#9888; No container runtime found</span>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:4px;line-height:1.5">
-            A container runtime is required for subsidiary agent deployment.<br>
-            Install <strong>Podman</strong> (recommended): <code>sudo apt install podman</code> or <a href="https://podman.io/docs/installation" target="_blank" rel="noopener" style="color:var(--accent)">podman.io</a><br>
-            Or <strong>Docker</strong>: <code>sudo apt install docker.io</code> or <a href="https://docs.docker.com/get-docker/" target="_blank" rel="noopener" style="color:var(--accent)">docker.com</a>
-          </div>
-        </div>
-      ` : `
-        <div style="margin-top:12px;font-size:12px;color:var(--text-dim)">
-          <span style="color:var(--green)">&#10003;</span> Container runtime: <strong>${cfg.container_runtime.engine}</strong>
-        </div>
-      `}
       <div id="cli-auth-terminal-wrap" style="display:none;margin-top:14px">
         <div style="font-size:12px;color:var(--accent);margin-bottom:6px" id="cli-auth-terminal-label">Authentication session</div>
         <div id="cli-auth-terminal" style="height:260px;border:1px solid var(--border);border-radius:6px;overflow:hidden"></div>
@@ -3052,63 +3228,48 @@ async function renderSetup() {
       </div>
     </div>
 
-    <!-- SECTION 3: Connect Your LLM -->
-    <div class="setup-card-v2 ${step2Done ? 'card-done' : 'card-active'}" id="setup-llm" style="border-radius:0 0 10px 10px;border-top:1px solid var(--border);margin-top:0">
+    <!-- SECTION 3: OpenRouter LLM Key -->
+    <div class="setup-card-v2 ${c2c}" id="setup-llm" style="border-radius:0 0 10px 10px;border-top:1px solid var(--border);margin-top:0">
       <div class="card-header">
-        <div class="card-icon" style="font-size:22px">&#9889;</div>
+        <img class="card-icon-logo-dark" src="img/openrouter-logo.svg" alt="OpenRouter" title="OpenRouter">
         <div>
           <div class="card-title">
-            Connect Your LLM
-            ${step2Done ? '<span class="setup-inline-status status-done">&#10003; Ready</span>' : ''}
+            Add Your LLM Key
+            ${step2Done ? '<span class="setup-inline-status status-done">&#10003; Verified</span>' : ''}
           </div>
-          <div class="card-desc">Choose how your agents access language models</div>
+          <div class="card-desc">Power your agents with OpenRouter &mdash; one key for 200+ models</div>
         </div>
       </div>
 
-      ${step2Done ? _step2DoneHtml : `
-        <!-- Choice: two options -->
-        <div class="setup-llm-choice-grid">
-
-          <!-- Option A: Local Models -->
-          <div class="setup-llm-option" id="setup-local-models">
-            <div class="setup-llm-option-icon">&#128421;</div>
-            <div class="setup-llm-option-title">Local Models</div>
-            <div class="setup-llm-option-desc">
-              Run models on your own hardware via vLLM. Free, private, no API key needed.
-            </div>
-            <button class="btn btn-primary" id="setup-choose-local-models-btn"
-                    style="border-radius:8px;padding:10px 24px;font-size:13px;margin-top:auto">
-              Use Local Models
-            </button>
-            <div id="setup-local-models-status" style="margin-top:6px;font-size:11px;min-height:16px"></div>
-          </div>
-
-          <!-- Divider -->
-          <div class="setup-llm-divider">
-            <span>or</span>
-          </div>
-
-          <!-- Option B: OpenRouter -->
-          <div class="setup-llm-option" id="setup-openrouter">
-            <div class="setup-llm-option-icon">
-              <img src="img/openrouter-logo.svg" alt="OpenRouter" style="height:28px;opacity:0.85">
-            </div>
-            <div class="setup-llm-option-title">OpenRouter</div>
-            <div class="setup-llm-option-desc">
-              One key for 200+ cloud models. Sign up or log in &mdash; no copy-paste needed.
-            </div>
-            <button class="btn btn-primary" id="openrouter-oauth-connect-btn"
-                    style="border-radius:8px;padding:10px 24px;font-size:13px;margin-top:auto">
-              Connect OpenRouter
-            </button>
-            <div id="openrouter-oauth-status" style="margin-top:6px;font-size:11px;min-height:16px"></div>
-          </div>
-
+      ${step2Done ? `
+        <!-- Connected state with verified badge in proper context -->
+        <div class="setup-success-banner">
+          <span class="success-icon">&#10003;</span>
+          <span>
+            OpenRouter ${orStatus.tested ? '<strong>verified</strong>' : 'connected'} &mdash; LLM proxy is live
+          </span>
         </div>
-
-        <details style="margin-top:16px">
+        <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-sm setup-provider-config-btn" data-provider="openrouter" style="border-radius:6px">Change Key</button>
+          <button class="btn btn-sm setup-provider-test-btn" data-provider="openrouter" style="border-radius:6px">Re-test</button>
+          <button class="btn btn-sm setup-provider-disconnect-btn" data-provider="openrouter" style="border-color:var(--red);color:var(--red);border-radius:6px">
+            Disconnect
+          </button>
+        </div>
+      ` : `
+        <div style="text-align:center;padding:16px 0">
+          <button class="btn btn-primary" id="openrouter-oauth-connect-btn"
+                  style="border-radius:8px;padding:12px 28px;font-size:14px">
+            Connect with OpenRouter
+          </button>
+          <div style="margin-top:10px;font-size:11px;color:var(--text-dim)">
+            Sign up or log in &mdash; no API key copy-paste needed
+          </div>
+          <div id="openrouter-oauth-status" style="margin-top:8px;font-size:12px"></div>
+        </div>
+        <details style="margin-top:12px">
           <summary style="font-size:11px;color:var(--text-dim);cursor:pointer">
-            Or paste an OpenRouter API key manually
+            Or paste an API key manually
           </summary>
           <div style="margin-top:8px">
             ${requiredProviders.map(p => {
@@ -3142,80 +3303,73 @@ async function renderSetup() {
       `}
     </div>
 
-    <!-- SECTION 4: Wallet -->
-    <div class="setup-card-v2 ${c1c}" id="setup-wallet">
+    <!-- SECTION: OpenClaw Harness -->
+    <div class="setup-card-v2" id="setup-harness" style="margin-top:20px">
       <div class="card-header">
-        ${agentpmtConnected
-          ? '<img class="card-icon-logo" src="img/agentpmt-192.png" alt="AgentPMT" title="AgentPMT" onerror="this.outerHTML=\'<div class=\\\'card-icon\\\'>&#9883;</div>\'">'
-          : '<div class="card-icon">&#9883;</div>'}
+        <div class="card-icon" style="font-size:24px">&#129438;</div>
         <div>
-          <div class="card-title">
-            Your Wallet
-            ${step1Done
-              ? (agentpmtConnected
-                ? '<span class="setup-inline-status status-done">&#10003; AgentPMT Connected</span>'
-                : (agentaddressConnected
-                  ? '<span class="setup-inline-status status-done">&#10003; Agent Wallet Connected</span>'
-                  : '<span class="setup-inline-status status-done">&#10003; Connected</span>'))
-              : '<span class="setup-inline-status status-missing">&#10007; Not Connected</span>'}
+          <div class="card-title">OpenClaw Harness <span style="font-size:11px;font-weight:400;color:var(--text-dim);margin-left:6px">(Optional)</span></div>
+          <div class="card-desc">Configure OpenClaw gateway daemon and wire MCP tools for full agent orchestration</div>
+        </div>
+      </div>
+
+      <div class="harness-steps">
+        <!-- Step 1: CLI Status -->
+        <div class="harness-step" id="harness-step-install">
+          <div class="harness-step-num">1</div>
+          <div class="harness-step-body">
+            <div class="harness-step-title">OpenClaw CLI</div>
+            <div class="harness-step-desc">Pre-installed in the container image.</div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+              <span class="harness-status" id="harness-install-status">Checking...</span>
+            </div>
           </div>
-          <div class="card-desc">${walletCardDesc}</div>
-          <div class="setup-wallet-summary">
-            <span class="setup-wallet-chip ${hasAnyWallet ? 'ok' : 'bad'}">
-              ${hasAnyWallet ? '&#10003;' : '&#10007;'} Wallet Presence
-            </span>
-            <span class="setup-wallet-chip ${agentpmtConnected ? 'ok' : 'bad'}">
-              ${agentpmtConnected ? '&#10003;' : '&#10007;'} AgentPMT
-            </span>
-            <span class="setup-wallet-chip ${agentaddressConnected ? 'ok' : 'bad'}">
-              ${agentaddressConnected ? '&#10003;' : '&#10007;'} Agent Wallet
-            </span>
+        </div>
+
+        <!-- Step 2: Onboard & Gateway -->
+        <div class="harness-step" id="harness-step-onboard">
+          <div class="harness-step-num">2</div>
+          <div class="harness-step-body">
+            <div class="harness-step-title">Onboard &amp; Start Gateway</div>
+            <div class="harness-step-desc">
+              Runs the interactive onboard wizard, configures auth, and installs the gateway as a system daemon (systemd/launchd).
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+              <span class="harness-status" id="harness-gateway-status">Unknown</span>
+              <button class="btn btn-sm btn-primary" id="harness-onboard-btn" disabled>Launch Onboard Wizard</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3: Wire MCP -->
+        <div class="harness-step" id="harness-step-mcp">
+          <div class="harness-step-num">3</div>
+          <div class="harness-step-body">
+            <div class="harness-step-title">Wire MCP Tools</div>
+            <div class="harness-step-desc">
+              Auto-configures OpenClaw to use NucleusDB (37+ verifiable database tools) and HALO
+              (identity, attestation, mesh) MCP servers. Injects <code>mcpServers</code> into
+              <code>~/.openclaw/openclaw.json</code> &mdash; OpenClaw spawns them as child processes.
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+              <span class="harness-status" id="harness-mcp-status"></span>
+              <button class="btn btn-sm btn-primary" id="harness-wire-mcp-btn" disabled>Wire MCP Servers</button>
+            </div>
           </div>
         </div>
       </div>
 
-      ${step1Done ? `
-        <div class="setup-success-banner">
-          <span class="success-icon">&#10003;</span>
-          <span>
-            ${walletPath === 'agentpmt'
-              ? `AgentPMT connected${pmtToolCount > 0 ? ' &mdash; <strong>' + pmtToolCount + ' tools</strong> ready to use' : ''}`
-              : `Agent wallet connected${agentaddressAddress ? ` &mdash; <code>${esc(agentaddressAddress)}</code>` : ''}`}
-          </span>
+      <!-- Embedded PTY terminal for onboard wizard -->
+      <div id="harness-terminal-wrap" style="display:none;margin-top:14px">
+        <div style="font-size:12px;color:var(--accent);margin-bottom:6px" id="harness-terminal-label">OpenClaw onboard wizard</div>
+        <div id="harness-terminal" style="height:320px;border:1px solid var(--border);border-radius:6px;overflow:hidden"></div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button class="btn btn-sm" id="harness-terminal-close">Close Terminal</button>
         </div>
-        ${walletPath === 'agentpmt' ? `
-          <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button class="btn btn-sm" id="setup-disconnect-agentpmt" style="border-color:var(--red);color:var(--red)">
-              Disconnect My Account
-            </button>
-            <span style="font-size:11px;color:var(--text-dim)">Removes your token and disables the tool proxy</span>
-          </div>
-        ` : `
-          <div style="margin-top:20px;text-align:center">
-            <button class="btn btn-primary" id="setup-agentpmt-initiate" style="padding:14px 36px;font-size:15px;border-radius:8px;font-weight:700;letter-spacing:0.5px">
-              &#9883; INITIATE
-            </button>
-            <div style="margin-top:10px">
-              <span style="font-size:12px;color:var(--text-dim)">Connect to AgentPMT for 100+ tools, budget controls, and workflow automation</span>
-            </div>
-          </div>
-        `}
-      ` : `
-        <div style="text-align:center;padding:24px 16px">
-          <p style="font-size:15px;color:var(--text-muted);line-height:1.7;margin-bottom:20px;max-width:480px;margin-left:auto;margin-right:auto">
-            Connect to AgentPMT to unlock 100+ third-party tools, budget controls, and workflow automation for your agents.
-          </p>
-          <button class="btn btn-primary" id="setup-agentpmt-setup-now" style="padding:14px 36px;font-size:15px;border-radius:8px;font-weight:700;letter-spacing:0.5px">
-            SET UP NOW
-          </button>
-          <div style="margin-top:14px">
-            <span style="font-size:12px;color:var(--text-dim)">Opens the AgentPMT dashboard where you can create an account and connect</span>
-          </div>
-        </div>
-      `}
+      </div>
     </div>
 
-    <!-- SECTION 5: Dashboard Unlocked -->
+    <!-- SECTION 4: Dashboard Unlocked -->
     <div class="setup-card-v2 ${c3c}" id="setup-unlocked">
       <div class="card-header">
         <div class="card-icon">&#127919;</div>
@@ -3231,6 +3385,7 @@ async function renderSetup() {
         <div class="setup-unlocked-actions">
           <a class="btn btn-primary" href="#/overview" style="border-radius:6px">Explore Overview</a>
           <a class="btn" href="#/cockpit" style="border-radius:6px">Open Cockpit</a>
+          <a class="btn" href="#/deploy" style="border-radius:6px">Deploy Agents</a>
         </div>
       ` : `
         <p style="color:var(--text-dim);font-size:13px;line-height:1.6;margin-top:4px">
@@ -3336,89 +3491,45 @@ async function renderSetup() {
 
   // ---- Wire up interactive elements ----
 
-  // --- CLI Agent Detect & Auth ---
+  // --- CLI Agent Install & Auth ---
   (async () => {
     const cliAgents = ['claude', 'codex', 'gemini'];
-    const cliResolved = {};
-    let cliPollTimer = null;
-    let cliPollCount = 0;
-    const maxCliPolls = 15;
-
-    const setCliStatus = (cli, resp, statusEl, authBtn) => {
-      if (resp.installed) {
-        cliResolved[cli] = true;
-        if (resp.authenticated) {
-          if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
-          if (authBtn) {
-            authBtn.disabled = false;
-            authBtn.textContent = 'Re-authenticate';
-            authBtn.classList.remove('btn-primary');
+    // Poll for CLI install completion (background install runs at boot)
+    const cliInstalled = {};
+    async function pollCliDetect() {
+      for (const cli of cliAgents) {
+        if (cliInstalled[cli]) continue;
+        const statusEl = document.getElementById('cli-status-' + cli);
+        const row = document.querySelector('.cli-agent-row[data-cli="' + cli + '"]');
+        const authBtn = row && row.querySelector('.cli-auth-btn');
+        try {
+          const resp = await api('/cli/detect/' + cli);
+          if (resp.installed) {
+            cliInstalled[cli] = true;
+            if (resp.authenticated) {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
+              if (authBtn) {
+                authBtn.disabled = false;
+                authBtn.textContent = 'Re-authenticate';
+                authBtn.classList.remove('btn-primary');
+              }
+            } else {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span> <span style="color:var(--yellow)">(not authenticated)</span>';
+              if (authBtn) authBtn.disabled = false;
+            }
+          } else {
+            if (statusEl) statusEl.innerHTML = '<span style="color:var(--yellow)">&#8987; Installing...</span>';
           }
-          return;
+        } catch (_e) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Checking...</span>';
         }
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Found</span> <span style="color:var(--yellow)">(not authenticated)</span>';
-        if (authBtn) {
-          authBtn.disabled = false;
-          authBtn.textContent = 'Authenticate';
-          authBtn.classList.add('btn-primary');
-        }
-        return;
       }
-      if (statusEl) {
-        const pkg = cli === 'claude' ? '@anthropic-ai/claude-code'
-          : cli === 'codex' ? '@openai/codex'
-          : '@google/gemini-cli';
-        statusEl.innerHTML = '<span style="color:var(--yellow)">Not found</span> '
-          + '<span style="color:var(--text-dim);font-size:11px">Install: <code>npm i -g ' + pkg + '</code></span>';
+      // Keep polling until all are installed
+      if (cliAgents.some(c => !cliInstalled[c])) {
+        setTimeout(pollCliDetect, 4000);
       }
-      if (authBtn) {
-        authBtn.disabled = true;
-        authBtn.textContent = 'Authenticate';
-        authBtn.classList.add('btn-primary');
-      }
-    };
-
-    const detectCli = async (cli) => {
-      const statusEl = document.getElementById('cli-status-' + cli);
-      const row = document.querySelector('.cli-agent-row[data-cli="' + cli + '"]');
-      const authBtn = row && row.querySelector('.cli-auth-btn');
-      try {
-        const resp = await api('/cli/detect/' + cli);
-        setCliStatus(cli, resp, statusEl, authBtn);
-      } catch (_e) {
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Detection error</span>';
-      }
-    };
-
-    const stopCliPolling = () => {
-      if (cliPollTimer) {
-        clearInterval(cliPollTimer);
-        cliPollTimer = null;
-      }
-    };
-
-    const maybeStartCliPolling = () => {
-      if (!cliAgents.some(cli => !cliResolved[cli])) {
-        stopCliPolling();
-        return;
-      }
-      if (cliPollTimer) return;
-      cliPollTimer = setInterval(async () => {
-        cliPollCount += 1;
-        await Promise.allSettled(
-          cliAgents
-            .filter(cli => !cliResolved[cli])
-            .map(detectCli),
-        );
-        if (!cliAgents.some(cli => !cliResolved[cli]) || cliPollCount >= maxCliPolls) {
-          stopCliPolling();
-        }
-      }, 8000);
-    };
-
-    await Promise.allSettled(cliAgents.map(detectCli));
-    maybeStartCliPolling();
-
+    }
+    pollCliDetect();
     // Auth button handlers — open a PTY terminal for OAuth flow
     let _cliAuthTerm = null;
     let _cliAuthFitAddon = null;
@@ -3449,18 +3560,11 @@ async function renderSetup() {
             _cliAuthTerm.loadAddon(_cliAuthFitAddon);
             _cliAuthTerm.open(termEl);
             try { _cliAuthFitAddon.fit(); } catch (_e) {}
-            try { _cliAuthTerm.focus(); } catch (_e) {}
-            termEl.onmousedown = () => {
-              try { _cliAuthTerm && _cliAuthTerm.focus(); } catch (_e) {}
-            };
             // Connect WebSocket
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = proto + '//' + location.host + '/api/cockpit/sessions/' + resp.session_id + '/ws';
             _cliAuthWs = new WebSocket(wsUrl);
             _cliAuthWs.binaryType = 'arraybuffer';
-            _cliAuthWs.onopen = () => {
-              try { _cliAuthTerm && _cliAuthTerm.focus(); } catch (_e) {}
-            };
             let _cliAuthOpened = false;
             _cliAuthWs.onmessage = (ev) => {
               let text = '';
@@ -3493,9 +3597,8 @@ async function renderSetup() {
                   btn.textContent = 'Re-authenticate';
                   btn.classList.remove('btn-primary');
                 } else {
-                  if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Found</span> <span style="color:var(--red)">(auth failed)</span>';
+                  if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span> <span style="color:var(--red)">(auth failed)</span>';
                   btn.textContent = 'Authenticate';
-                  btn.classList.add('btn-primary');
                 }
               } catch (_e) {
                 // Fallback: show as authenticated (session completed)
@@ -3529,17 +3632,215 @@ async function renderSetup() {
     }
   })();
 
-  const setupNowBtn = document.getElementById('setup-agentpmt-setup-now');
-  if (setupNowBtn) {
-    setupNowBtn.addEventListener('click', () => {
-      window.location.hash = '#/agentpmt';
+  // ---- OpenClaw Harness wiring ----
+  (async () => {
+    let _harnessWs = null;
+    let _harnessTerm = null;
+    let _harnessFitAddon = null;
+
+    const installStatus = document.getElementById('harness-install-status');
+    const gatewayStatus = document.getElementById('harness-gateway-status');
+    const mcpStatus = document.getElementById('harness-mcp-status');
+    const onboardBtn = document.getElementById('harness-onboard-btn');
+    const wireMcpBtn = document.getElementById('harness-wire-mcp-btn');
+
+    // Auto-detect openclaw on page load
+    async function pollOpenClawDetect() {
+      try {
+        const detect = await api('/cli/detect/openclaw');
+        if (detect.installed) {
+          if (installStatus) installStatus.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span>' + (detect.path ? ' <span style="color:var(--text-dim);font-size:11px">(' + esc(detect.path) + ')</span>' : '');
+          if (onboardBtn) onboardBtn.disabled = false;
+          if (wireMcpBtn) wireMcpBtn.disabled = false;
+          try {
+            const gw = await api('/openclaw/gateway-status');
+            if (gw.gateway_running) {
+              if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--green)">&#10003; Gateway running</span>';
+            } else {
+              if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--yellow)">&#9888; Gateway not running</span>';
+            }
+          } catch (_e) {
+            if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--text-dim)">Could not check gateway</span>';
+          }
+        } else {
+          if (installStatus) installStatus.innerHTML = '<span style="color:var(--yellow)">&#8987; Installing...</span>';
+          setTimeout(pollOpenClawDetect, 4000);
+        }
+      } catch (_e) {
+        if (installStatus) installStatus.innerHTML = '<span style="color:var(--text-dim)">Checking...</span>';
+        setTimeout(pollOpenClawDetect, 4000);
+      }
+    }
+    pollOpenClawDetect();
+
+    // Onboard wizard button — launches PTY
+    if (onboardBtn) {
+      onboardBtn.addEventListener('click', async () => {
+        onboardBtn.disabled = true;
+        onboardBtn.textContent = 'Starting...';
+        try {
+          const resp = await apiPost('/cli/auth/openclaw', {});
+          if (!resp.session_id) throw new Error('no session returned');
+          // Show embedded terminal
+          const termWrap = document.getElementById('harness-terminal-wrap');
+          const termEl = document.getElementById('harness-terminal');
+          const termLabel = document.getElementById('harness-terminal-label');
+          if (termWrap) termWrap.style.display = 'block';
+          if (termLabel) termLabel.textContent = 'OpenClaw onboard wizard — follow the prompts to configure gateway and daemon';
+          // Clean up previous
+          if (_harnessWs) { try { _harnessWs.close(); } catch (_e) {} _harnessWs = null; }
+          if (_harnessTerm) { try { _harnessTerm.dispose(); } catch (_e) {} _harnessTerm = null; }
+          if (termEl) termEl.innerHTML = '';
+          if (typeof Terminal !== 'undefined' && termEl) {
+            _harnessTerm = new Terminal({ cursorBlink: true, fontSize: 13, theme: { background: '#0a0a0a', foreground: '#33ff33' } });
+            _harnessFitAddon = new FitAddon.FitAddon();
+            _harnessTerm.loadAddon(_harnessFitAddon);
+            _harnessTerm.open(termEl);
+            try { _harnessFitAddon.fit(); } catch (_e) {}
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = proto + '//' + location.host + '/api/cockpit/sessions/' + resp.session_id + '/ws';
+            _harnessWs = new WebSocket(wsUrl);
+            _harnessWs.binaryType = 'arraybuffer';
+            let _harnessAuthOpened = false;
+            _harnessWs.onmessage = (ev) => {
+              let text = '';
+              if (ev.data instanceof ArrayBuffer) {
+                const bytes = new Uint8Array(ev.data);
+                _harnessTerm.write(bytes);
+                text = new TextDecoder().decode(bytes);
+              } else {
+                _harnessTerm.write(ev.data);
+                text = ev.data;
+              }
+              if (!_harnessAuthOpened) {
+                const m = text.match(/https:\/\/[^\s\x1b\x07]+/);
+                if (m) {
+                  _harnessAuthOpened = true;
+                  const authUrl = m[0].replace(/[\x00-\x1f]/g, '');
+                  window.open(authUrl, '_blank', 'width=600,height=700,scrollbars=yes');
+                }
+              }
+            };
+            _harnessWs.onclose = () => {
+              _harnessTerm.write('\r\n\x1b[90m--- onboard session ended ---\x1b[0m\r\n');
+              if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--green)">&#10003; Onboard complete — checking gateway...</span>';
+              // Re-check gateway status after onboard completes
+              (async () => {
+                try {
+                  const gw = await api('/openclaw/gateway-status');
+                  if (gw.gateway_running) {
+                    if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--green)">&#10003; Gateway running</span>';
+                  } else {
+                    if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--yellow)">&#9888; Gateway not running &mdash; run <code>openclaw gateway start</code> manually</span>';
+                  }
+                } catch (_e) {}
+              })();
+            };
+            _harnessTerm.onData((data) => {
+              if (_harnessWs && _harnessWs.readyState === WebSocket.OPEN) {
+                _harnessWs.send(data);
+              }
+            });
+          }
+        } catch (e) {
+          if (gatewayStatus) gatewayStatus.innerHTML = '<span style="color:var(--red)">Onboard error: ' + esc(String(e.message || e)) + '</span>';
+        }
+        onboardBtn.disabled = false;
+        onboardBtn.textContent = 'Launch Onboard Wizard';
+      });
+    }
+
+    // Wire MCP button
+    if (wireMcpBtn) {
+      wireMcpBtn.addEventListener('click', async () => {
+        wireMcpBtn.disabled = true;
+        wireMcpBtn.textContent = 'Wiring...';
+        if (mcpStatus) mcpStatus.innerHTML = '<span style="color:var(--text-dim)">Injecting MCP server configs...</span>';
+        try {
+          const resp = await apiPost('/openclaw/wire-mcp', {});
+          if (resp.success) {
+            const detail = resp.detail || {};
+            const tools = (detail.tools_wired || []).join(', ');
+            if (mcpStatus) mcpStatus.innerHTML = '<span style="color:var(--green)">&#10003; Wired: ' + esc(tools) + '</span>' +
+              '<br><span style="font-size:11px;color:var(--text-dim)">Config: ' + esc(detail.config_path || '~/.openclaw/openclaw.json') + '</span>';
+          } else {
+            if (mcpStatus) mcpStatus.innerHTML = '<span style="color:var(--red)">Wiring failed</span>';
+          }
+        } catch (e) {
+          if (mcpStatus) mcpStatus.innerHTML = '<span style="color:var(--red)">Error: ' + esc(String(e.message || e)) + '</span>';
+        }
+        wireMcpBtn.disabled = false;
+        wireMcpBtn.textContent = 'Wire MCP Servers';
+      });
+    }
+
+    // Close terminal button
+    const harnessCloseBtn = document.getElementById('harness-terminal-close');
+    if (harnessCloseBtn) {
+      harnessCloseBtn.addEventListener('click', () => {
+        if (_harnessWs) { try { _harnessWs.close(); } catch (_e) {} _harnessWs = null; }
+        if (_harnessTerm) { try { _harnessTerm.dispose(); } catch (_e) {} _harnessTerm = null; }
+        const termWrap = document.getElementById('harness-terminal-wrap');
+        if (termWrap) termWrap.style.display = 'none';
+      });
+    }
+  })();
+
+  // AgentPMT token save
+  const saveBtn = document.getElementById('setup-save-agentpmt');
+  const testBtn = document.getElementById('setup-test-agentpmt');
+  const tokenInput = document.getElementById('setup-agentpmt-token');
+  const statusEl = document.getElementById('setup-agentpmt-status');
+
+  if (saveBtn && tokenInput) {
+    saveBtn.addEventListener('click', async () => {
+      const token = (tokenInput.value || '').trim();
+      if (!token) {
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Please paste your bearer token first.</span>';
+        return;
+      }
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Connecting...';
+      try {
+        // Store the token in the vault under the agentpmt provider
+        await apiPost('/vault/keys/agentpmt', { key: token, env_var: 'AGENTPMT_API_KEY' });
+        // Enable the tool proxy
+        await apiPost('/agentpmt/enable', {});
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Token saved. Testing connection...</span>';
+        // Auto-test: refresh catalog
+        try {
+          const refreshResp = await apiPost('/agentpmt/refresh', {});
+          const count = Number(refreshResp.count || 0);
+          if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">&#10003; Connected! ${count} tools available.</span>`;
+        } catch (re) {
+          if (statusEl) statusEl.innerHTML = `<span style="color:var(--yellow)">Token saved but catalog refresh failed: ${esc(String(re.message || re))}</span>`;
+        }
+        // Invalidate setup state cache and re-render
+        window._invalidateSetupState();
+        await fetchSetupState(true);
+        await renderSetup();
+        updateNavLockState();
+      } catch (e) {
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Save failed: ${esc(String(e.message || e))}</span>`;
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save & Connect';
+      }
     });
   }
 
-  const initiateBtn = document.getElementById('setup-agentpmt-initiate');
-  if (initiateBtn) {
-    initiateBtn.addEventListener('click', () => {
-      window.location.hash = '#/agentpmt';
+  if (testBtn) {
+    testBtn.addEventListener('click', async () => {
+      testBtn.disabled = true;
+      testBtn.textContent = 'Testing...';
+      try {
+        const resp = await apiPost('/agentpmt/refresh', {});
+        const count = Number(resp.count || 0);
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">&#10003; Connection OK &mdash; ${count} tools loaded.</span>`;
+      } catch (e) {
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Test failed: ${esc(String(e.message || e))}</span>`;
+      }
+      testBtn.disabled = false;
+      testBtn.textContent = 'Test';
     });
   }
 
@@ -3560,6 +3861,43 @@ async function renderSetup() {
         alert('Disconnect failed: ' + (e.message || e));
         disconnectPmtBtn.disabled = false;
         disconnectPmtBtn.textContent = 'Disconnect My Account';
+      }
+    });
+  }
+
+  // Quick-connect (no signup) handler
+  const anonWalletBtn = document.getElementById('setup-create-anon-wallet');
+  const anonWalletStatus = document.getElementById('setup-anon-wallet-status');
+  if (anonWalletBtn) {
+    anonWalletBtn.addEventListener('click', async () => {
+      anonWalletBtn.disabled = true;
+      anonWalletBtn.textContent = 'Connecting...';
+      if (anonWalletStatus) {
+        anonWalletStatus.innerHTML = '<span style="color:var(--text-dim)">Requesting API token...</span>';
+      }
+      try {
+        const resp = await apiPost('/agentpmt/anonymous-wallet', {});
+        if (resp && resp.token_saved) {
+          if (anonWalletStatus) {
+            anonWalletStatus.innerHTML = '<span style="color:var(--green)">&#10003; Connected!</span>';
+          }
+          window._invalidateSetupState();
+          await fetchSetupState(true);
+          await renderSetup();
+          updateNavLockState();
+        } else {
+          if (anonWalletStatus) {
+            anonWalletStatus.innerHTML = '<span style="color:var(--yellow)">Request succeeded but no token was returned.</span>';
+          }
+          anonWalletBtn.disabled = false;
+          anonWalletBtn.textContent = 'Connect Without Account';
+        }
+      } catch (e) {
+        if (anonWalletStatus) {
+          anonWalletStatus.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
+        }
+        anonWalletBtn.disabled = false;
+        anonWalletBtn.textContent = 'Connect Without Account';
       }
     });
   }
@@ -4165,8 +4503,8 @@ async function renderSetup() {
   setSecurityTier(initialSecurityTier, false);
 
   // Auto-apply "As Safe As Possible" on first visit if no tier has been set yet
-  if (willAutoApply) {
-    // Buttons start hidden to avoid flash; apply the preset in the background.
+  if (!hideSafetyUI && !appliedSecurityTier && initialSecurityTier === 'max-safe') {
+    // Defer slightly to let the UI render before running the preset
     setTimeout(() => applyTierPreset('max-safe'), 250);
   }
 
@@ -4398,6 +4736,29 @@ async function renderSetup() {
     });
   }
 
+  // Iframe embed logic: try opening AgentPMT in iframe when CTA is clicked
+  const signupBtn = document.getElementById('setup-agentpmt-signup');
+  const iframeWrap = document.getElementById('setup-agentpmt-iframe-wrap');
+  const iframe = document.getElementById('setup-agentpmt-iframe');
+  const closeIframeBtn = document.getElementById('setup-close-iframe');
+  if (signupBtn && iframeWrap && iframe) {
+    signupBtn.addEventListener('click', (e) => {
+      // Try embedding; if it fails the link still opens in new tab (target=_blank)
+      e.preventDefault();
+      iframe.src = 'https://www.agentpmt.com/login';
+      iframeWrap.style.display = 'block';
+      iframeWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      // Also open in new tab as fallback
+      window.open('https://www.agentpmt.com', '_blank', 'noopener,noreferrer');
+    });
+  }
+  if (closeIframeBtn && iframeWrap && iframe) {
+    closeIframeBtn.addEventListener('click', () => {
+      iframeWrap.style.display = 'none';
+      iframe.src = '';
+    });
+  }
+
   // Provider "Set Key" buttons
   content.querySelectorAll('.setup-provider-config-btn[data-provider]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -4514,49 +4875,6 @@ async function renderSetup() {
         }
         oauthConnectBtn.disabled = false;
         oauthConnectBtn.textContent = 'Connect with OpenRouter';
-      }
-    });
-  }
-
-  // "Use Local Models" button handler
-  const chooseLocalBtn = content.querySelector('#setup-choose-local-models-btn');
-  if (chooseLocalBtn) {
-    chooseLocalBtn.addEventListener('click', async () => {
-      const statusEl = content.querySelector('#setup-local-models-status');
-      chooseLocalBtn.disabled = true;
-      chooseLocalBtn.textContent = 'Setting up...';
-      try {
-        await apiPost('/models/choose-local', {});
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        if (statusEl) {
-          statusEl.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
-        }
-        chooseLocalBtn.disabled = false;
-        chooseLocalBtn.textContent = 'Use Local Models';
-      }
-    });
-  }
-
-  // "Disconnect" local models button handler
-  const disconnectLocalBtn = content.querySelector('.setup-disconnect-local-models-btn');
-  if (disconnectLocalBtn) {
-    disconnectLocalBtn.addEventListener('click', async () => {
-      disconnectLocalBtn.disabled = true;
-      disconnectLocalBtn.textContent = 'Disconnecting...';
-      try {
-        await apiPost('/models/unchoose-local', {});
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        alert(`Failed to disconnect local models: ${String(e.message || e)}`);
-        disconnectLocalBtn.disabled = false;
-        disconnectLocalBtn.textContent = 'Disconnect';
       }
     });
   }
@@ -4680,6 +4998,54 @@ function renderCockpit() {
       <div class="card" style="padding:2rem;text-align:center;color:var(--amber);">
         <p style="font-size:1.5rem;">&#9654; Cockpit unavailable</p>
         <p style="margin-top:1rem;color:var(--text-dim);">cockpit.js failed to load.</p>
+      </div>`;
+  }
+}
+
+// =============================================================================
+// PAGE: Orchestrator
+// =============================================================================
+function renderOrchestrator() {
+  content.innerHTML = `
+    <div class="page-header">
+      <h1>Orchestrator</h1>
+      <p class="subtitle">Launch, task, and monitor managed agent sessions</p>
+    </div>
+    <div id="orchestrator-root"></div>
+  `;
+
+  const root = document.getElementById('orchestrator-root');
+  if (window.OrchestratorPage && typeof window.OrchestratorPage.render === 'function') {
+    window.OrchestratorPage.render(root);
+  } else {
+    root.innerHTML = `
+      <div class="card" style="padding:2rem;text-align:center;color:var(--amber);">
+        <p style="font-size:1.5rem;">&#9881; Orchestrator unavailable</p>
+        <p style="margin-top:1rem;color:var(--text-dim);">orchestrator.js failed to load.</p>
+      </div>`;
+  }
+}
+
+// =============================================================================
+// PAGE: Deploy
+// =============================================================================
+function renderDeploy() {
+  content.innerHTML = `
+    <div class="page-header">
+      <h1>Deploy</h1>
+      <p class="subtitle">Launch and manage agents</p>
+    </div>
+    <div id="deploy-root"></div>
+  `;
+
+  const root = document.getElementById('deploy-root');
+  if (window.DeployPage && typeof window.DeployPage.init === 'function') {
+    window.DeployPage.init(root);
+  } else {
+    root.innerHTML = `
+      <div class="card" style="padding:2rem;text-align:center;color:var(--amber);">
+        <p style="font-size:1.5rem;">&#9732; Deploy unavailable</p>
+        <p style="margin-top:1rem;color:var(--text-dim);">deploy.js failed to load.</p>
       </div>`;
   }
 }

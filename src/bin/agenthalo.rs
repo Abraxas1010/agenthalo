@@ -25,8 +25,6 @@ use nucleusdb::halo::onchain::{
     deploy_trust_verifier, load_onchain_config_or_default, onchain_config_path, post_attestation,
     query_attestation, save_onchain_config, signer_mode_label, warn_if_simulation_mode, SignerMode,
 };
-use nucleusdb::halo::p2pclaw;
-use nucleusdb::halo::p2pclaw_bridge;
 use nucleusdb::halo::pq::{has_wallet, keygen_pq, sign_pq_payload, wallet_key_identity};
 use nucleusdb::halo::privacy_controller;
 use nucleusdb::halo::runner::AgentRunner;
@@ -82,7 +80,6 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "sync" => cmd_sync(&args[2..]),
         "onchain" => cmd_onchain(&args[2..]),
         "protocol" => cmd_protocol(&args[2..]),
-        "p2pclaw" => cmd_p2pclaw(&args[2..]),
         "addon" => cmd_addon(&args[2..]),
         "license" => cmd_license(&args[2..]),
         "vault" => cmd_vault(&args[2..]),
@@ -661,9 +658,6 @@ fn cmd_governor(args: &[String]) -> Result<(), String> {
                 target,
                 formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime"
                     .to_string(),
-                ki: 0.0,
-                kb: 0.0,
-                adaptive: None,
             });
             let gamma = state.config.alpha + state.config.beta / state.config.dt;
             match state.validate_params() {
@@ -1588,335 +1582,6 @@ fn cmd_protocol(args: &[String]) -> Result<(), String> {
         "pq-bridge-transfer" => cmd_protocol_bridge_transfer(&args[1..]),
         _ => Err("usage: agenthalo protocol [privacy-pool-create|privacy-pool-withdraw|pq-bridge-transfer] ...".to_string()),
     }
-}
-
-fn cmd_p2pclaw(args: &[String]) -> Result<(), String> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
-    match sub {
-        "configure" => {
-            let mut cfg = p2pclaw::load_or_default();
-            if let Some(endpoint_url) = flag_value(args, "--endpoint") {
-                cfg.endpoint_url = endpoint_url.to_string();
-            }
-            if let Some(agent_id) = flag_value(args, "--agent-id") {
-                if agent_id.trim().is_empty() {
-                    return Err("--agent-id must not be empty".to_string());
-                }
-                cfg.agent_id = agent_id.to_string();
-            }
-            if let Some(agent_name) = flag_value(args, "--agent-name") {
-                if agent_name.trim().is_empty() {
-                    return Err("--agent-name must not be empty".to_string());
-                }
-                cfg.agent_name = agent_name.to_string();
-            }
-            if let Some(tier) = flag_value(args, "--tier") {
-                let tier = tier.to_ascii_lowercase();
-                if !matches!(tier.as_str(), "tier1" | "tier2") {
-                    return Err("tier must be one of: tier1, tier2".to_string());
-                }
-                cfg.tier = tier;
-            }
-            let configured =
-                p2pclaw::configure(&mut cfg, flag_value(args, "--auth-secret").map(str::to_string))?;
-            if has_flag(args, "--enable-addon") {
-                addons::set_enabled("p2pclaw", true)?;
-            }
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "auth_in_vault": configured.auth_in_vault,
-                "auth_configured": configured.auth_configured,
-                "enabled": addons::is_enabled("p2pclaw").unwrap_or(false),
-                "config": cfg,
-            }))
-        }
-        "status" => {
-            let mut cfg = load_required_p2pclaw_config()?;
-            let swarm = p2pclaw::ping(&cfg)?;
-            cfg.last_connected_at = now_unix_secs();
-            let _ = p2pclaw::save_config(&cfg);
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "config": cfg,
-                "swarm": swarm,
-            }))
-        }
-        "rank" => {
-            let cfg = load_required_p2pclaw_config()?;
-            let rank = p2pclaw::get_agent_rank(&cfg, flag_value(args, "--agent"))?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "rank": rank,
-            }))
-        }
-        "briefing" => {
-            let cfg = load_required_p2pclaw_config()?;
-            println!("{}", p2pclaw::get_briefing(&cfg)?);
-            Ok(())
-        }
-        "agent-briefing" => {
-            let cfg = load_required_p2pclaw_config()?;
-            let briefing =
-                p2pclaw::get_agent_briefing(&cfg, flag_value(args, "--agent-id"))?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "briefing": briefing,
-            }))
-        }
-        "papers" => {
-            let cfg = load_required_p2pclaw_config()?;
-            let limit = flag_value(args, "--limit")
-                .map(|v| v.parse::<u64>().map_err(|e| format!("invalid --limit: {e}")))
-                .transpose()?;
-            let papers = p2pclaw::list_papers(&cfg, limit)?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "count": papers.len(),
-                "papers": papers,
-            }))
-        }
-        "mempool" => {
-            let cfg = load_required_p2pclaw_config()?;
-            let papers = p2pclaw::list_mempool(&cfg)?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "count": papers.len(),
-                "papers": papers,
-            }))
-        }
-        "investigations" => {
-            let cfg = load_required_p2pclaw_config()?;
-            let investigations = p2pclaw::list_investigations(&cfg)?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "count": investigations.len(),
-                "investigations": investigations,
-            }))
-        }
-        "create-investigation" => {
-            let cfg = load_required_p2pclaw_config()?;
-            let title = flag_value(args, "--title")
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| {
-                    "usage: agenthalo p2pclaw create-investigation --title <text> --description <text>"
-                        .to_string()
-                })?;
-            let description = flag_value(args, "--description")
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| {
-                    "usage: agenthalo p2pclaw create-investigation --title <text> --description <text>"
-                        .to_string()
-                })?;
-            let result = p2pclaw::create_investigation(&cfg, title, description)?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "result": result,
-            }))
-        }
-        "verify-paper" => {
-            let title = flag_value(args, "--title")
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| {
-                    "usage: agenthalo p2pclaw verify-paper --title <text> [--content <text>|--content-file <path>]".to_string()
-                })?;
-            let content = read_flag_or_file(args, "--content", "--content-file")?;
-            let agent_id = load_optional_p2pclaw_config().map(|cfg| cfg.agent_id);
-            let bridge_cfg = p2pclaw_bridge::load_config()?;
-            let script_path = p2pclaw_bridge::discover_verify_script(&bridge_cfg);
-            let verification = nucleusdb::halo::p2pclaw_verify::verify_paper_full(
-                &nucleusdb::halo::p2pclaw_verify::VerificationRequest {
-                    title: title.to_string(),
-                    content,
-                    claims: vec![],
-                    agent_id,
-                },
-                script_path.as_deref(),
-                bridge_cfg
-                    .heyting_verify_python
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or("python3"),
-                bridge_cfg.heyting_verify_timeout_secs.unwrap_or(120),
-            );
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "verification": verification,
-            }))
-        }
-        "bridge" => cmd_p2pclaw_bridge(&args[1..]),
-        _ => Err("usage: agenthalo p2pclaw [configure|status|rank|briefing|agent-briefing|papers|mempool|investigations|create-investigation|verify-paper|bridge] ...".to_string()),
-    }
-}
-
-fn cmd_p2pclaw_bridge(args: &[String]) -> Result<(), String> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
-    match sub {
-        "configure" => {
-            let mut cfg = p2pclaw_bridge::load_config()?;
-            if let Some(value) = flag_value(args, "--min-poll-secs") {
-                cfg.min_poll_interval_secs = value
-                    .parse::<u64>()
-                    .map_err(|e| format!("invalid --min-poll-secs: {e}"))?;
-            }
-            if let Some(value) = flag_value(args, "--max-poll-secs") {
-                cfg.max_poll_interval_secs = value
-                    .parse::<u64>()
-                    .map_err(|e| format!("invalid --max-poll-secs: {e}"))?;
-            }
-            if let Some(value) = flag_value(args, "--heartbeat-secs") {
-                cfg.heartbeat_interval_secs = value
-                    .parse::<u64>()
-                    .map_err(|e| format!("invalid --heartbeat-secs: {e}"))?;
-            }
-            if let Some(value) = flag_value(args, "--event-limit") {
-                cfg.event_limit = value
-                    .parse::<u64>()
-                    .map_err(|e| format!("invalid --event-limit: {e}"))?;
-            }
-            if let Some(value) = flag_value(args, "--preview-items") {
-                cfg.preview_items = value
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid --preview-items: {e}"))?;
-            }
-            if let Some(value) = flag_value(args, "--heyting-verify-script") {
-                cfg.heyting_verify_script = Some(value.into());
-            }
-            if let Some(value) = flag_value(args, "--heyting-verify-python") {
-                cfg.heyting_verify_python = Some(value.to_string());
-            }
-            if let Some(value) = flag_value(args, "--heyting-verify-timeout-secs") {
-                cfg.heyting_verify_timeout_secs = Some(
-                    value
-                        .parse::<u64>()
-                        .map_err(|e| format!("invalid --heyting-verify-timeout-secs: {e}"))?,
-                );
-            }
-            p2pclaw_bridge::save_config(&cfg)?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "bridge_config_path": p2pclaw_bridge::config_path(),
-                "bridge_config": cfg,
-            }))
-        }
-        "status" => {
-            let cfg = p2pclaw::load_config().ok();
-            let status =
-                p2pclaw_bridge::status(cfg.as_ref(), has_flag(args, "--include-mcp-tools"))?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "bridge": status,
-            }))
-        }
-        "run-once" => {
-            let cfg = load_required_p2pclaw_config()?;
-            let report = p2pclaw_bridge::run_once(
-                &cfg,
-                p2pclaw_bridge::BridgeRunOptions {
-                    dry_run: !has_flag(args, "--live"),
-                    include_mcp_tools: has_flag(args, "--include-mcp-tools"),
-                    publish_summary: has_flag(args, "--publish-summary"),
-                    force_repeat_actions: has_flag(args, "--force-repeat-actions"),
-                    validate_paper_id: flag_value(args, "--validate-paper-id").map(str::to_string),
-                    validate_approve: !has_flag(args, "--reject"),
-                    validate_occam_score: flag_value(args, "--occam-score")
-                        .map(|v| {
-                            v.parse::<f64>()
-                                .map_err(|e| format!("invalid --occam-score: {e}"))
-                        })
-                        .transpose()?,
-                    chat_message: flag_value(args, "--chat-message").map(str::to_string),
-                    chat_channel: flag_value(args, "--chat-channel").map(str::to_string),
-                },
-            )?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "report": report,
-            }))
-        }
-        "run-loop" => {
-            let cfg = load_required_p2pclaw_config()?;
-            let max_iterations = flag_value(args, "--iterations")
-                .map(|v| {
-                    v.parse::<u64>()
-                        .map_err(|e| format!("invalid --iterations: {e}"))
-                })
-                .transpose()?;
-            let report = p2pclaw_bridge::run_loop(
-                &cfg,
-                p2pclaw_bridge::BridgeLoopOptions {
-                    run: p2pclaw_bridge::BridgeRunOptions {
-                        dry_run: !has_flag(args, "--live"),
-                        include_mcp_tools: has_flag(args, "--include-mcp-tools"),
-                        publish_summary: has_flag(args, "--publish-summary"),
-                        force_repeat_actions: has_flag(args, "--force-repeat-actions"),
-                        validate_paper_id: flag_value(args, "--validate-paper-id")
-                            .map(str::to_string),
-                        validate_approve: !has_flag(args, "--reject"),
-                        validate_occam_score: flag_value(args, "--occam-score")
-                            .map(|v| {
-                                v.parse::<f64>()
-                                    .map_err(|e| format!("invalid --occam-score: {e}"))
-                            })
-                            .transpose()?,
-                        chat_message: flag_value(args, "--chat-message").map(str::to_string),
-                        chat_channel: flag_value(args, "--chat-channel").map(str::to_string),
-                    },
-                    max_iterations,
-                    respect_backoff: !has_flag(args, "--no-backoff"),
-                    heartbeat: has_flag(args, "--heartbeat"),
-                    report_tau_sync: has_flag(args, "--tau-sync"),
-                },
-            )?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "loop": report,
-            }))
-        }
-        "publish-paper" => {
-            let cfg = load_required_p2pclaw_config()?;
-            let title = flag_value(args, "--title")
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| {
-                    "usage: agenthalo p2pclaw bridge publish-paper --title <text> [--content <text>|--content-file <path>] [--live]".to_string()
-                })?;
-            let content = read_flag_or_file(args, "--content", "--content-file")?;
-            let result = p2pclaw_bridge::publish_verified_paper(
-                &cfg,
-                p2pclaw_bridge::BridgePaperPublishOptions {
-                    title: title.to_string(),
-                    content,
-                    dry_run: !has_flag(args, "--live"),
-                },
-            )?;
-            print_pretty_json(&serde_json::json!({
-                "status": "ok",
-                "result": result,
-            }))
-        }
-        _ => Err(
-            "usage: agenthalo p2pclaw bridge [configure|status|run-once|run-loop|publish-paper] ...".to_string(),
-        ),
-    }
-}
-
-fn load_required_p2pclaw_config() -> Result<p2pclaw::P2PClawConfig, String> {
-    if !addons::is_enabled("p2pclaw")? {
-        return Err("p2pclaw add-on is required. Run: agenthalo addon enable p2pclaw".to_string());
-    }
-    p2pclaw::load_config().map_err(|e| {
-        format!("P2PCLAW is not configured. Run `agenthalo p2pclaw configure ...`: {e}")
-    })
-}
-
-fn load_optional_p2pclaw_config() -> Option<p2pclaw::P2PClawConfig> {
-    if !addons::is_enabled("p2pclaw").ok()? {
-        return None;
-    }
-    p2pclaw::load_config().ok()
 }
 
 fn cmd_protocol_privacy_pool_create(args: &[String]) -> Result<(), String> {
@@ -5233,7 +4898,7 @@ fn cmd_harness(args: &[String]) -> Result<(), String> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("help");
     match sub {
         "detect" => {
-            let agents = ["claude", "codex", "gemini"];
+            let agents = ["claude", "codex", "gemini", "openclaw"];
             println!();
             println!("  Agent CLI detection:");
             println!();
@@ -5258,11 +4923,12 @@ fn cmd_harness(args: &[String]) -> Result<(), String> {
         "install" => {
             let agent = args
                 .get(1)
-                .ok_or("usage: agenthalo harness install <claude|codex|gemini>")?;
+                .ok_or("usage: agenthalo harness install <claude|codex|gemini|openclaw>")?;
             let pkg = match agent.as_str() {
                 "claude" => "@anthropic-ai/claude-code",
                 "codex" => "@openai/codex",
                 "gemini" => "@google/gemini-cli",
+                "openclaw" => "openclaw@latest",
                 other => return Err(format!("unknown agent: {other}")),
             };
             println!("  Installing {agent} ({pkg})...");
@@ -5280,13 +4946,107 @@ fn cmd_harness(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "wire-mcp" => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            let config_path = Path::new(&home).join(".openclaw").join("openclaw.json");
+
+            let mut config: serde_json::Value = if config_path.exists() {
+                let contents = std::fs::read_to_string(&config_path)
+                    .map_err(|e| format!("read {}: {e}", config_path.display()))?;
+                serde_json::from_str(&contents)
+                    .map_err(|e| format!("parse {}: {e}", config_path.display()))?
+            } else {
+                if let Some(parent) = config_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+                }
+                serde_json::json!({})
+            };
+
+            let ndb_cmd =
+                which_path("nucleusdb-mcp").unwrap_or_else(|| "nucleusdb-mcp".to_string());
+            let halo_cmd = which_path("agenthalo-mcp-server")
+                .unwrap_or_else(|| "agenthalo-mcp-server".to_string());
+
+            let ndb_entry = serde_json::json!({ "command": ndb_cmd, "args": [] });
+            let halo_entry = serde_json::json!({ "command": halo_cmd, "args": [] });
+
+            let agents = config
+                .as_object_mut()
+                .ok_or("config root is not an object")?
+                .entry("agents")
+                .or_insert_with(|| serde_json::json!({}));
+            let defaults = agents
+                .as_object_mut()
+                .ok_or("agents is not an object")?
+                .entry("defaults")
+                .or_insert_with(|| serde_json::json!({}));
+            let mcp_servers = defaults
+                .as_object_mut()
+                .ok_or("defaults is not an object")?
+                .entry("mcpServers")
+                .or_insert_with(|| serde_json::json!({}));
+            let servers = mcp_servers
+                .as_object_mut()
+                .ok_or("mcpServers is not an object")?;
+
+            servers.insert("nucleusdb".to_string(), ndb_entry);
+            servers.insert("agenthalo".to_string(), halo_entry);
+
+            let serialized =
+                serde_json::to_string_pretty(&config).map_err(|e| format!("serialize: {e}"))?;
+            let tmp = config_path.with_extension("json.tmp");
+            std::fs::write(&tmp, &serialized)
+                .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+            std::fs::rename(&tmp, &config_path).map_err(|e| format!("rename: {e}"))?;
+
+            println!();
+            println!("  MCP servers wired into {}", config_path.display());
+            println!("    nucleusdb   → {ndb_cmd}");
+            println!("    agenthalo   → {halo_cmd}");
+            println!();
+            Ok(())
+        }
+        "gateway-status" => {
+            let which = std::process::Command::new("which")
+                .arg("openclaw")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !which {
+                println!("  OpenClaw CLI not found on PATH.");
+                return Ok(());
+            }
+            let output = std::process::Command::new("openclaw")
+                .args(["gateway", "status"])
+                .output()
+                .map_err(|e| format!("failed to check gateway: {e}"))?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if output.status.success() {
+                println!("  Gateway: RUNNING");
+                if !stdout.trim().is_empty() {
+                    println!("  {}", stdout.trim());
+                }
+            } else {
+                println!("  Gateway: NOT RUNNING");
+                if !stderr.trim().is_empty() {
+                    println!("  {}", stderr.trim());
+                }
+            }
+            Ok(())
+        }
         "help" | "--help" | "-h" => {
-            println!("agenthalo harness - CLI agent management");
+            println!("agenthalo harness - CLI agent management and OpenClaw integration");
             println!();
             println!("Subcommands:");
             println!("  detect                           Detect all supported agent CLIs on PATH");
-            println!("  install <claude|codex|gemini>");
+            println!("  install <claude|codex|gemini|openclaw>");
             println!("                                   Install an agent CLI via npm");
+            println!("  wire-mcp                         Wire NucleusDB + HALO MCP servers into OpenClaw config");
+            println!(
+                "  gateway-status                   Check if OpenClaw gateway daemon is running"
+            );
             println!("  help                             Show this help");
             Ok(())
         }
@@ -5416,7 +5176,7 @@ fn print_dashboard_usage() {
 fn cmd_models(args: &[String]) -> Result<(), String> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "usage: agenthalo models [status|list|search <query>|pull <model> [--source ollama|vllm]|rm <model> [--source ollama|vllm]|serve [--backend ollama|vllm] [--port PORT] [--model MODEL]|stop [--backend ollama|vllm]|login huggingface [--token hf_xxx]]"
+            "usage: agenthalo models [status|list|search <query>|pull <model> [--source vllm]|rm <model> [--source vllm]|serve [--port PORT] [--model MODEL]|stop|login huggingface [--token hf_xxx]]"
         );
         return Ok(());
     }
@@ -5485,20 +5245,17 @@ fn cmd_models(args: &[String]) -> Result<(), String> {
                 .find(|item| item.index == index)
                 .ok_or_else(|| format!("no search result numbered {index}"))?;
             let mut stdout = io::stdout();
-            let source =
-                if selected.backend == nucleusdb::halo::local_models::LocalBackendType::Vllm {
-                    Some("vllm")
-                } else {
-                    Some("ollama")
-                };
-            let installed =
-                nucleusdb::halo::local_models::pull_model(&selected.model, source, &mut stdout)?;
+            let installed = nucleusdb::halo::local_models::pull_model(
+                &selected.model,
+                Some("vllm"),
+                &mut stdout,
+            )?;
             println!("\nModel ready: {}", installed.model);
             Ok(())
         }
         "pull" => {
             let model = args.get(1).ok_or_else(|| {
-                "usage: agenthalo models pull <model> [--source ollama|vllm]".to_string()
+                "usage: agenthalo models pull <model> [--source vllm]".to_string()
             })?;
             let source = args
                 .iter()
@@ -5511,9 +5268,9 @@ fn cmd_models(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "rm" => {
-            let model = args.get(1).ok_or_else(|| {
-                "usage: agenthalo models rm <model> [--source ollama|vllm]".to_string()
-            })?;
+            let model = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo models rm <model> [--source vllm]".to_string())?;
             let source = args
                 .iter()
                 .position(|arg| arg == "--source")
@@ -5524,13 +5281,6 @@ fn cmd_models(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "serve" => {
-            let backend = args
-                .iter()
-                .position(|arg| arg == "--backend")
-                .and_then(|idx| args.get(idx + 1))
-                .map(|value| value.parse::<nucleusdb::halo::local_models::LocalBackendType>())
-                .transpose()?
-                .unwrap_or(nucleusdb::halo::local_models::LocalBackendType::Ollama);
             let port = args
                 .iter()
                 .position(|arg| arg == "--port")
@@ -5548,7 +5298,7 @@ fn cmd_models(args: &[String]) -> Result<(), String> {
                 .cloned();
             let result = nucleusdb::halo::local_models::serve_backend(
                 nucleusdb::halo::local_models::ServeRequest {
-                    backend,
+                    backend: nucleusdb::halo::local_models::LocalBackendType::Vllm,
                     port,
                     model,
                 },
@@ -5571,14 +5321,9 @@ fn cmd_models(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "stop" => {
-            let backend = args
-                .iter()
-                .position(|arg| arg == "--backend")
-                .and_then(|idx| args.get(idx + 1))
-                .map(|value| value.parse::<nucleusdb::halo::local_models::LocalBackendType>())
-                .transpose()?
-                .unwrap_or(nucleusdb::halo::local_models::LocalBackendType::Ollama);
-            let result = nucleusdb::halo::local_models::stop_backend(backend)?;
+            let result = nucleusdb::halo::local_models::stop_backend(
+                nucleusdb::halo::local_models::LocalBackendType::Vllm,
+            )?;
             println!(
                 "{} stopped at {}{}",
                 result.backend.display_name(),
@@ -5720,7 +5465,7 @@ fn cmd_doctor(_args: &[String]) -> Result<(), String> {
 
     // Agent CLIs
     println!("  Agent CLIs:");
-    for cli in ["claude", "codex", "gemini"] {
+    for cli in ["claude", "codex", "gemini", "openclaw"] {
         let found = which_path(cli);
         if let Some(p) = found {
             println!("    {cli:<12}      INSTALLED  ({p})");
@@ -5731,12 +5476,24 @@ fn cmd_doctor(_args: &[String]) -> Result<(), String> {
 
     let model_status = nucleusdb::halo::local_models::detect_status();
     println!("  Local models:");
-    print_doctor_backend_line(&model_status.ollama);
-    print_doctor_backend_line(&model_status.vllm);
+    print_doctor_backend_line("vLLM", &model_status.backend);
     if model_status.huggingface_token_configured {
         println!("    Hugging Face    TOKEN CONFIGURED");
     } else {
         println!("    Hugging Face    TOKEN NOT CONFIGURED");
+    }
+
+    // OpenClaw gateway
+    if which_path("openclaw").is_some() {
+        let gw = std::process::Command::new("openclaw")
+            .args(["gateway", "status"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        println!(
+            "  OpenClaw gateway:   {}",
+            if gw { "RUNNING" } else { "NOT RUNNING" }
+        );
     }
 
     // License
@@ -5763,7 +5520,7 @@ fn format_number_inline(v: u64) -> String {
     out.chars().rev().collect()
 }
 
-fn print_doctor_backend_line(status: &nucleusdb::halo::local_models::BackendStatus) {
+fn print_doctor_backend_line(label: &str, status: &nucleusdb::halo::local_models::BackendStatus) {
     let installed = if status.cli_installed {
         "INSTALLED"
     } else {
@@ -5781,18 +5538,12 @@ fn print_doctor_backend_line(status: &nucleusdb::halo::local_models::BackendStat
         .unwrap_or_default();
     println!(
         "    {:<14} {installed}, {health} @ {}{}",
-        status.backend.display_name(),
-        status.base_url,
-        version
+        label, status.base_url, version
     );
 }
 
 fn print_local_models_status(status: &nucleusdb::halo::local_models::LocalModelsStatus) {
     println!("Local Models");
-    println!(
-        "  Preferred backend: {}",
-        status.config.preferred_backend.display_name()
-    );
     if let Some(gpu) = &status.gpu {
         println!(
             "  GPU: {} ({:.1} GiB {})",
@@ -5809,14 +5560,13 @@ fn print_local_models_status(status: &nucleusdb::halo::local_models::LocalModels
             "not configured"
         }
     );
-    print_backend_status_block(&status.ollama);
-    print_backend_status_block(&status.vllm);
+    print_backend_status_block(&status.backend);
 }
 
 fn print_backend_status_block(status: &nucleusdb::halo::local_models::BackendStatus) {
     println!(
         "\n  {}: {}{}",
-        status.backend.display_name(),
+        "vLLM",
         if status.cli_installed {
             "installed"
         } else {
@@ -5875,18 +5625,25 @@ fn print_search_results(results: &[nucleusdb::halo::local_models::ModelSearchRes
         return;
     }
     println!(
-        "{:<3} {:<12} {:<42} {:<10} {:<10} {:<10}",
-        "#", "Source", "Model", "Size", "Quant", "Downloads"
+        "{:<3} {:<12} {:<40} {:<10} {:<12} {:<10} {:<9}",
+        "#", "Source", "Model", "Size", "Quant", "Downloads", "Fit GPU"
     );
     for item in results {
         println!(
-            "{:<3} {:<12} {:<42} {:<10} {:<10} {:<10}",
+            "{:<3} {:<12} {:<40} {:<10} {:<12} {:<10} {:<9}",
             item.index,
             item.source,
-            truncate(&item.model, 42),
+            truncate(&item.model, 40),
             item.size.clone().unwrap_or_else(|| "-".to_string()),
-            item.quantization.clone().unwrap_or_else(|| "-".to_string()),
-            item.downloads.clone().unwrap_or_else(|| "-".to_string())
+            if item.quantizations.is_empty() {
+                item.quantization.clone().unwrap_or_else(|| "-".to_string())
+            } else {
+                truncate(&item.quantizations.join(","), 12)
+            },
+            item.downloads.clone().unwrap_or_else(|| "-".to_string()),
+            item.fits_gpu
+                .map(|fits| if fits { "yes" } else { "no" })
+                .unwrap_or("-")
         );
     }
 }
@@ -5904,39 +5661,6 @@ fn truncate(value: &str, max_chars: usize) -> String {
         let truncated: String = value.chars().take(max_chars - 3).collect();
         format!("{truncated}...")
     }
-}
-
-fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    args.iter()
-        .position(|arg| arg == flag)
-        .and_then(|idx| args.get(idx + 1))
-        .map(|s| s.as_str())
-}
-
-fn has_flag(args: &[String], flag: &str) -> bool {
-    args.iter().any(|arg| arg == flag)
-}
-
-fn read_flag_or_file(args: &[String], value_flag: &str, file_flag: &str) -> Result<String, String> {
-    if let Some(value) = flag_value(args, value_flag) {
-        return Ok(value.to_string());
-    }
-    if let Some(path) = flag_value(args, file_flag) {
-        return std::fs::read_to_string(path)
-            .map_err(|e| format!("read {} {}: {e}", file_flag, path));
-    }
-    Err(format!(
-        "pass {} <text> or {} <path>",
-        value_flag, file_flag
-    ))
-}
-
-fn print_pretty_json(value: &serde_json::Value) -> Result<(), String> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(value).map_err(|e| format!("serialize JSON output: {e}"))?
-    );
-    Ok(())
 }
 
 fn infer_model(args: &[String]) -> Option<String> {
@@ -5973,7 +5697,7 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install]\n                             Agent CLI management for supported local agents\n  models [status|list|search|pull|serve|stop|rm|login]\n                             Local Ollama/vLLM model discovery, download, and serving\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  p2pclaw ...                P2PCLAW hive config, status, investigations, and bridge worker control\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nControl:\n  governor status [INSTANCE] [--json]\n                             Show live AETHER governor state from the dashboard control plane\n  governor reset [INSTANCE|all] [--json]\n                             Soft-reset runtime/storage governors back to from-rest\n  governor watch [INSTANCE] [--interval SECS] [--json]\n                             Poll governor status for manager loops\n  governor validate --alpha A --beta B --dt DT --eps-min LO --eps-max HI --target T\n                             Validate the AETHER gain condition and formal regime\n  deploy preflight --agent ID [--admission-mode warn|block|force] [--json]\n                             Check CLI readiness, Betti topology drift, and AETHER admission\n  deploy launch --agent ID --mode terminal|cockpit|gui|gui+terminal [--container]\n                [--working-dir DIR] [--admission-mode warn|block|force] [--json]\n                             Launch a cockpit-managed agent session with admission control\n  deploy status <session-id> [--json]\n                             Show current status for a cockpit-managed deploy session\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n  p2pclaw bridge run-loop [--live] [--iterations N] [--heartbeat] [--tau-sync]\n                             Run the local bridge worker against the configured hive\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install|wire-mcp|gateway-status]\n                             Agent CLI management and OpenClaw MCP wiring\n  models [status|list|search|pull|serve|stop|rm|login]\n                             Local vLLM model discovery, download, and serving\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nControl:\n  governor status [INSTANCE] [--json]\n                             Show live AETHER governor state from the dashboard control plane\n  governor reset [INSTANCE|all] [--json]\n                             Soft-reset runtime/storage governors back to from-rest\n  governor watch [INSTANCE] [--interval SECS] [--json]\n                             Poll governor status for manager loops\n  governor validate --alpha A --beta B --dt DT --eps-min LO --eps-max HI --target T\n                             Validate the AETHER gain condition and formal regime\n  deploy preflight --agent ID [--admission-mode warn|block|force] [--json]\n                             Check CLI readiness, Betti topology drift, and AETHER admission\n  deploy launch --agent ID --mode terminal|cockpit|gui|gui+terminal [--container]\n                [--working-dir DIR] [--admission-mode warn|block|force] [--json]\n                             Launch a cockpit-managed agent session with admission control\n  deploy status <session-id> [--json]\n                             Show current status for a cockpit-managed deploy session\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
   NYM_FAIL_CLOSED=0           Legacy equivalent of NYM_FAIL_OPEN=1"
     );
 }

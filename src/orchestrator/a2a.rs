@@ -3,6 +3,17 @@ use crate::container::mesh::{call_remote_tool, mesh_registry_path, PeerRegistry}
 use crate::halo::did::DIDIdentity;
 use crate::pod::capability::CapabilityToken;
 
+fn mesh_auth_token() -> Option<String> {
+    std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            std::env::var("AGENTHALO_MCP_SECRET")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })
+}
+
 /// Delegate a task to a remote mesh peer.
 ///
 /// This uses the peer's `orchestrator_send_task` MCP tool surface. The DID identity
@@ -29,7 +40,7 @@ pub fn delegate_task_to_peer(
             "wait": true,
             "timeout_secs": timeout_secs,
         }),
-        None,
+        mesh_auth_token().as_deref(),
     )?;
     unwrap_orchestrator_result(result)
 }

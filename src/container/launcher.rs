@@ -105,6 +105,21 @@ fn run_dir() -> PathBuf {
     std::env::temp_dir().join("nucleusdb-container")
 }
 
+fn env_contains(env_vars: &[(String, String)], key: &str) -> bool {
+    env_vars.iter().any(|(existing, _)| existing == key)
+}
+
+fn direct_mcp_server_command(command: &[String]) -> bool {
+    command
+        .first()
+        .map(|value| {
+            value == "agenthalo-mcp-server"
+                || value.ends_with("/agenthalo-mcp-server")
+                || value.ends_with("\\agenthalo-mcp-server")
+        })
+        .unwrap_or(false)
+}
+
 pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
     let engine = ContainerBackend::detect();
     let session_id = make_session_id();
@@ -127,6 +142,29 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
         .arg(format!("{}:/run/nucleusdb.sock", host_sock.display()));
     if cfg.use_gvisor {
         cmd.arg("--runtime").arg("runsc");
+    }
+
+    let mut env_vars = cfg.env_vars.clone();
+    if direct_mcp_server_command(&cfg.command) {
+        if !env_contains(&env_vars, "AGENTHALO_MCP_HOST") {
+            env_vars.push(("AGENTHALO_MCP_HOST".to_string(), "0.0.0.0".to_string()));
+        }
+        let shared_secret = std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                std::env::var("AGENTHALO_MCP_SECRET")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            });
+        if let Some(secret) = shared_secret {
+            if !env_contains(&env_vars, "AGENTHALO_MCP_SECRET") {
+                env_vars.push(("AGENTHALO_MCP_SECRET".to_string(), secret.clone()));
+            }
+            if !env_contains(&env_vars, "NUCLEUSDB_MESH_AUTH_TOKEN") {
+                env_vars.push(("NUCLEUSDB_MESH_AUTH_TOKEN".to_string(), secret));
+            }
+        }
     }
 
     // Mesh networking: shared Docker network + MCP port exposure
@@ -159,6 +197,14 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
                     mesh_cfg.registry_volume.display()
                 )
             })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    &mesh_cfg.registry_volume,
+                    std::fs::Permissions::from_mode(0o777),
+                );
+            }
             cmd.arg("-v")
                 .arg(format!("{}:/data/mesh", mesh_cfg.registry_volume.display()));
 
@@ -166,12 +212,17 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
         }
     }
 
-    for (key, value) in &cfg.env_vars {
+    for (key, value) in &env_vars {
         cmd.arg("-e").arg(format!("{key}={value}"));
     }
-    cmd.arg(&cfg.image);
-    for arg in &cfg.command {
-        cmd.arg(arg);
+    if let Some((entrypoint, args)) = cfg.command.split_first() {
+        cmd.arg("--entrypoint").arg(entrypoint);
+        cmd.arg(&cfg.image);
+        for arg in args {
+            cmd.arg(arg);
+        }
+    } else {
+        cmd.arg(&cfg.image);
     }
     let out = cmd
         .output()

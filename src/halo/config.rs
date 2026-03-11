@@ -1,52 +1,4 @@
-use std::path::{Path, PathBuf};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PasswordBootstrapMode {
-    Required,
-    Optional,
-    Disabled,
-}
-
-impl PasswordBootstrapMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Required => "required",
-            Self::Optional => "optional",
-            Self::Disabled => "disabled",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "required" => Some(Self::Required),
-            "optional" => Some(Self::Optional),
-            "disabled" | "off" | "none" | "passwordless" => Some(Self::Disabled),
-            _ => None,
-        }
-    }
-}
-
-#[cfg(unix)]
-fn ensure_dir_mode(path: &Path, mode: u32, err_prefix: &str) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    match std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            let current_mode = std::fs::metadata(path)
-                .map_err(|meta_err| format!("{err_prefix}: {e} (metadata: {meta_err})"))?
-                .permissions()
-                .mode()
-                & 0o777;
-            if current_mode == mode {
-                Ok(())
-            } else {
-                Err(format!("{err_prefix}: {e}"))
-            }
-        }
-        Err(e) => Err(format!("{err_prefix}: {e}")),
-    }
-}
+use std::path::PathBuf;
 
 pub fn halo_dir() -> PathBuf {
     if let Ok(p) = std::env::var("AGENTHALO_HOME") {
@@ -204,33 +156,6 @@ pub fn p2pclaw_config_path() -> PathBuf {
     halo_dir().join("p2pclaw.json")
 }
 
-pub fn p2pclaw_bridge_config_path() -> PathBuf {
-    halo_dir().join("p2pclaw_bridge.json")
-}
-
-pub fn p2pclaw_bridge_state_path() -> PathBuf {
-    halo_dir().join("p2pclaw_bridge_state.json")
-}
-
-pub fn p2pclaw_bridge_lock_path() -> PathBuf {
-    halo_dir().join("p2pclaw_bridge_state.lock")
-}
-
-pub fn compile_workflow_dir() -> PathBuf {
-    halo_dir().join("compile_workflow")
-}
-
-pub fn lambda_credits_path() -> PathBuf {
-    halo_dir().join("lambda_credits.json")
-}
-
-pub fn heytinglean_cache_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("AGENTHALO_HEYTINGLEAN_CACHE_DIR") {
-        return PathBuf::from(path);
-    }
-    halo_dir().join("heytinglean_cache")
-}
-
 pub fn proof_certificates_dir() -> PathBuf {
     halo_dir().join("proof_certificates")
 }
@@ -252,17 +177,9 @@ pub fn ensure_halo_dir() -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create halo dir: {e}"))?;
     #[cfg(unix)]
     {
-        ensure_dir_mode(&dir, 0o700, "set halo dir permissions")?;
+        chmod_private_dir(&dir).map_err(|error| format!("set halo dir permissions: {error}"))?;
     }
     Ok(())
-}
-
-pub fn password_bootstrap_mode() -> PasswordBootstrapMode {
-    std::env::var("AGENTHALO_PASSWORD_BOOTSTRAP_MODE")
-        .ok()
-        .as_deref()
-        .and_then(PasswordBootstrapMode::parse)
-        .unwrap_or(PasswordBootstrapMode::Required)
 }
 
 pub fn ensure_attestations_dir() -> Result<(), String> {
@@ -283,41 +200,14 @@ pub fn ensure_agent_credentials_dir() -> Result<(), String> {
         .map_err(|e| format!("create agent credentials dir {}: {e}", path.display()))?;
     #[cfg(unix)]
     {
-        ensure_dir_mode(
-            &path,
-            0o700,
-            &format!("chmod agent credentials dir {} to 0700", path.display()),
-        )?;
+        chmod_private_dir(&path).map_err(|error| {
+            format!(
+                "chmod agent credentials dir {} to 0700: {error}",
+                path.display()
+            )
+        })?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn password_bootstrap_mode_defaults_to_required() {
-        unsafe {
-            std::env::remove_var("AGENTHALO_PASSWORD_BOOTSTRAP_MODE");
-        }
-        assert_eq!(password_bootstrap_mode(), PasswordBootstrapMode::Required);
-    }
-
-    #[test]
-    fn password_bootstrap_mode_parses_variants() {
-        unsafe {
-            std::env::set_var("AGENTHALO_PASSWORD_BOOTSTRAP_MODE", "optional");
-        }
-        assert_eq!(password_bootstrap_mode(), PasswordBootstrapMode::Optional);
-        unsafe {
-            std::env::set_var("AGENTHALO_PASSWORD_BOOTSTRAP_MODE", "passwordless");
-        }
-        assert_eq!(password_bootstrap_mode(), PasswordBootstrapMode::Disabled);
-        unsafe {
-            std::env::remove_var("AGENTHALO_PASSWORD_BOOTSTRAP_MODE");
-        }
-    }
 }
 
 pub fn ensure_proof_certificates_dir() -> Result<(), String> {
@@ -326,15 +216,30 @@ pub fn ensure_proof_certificates_dir() -> Result<(), String> {
         .map_err(|e| format!("create proof certificates dir {}: {e}", path.display()))?;
     #[cfg(unix)]
     {
-        ensure_dir_mode(
-            &path,
-            0o700,
-            &format!("chmod proof certificates dir {} to 0700", path.display()),
-        )?;
+        chmod_private_dir(&path).map_err(|error| {
+            format!(
+                "chmod proof certificates dir {} to 0700: {error}",
+                path.display()
+            )
+        })?;
     }
     Ok(())
 }
 
 pub fn ensure_circuit_dir() -> Result<(), String> {
     std::fs::create_dir_all(circuit_dir()).map_err(|e| format!("create circuit dir: {e}"))
+}
+
+#[cfg(unix)]
+fn chmod_private_dir(path: &PathBuf) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
+        // Bind-mounted data dirs may be owned by a different host UID/GID.
+        // If chmod is denied but the directory already exists, continue.
+        if error.kind() != std::io::ErrorKind::PermissionDenied {
+            return Err(error);
+        }
+    }
+    Ok(())
 }

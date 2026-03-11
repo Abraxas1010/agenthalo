@@ -53,8 +53,8 @@ pub struct DashboardState {
     pub memory_db_cache: Arc<StdMutex<MemoryDbCache>>,
     /// Local fallback orchestrator when MCP-proxy mode is disabled.
     pub orchestrator: Option<Arc<crate::orchestrator::Orchestrator>>,
-    /// Container backend used by cockpit container endpoints.
-    pub container_dispatch: Arc<dyn crate::orchestrator::container_dispatch::ContainerDispatch>,
+    /// In-process MCP service for self-container lifecycle and dashboard-local calls.
+    pub mcp_service: Arc<crate::mcp::tools::NucleusDbMcpService>,
     /// Shared AETHER governor registry across proxy/comms/compute/pty lanes.
     pub governor_registry: Arc<crate::halo::governor_registry::GovernorRegistry>,
     /// Live proxy admission/runtime telemetry wrapper.
@@ -173,6 +173,20 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
             db_path.clone(),
         )))
     };
+    let mcp_service = Arc::new(
+        if let Some(shared_orchestrator) = orchestrator.as_ref() {
+            crate::mcp::tools::NucleusDbMcpService::new_with_runtime(
+                &db_path,
+                vault.clone(),
+                pty_manager.clone(),
+                governor_registry.clone(),
+                (**shared_orchestrator).clone(),
+            )
+        } else {
+            crate::mcp::tools::NucleusDbMcpService::new(&db_path)
+        }
+        .expect("dashboard-local MCP service should initialize"),
+    );
 
     DashboardState {
         db_path,
@@ -193,21 +207,9 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         memory_store: Arc::new(crate::memory::MemoryStore::default()),
         memory_db_cache: Arc::new(StdMutex::new(MemoryDbCache::default())),
         orchestrator,
-        container_dispatch: Arc::new(
-            crate::orchestrator::container_dispatch::MeshContainerDispatch::default(),
-        ),
+        mcp_service,
         governor_registry,
         proxy_governor,
-    }
-}
-
-impl DashboardState {
-    pub fn with_container_dispatch(
-        mut self,
-        container_dispatch: Arc<dyn crate::orchestrator::container_dispatch::ContainerDispatch>,
-    ) -> Self {
-        self.container_dispatch = container_dispatch;
-        self
     }
 }
 
@@ -218,22 +220,6 @@ pub fn build_router(state: DashboardState) -> Router {
     Router::new()
         .nest("/api", api_router)
         .route("/events", get(api::sse_handler))
-        // AgentPMT same-origin reverse proxy: /__pmt/* proxies to agentpmt.com/*
-        // All HTTP methods needed for auth flows (login POST, session DELETE, etc.)
-        .route(
-            "/__pmt/{*rest}",
-            get(api::pmt_top_proxy)
-                .post(api::pmt_top_proxy)
-                .put(api::pmt_top_proxy)
-                .patch(api::pmt_top_proxy)
-                .delete(api::pmt_top_proxy),
-        )
-        // Catch-all for /_next/* — Next.js dynamic imports use path-absolute URLs
-        .route("/_next/{*rest}", get(api::pmt_next_proxy))
-        // Additional host-visible AgentPMT assets requested after pathname rewrite.
-        .route("/_vercel/{*rest}", get(api::pmt_vercel_proxy))
-        .route("/logo-w-text.svg", get(api::pmt_logo_proxy))
-        .route("/site.webmanifest", get(api::pmt_manifest_proxy))
         .fallback(get(assets::static_handler))
         .with_state(state)
 }

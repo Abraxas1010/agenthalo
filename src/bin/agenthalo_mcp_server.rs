@@ -6937,7 +6937,8 @@ where
     F: FnOnce(nucleusdb::mcp::tools::NucleusDbMcpService) -> Fut + Send + 'static,
     Fut: Future<Output = Result<Value, String>> + Send + 'static,
 {
-    let db_path = local_nucleusdb_path();
+    let service = local_nucleusdb_service().clone();
+    let orchestrator = local_orchestrator().clone();
     let handle = std::thread::Builder::new()
         .name("agenthalo-mcp-nucleusdb-tool".to_string())
         .stack_size(8 * 1024 * 1024)
@@ -6947,8 +6948,7 @@ where
                 .build()
                 .map_err(|e| format!("build nucleusdb tool runtime: {e}"))?;
             runtime.block_on(async move {
-                let service = nucleusdb::mcp::tools::NucleusDbMcpService::new(&db_path)
-                    .map_err(|e| format!("open local nucleusdb at {}: {e}", db_path.display()))?;
+                service.sync_orchestrator(orchestrator).await;
                 call(service).await
             })
         })
@@ -6958,16 +6958,59 @@ where
         .map_err(|_| "nucleusdb tool worker panicked".to_string())?
 }
 
-fn local_orchestrator() -> &'static nucleusdb::orchestrator::Orchestrator {
-    static ORCH: OnceLock<nucleusdb::orchestrator::Orchestrator> = OnceLock::new();
-    ORCH.get_or_init(|| {
+struct LocalMcpRuntime {
+    vault: Option<Arc<nucleusdb::halo::vault::Vault>>,
+    pty_manager: Arc<nucleusdb::cockpit::pty_manager::PtyManager>,
+    governor_registry: Arc<nucleusdb::halo::governor_registry::GovernorRegistry>,
+    orchestrator: nucleusdb::orchestrator::Orchestrator,
+}
+
+fn local_mcp_runtime() -> &'static LocalMcpRuntime {
+    static RUNTIME: OnceLock<LocalMcpRuntime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
         let vault =
             nucleusdb::halo::vault::Vault::open(&config::pq_wallet_path(), &config::vault_path())
                 .ok()
                 .map(Arc::new);
-        let pty_manager = Arc::new(nucleusdb::cockpit::pty_manager::PtyManager::new(24));
-        nucleusdb::orchestrator::Orchestrator::new(pty_manager, vault, config::db_path())
+        let governor_registry = nucleusdb::halo::governor_registry::build_default_registry();
+        nucleusdb::halo::governor_registry::install_global_registry(governor_registry.clone());
+        let pty_manager = Arc::new(
+            nucleusdb::cockpit::pty_manager::PtyManager::with_governor_registry(
+                24,
+                Some(governor_registry.clone()),
+            ),
+        );
+        let orchestrator = nucleusdb::orchestrator::Orchestrator::new(
+            pty_manager.clone(),
+            vault.clone(),
+            config::db_path(),
+        );
+        LocalMcpRuntime {
+            vault,
+            pty_manager,
+            governor_registry,
+            orchestrator,
+        }
     })
+}
+
+fn local_nucleusdb_service() -> &'static nucleusdb::mcp::tools::NucleusDbMcpService {
+    static SERVICE: OnceLock<nucleusdb::mcp::tools::NucleusDbMcpService> = OnceLock::new();
+    SERVICE.get_or_init(|| {
+        let runtime = local_mcp_runtime();
+        nucleusdb::mcp::tools::NucleusDbMcpService::new_with_runtime(
+            local_nucleusdb_path(),
+            runtime.vault.clone(),
+            runtime.pty_manager.clone(),
+            runtime.governor_registry.clone(),
+            runtime.orchestrator.clone(),
+        )
+        .expect("initialize local nucleusdb MCP service")
+    })
+}
+
+fn local_orchestrator() -> &'static nucleusdb::orchestrator::Orchestrator {
+    &local_mcp_runtime().orchestrator
 }
 
 fn run_orchestrator_call<F, Fut>(call: F) -> Result<Value, String>
@@ -7435,9 +7478,10 @@ fn tool_nucleusdb_container_deinitialize(_arguments: Value) -> Result<Value, Str
 fn tool_nucleusdb_subsidiary_provision(arguments: Value) -> Result<Value, String> {
     let req: nucleusdb::mcp::tools::SubsidiaryProvisionRequest =
         parse_tool_args(arguments, "nucleusdb_subsidiary_provision")?;
+    let orchestrator = local_orchestrator().clone();
     run_local_nucleusdb_call(move |service| async move {
         let rmcp::Json(response) = service
-            .subsidiary_provision(rmcp::handler::server::wrapper::Parameters(req))
+            .subsidiary_provision_with_orchestrator(req, orchestrator)
             .await
             .map_err(|e| format!("{e:?}"))?;
         serde_json::to_value(response)
@@ -7448,9 +7492,10 @@ fn tool_nucleusdb_subsidiary_provision(arguments: Value) -> Result<Value, String
 fn tool_nucleusdb_subsidiary_initialize(arguments: Value) -> Result<Value, String> {
     let req: nucleusdb::mcp::tools::SubsidiaryInitializeRequest =
         parse_tool_args(arguments, "nucleusdb_subsidiary_initialize")?;
+    let orchestrator = local_orchestrator().clone();
     run_local_nucleusdb_call(move |service| async move {
         let rmcp::Json(response) = service
-            .subsidiary_initialize(rmcp::handler::server::wrapper::Parameters(req))
+            .subsidiary_initialize_with_orchestrator(req, orchestrator)
             .await
             .map_err(|e| format!("{e:?}"))?;
         serde_json::to_value(response)
@@ -7461,9 +7506,10 @@ fn tool_nucleusdb_subsidiary_initialize(arguments: Value) -> Result<Value, Strin
 fn tool_nucleusdb_subsidiary_send_task(arguments: Value) -> Result<Value, String> {
     let req: nucleusdb::mcp::tools::SubsidiarySendTaskRequest =
         parse_tool_args(arguments, "nucleusdb_subsidiary_send_task")?;
+    let orchestrator = local_orchestrator().clone();
     run_local_nucleusdb_call(move |service| async move {
         let rmcp::Json(response) = service
-            .subsidiary_send_task(rmcp::handler::server::wrapper::Parameters(req))
+            .subsidiary_send_task_with_orchestrator(req, orchestrator)
             .await
             .map_err(|e| format!("{e:?}"))?;
         serde_json::to_value(response)
@@ -7474,9 +7520,10 @@ fn tool_nucleusdb_subsidiary_send_task(arguments: Value) -> Result<Value, String
 fn tool_nucleusdb_subsidiary_get_result(arguments: Value) -> Result<Value, String> {
     let req: nucleusdb::mcp::tools::SubsidiaryGetResultRequest =
         parse_tool_args(arguments, "nucleusdb_subsidiary_get_result")?;
+    let orchestrator = local_orchestrator().clone();
     run_local_nucleusdb_call(move |service| async move {
         let rmcp::Json(response) = service
-            .subsidiary_get_result(rmcp::handler::server::wrapper::Parameters(req))
+            .subsidiary_get_result_with_orchestrator(req, orchestrator)
             .await
             .map_err(|e| format!("{e:?}"))?;
         serde_json::to_value(response)
@@ -7487,9 +7534,10 @@ fn tool_nucleusdb_subsidiary_get_result(arguments: Value) -> Result<Value, Strin
 fn tool_nucleusdb_subsidiary_deinitialize(arguments: Value) -> Result<Value, String> {
     let req: nucleusdb::mcp::tools::SubsidiaryDeinitializeRequest =
         parse_tool_args(arguments, "nucleusdb_subsidiary_deinitialize")?;
+    let orchestrator = local_orchestrator().clone();
     run_local_nucleusdb_call(move |service| async move {
         let rmcp::Json(response) = service
-            .subsidiary_deinitialize(rmcp::handler::server::wrapper::Parameters(req))
+            .subsidiary_deinitialize_with_orchestrator(req, orchestrator)
             .await
             .map_err(|e| format!("{e:?}"))?;
         serde_json::to_value(response)
@@ -7500,9 +7548,10 @@ fn tool_nucleusdb_subsidiary_deinitialize(arguments: Value) -> Result<Value, Str
 fn tool_nucleusdb_subsidiary_destroy(arguments: Value) -> Result<Value, String> {
     let req: nucleusdb::mcp::tools::SubsidiaryDestroyRequest =
         parse_tool_args(arguments, "nucleusdb_subsidiary_destroy")?;
+    let orchestrator = local_orchestrator().clone();
     run_local_nucleusdb_call(move |service| async move {
         let rmcp::Json(response) = service
-            .subsidiary_destroy(rmcp::handler::server::wrapper::Parameters(req))
+            .subsidiary_destroy_with_orchestrator(req, orchestrator)
             .await
             .map_err(|e| format!("{e:?}"))?;
         serde_json::to_value(response)
@@ -7513,9 +7562,10 @@ fn tool_nucleusdb_subsidiary_destroy(arguments: Value) -> Result<Value, String> 
 fn tool_nucleusdb_subsidiary_list(arguments: Value) -> Result<Value, String> {
     let req: nucleusdb::mcp::tools::SubsidiaryListRequest =
         parse_tool_args(arguments, "nucleusdb_subsidiary_list")?;
+    let orchestrator = local_orchestrator().clone();
     run_local_nucleusdb_call(move |service| async move {
         let rmcp::Json(response) = service
-            .subsidiary_list(rmcp::handler::server::wrapper::Parameters(req))
+            .subsidiary_list_with_orchestrator(req, orchestrator)
             .await
             .map_err(|e| format!("{e:?}"))?;
         serde_json::to_value(response)

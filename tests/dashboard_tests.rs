@@ -2,19 +2,18 @@
 #![allow(clippy::await_holding_lock)]
 
 use nucleusdb::cli::default_witness_cfg;
+use nucleusdb::container::SessionInfo;
 use nucleusdb::dashboard::api::api_router;
 use nucleusdb::dashboard::{build_state, DashboardState};
 use nucleusdb::halo::agentpmt;
 use nucleusdb::halo::auth::{save_credentials, Credentials};
 use nucleusdb::halo::config;
-use nucleusdb::halo::p2pclaw_bridge;
 use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
 use nucleusdb::halo::trace::{
     list_sessions as list_trace_sessions, now_unix_secs, session_events, TraceWriter,
 };
 use nucleusdb::halo::vault::Vault;
 use nucleusdb::memory::MemoryStore;
-use nucleusdb::orchestrator::container_dispatch::InMemoryContainerDispatch;
 use nucleusdb::persistence::{default_wal_path, persist_snapshot_and_sync_wal};
 use nucleusdb::protocol::{NucleusDb, VcBackend};
 use nucleusdb::state::State;
@@ -69,14 +68,6 @@ fn test_state_unauth(tag: &str) -> (DashboardState, PathBuf, PathBuf) {
     let _ = std::fs::remove_file(&creds);
     let state = build_state(db_path.clone(), creds.clone());
     (state, db_path, creds)
-}
-
-fn test_state_with_container_dispatch(
-    tag: &str,
-    dispatch: Arc<dyn nucleusdb::orchestrator::container_dispatch::ContainerDispatch>,
-) -> (DashboardState, PathBuf) {
-    let (state, db_path) = test_state(tag);
-    (state.with_container_dispatch(dispatch), db_path)
 }
 
 fn seed_session(db_path: &std::path::Path, session_id: &str) {
@@ -252,39 +243,6 @@ fn write_wallet_json(path: &std::path::Path, key_id: &str, seed_hex: &str) {
     std::fs::write(path, serde_json::to_vec_pretty(&wallet).unwrap()).unwrap();
 }
 
-fn write_mock_verify_script(dir: &std::path::Path) -> PathBuf {
-    let path = dir.join("living_agent_verify.py");
-    std::fs::write(
-        &path,
-        r#"#!/usr/bin/env python3
-import json
-print(json.dumps({
-  "paper_sha256": "mock-sha",
-  "generated_at": "2026-03-13T00:00:00Z",
-  "schema_version": "living-agent-verify-v1",
-  "structural": {"score": 0.95, "passed": True, "details": {"word_count": 300}},
-  "semantic": {"score": 0.75, "passed": True, "details": {"top_grid_match": "HeytingLean.Mock"}},
-  "formal": {"score": 1.0, "passed": True, "details": {"checked": 2, "successes": 2}},
-  "composite": {
-    "score": 0.75,
-    "passed": True,
-    "details": {"governing_tier": "semantic", "generated_at": "2026-03-13T00:00:00Z"}
-  },
-  "report_path": "/tmp/mock-report.json"
-}))"#,
-    )
-    .expect("write mock verifier");
-    #[cfg(unix)]
-    {
-        let mut perms = std::fs::metadata(&path)
-            .expect("verifier metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).expect("chmod verifier");
-    }
-    path
-}
-
 fn test_vault(tag: &str) -> (Arc<Vault>, PathBuf, PathBuf) {
     let wallet_path = std::env::temp_dir().join(format!(
         "wallet_{}_{}_{}.json",
@@ -389,156 +347,179 @@ async fn api_container_lock_status_reports_current_container() {
 }
 
 #[tokio::test]
-async fn api_containers_list_returns_empty_sessions_array() {
+async fn api_container_initialize_roundtrip_and_rejects_double_init() {
     let _guard = lock_env();
-    let run_root = tempfile::tempdir().expect("tempdir");
-    let _tmp_guard = EnvVarGuard::set("TMPDIR", Some(run_root.path().to_str().expect("utf8")));
-    let (state, db_path) = test_state_with_container_dispatch(
-        "api_containers_list_empty",
-        Arc::new(InMemoryContainerDispatch::default()),
-    );
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let _container_guard = EnvVarGuard::set("NUCLEUSDB_MESH_AGENT_ID", Some("dashboard-self-init"));
+    let (state, db_path) = test_state("api_container_initialize_roundtrip");
 
-    let (status, val) = api_get(state, "/containers").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(val["count"], 0);
-    assert_eq!(val["sessions"], json!([]));
-
-    let _ = std::fs::remove_file(&db_path);
-}
-
-#[tokio::test]
-async fn api_containers_provision_returns_session_id_and_did_uri() {
-    let _guard = lock_env();
-    let run_root = tempfile::tempdir().expect("tempdir");
-    let _tmp_guard = EnvVarGuard::set("TMPDIR", Some(run_root.path().to_str().expect("utf8")));
-    let (state, db_path) = test_state_with_container_dispatch(
-        "api_containers_provision",
-        Arc::new(InMemoryContainerDispatch::default()),
-    );
-
-    let (status, val) = api_post(
+    let (init_status, init_val) = api_post(
         state.clone(),
-        "/containers/provision",
+        "/container/initialize",
         json!({
-            "agent_id": "container-audit",
+            "hookup": {
+                "kind": "cli",
+                "cli_name": "shell"
+            },
+            "reuse_policy": "single_use"
+        }),
+    )
+    .await;
+    assert_eq!(init_status, StatusCode::OK, "initialize failed: {init_val}");
+    assert_eq!(init_val["state"], "locked");
+    assert_eq!(init_val["reuse_policy"], "single_use");
+
+    let (conflict_status, conflict_val) = api_post(
+        state.clone(),
+        "/container/initialize",
+        json!({
+            "hookup": {
+                "kind": "cli",
+                "cli_name": "shell"
+            },
+            "reuse_policy": "single_use"
         }),
     )
     .await;
     assert_eq!(
-        status,
-        StatusCode::OK,
-        "unexpected provision response: {val}"
+        conflict_status,
+        StatusCode::CONFLICT,
+        "second initialize should fail with conflict: {conflict_val}"
     );
-    assert!(val["session_id"].as_str().is_some());
-    assert_eq!(val["agent_id"], "container-audit");
-    assert_eq!(val["did_uri"], "did:key:z6MkInMemory");
-    assert_eq!(val["identity"]["did_uri"], "did:key:z6MkInMemory");
 
-    let (list_status, list_val) = api_get(state, "/containers").await;
-    assert_eq!(list_status, StatusCode::OK);
-    assert_eq!(list_val["count"], 1);
+    let (deinit_status, deinit_val) = api_post(state, "/container/deinitialize", json!({})).await;
     assert_eq!(
-        list_val["sessions"][0]["identity"]["did_uri"],
-        "did:key:z6MkInMemory"
+        deinit_status,
+        StatusCode::OK,
+        "deinitialize failed: {deinit_val}"
+    );
+    assert_eq!(deinit_val["state"], "empty");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_models_status_reports_single_backend_shape() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state("api_models_status_shape");
+
+    let (status, val) = api_get(state, "/models/status").await;
+    assert_eq!(status, StatusCode::OK, "models status failed: {val}");
+    assert!(val["backend"].is_object());
+    assert!(
+        val.get("ollama").is_none(),
+        "legacy ollama backend should be absent"
+    );
+    assert!(val["backend"]["healthy"].is_boolean());
+    assert!(val["backend"]["installed_models"].is_array());
+    assert!(val["backend"]["served_models"].is_array());
+    assert!(val["huggingface_token_configured"].is_boolean());
+    assert!(val["config"].is_object());
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_containers_route_returns_list_shape() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state("api_containers_list_shape");
+
+    let (status, val) = api_get(state, "/containers").await;
+    assert_eq!(status, StatusCode::OK, "containers route failed: {val}");
+    assert!(val["count"].is_number());
+    assert!(val["sessions"].is_array());
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_containers_route_uses_local_stateful_service() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state("api_containers_local_stateful");
+
+    let run_dir = std::env::temp_dir().join("nucleusdb-container");
+    std::fs::create_dir_all(&run_dir).expect("create container run dir");
+    let session_id = format!("sess-dashboard-local-{}", now_unix_secs());
+    let session_path = run_dir.join(format!("{session_id}.json"));
+    let session = SessionInfo {
+        session_id: session_id.clone(),
+        container_id: "container-dashboard-local".to_string(),
+        image: "agenthalo:test".to_string(),
+        agent_id: "dashboard-local-peer".to_string(),
+        host_sock: std::env::temp_dir().join("dashboard-local.sock"),
+        started_at_unix: now_unix_secs(),
+        mesh_port: Some(3000),
+    };
+    std::fs::write(
+        &session_path,
+        serde_json::to_vec_pretty(&session).expect("encode session"),
+    )
+    .expect("write session");
+
+    let (status, val) = api_get(state, "/containers").await;
+    let _ = std::fs::remove_file(&session_path);
+    assert_eq!(status, StatusCode::OK, "containers route failed: {val}");
+    let sessions = val["sessions"].as_array().expect("sessions array");
+    let view = sessions
+        .iter()
+        .find(|item| item["session_id"] == session_id)
+        .expect("session present");
+    assert!(
+        view.get("lock_state").is_some(),
+        "local stateful service should preserve lock_state key: {view}"
     );
 
     let _ = std::fs::remove_file(&db_path);
 }
 
 #[tokio::test]
-async fn api_containers_initialize_and_deinitialize_roundtrip() {
+async fn api_mcp_invoke_uses_local_stateful_service_for_subsidiary_tools() {
     let _guard = lock_env();
-    let run_root = tempfile::tempdir().expect("tempdir");
-    let _tmp_guard = EnvVarGuard::set("TMPDIR", Some(run_root.path().to_str().expect("utf8")));
-    let (state, db_path) = test_state_with_container_dispatch(
-        "api_containers_init_deinit",
-        Arc::new(InMemoryContainerDispatch::default()),
-    );
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state("api_mcp_local_subsidiary");
 
-    let (_, provisioned) = api_post(
+    let (launch_status, launch_val) = api_post(
         state.clone(),
-        "/containers/provision",
-        json!({ "agent_id": "container-init" }),
+        "/orchestrator/launch",
+        json!({
+            "agent": "shell",
+            "agent_name": "operator-shell",
+            "timeout_secs": 30,
+            "trace": false,
+            "capabilities": ["operator"]
+        }),
     )
     .await;
-    let session_id = provisioned["session_id"].as_str().expect("session id");
+    assert_eq!(
+        launch_status,
+        StatusCode::OK,
+        "operator launch failed: {launch_val}"
+    );
+    let agent_id = launch_val["agent_id"].as_str().expect("agent_id");
 
-    let (init_status, init_val) = api_post(
+    let (status, val) = api_post(
         state.clone(),
-        "/containers/initialize",
+        "/mcp/invoke",
         json!({
-            "session_id": session_id,
-            "reuse_policy": "single_use",
-            "hookup": {
-                "kind": "cli",
-                "cli_name": "shell",
-                "model": null
+            "tool": "nucleusdb_subsidiary_list",
+            "params": {
+                "operator_agent_id": agent_id,
             }
         }),
     )
     .await;
-    assert_eq!(
-        init_status,
-        StatusCode::OK,
-        "unexpected initialize response: {init_val}"
-    );
-    assert_eq!(init_val["session_id"], session_id);
-    assert_eq!(init_val["state"], "locked");
-    assert_eq!(init_val["reuse_policy"], "single_use");
-
-    let (deinit_status, deinit_val) = api_post(
-        state,
-        "/containers/deinitialize",
-        json!({ "session_id": session_id }),
-    )
-    .await;
-    assert_eq!(
-        deinit_status,
-        StatusCode::OK,
-        "unexpected deinitialize response: {deinit_val}"
-    );
-    assert_eq!(deinit_val["session_id"], session_id);
-    assert_eq!(deinit_val["state"], "empty");
-    assert_eq!(deinit_val["reuse_policy"], "single_use");
-
-    let _ = std::fs::remove_file(&db_path);
-}
-
-#[tokio::test]
-async fn api_containers_destroy_removes_session() {
-    let _guard = lock_env();
-    let run_root = tempfile::tempdir().expect("tempdir");
-    let _tmp_guard = EnvVarGuard::set("TMPDIR", Some(run_root.path().to_str().expect("utf8")));
-    let (state, db_path) = test_state_with_container_dispatch(
-        "api_containers_destroy",
-        Arc::new(InMemoryContainerDispatch::default()),
-    );
-
-    let (_, provisioned) = api_post(
-        state.clone(),
-        "/containers/provision",
-        json!({ "agent_id": "container-destroy" }),
-    )
-    .await;
-    let session_id = provisioned["session_id"]
-        .as_str()
-        .expect("session id")
-        .to_string();
-
-    let (destroy_status, destroy_val) =
-        api_delete(state.clone(), &format!("/containers/{session_id}")).await;
-    assert_eq!(
-        destroy_status,
-        StatusCode::OK,
-        "unexpected destroy response: {destroy_val}"
-    );
-    assert_eq!(destroy_val["session_id"], session_id);
-    assert_eq!(destroy_val["destroyed"], true);
-
-    let (list_status, list_val) = api_get(state, "/containers").await;
-    assert_eq!(list_status, StatusCode::OK);
-    assert_eq!(list_val["count"], 0);
-    assert_eq!(list_val["sessions"], json!([]));
+    assert_eq!(status, StatusCode::OK, "mcp invoke failed: {val}");
+    assert_eq!(val["ok"], true);
+    assert_eq!(val["result"]["is_error"], false, "tool error: {val}");
+    assert_eq!(val["result"]["structured_content"]["count"], 0);
 
     let _ = std::fs::remove_file(&db_path);
 }
@@ -3154,37 +3135,6 @@ async fn crypto_unlock_rejects_wrong_password_after_creation() {
 }
 
 #[tokio::test]
-async fn crypto_status_reports_unlocked_when_bootstrap_disabled_and_no_password_exists() {
-    let _guard = lock_env();
-    let halo_home = std::env::temp_dir().join(format!(
-        "dashboard_test_crypto_status_disabled_bootstrap_{}_{}",
-        std::process::id(),
-        now_unix_secs()
-    ));
-    let _ = std::fs::remove_dir_all(&halo_home);
-    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
-    let _home_guard = EnvVarGuard::set(
-        "AGENTHALO_HOME",
-        Some(halo_home.to_str().expect("temp home utf8 path")),
-    );
-    let _bootstrap_guard = EnvVarGuard::set("AGENTHALO_PASSWORD_BOOTSTRAP_MODE", Some("disabled"));
-
-    let (state, db_path) = test_state("crypto_status_disabled_bootstrap");
-    let (status, val) = api_get(state, "/crypto/status").await;
-    assert_eq!(status, StatusCode::OK, "crypto status should succeed: {val}");
-    assert_eq!(val["password_protected"], json!(false));
-    assert_eq!(val["bootstrap_mode"], json!("disabled"));
-    assert_eq!(
-        val["locked"],
-        json!(false),
-        "fresh passwordless instances should not appear locked: {val}"
-    );
-
-    let _ = std::fs::remove_dir_all(&halo_home);
-    let _ = std::fs::remove_file(&db_path);
-}
-
-#[tokio::test]
 async fn crypto_change_password_rejects_wrong_current_password() {
     let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(
@@ -3742,63 +3692,19 @@ async fn api_p2pclaw_briefing_requires_authentication() {
 }
 
 #[tokio::test]
-async fn api_p2pclaw_bridge_status_returns_persisted_state_without_network() {
-    let _guard = lock_env();
-    let home = std::env::temp_dir().join(format!(
-        "dashboard_p2pclaw_bridge_{}_{}",
-        std::process::id(),
-        now_unix_secs()
-    ));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&home).expect("create temp home");
-    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.to_str().expect("utf8 home")));
-
-    let mut bridge_state = p2pclaw_bridge::BridgePersistentState::default();
-    bridge_state.polls_total = 9;
-    bridge_state.hive_compute_cycles = 7;
-    bridge_state.local_compute_cycles = 3;
-    p2pclaw_bridge::save_state(&bridge_state).expect("save bridge state");
-
-    let (state, db_path) = test_state("api_p2pclaw_bridge_status");
-    let (status, body) = api_get(state, "/p2pclaw/bridge/status").await;
-    assert_eq!(status, StatusCode::OK, "bridge status failed: {body}");
-    assert_eq!(body["ok"], true);
-    assert_eq!(body["bridge"]["state"]["polls_total"], 9);
-    assert_eq!(body["bridge"]["compute_split_ratio"], 0.7);
-    assert_eq!(body["bridge"]["nash_compliant"], true);
-    assert_eq!(body["bridge"]["configured"], false);
-
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_dir_all(&home);
-}
-
-#[tokio::test]
 async fn api_p2pclaw_verify_returns_real_verification_payload() {
-    let _guard = lock_env();
-    let verify_dir = std::env::temp_dir().join(format!(
-        "dashboard_verify_mock_{}_{}",
-        std::process::id(),
-        now_unix_secs()
-    ));
-    std::fs::create_dir_all(&verify_dir).expect("create mock verify dir");
-    let verifier = write_mock_verify_script(&verify_dir);
-    let _verify_guard = EnvVarGuard::set(
-        "AGENTHALO_VERIFY_SCRIPT",
-        Some(verifier.to_str().expect("utf8 verifier path")),
-    );
     let (state, db_path) = test_state("api_p2pclaw_verify");
     let (status, body) = api_post(
         state,
         "/p2pclaw/verify",
         json!({
             "title": "Structured Verification",
-            "content": "# Abstract\nThis paper proves that a verification bridge can transform a structured research draft into a reviewable record with explicit claims, stable hashes, and reproducible structural checks. The abstract explains the goal, the method, and the observed result in plain language so the verifier can recover the same narrative from the document itself.\n\n# Introduction\nWe study a verifier that reads section headings, extracts theorem-like claims, measures internal consistency, and records a proof hash. The introduction shows why the workflow matters: a collaborator needs a fast structural review before a deeper formal pass, and the review must remain inspectable by another agent later.\n\n# Methodology\nOur methodology demonstrates that the bridge validates the title, scans the body for supported claims, and confirms that the paper contains enough substance to be treated as a serious submission. We describe the headings, the claim language, the references, and the explanation text so the verifier can establish a consistent structural record.\n\n# Results\nThe results show that the bridge extracts claims, computes a proof hash, and reports a valid review outcome. The result confirms that the content is coherent, sufficiently detailed, and suitable for later formal scrutiny.\n\n# Discussion\nTherefore the result is consistent, reviewable, and ready for downstream checking. [1]"
+            "content": "# Main Theorem\nTheorem. Suppose a verifier receives a structured proof sketch.\nProof. Because the draft contains assumptions, claims, and proof language, the verification bridge extracts claims and computes a proof hash.\n\n# Discussion\nTherefore the result is consistent and reviewable. [1]"
         }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "verify failed: {body}");
     assert_eq!(body["ok"], true);
-    assert_eq!(body["verification"]["verified"], true);
     assert_eq!(body["verification"]["valid"], true);
     assert_eq!(
         body["verification"]["proof_hash"]
@@ -3808,7 +3714,6 @@ async fn api_p2pclaw_verify_returns_real_verification_payload() {
         64
     );
     let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_dir_all(&verify_dir);
 }
 
 #[tokio::test]

@@ -51,7 +51,7 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData as McpError, Json, ServerHandler,
 };
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -84,7 +84,49 @@ struct ActiveContainerHookup {
     hookup: Arc<dyn AgentHookup>,
 }
 
+struct SharedServiceRuntime {
+    vault: Option<Arc<crate::halo::vault::Vault>>,
+    pty_manager: Arc<crate::cockpit::pty_manager::PtyManager>,
+    governor_registry: Arc<GovernorRegistry>,
+    orchestrator: Orchestrator,
+}
+
 const CONTAINER_LIST_LOCK_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+const SUBSIDIARY_PEER_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(30);
+const SUBSIDIARY_PEER_REGISTRATION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const SUBSIDIARY_PEER_HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn inspect_container_mesh_ip(session_id: &str) -> Result<Option<String>, String> {
+    let output = Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            session_id,
+        ])
+        .output()
+        .map_err(|e| format!("docker inspect mesh ip for `{session_id}`: {e}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if ip.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(ip))
+    }
+}
+
+fn mesh_auth_token() -> Option<String> {
+    std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            std::env::var("AGENTHALO_MCP_SECRET")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExportFormat {
@@ -1150,6 +1192,8 @@ pub struct SubsidiarySendTaskRequest {
     pub operator_agent_id: String,
     pub session_id: String,
     pub prompt: String,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1648,12 +1692,37 @@ impl ServerHandler for NucleusDbMcpService {
 #[tool_router(router = tool_router)]
 impl NucleusDbMcpService {
     pub fn new(db_path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::new_with_shared_runtime(db_path, None)
+    }
+
+    pub fn new_with_runtime(
+        db_path: impl AsRef<Path>,
+        vault: Option<Arc<crate::halo::vault::Vault>>,
+        pty_manager: Arc<crate::cockpit::pty_manager::PtyManager>,
+        governor_registry: Arc<GovernorRegistry>,
+        orchestrator: Orchestrator,
+    ) -> Result<Self, String> {
+        Self::new_with_shared_runtime(
+            db_path,
+            Some(SharedServiceRuntime {
+                vault,
+                pty_manager,
+                governor_registry,
+                orchestrator,
+            }),
+        )
+    }
+
+    fn new_with_shared_runtime(
+        db_path: impl AsRef<Path>,
+        shared_runtime: Option<SharedServiceRuntime>,
+    ) -> Result<Self, String> {
         let db_path = db_path.as_ref().to_path_buf();
         let wal_path = Self::default_wal_path(&db_path);
         let state = if db_path.exists() {
-            Self::load_state(db_path, wal_path, false)?
+            Self::load_state(db_path, wal_path, false, shared_runtime)?
         } else {
-            Self::create_state(db_path, wal_path, VcBackend::BinaryMerkle)?
+            Self::create_state(db_path, wal_path, VcBackend::BinaryMerkle, shared_runtime)?
         };
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
@@ -1663,6 +1732,11 @@ impl NucleusDbMcpService {
 
     fn default_wal_path(db_path: &Path) -> PathBuf {
         crate::persistence::default_wal_path(db_path)
+    }
+
+    pub async fn sync_orchestrator(&self, orchestrator: Orchestrator) {
+        let mut state = self.state.lock().await;
+        state.orchestrator = orchestrator;
     }
 
     fn backend_label(backend: &VcBackend) -> &'static str {
@@ -1758,6 +1832,45 @@ impl NucleusDbMcpService {
         ))
     }
 
+    fn decode_remote_tool_value<T: DeserializeOwned>(
+        value: serde_json::Value,
+        context: &str,
+    ) -> Result<T, McpError> {
+        let is_error = value
+            .get("isError")
+            .or_else(|| value.get("is_error"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_error {
+            let message = value
+                .get("structuredContent")
+                .or_else(|| value.get("structured_content"))
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    value
+                        .get("content")
+                        .and_then(|v| v.as_array())
+                        .and_then(|items| items.first())
+                        .and_then(|item| {
+                            item.as_str()
+                                .or_else(|| item.get("text").and_then(|v| v.as_str()))
+                        })
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| format!("remote tool returned error for {context}"));
+            return Err(McpError::internal_error(message, None));
+        }
+        let payload = value
+            .get("structuredContent")
+            .or_else(|| value.get("structured_content"))
+            .cloned()
+            .unwrap_or(value);
+        serde_json::from_value(payload)
+            .map_err(|e| McpError::internal_error(format!("decode {context}: {e}"), None))
+    }
+
     fn session_view_with_lock(
         session: crate::container::launcher::SessionInfo,
         lock_state: Option<String>,
@@ -1835,16 +1948,31 @@ impl NucleusDbMcpService {
         Ok(ordered.into_iter().flatten().collect())
     }
 
-    async fn require_operator_capability(&self, operator_agent_id: &str) -> Result<(), McpError> {
-        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+    async fn require_operator_capability_with(
+        &self,
+        operator_agent_id: &str,
+        orchestrator_override: Option<Orchestrator>,
+    ) -> Result<(), McpError> {
+        let orchestrator = match orchestrator_override {
+            Some(orchestrator) => orchestrator,
+            None => self.state.lock().await.orchestrator.clone(),
+        };
         orchestrator
             .require_capability(operator_agent_id, "operator")
             .await
             .map_err(|e| McpError::invalid_params(e, None))
     }
 
-    fn load_operator_registry(operator_agent_id: &str) -> Result<SubsidiaryRegistry, McpError> {
-        SubsidiaryRegistry::load_or_create(operator_agent_id)
+    fn load_operator_registry_locked(
+        operator_agent_id: &str,
+    ) -> Result<
+        (
+            crate::orchestrator::subsidiary_registry::SubsidiaryRegistryLock,
+            SubsidiaryRegistry,
+        ),
+        McpError,
+    > {
+        SubsidiaryRegistry::load_or_create_locked(operator_agent_id)
             .map_err(|e| McpError::internal_error(e, None))
     }
 
@@ -1862,24 +1990,108 @@ impl NucleusDbMcpService {
         }
     }
 
-    fn peer_for_subsidiary(
+    fn peer_for_subsidiary_immediate(
         record: &SubsidiaryRecord,
-    ) -> Result<crate::container::PeerInfo, McpError> {
+    ) -> Result<Option<crate::container::PeerInfo>, McpError> {
         let registry =
             crate::container::PeerRegistry::load(&crate::container::mesh_registry_path())
                 .map_err(|e| McpError::internal_error(e, None))?;
-        registry
-            .find(&record.peer_agent_id)
-            .cloned()
-            .ok_or_else(|| {
-                McpError::invalid_params(
+        if let Some(peer) = registry.find(&record.peer_agent_id).cloned() {
+            return Ok(Some(peer));
+        }
+
+        let session = match crate::container::launcher::load_session(&record.session_id) {
+            Ok(session) => session,
+            Err(_) => return Ok(None),
+        };
+        let mesh_port = match session.mesh_port {
+            Some(port) => port,
+            None => return Ok(None),
+        };
+        let host = inspect_container_mesh_ip(&session.session_id)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| session.session_id.clone());
+        let now = crate::pod::now_unix();
+        Ok(Some(crate::container::PeerInfo {
+            agent_id: record.peer_agent_id.clone(),
+            container_name: session.session_id.clone(),
+            did_uri: None,
+            mcp_endpoint: format!("http://{host}:{mesh_port}/mcp"),
+            discovery_endpoint: format!("http://{host}:{mesh_port}/.well-known/nucleus-pod"),
+            registered_at: now,
+            last_seen: now,
+        }))
+    }
+
+    async fn peer_for_subsidiary_with_timeout(
+        record: &SubsidiaryRecord,
+        timeout: Duration,
+    ) -> Result<crate::container::PeerInfo, McpError> {
+        let started = tokio::time::Instant::now();
+        loop {
+            if let Some(peer) = Self::peer_for_subsidiary_immediate(record)? {
+                return Ok(peer);
+            }
+            if started.elapsed() >= timeout {
+                return Err(McpError::invalid_params(
                     format!(
                         "subsidiary peer `{}` is not present in the mesh registry",
                         record.peer_agent_id
                     ),
                     None,
-                )
-            })
+                ));
+            }
+            tokio::time::sleep(SUBSIDIARY_PEER_REGISTRATION_POLL_INTERVAL).await;
+        }
+    }
+
+    async fn wait_for_subsidiary_peer_health(
+        record: &SubsidiaryRecord,
+        timeout: Duration,
+    ) -> Result<(), McpError> {
+        let started = tokio::time::Instant::now();
+        loop {
+            let Some(peer) = Self::peer_for_subsidiary_immediate(record)? else {
+                if started.elapsed() >= timeout {
+                    return Err(McpError::internal_error(
+                        format!(
+                            "subsidiary peer `{}` did not become discoverable within {}s",
+                            record.peer_agent_id,
+                            timeout.as_secs()
+                        ),
+                        None,
+                    ));
+                }
+                tokio::time::sleep(SUBSIDIARY_PEER_REGISTRATION_POLL_INTERVAL).await;
+                continue;
+            };
+            let health_peer = peer.clone();
+            let healthy =
+                tokio::task::spawn_blocking(move || crate::container::ping_peer(&health_peer))
+                    .await
+                    .map_err(|e| {
+                        McpError::internal_error(
+                            format!("join subsidiary peer health check: {e}"),
+                            None,
+                        )
+                    })?
+                    .map_err(|e| McpError::internal_error(e, None))?;
+            if healthy {
+                return Ok(());
+            }
+            if started.elapsed() >= timeout {
+                return Err(McpError::internal_error(
+                    format!(
+                        "subsidiary peer `{}` did not become healthy within {}s",
+                        record.peer_agent_id,
+                        timeout.as_secs()
+                    ),
+                    None,
+                ));
+            }
+            tokio::time::sleep(SUBSIDIARY_PEER_REGISTRATION_POLL_INTERVAL).await;
+        }
     }
 
     fn subsidiary_view(
@@ -2101,6 +2313,7 @@ impl NucleusDbMcpService {
         db_path: PathBuf,
         wal_path: PathBuf,
         backend: VcBackend,
+        shared_runtime: Option<SharedServiceRuntime>,
     ) -> Result<ServiceState, String> {
         let cfg = default_witness_cfg();
         let db = NucleusDb::new(State::new(vec![]), backend, cfg);
@@ -2108,20 +2321,8 @@ impl NucleusDbMcpService {
             .map_err(|e| format!("failed to save snapshot {}: {e:?}", db_path.display()))?;
         init_wal(&wal_path, &db)
             .map_err(|e| format!("failed to initialize WAL {}: {e:?}", wal_path.display()))?;
-        let vault = crate::halo::vault::Vault::open(
-            &crate::halo::config::pq_wallet_path(),
-            &crate::halo::config::vault_path(),
-        )
-        .ok()
-        .map(Arc::new);
-        let governor_registry = build_default_registry();
-        install_global_registry(governor_registry.clone());
-        let pty_manager = Arc::new(
-            crate::cockpit::pty_manager::PtyManager::with_governor_registry(
-                24,
-                Some(governor_registry.clone()),
-            ),
-        );
+        let (vault, governor_registry, pty_manager, orchestrator) =
+            Self::resolve_runtime(&db_path, shared_runtime);
         let swarm_store = ChunkStore::load_from_db(&db);
         let swarm_config = SwarmConfig::from_env();
         let mut bitswap_runtime = crate::swarm::bitswap::BitswapRuntime::default();
@@ -2132,7 +2333,7 @@ impl NucleusDbMcpService {
         ));
         Ok(ServiceState {
             db,
-            orchestrator: Orchestrator::new(pty_manager.clone(), vault.clone(), db_path.clone()),
+            orchestrator,
             db_path,
             wal_path,
             work_record_store: WorkRecordStore::new(),
@@ -2151,6 +2352,7 @@ impl NucleusDbMcpService {
         db_path: PathBuf,
         wal_path: PathBuf,
         prefer_wal: bool,
+        shared_runtime: Option<SharedServiceRuntime>,
     ) -> Result<ServiceState, String> {
         let cfg = default_witness_cfg();
         let db = if prefer_wal && wal_path.exists() {
@@ -2167,6 +2369,52 @@ impl NucleusDbMcpService {
         };
         init_wal(&wal_path, &db)
             .map_err(|e| format!("failed to initialize WAL {}: {e:?}", wal_path.display()))?;
+        let (vault, governor_registry, pty_manager, orchestrator) =
+            Self::resolve_runtime(&db_path, shared_runtime);
+        let swarm_store = ChunkStore::load_from_db(&db);
+        let swarm_config = SwarmConfig::from_env();
+        let mut bitswap_runtime = crate::swarm::bitswap::BitswapRuntime::default();
+        bitswap_runtime.register_local_chunks(&swarm_store.all_chunks());
+        bitswap_runtime.set_require_grants(swarm_config.require_grants);
+        bitswap_runtime.set_grants(crate::pod::acl::GrantStore::load_or_default(
+            &db_path.with_extension("pod_grants.json"),
+        ));
+        Ok(ServiceState {
+            db,
+            orchestrator,
+            db_path,
+            wal_path,
+            work_record_store: WorkRecordStore::new(),
+            memory_store: crate::memory::MemoryStore::default(),
+            swarm_store,
+            swarm_config,
+            bitswap_runtime,
+            vault,
+            pty_manager,
+            governor_registry,
+            container_runtime: Arc::new(tokio::sync::Mutex::new(ContainerRuntime { active: None })),
+        })
+    }
+
+    fn resolve_runtime(
+        db_path: &Path,
+        shared_runtime: Option<SharedServiceRuntime>,
+    ) -> (
+        Option<Arc<crate::halo::vault::Vault>>,
+        Arc<GovernorRegistry>,
+        Arc<crate::cockpit::pty_manager::PtyManager>,
+        Orchestrator,
+    ) {
+        if let Some(shared) = shared_runtime {
+            install_global_registry(shared.governor_registry.clone());
+            return (
+                shared.vault,
+                shared.governor_registry,
+                shared.pty_manager,
+                shared.orchestrator,
+            );
+        }
+
         let vault = crate::halo::vault::Vault::open(
             &crate::halo::config::pq_wallet_path(),
             &crate::halo::config::vault_path(),
@@ -2181,29 +2429,9 @@ impl NucleusDbMcpService {
                 Some(governor_registry.clone()),
             ),
         );
-        let swarm_store = ChunkStore::load_from_db(&db);
-        let swarm_config = SwarmConfig::from_env();
-        let mut bitswap_runtime = crate::swarm::bitswap::BitswapRuntime::default();
-        bitswap_runtime.register_local_chunks(&swarm_store.all_chunks());
-        bitswap_runtime.set_require_grants(swarm_config.require_grants);
-        bitswap_runtime.set_grants(crate::pod::acl::GrantStore::load_or_default(
-            &db_path.with_extension("pod_grants.json"),
-        ));
-        Ok(ServiceState {
-            db,
-            orchestrator: Orchestrator::new(pty_manager.clone(), vault.clone(), db_path.clone()),
-            db_path,
-            wal_path,
-            work_record_store: WorkRecordStore::new(),
-            memory_store: crate::memory::MemoryStore::default(),
-            swarm_store,
-            swarm_config,
-            bitswap_runtime,
-            vault,
-            pty_manager,
-            governor_registry,
-            container_runtime: Arc::new(tokio::sync::Mutex::new(ContainerRuntime { active: None })),
-        })
+        let orchestrator =
+            Orchestrator::new(pty_manager.clone(), vault.clone(), db_path.to_path_buf());
+        (vault, governor_registry, pty_manager, orchestrator)
     }
 
     fn build_container_hookup(
@@ -2364,7 +2592,7 @@ impl NucleusDbMcpService {
             .unwrap_or_else(|| Self::default_wal_path(&db_path));
         let backend = parse_backend(req.backend.as_deref().unwrap_or("merkle"))
             .map_err(|e| McpError::invalid_params(e, None))?;
-        let state = Self::create_state(db_path.clone(), wal_path.clone(), backend.clone())
+        let state = Self::create_state(db_path.clone(), wal_path.clone(), backend.clone(), None)
             .map_err(|e| McpError::internal_error(e, None))?;
         let mut guard = self.state.lock().await;
         *guard = state;
@@ -2392,7 +2620,7 @@ impl NucleusDbMcpService {
             .map(PathBuf::from)
             .unwrap_or_else(|| Self::default_wal_path(&db_path));
         let prefer_wal = req.prefer_wal.unwrap_or(false);
-        let state = Self::load_state(db_path.clone(), wal_path.clone(), prefer_wal)
+        let state = Self::load_state(db_path.clone(), wal_path.clone(), prefer_wal, None)
             .map_err(|e| McpError::invalid_params(e, None))?;
         let backend = state.db.backend.clone();
         let mut guard = self.state.lock().await;
@@ -3313,7 +3541,24 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<SubsidiaryProvisionRequest>,
     ) -> Result<Json<SubsidiaryProvisionResponse>, McpError> {
-        self.require_operator_capability(&req.operator_agent_id)
+        self.subsidiary_provision_internal(req, None).await
+    }
+
+    pub async fn subsidiary_provision_with_orchestrator(
+        &self,
+        req: SubsidiaryProvisionRequest,
+        orchestrator: Orchestrator,
+    ) -> Result<Json<SubsidiaryProvisionResponse>, McpError> {
+        self.subsidiary_provision_internal(req, Some(orchestrator))
+            .await
+    }
+
+    async fn subsidiary_provision_internal(
+        &self,
+        req: SubsidiaryProvisionRequest,
+        orchestrator_override: Option<Orchestrator>,
+    ) -> Result<Json<SubsidiaryProvisionResponse>, McpError> {
+        self.require_operator_capability_with(&req.operator_agent_id, orchestrator_override)
             .await?;
         let Json(provisioned) = self
             .container_provision(Parameters(ContainerLaunchRequest {
@@ -3327,7 +3572,8 @@ impl NucleusDbMcpService {
                 admission_mode: req.admission_mode,
             }))
             .await?;
-        let mut registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let (_registry_lock, mut registry) =
+            Self::load_operator_registry_locked(&req.operator_agent_id)?;
         registry.register_provision(
             provisioned.session_id.clone(),
             provisioned.container_id.clone(),
@@ -3353,17 +3599,39 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<SubsidiaryInitializeRequest>,
     ) -> Result<Json<SubsidiaryInitializeResponse>, McpError> {
-        self.require_operator_capability(&req.operator_agent_id)
+        self.subsidiary_initialize_internal(req, None).await
+    }
+
+    pub async fn subsidiary_initialize_with_orchestrator(
+        &self,
+        req: SubsidiaryInitializeRequest,
+        orchestrator: Orchestrator,
+    ) -> Result<Json<SubsidiaryInitializeResponse>, McpError> {
+        self.subsidiary_initialize_internal(req, Some(orchestrator))
+            .await
+    }
+
+    async fn subsidiary_initialize_internal(
+        &self,
+        req: SubsidiaryInitializeRequest,
+        orchestrator_override: Option<Orchestrator>,
+    ) -> Result<Json<SubsidiaryInitializeResponse>, McpError> {
+        self.require_operator_capability_with(&req.operator_agent_id, orchestrator_override)
             .await?;
-        let mut registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let (_registry_lock, mut registry) =
+            Self::load_operator_registry_locked(&req.operator_agent_id)?;
         let owned = registry
             .assert_owned(&req.session_id)
             .map_err(|e| McpError::invalid_params(e, None))?
             .clone();
-        let peer = Self::peer_for_subsidiary(&owned)?;
+        let peer =
+            Self::peer_for_subsidiary_with_timeout(&owned, SUBSIDIARY_PEER_REGISTRATION_TIMEOUT)
+                .await?;
+        Self::wait_for_subsidiary_peer_health(&owned, SUBSIDIARY_PEER_HEALTH_TIMEOUT).await?;
         let value = tokio::task::spawn_blocking({
             let hookup = req.hookup.clone();
             let reuse_policy = req.reuse_policy.unwrap_or(ReusePolicy::Reusable);
+            let auth_token = mesh_auth_token();
             move || {
                 crate::container::call_remote_tool_with_timeout(
                     &peer,
@@ -3372,7 +3640,7 @@ impl NucleusDbMcpService {
                         "hookup": hookup,
                         "reuse_policy": reuse_policy,
                     }),
-                    None,
+                    auth_token.as_deref(),
                     Duration::from_secs(30),
                 )
             }
@@ -3381,9 +3649,7 @@ impl NucleusDbMcpService {
         .map_err(|e| McpError::internal_error(format!("join subsidiary initialize: {e}"), None))?
         .map_err(|e| McpError::internal_error(e, None))?;
         let initialized: ContainerInitializeResponse =
-            serde_json::from_value(value).map_err(|e| {
-                McpError::internal_error(format!("decode subsidiary initialize: {e}"), None)
-            })?;
+            Self::decode_remote_tool_value(value, "subsidiary initialize")?;
         registry
             .register_initialize(
                 &req.session_id,
@@ -3415,33 +3681,54 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<SubsidiarySendTaskRequest>,
     ) -> Result<Json<SubsidiaryTaskResponse>, McpError> {
-        self.require_operator_capability(&req.operator_agent_id)
+        self.subsidiary_send_task_internal(req, None).await
+    }
+
+    pub async fn subsidiary_send_task_with_orchestrator(
+        &self,
+        req: SubsidiarySendTaskRequest,
+        orchestrator: Orchestrator,
+    ) -> Result<Json<SubsidiaryTaskResponse>, McpError> {
+        self.subsidiary_send_task_internal(req, Some(orchestrator))
+            .await
+    }
+
+    async fn subsidiary_send_task_internal(
+        &self,
+        req: SubsidiarySendTaskRequest,
+        orchestrator_override: Option<Orchestrator>,
+    ) -> Result<Json<SubsidiaryTaskResponse>, McpError> {
+        self.require_operator_capability_with(&req.operator_agent_id, orchestrator_override)
             .await?;
         if req.prompt.trim().is_empty() {
             return Err(McpError::invalid_params("prompt must be non-empty", None));
         }
-        let mut registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let (_registry_lock, mut registry) =
+            Self::load_operator_registry_locked(&req.operator_agent_id)?;
         let owned = registry
             .assert_owned(&req.session_id)
             .map_err(|e| McpError::invalid_params(e, None))?
             .clone();
-        let peer = Self::peer_for_subsidiary(&owned)?;
+        let peer =
+            Self::peer_for_subsidiary_with_timeout(&owned, SUBSIDIARY_PEER_REGISTRATION_TIMEOUT)
+                .await?;
         let prompt = req.prompt.clone();
+        let auth_token = mesh_auth_token();
+        let timeout_secs = req.timeout_secs.unwrap_or(30).clamp(1, 600);
         let value = tokio::task::spawn_blocking(move || {
             crate::container::call_remote_tool_with_timeout(
                 &peer,
                 "nucleusdb_container_agent_prompt",
                 serde_json::json!({ "prompt": prompt }),
-                None,
-                Duration::from_secs(30),
+                auth_token.as_deref(),
+                Duration::from_secs(timeout_secs),
             )
         })
         .await;
         let task = match value {
             Ok(Ok(value)) => {
-                let response: AgentResponse = serde_json::from_value(value).map_err(|e| {
-                    McpError::internal_error(format!("decode subsidiary prompt: {e}"), None)
-                })?;
+                let response: AgentResponse =
+                    Self::decode_remote_tool_value(value, "subsidiary prompt")?;
                 registry
                     .record_task(
                         &req.session_id,
@@ -3508,9 +3795,27 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<SubsidiaryGetResultRequest>,
     ) -> Result<Json<SubsidiaryTaskResponse>, McpError> {
-        self.require_operator_capability(&req.operator_agent_id)
+        self.subsidiary_get_result_internal(req, None).await
+    }
+
+    pub async fn subsidiary_get_result_with_orchestrator(
+        &self,
+        req: SubsidiaryGetResultRequest,
+        orchestrator: Orchestrator,
+    ) -> Result<Json<SubsidiaryTaskResponse>, McpError> {
+        self.subsidiary_get_result_internal(req, Some(orchestrator))
+            .await
+    }
+
+    async fn subsidiary_get_result_internal(
+        &self,
+        req: SubsidiaryGetResultRequest,
+        orchestrator_override: Option<Orchestrator>,
+    ) -> Result<Json<SubsidiaryTaskResponse>, McpError> {
+        self.require_operator_capability_with(&req.operator_agent_id, orchestrator_override)
             .await?;
-        let registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let (_registry_lock, registry) =
+            Self::load_operator_registry_locked(&req.operator_agent_id)?;
         let task = registry.task(&req.task_id).ok_or_else(|| {
             McpError::invalid_params(
                 format!("unknown subsidiary task_id `{}`", req.task_id),
@@ -3534,20 +3839,41 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<SubsidiaryDeinitializeRequest>,
     ) -> Result<Json<SubsidiaryDeinitializeResponse>, McpError> {
-        self.require_operator_capability(&req.operator_agent_id)
+        self.subsidiary_deinitialize_internal(req, None).await
+    }
+
+    pub async fn subsidiary_deinitialize_with_orchestrator(
+        &self,
+        req: SubsidiaryDeinitializeRequest,
+        orchestrator: Orchestrator,
+    ) -> Result<Json<SubsidiaryDeinitializeResponse>, McpError> {
+        self.subsidiary_deinitialize_internal(req, Some(orchestrator))
+            .await
+    }
+
+    async fn subsidiary_deinitialize_internal(
+        &self,
+        req: SubsidiaryDeinitializeRequest,
+        orchestrator_override: Option<Orchestrator>,
+    ) -> Result<Json<SubsidiaryDeinitializeResponse>, McpError> {
+        self.require_operator_capability_with(&req.operator_agent_id, orchestrator_override)
             .await?;
-        let mut registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let (_registry_lock, mut registry) =
+            Self::load_operator_registry_locked(&req.operator_agent_id)?;
         let owned = registry
             .assert_owned(&req.session_id)
             .map_err(|e| McpError::invalid_params(e, None))?
             .clone();
-        let peer = Self::peer_for_subsidiary(&owned)?;
+        let peer =
+            Self::peer_for_subsidiary_with_timeout(&owned, SUBSIDIARY_PEER_REGISTRATION_TIMEOUT)
+                .await?;
+        let auth_token = mesh_auth_token();
         let value = tokio::task::spawn_blocking(move || {
             crate::container::call_remote_tool_with_timeout(
                 &peer,
                 "nucleusdb_container_deinitialize",
                 serde_json::json!({}),
-                None,
+                auth_token.as_deref(),
                 Duration::from_secs(30),
             )
         })
@@ -3555,9 +3881,7 @@ impl NucleusDbMcpService {
         .map_err(|e| McpError::internal_error(format!("join subsidiary deinitialize: {e}"), None))?
         .map_err(|e| McpError::internal_error(e, None))?;
         let response: ContainerDeinitializeResponse =
-            serde_json::from_value(value).map_err(|e| {
-                McpError::internal_error(format!("decode subsidiary deinitialize: {e}"), None)
-            })?;
+            Self::decode_remote_tool_value(value, "subsidiary deinitialize")?;
         registry
             .register_deinitialize(&req.session_id, response.reuse_policy)
             .map_err(|e| McpError::internal_error(e, None))?;
@@ -3581,9 +3905,27 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<SubsidiaryDestroyRequest>,
     ) -> Result<Json<SubsidiaryDestroyResponse>, McpError> {
-        self.require_operator_capability(&req.operator_agent_id)
+        self.subsidiary_destroy_internal(req, None).await
+    }
+
+    pub async fn subsidiary_destroy_with_orchestrator(
+        &self,
+        req: SubsidiaryDestroyRequest,
+        orchestrator: Orchestrator,
+    ) -> Result<Json<SubsidiaryDestroyResponse>, McpError> {
+        self.subsidiary_destroy_internal(req, Some(orchestrator))
+            .await
+    }
+
+    async fn subsidiary_destroy_internal(
+        &self,
+        req: SubsidiaryDestroyRequest,
+        orchestrator_override: Option<Orchestrator>,
+    ) -> Result<Json<SubsidiaryDestroyResponse>, McpError> {
+        self.require_operator_capability_with(&req.operator_agent_id, orchestrator_override)
             .await?;
-        let mut registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let (_registry_lock, mut registry) =
+            Self::load_operator_registry_locked(&req.operator_agent_id)?;
         registry
             .assert_owned(&req.session_id)
             .map_err(|e| McpError::invalid_params(e, None))?;
@@ -3610,9 +3952,26 @@ impl NucleusDbMcpService {
         &self,
         Parameters(req): Parameters<SubsidiaryListRequest>,
     ) -> Result<Json<SubsidiaryListResponse>, McpError> {
-        self.require_operator_capability(&req.operator_agent_id)
+        self.subsidiary_list_internal(req, None).await
+    }
+
+    pub async fn subsidiary_list_with_orchestrator(
+        &self,
+        req: SubsidiaryListRequest,
+        orchestrator: Orchestrator,
+    ) -> Result<Json<SubsidiaryListResponse>, McpError> {
+        self.subsidiary_list_internal(req, Some(orchestrator)).await
+    }
+
+    async fn subsidiary_list_internal(
+        &self,
+        req: SubsidiaryListRequest,
+        orchestrator_override: Option<Orchestrator>,
+    ) -> Result<Json<SubsidiaryListResponse>, McpError> {
+        self.require_operator_capability_with(&req.operator_agent_id, orchestrator_override)
             .await?;
-        let registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let (_registry_lock, registry) =
+            Self::load_operator_registry_locked(&req.operator_agent_id)?;
         let sessions = list_container_sessions()
             .map_err(|e| McpError::internal_error(e, None))?
             .into_iter()
@@ -6661,6 +7020,7 @@ mod tests {
                 operator_agent_id: operator.agent_id.clone(),
                 session_id: owned_session_id.to_string(),
                 prompt: "review this".to_string(),
+                timeout_secs: Some(30),
             }))
             .await
             .expect("subsidiary send_task");
@@ -6721,6 +7081,288 @@ mod tests {
             }))
             .await;
         let _ = std::fs::remove_file(run_dir.join(format!("{unowned_session_id}.json")));
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn subsidiary_initialize_waits_for_peer_registration() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarRestore::set("AGENTHALO_HOME", home.path().to_str().expect("utf8 home"));
+        let _container = EnvVarRestore::set("NUCLEUSDB_MESH_AGENT_ID", "operator-container");
+        let registry_dir = tempfile::tempdir().expect("registry tempdir");
+        let registry_path = registry_dir.path().join("peers.json");
+        let _registry = EnvVarRestore::set(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.to_str().expect("utf8 registry path"),
+        );
+
+        let db_path = temp_db_path("subsidiary_waits_for_peer");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let Json(operator) = service
+            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                agent: "shell".to_string(),
+                agent_name: "operator".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: Some(30),
+                model: None,
+                trace: Some(false),
+                capabilities: vec!["operator".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
+                admission_mode: None,
+            }))
+            .await
+            .expect("launch operator");
+
+        let run_dir = std::env::temp_dir().join("nucleusdb-container");
+        std::fs::create_dir_all(&run_dir).expect("create run dir");
+        let session_id = "sess-delayed-peer-phase4";
+        let session_path = run_dir.join(format!("{session_id}.json"));
+        std::fs::write(
+            &session_path,
+            serde_json::to_vec_pretty(&crate::container::launcher::SessionInfo {
+                session_id: session_id.to_string(),
+                container_id: "ctr-delayed-peer".to_string(),
+                image: "nucleusdb-agent:test".to_string(),
+                agent_id: "peer-delayed".to_string(),
+                host_sock: std::env::temp_dir().join("sess-delayed-peer.sock"),
+                started_at_unix: crate::pod::now_unix(),
+                mesh_port: None,
+            })
+            .expect("encode session"),
+        )
+        .expect("write session");
+
+        let mut registry =
+            SubsidiaryRegistry::load_or_create(&operator.agent_id).expect("subsidiary registry");
+        registry.register_provision(
+            session_id.to_string(),
+            "ctr-delayed-peer".to_string(),
+            "peer-delayed".to_string(),
+        );
+        registry.save().expect("save operator registry");
+
+        let mock = MockContainerToolServer::spawn();
+        let delayed_registry_path = registry_path.clone();
+        let delayed_base_url = mock.base_url.clone();
+        let delayed_writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            let mut peers = crate::container::PeerRegistry::new();
+            peers.register(crate::container::PeerInfo {
+                agent_id: "peer-delayed".to_string(),
+                container_name: "peer-delayed".to_string(),
+                did_uri: None,
+                mcp_endpoint: format!("{delayed_base_url}/mcp"),
+                discovery_endpoint: format!("{delayed_base_url}/.well-known/nucleus-pod"),
+                registered_at: crate::pod::now_unix(),
+                last_seen: crate::pod::now_unix(),
+            });
+            peers
+                .save(&delayed_registry_path)
+                .expect("save delayed peer registry");
+        });
+
+        let started = tokio::time::Instant::now();
+        let Json(initialized) = service
+            .subsidiary_initialize(Parameters(SubsidiaryInitializeRequest {
+                operator_agent_id: operator.agent_id.clone(),
+                session_id: session_id.to_string(),
+                hookup: ContainerHookupRequest::Api {
+                    provider: "openrouter".to_string(),
+                    model: "openrouter/test-model".to_string(),
+                    api_key_source: "unused".to_string(),
+                    base_url_override: None,
+                },
+                reuse_policy: Some(ReusePolicy::SingleUse),
+            }))
+            .await
+            .expect("subsidiary initialize");
+        assert_eq!(initialized.state, "locked");
+        assert!(
+            started.elapsed() >= Duration::from_millis(400),
+            "initialize should wait for delayed mesh registration"
+        );
+
+        delayed_writer.join().expect("join delayed writer");
+        let _ = service
+            .orchestrator_stop(Parameters(OrchestratorStopRequest {
+                agent_id: operator.agent_id.clone(),
+                force: Some(true),
+            }))
+            .await;
+        let _ = std::fs::remove_file(session_path);
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn subsidiary_initialize_falls_back_to_session_mesh_endpoint() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarRestore::set("AGENTHALO_HOME", home.path().to_str().expect("utf8 home"));
+        let _container = EnvVarRestore::set("NUCLEUSDB_MESH_AGENT_ID", "operator-container");
+        let registry_dir = tempfile::tempdir().expect("registry tempdir");
+        let registry_path = registry_dir.path().join("peers.json");
+        let _registry = EnvVarRestore::set(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.to_str().expect("utf8 registry path"),
+        );
+
+        let db_path = temp_db_path("subsidiary_fallback_mesh_endpoint");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let Json(operator) = service
+            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                agent: "shell".to_string(),
+                agent_name: "operator".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: Some(30),
+                model: None,
+                trace: Some(false),
+                capabilities: vec!["operator".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
+                admission_mode: None,
+            }))
+            .await
+            .expect("launch operator");
+
+        let mock = MockContainerToolServer::spawn();
+        let port = mock
+            .base_url
+            .rsplit(':')
+            .next()
+            .and_then(|v| v.parse::<u16>().ok())
+            .expect("mock port");
+
+        let run_dir = std::env::temp_dir().join("nucleusdb-container");
+        std::fs::create_dir_all(&run_dir).expect("create run dir");
+        let session_id = "localhost";
+        let session_path = run_dir.join(format!("{session_id}.json"));
+        std::fs::write(
+            &session_path,
+            serde_json::to_vec_pretty(&crate::container::launcher::SessionInfo {
+                session_id: session_id.to_string(),
+                container_id: "ctr-fallback-peer".to_string(),
+                image: "nucleusdb-agent:test".to_string(),
+                agent_id: "peer-fallback".to_string(),
+                host_sock: std::env::temp_dir().join("sess-fallback-peer.sock"),
+                started_at_unix: crate::pod::now_unix(),
+                mesh_port: Some(port),
+            })
+            .expect("encode session"),
+        )
+        .expect("write session");
+
+        let mut registry =
+            SubsidiaryRegistry::load_or_create(&operator.agent_id).expect("subsidiary registry");
+        registry.register_provision(
+            session_id.to_string(),
+            "ctr-fallback-peer".to_string(),
+            "peer-fallback".to_string(),
+        );
+        registry.save().expect("save operator registry");
+
+        let Json(initialized) = service
+            .subsidiary_initialize(Parameters(SubsidiaryInitializeRequest {
+                operator_agent_id: operator.agent_id.clone(),
+                session_id: session_id.to_string(),
+                hookup: ContainerHookupRequest::Api {
+                    provider: "openrouter".to_string(),
+                    model: "openrouter/test-model".to_string(),
+                    api_key_source: "unused".to_string(),
+                    base_url_override: None,
+                },
+                reuse_policy: Some(ReusePolicy::SingleUse),
+            }))
+            .await
+            .expect("subsidiary initialize");
+        assert_eq!(initialized.state, "locked");
+        assert_eq!(initialized.reuse_policy, ReusePolicy::SingleUse);
+
+        let _ = service
+            .orchestrator_stop(Parameters(OrchestratorStopRequest {
+                agent_id: operator.agent_id.clone(),
+                force: Some(true),
+            }))
+            .await;
+        let _ = std::fs::remove_file(session_path);
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn subsidiary_tools_accept_explicit_orchestrator_override_when_service_state_is_stale() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarRestore::set("AGENTHALO_HOME", home.path().to_str().expect("utf8 home"));
+        let _container = EnvVarRestore::set("NUCLEUSDB_MESH_AGENT_ID", "operator-container");
+
+        let db_path = temp_db_path("subsidiary_override");
+        let stale_governors = build_default_registry();
+        let stale_service = NucleusDbMcpService::new_with_shared_runtime(
+            &db_path,
+            Some(SharedServiceRuntime {
+                vault: None,
+                pty_manager: Arc::new(crate::cockpit::pty_manager::PtyManager::new(4)),
+                governor_registry: stale_governors,
+                orchestrator: Orchestrator::new(
+                    Arc::new(crate::cockpit::pty_manager::PtyManager::new(4)),
+                    None,
+                    db_path.clone(),
+                ),
+            }),
+        )
+        .expect("service");
+
+        let live_orchestrator = Orchestrator::new(
+            Arc::new(crate::cockpit::pty_manager::PtyManager::new(4)),
+            None,
+            db_path.clone(),
+        );
+        let launched = live_orchestrator
+            .launch_agent(crate::orchestrator::LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "operator".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: false,
+                capabilities: vec!["operator".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
+            })
+            .await
+            .expect("launch operator");
+
+        let err = stale_service
+            .subsidiary_list(Parameters(SubsidiaryListRequest {
+                operator_agent_id: launched.agent_id.clone(),
+            }))
+            .await
+            .err()
+            .expect("stale service must reject unknown operator");
+        assert!(format!("{err:?}").contains("unknown agent_id"));
+
+        let Json(listed) = stale_service
+            .subsidiary_list_with_orchestrator(
+                SubsidiaryListRequest {
+                    operator_agent_id: launched.agent_id.clone(),
+                },
+                live_orchestrator.clone(),
+            )
+            .await
+            .expect("explicit orchestrator override should succeed");
+        assert_eq!(listed.operator_agent_id, launched.agent_id);
+        assert_eq!(listed.count, 0);
+
+        let _ = live_orchestrator
+            .stop_agent(crate::orchestrator::StopRequest {
+                agent_id: launched.agent_id,
+                force: true,
+            })
+            .await;
         cleanup_db_files(&db_path);
     }
 

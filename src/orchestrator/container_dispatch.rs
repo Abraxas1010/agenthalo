@@ -12,6 +12,17 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+fn mesh_auth_token() -> Option<String> {
+    std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            std::env::var("AGENTHALO_MCP_SECRET")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })
+}
+
 #[derive(Debug, Clone)]
 pub struct ContainerProvisionSpec {
     pub image: String,
@@ -234,9 +245,12 @@ impl MeshContainerDispatch {
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let peer = self.find_peer(peer_agent_id).await?;
-        tokio::task::spawn_blocking(move || call_remote_tool(&peer, tool_name, arguments, None))
-            .await
-            .map_err(|e| format!("mesh remote call join failure: {e}"))?
+        let auth_token = mesh_auth_token();
+        tokio::task::spawn_blocking(move || {
+            call_remote_tool(&peer, tool_name, arguments, auth_token.as_deref())
+        })
+        .await
+        .map_err(|e| format!("mesh remote call join failure: {e}"))?
     }
 }
 

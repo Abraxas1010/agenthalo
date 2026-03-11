@@ -10,6 +10,7 @@ MCP_PORT="${AGENTHALO_MCP_PORT:-8390}"
 NUCLEUSDB_PORT="${NUCLEUSDB_PORT:-8088}"
 LOG_DIR="${AGENTHALO_HOME:-/data}/logs"
 NOMIC_MODEL_DIR="${NOMIC_MODEL_DIR:-/opt/models/nomic-embed-text}"
+EMBEDDINGS_REQUIRED="${AGENTHALO_REQUIRE_EMBEDDING_MODEL:-0}"
 
 export AGENTHALO_DASHBOARD_HOST="${AGENTHALO_DASHBOARD_HOST:-0.0.0.0}"
 export AGENTHALO_MCP_HOST="${AGENTHALO_MCP_HOST:-0.0.0.0}"
@@ -28,6 +29,42 @@ fi
 
 log() { echo "[AgentHALO] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 die() { log "FATAL: $*" >&2; exit 1; }
+
+ensure_self_mesh_connect() {
+  local enabled="${AGENTHALO_ATTACH_SELF_TO_MESH:-1}"
+  case "${enabled,,}" in
+    0|false|no|off)
+      return 0
+      ;;
+  esac
+  if ! command -v docker >/dev/null 2>&1; then
+    log "WARN: docker CLI unavailable; skipping self mesh attach"
+    return 0
+  fi
+  if [[ ! -S /var/run/docker.sock ]]; then
+    log "WARN: docker socket unavailable; skipping self mesh attach"
+    return 0
+  fi
+  local self_name="${NUCLEUSDB_SELF_CONTAINER_NAME:-${HOSTNAME:-}}"
+  if [[ -z "${self_name}" ]]; then
+    self_name="$(hostname 2>/dev/null || true)"
+  fi
+  if [[ -z "${self_name}" ]]; then
+    log "WARN: unable to resolve self container name; skipping self mesh attach"
+    return 0
+  fi
+  if ! docker network inspect halo-mesh >/dev/null 2>&1; then
+    docker network create --driver bridge --label nucleusdb.mesh=true halo-mesh >/dev/null 2>&1 || true
+  fi
+  if docker inspect --format '{{json .NetworkSettings.Networks}}' "${self_name}" 2>/dev/null | grep -q '"halo-mesh"'; then
+    return 0
+  fi
+  if docker network connect halo-mesh "${self_name}" >/dev/null 2>&1; then
+    log "Attached ${self_name} to halo-mesh for container RPC"
+  else
+    log "WARN: failed to attach ${self_name} to halo-mesh"
+  fi
+}
 
 wait_for_port() {
   local name="$1"
@@ -104,11 +141,11 @@ trap stop_all EXIT
 mkdir -p "$LOG_DIR" "$NYM_DATA_DIR"
 chmod 700 "${AGENTHALO_HOME:-/data}" || true
 
-if [[ ! -f "${NOMIC_MODEL_DIR}/model.onnx" ]]; then
-  die "nomic-embed-text model not found at ${NOMIC_MODEL_DIR}/model.onnx"
-fi
-if [[ ! -f "${NOMIC_MODEL_DIR}/tokenizer.json" ]]; then
-  die "nomic-embed-text tokenizer not found at ${NOMIC_MODEL_DIR}/tokenizer.json"
+if [[ ! -f "${NOMIC_MODEL_DIR}/model.onnx" ]] || [[ ! -f "${NOMIC_MODEL_DIR}/tokenizer.json" ]]; then
+  if [[ "${EMBEDDINGS_REQUIRED}" == "1" ]] || [[ "${EMBEDDINGS_REQUIRED}" == "true" ]]; then
+    die "nomic-embed-text files missing in ${NOMIC_MODEL_DIR} (set AGENTHALO_REQUIRE_EMBEDDING_MODEL=0 to boot without local embeddings)"
+  fi
+  log "WARN: nomic-embed-text files missing in ${NOMIC_MODEL_DIR}; semantic memory embeddings will be unavailable until the model is provisioned."
 fi
 
 log "============================================"
@@ -121,6 +158,8 @@ log " SOCKS5_PROXY:   ${SOCKS5_PROXY:-not set}"
 log " Dashboard:      ${DASHBOARD_PORT}"
 log " MCP:            ${MCP_PORT}"
 log "============================================"
+
+ensure_self_mesh_connect
 
 # -- Nym mixnet transport (must start before any service that makes outbound requests) --
 # The proxy env vars (HTTP_PROXY, SOCKS5_PROXY, etc.) are baked into the image.

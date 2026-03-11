@@ -268,9 +268,17 @@ fn ensure_lock_parent_dir(path: &Path) -> Result<(), String> {
     std::fs::create_dir_all(parent).map_err(|e| format!("create dir {}: {e}", parent.display()))?;
     #[cfg(unix)]
     {
+        use std::io::ErrorKind;
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("set agent lock dir permissions {}: {e}", parent.display()))?;
+        if let Err(error) = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+        {
+            if error.kind() != ErrorKind::PermissionDenied {
+                return Err(format!(
+                    "set agent lock dir permissions {}: {error}",
+                    parent.display()
+                ));
+            }
+        }
     }
     Ok(())
 }
