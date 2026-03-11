@@ -1,6 +1,7 @@
 import NucleusDB.Comms.Identity.GenesisDerivation
 import NucleusDB.Comms.Identity.DIDDocumentSpec
 import NucleusDB.Comms.Identity.DIDKeySpec
+import NucleusDB.Comms.Identity.EVMGate
 import NucleusDB.Comms.Identity.EntropyMixing
 import NucleusDB.Comms.Identity.AgentAddressDerivation
 import NucleusDB.Comms.Identity.SovereignBinding

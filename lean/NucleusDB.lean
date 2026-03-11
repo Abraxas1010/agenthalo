@@ -3,6 +3,8 @@ import NucleusDB.Adversarial.ByzantineTolerance
 import NucleusDB.Adversarial.Witness
 import NucleusDB.Commitment.Adapter
 import NucleusDB.Commitment.VectorModel
+import NucleusDB.Core.EpistemicTrust
+import NucleusDB.Core.EvidenceFusion
 import NucleusDB.Core.Authorization
 import NucleusDB.Core.Certificates
 import NucleusDB.Core.Invariants
@@ -63,6 +65,7 @@ import NucleusDB.Sheaf.ChainTransport
 import NucleusDB.Sheaf.Coherence
 import NucleusDB.Sheaf.CoherenceUniqueness
 import NucleusDB.Sheaf.MaterializationFunctor
+import NucleusDB.TrustLayer.AttestationCircuit
 import NucleusDB.TrustLayer.CompositeCab.Circuit
 import NucleusDB.TrustLayer.CompositeCab.GlobalCab
 import NucleusDB.TrustLayer.CompositeCab.GluingCondition

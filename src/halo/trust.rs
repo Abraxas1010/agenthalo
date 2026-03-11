@@ -6,6 +6,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub const EPISTEMIC_TRUST_FORMAL_BASIS: &str =
+    "HeytingLean.EpistemicCalculus.NucleusBridge.nucleus_combine_floor_bound";
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TrustScoreResult {
     pub score: f64,
@@ -55,6 +58,10 @@ impl EpistemicTrust {
 
     pub fn floor(&self) -> f64 {
         self.floor
+    }
+
+    pub fn formal_basis(&self) -> &'static str {
+        EPISTEMIC_TRUST_FORMAL_BASIS
     }
 
     /// Nucleus operator N(x)=max(x,floor).

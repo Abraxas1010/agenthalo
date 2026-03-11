@@ -3,6 +3,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 const EPS: f64 = 1e-12;
+pub const EVIDENCE_COMBINATION_FORMAL_BASIS: &str =
+    "HeytingLean.EpistemicCalculus.Updating.vUpdate_chain_comm";
 
 /// Tool-provided evidence for a hypothesis.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

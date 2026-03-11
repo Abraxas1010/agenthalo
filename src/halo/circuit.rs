@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 const CIRCUIT_SETUP_DOMAIN: &str = "agenthalo.circuit.setup.v1";
 const CIRCUIT_PROVE_DOMAIN: &str = "agenthalo.circuit.prove.v1";
 const MAX_EVENTS_DEFAULT: usize = 256;
+pub const ATTESTATION_CIRCUIT_FORMAL_BASIS: &str =
+    "HeytingLean.NucleusDB.Circuit.AttestationR1CS.attestation_circuit_satisfiable";
 
 #[derive(Clone, Debug)]
 pub struct AttestationCircuit {
