@@ -1,8 +1,12 @@
+import Mathlib.Data.List.Infix
 import NucleusDB.Identity.LedgerSpec
+import NucleusDB.Transparency.CT6962
 
 namespace HeytingLean
 namespace NucleusDB
 namespace Identity
+
+open Transparency.RFC6962
 
 def chainLinked : List IdentityLedgerEntrySpec → Prop
   | [] => True
@@ -214,6 +218,31 @@ theorem lookup_returns_latest
           exact hy
         · exact ih acc out hAcc (by simpa [hy] using hFold)
   exact hInv entries none e (by intro q hq; cases hq) (by simpa [step] using h)
+
+/-- The identity ledger's append-only discipline induces a prefix relation on
+the sequence of committed entry hashes consumed by the CT layer. -/
+theorem entryHash_prefix_of_append
+    (entries suffix : List IdentityLedgerEntrySpec) :
+    List.IsPrefix
+      (entries.map IdentityLedgerEntrySpec.entryHash)
+      ((entries ++ suffix).map IdentityLedgerEntrySpec.entryHash) := by
+  refine ⟨suffix.map IdentityLedgerEntrySpec.entryHash, ?_⟩
+  simp
+
+/-- Appending new ledger entries replays the CT leaf-chain root by folding the
+new entry hashes onto the old root. -/
+theorem entryHash_root_append
+    (S : MerkleHashSpec)
+    (embed : String → S.Hash)
+    (entries suffix : List IdentityLedgerEntrySpec) :
+    replayAppendPath S
+      (leafChainRoot S (entries.map (fun e => embed e.entryHash)))
+      (suffix.map (fun e => embed e.entryHash)) =
+    leafChainRoot S ((entries ++ suffix).map (fun e => embed e.entryHash)) := by
+  simpa [List.map_append] using
+    (leafChainRoot_append S
+      (entries.map (fun e => embed e.entryHash))
+      (suffix.map (fun e => embed e.entryHash))).symm
 
 end Identity
 end NucleusDB
