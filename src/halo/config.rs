@@ -177,9 +177,7 @@ pub fn ensure_halo_dir() -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create halo dir: {e}"))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("set halo dir permissions: {e}"))?;
+        chmod_private_dir(&dir).map_err(|error| format!("set halo dir permissions: {error}"))?;
     }
     Ok(())
 }
@@ -202,10 +200,9 @@ pub fn ensure_agent_credentials_dir() -> Result<(), String> {
         .map_err(|e| format!("create agent credentials dir {}: {e}", path.display()))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
+        chmod_private_dir(&path).map_err(|error| {
             format!(
-                "chmod agent credentials dir {} to 0700: {e}",
+                "chmod agent credentials dir {} to 0700: {error}",
                 path.display()
             )
         })?;
@@ -219,10 +216,9 @@ pub fn ensure_proof_certificates_dir() -> Result<(), String> {
         .map_err(|e| format!("create proof certificates dir {}: {e}", path.display()))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
+        chmod_private_dir(&path).map_err(|error| {
             format!(
-                "chmod proof certificates dir {} to 0700: {e}",
+                "chmod proof certificates dir {} to 0700: {error}",
                 path.display()
             )
         })?;
@@ -232,4 +228,18 @@ pub fn ensure_proof_certificates_dir() -> Result<(), String> {
 
 pub fn ensure_circuit_dir() -> Result<(), String> {
     std::fs::create_dir_all(circuit_dir()).map_err(|e| format!("create circuit dir: {e}"))
+}
+
+#[cfg(unix)]
+fn chmod_private_dir(path: &PathBuf) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
+        // Bind-mounted data dirs may be owned by a different host UID/GID.
+        // If chmod is denied but the directory already exists, continue.
+        if error.kind() != std::io::ErrorKind::PermissionDenied {
+            return Err(error);
+        }
+    }
+    Ok(())
 }

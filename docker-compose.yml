@@ -15,10 +15,13 @@ services:
       NYM_MAX_PROVIDER_ATTEMPTS: "3"
     volumes:
       - agent-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${DASHBOARD_PORT:-3100}:3100"
       - "${MCP_PORT:-8390}:8390"
     restart: unless-stopped
+    group_add:
+      - "${DOCKER_GID:-0}"
     read_only: true
     tmpfs:
       - /tmp:size=100M

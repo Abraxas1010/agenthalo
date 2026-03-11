@@ -132,8 +132,10 @@ impl std::fmt::Debug for OrchestratorInner {
 #[derive(Debug, Clone)]
 struct ContainerAgentSession {
     session_id: String,
+    container_id: String,
     peer_agent_id: String,
     reuse_policy: ReusePolicy,
+    lock_state: String,
 }
 
 const MAX_TASK_TIMEOUT_SECS: u64 = 3600;
@@ -574,8 +576,10 @@ impl Orchestrator {
             agent_id,
             ContainerAgentSession {
                 session_id: provisioned.session_id,
+                container_id: provisioned.container_id,
                 peer_agent_id,
                 reuse_policy: initialized.reuse_policy,
+                lock_state: initialized.state,
             },
         );
         Ok(managed)
@@ -945,6 +949,12 @@ impl Orchestrator {
                     .destroy(&session.session_id)
                     .await?;
             }
+            {
+                let mut sessions = self.inner.container_sessions.lock().await;
+                if let Some(meta) = sessions.get_mut(&req.agent_id) {
+                    meta.lock_state = deinit.state.clone();
+                }
+            }
             let stopped = {
                 let mut agents = self.inner.container_agents.lock().await;
                 let agent = agents
@@ -980,6 +990,24 @@ impl Orchestrator {
         agent_id: &str,
     ) -> Option<Arc<crate::cockpit::pty_manager::PtySession>> {
         self.inner.pool.current_session_for_agent(agent_id).await
+    }
+
+    pub async fn container_agent_metadata(
+        &self,
+        agent_id: &str,
+    ) -> Option<(String, String, String)> {
+        self.inner
+            .container_sessions
+            .lock()
+            .await
+            .get(agent_id)
+            .map(|meta| {
+                (
+                    meta.session_id.clone(),
+                    meta.container_id.clone(),
+                    meta.lock_state.clone(),
+                )
+            })
     }
 
     pub async fn require_capability(&self, agent_id: &str, capability: &str) -> Result<(), String> {

@@ -2,6 +2,7 @@
 #![allow(clippy::await_holding_lock)]
 
 use nucleusdb::cli::default_witness_cfg;
+use nucleusdb::container::SessionInfo;
 use nucleusdb::dashboard::api::api_router;
 use nucleusdb::dashboard::{build_state, DashboardState};
 use nucleusdb::halo::agentpmt;
@@ -341,6 +342,184 @@ async fn api_container_lock_status_reports_current_container() {
     assert_eq!(val["state"], "empty");
     assert_eq!(val["lock"]["container_id"], "dashboard-container");
     assert_eq!(val["lock"]["state"]["state"], "empty");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_container_initialize_roundtrip_and_rejects_double_init() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let _container_guard = EnvVarGuard::set("NUCLEUSDB_MESH_AGENT_ID", Some("dashboard-self-init"));
+    let (state, db_path) = test_state("api_container_initialize_roundtrip");
+
+    let (init_status, init_val) = api_post(
+        state.clone(),
+        "/container/initialize",
+        json!({
+            "hookup": {
+                "kind": "cli",
+                "cli_name": "shell"
+            },
+            "reuse_policy": "single_use"
+        }),
+    )
+    .await;
+    assert_eq!(init_status, StatusCode::OK, "initialize failed: {init_val}");
+    assert_eq!(init_val["state"], "locked");
+    assert_eq!(init_val["reuse_policy"], "single_use");
+
+    let (conflict_status, conflict_val) = api_post(
+        state.clone(),
+        "/container/initialize",
+        json!({
+            "hookup": {
+                "kind": "cli",
+                "cli_name": "shell"
+            },
+            "reuse_policy": "single_use"
+        }),
+    )
+    .await;
+    assert_eq!(
+        conflict_status,
+        StatusCode::CONFLICT,
+        "second initialize should fail with conflict: {conflict_val}"
+    );
+
+    let (deinit_status, deinit_val) = api_post(state, "/container/deinitialize", json!({})).await;
+    assert_eq!(
+        deinit_status,
+        StatusCode::OK,
+        "deinitialize failed: {deinit_val}"
+    );
+    assert_eq!(deinit_val["state"], "empty");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_models_status_reports_single_backend_shape() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state("api_models_status_shape");
+
+    let (status, val) = api_get(state, "/models/status").await;
+    assert_eq!(status, StatusCode::OK, "models status failed: {val}");
+    assert!(val["backend"].is_object());
+    assert!(
+        val.get("ollama").is_none(),
+        "legacy ollama backend should be absent"
+    );
+    assert!(val["backend"]["healthy"].is_boolean());
+    assert!(val["backend"]["installed_models"].is_array());
+    assert!(val["backend"]["served_models"].is_array());
+    assert!(val["huggingface_token_configured"].is_boolean());
+    assert!(val["config"].is_object());
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_containers_route_returns_list_shape() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state("api_containers_list_shape");
+
+    let (status, val) = api_get(state, "/containers").await;
+    assert_eq!(status, StatusCode::OK, "containers route failed: {val}");
+    assert!(val["count"].is_number());
+    assert!(val["sessions"].is_array());
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_containers_route_uses_local_stateful_service() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state("api_containers_local_stateful");
+
+    let run_dir = std::env::temp_dir().join("nucleusdb-container");
+    std::fs::create_dir_all(&run_dir).expect("create container run dir");
+    let session_id = format!("sess-dashboard-local-{}", now_unix_secs());
+    let session_path = run_dir.join(format!("{session_id}.json"));
+    let session = SessionInfo {
+        session_id: session_id.clone(),
+        container_id: "container-dashboard-local".to_string(),
+        image: "agenthalo:test".to_string(),
+        agent_id: "dashboard-local-peer".to_string(),
+        host_sock: std::env::temp_dir().join("dashboard-local.sock"),
+        started_at_unix: now_unix_secs(),
+        mesh_port: Some(3000),
+    };
+    std::fs::write(
+        &session_path,
+        serde_json::to_vec_pretty(&session).expect("encode session"),
+    )
+    .expect("write session");
+
+    let (status, val) = api_get(state, "/containers").await;
+    let _ = std::fs::remove_file(&session_path);
+    assert_eq!(status, StatusCode::OK, "containers route failed: {val}");
+    let sessions = val["sessions"].as_array().expect("sessions array");
+    let view = sessions
+        .iter()
+        .find(|item| item["session_id"] == session_id)
+        .expect("session present");
+    assert!(
+        view.get("lock_state").is_some(),
+        "local stateful service should preserve lock_state key: {view}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_mcp_invoke_uses_local_stateful_service_for_subsidiary_tools() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state("api_mcp_local_subsidiary");
+
+    let (launch_status, launch_val) = api_post(
+        state.clone(),
+        "/orchestrator/launch",
+        json!({
+            "agent": "shell",
+            "agent_name": "operator-shell",
+            "timeout_secs": 30,
+            "trace": false,
+            "capabilities": ["operator"]
+        }),
+    )
+    .await;
+    assert_eq!(
+        launch_status,
+        StatusCode::OK,
+        "operator launch failed: {launch_val}"
+    );
+    let agent_id = launch_val["agent_id"].as_str().expect("agent_id");
+
+    let (status, val) = api_post(
+        state.clone(),
+        "/mcp/invoke",
+        json!({
+            "tool": "nucleusdb_subsidiary_list",
+            "params": {
+                "operator_agent_id": agent_id,
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "mcp invoke failed: {val}");
+    assert_eq!(val["ok"], true);
+    assert_eq!(val["result"]["is_error"], false, "tool error: {val}");
+    assert_eq!(val["result"]["structured_content"]["count"], 0);
 
     let _ = std::fs::remove_file(&db_path);
 }

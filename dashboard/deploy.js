@@ -6,6 +6,21 @@
     return localStorage.getItem('deploy_admission_mode') || 'warn';
   }
 
+  function currentReusePolicy() {
+    return localStorage.getItem('deploy_reuse_policy') || 'reusable';
+  }
+
+  function currentContainerImage() {
+    return localStorage.getItem('deploy_container_image') || 'agenthalo:latest';
+  }
+
+  function containerHookupForAgent(agentId) {
+    return {
+      kind: 'cli',
+      cli_name: String(agentId || 'codex').trim().toLowerCase(),
+    };
+  }
+
   function admissionIssues(preflight) {
     const issues = Array.isArray(preflight?.admission?.issues) ? preflight.admission.issues : [];
     return issues.map(issue => String(issue?.message || '').trim()).filter(Boolean);
@@ -54,6 +69,17 @@
         </label>
         <span style="opacity:0.8;">(requires Docker)</span>
         <label style="display:inline-flex;align-items:center;gap:6px;margin-left:16px;">
+          Reuse policy
+          <select id="deploy-reuse-policy">
+            <option value="reusable">reusable</option>
+            <option value="single_use">single_use</option>
+          </select>
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin-left:16px;min-width:260px;">
+          Container image
+          <input id="deploy-container-image" class="input" style="min-width:220px" value="${escapeHtml(currentContainerImage())}">
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin-left:16px;">
           Admission mode
           <select id="deploy-admission-mode">
             <option value="warn">warn</option>
@@ -73,6 +99,19 @@
       toggle.checked = localStorage.getItem('deploy_container_mode') === '1';
       toggle.addEventListener('change', () => {
         localStorage.setItem('deploy_container_mode', toggle.checked ? '1' : '0');
+      });
+    }
+    const reusePolicy = hostEl.querySelector('#deploy-reuse-policy');
+    if (reusePolicy) {
+      reusePolicy.value = currentReusePolicy();
+      reusePolicy.addEventListener('change', () => {
+        localStorage.setItem('deploy_reuse_policy', reusePolicy.value || 'reusable');
+      });
+    }
+    const imageInput = hostEl.querySelector('#deploy-container-image');
+    if (imageInput) {
+      imageInput.addEventListener('change', () => {
+        localStorage.setItem('deploy_container_image', imageInput.value || 'agenthalo:latest');
       });
     }
     const admissionSelect = hostEl.querySelector('#deploy-admission-mode');
@@ -185,6 +224,33 @@
 
     if (localStorage.getItem('deploy_container_mode') === '1' && !pre.docker_available) {
       setBanner(`${agentId}: Docker is required for container isolation mode.`, true);
+      return;
+    }
+
+    if (localStorage.getItem('deploy_container_mode') === '1') {
+      setBanner(`Provisioning container for ${agentId}...`);
+      const provision = await fetchJson('/api/containers/provision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image: currentContainerImage(),
+          agent_id: `deploy-${agentId}-${Date.now()}`,
+          admission_mode: currentAdmissionMode(),
+        }),
+      });
+      setBanner(`Initializing ${agentId} in container ${provision.session_id}...`);
+      await fetchJson('/api/containers/initialize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: provision.session_id,
+          hookup: containerHookupForAgent(agentId),
+          reuse_policy: currentReusePolicy(),
+        }),
+      });
+      localStorage.setItem('containers_selected_session', JSON.stringify(provision.session_id));
+      setBanner(`${agentId} container ready. Opening Containers.`);
+      location.hash = '#/containers';
       return;
     }
 

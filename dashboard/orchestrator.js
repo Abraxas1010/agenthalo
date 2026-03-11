@@ -80,6 +80,8 @@
       <tr data-agent-id="${esc(a.agent_id)}">
         <td><code>${esc(a.agent_name || a.agent_id)}</code></td>
         <td>${esc(a.agent_type || '-')}</td>
+        <td>${esc(a.container_id || '-')}</td>
+        <td>${esc(a.lock_state || '-')}</td>
         <td>${statusBadge(a.status)}</td>
         <td>${Number(a.tasks_completed || 0)}</td>
         <td>${Number(a.total_cost_usd || 0).toFixed(4)}</td>
@@ -291,7 +293,7 @@
       <section class="card">
         <h3>Agents</h3>
         <table class="table"><thead><tr>
-          <th>Name</th><th>Type</th><th>Status</th><th>Tasks</th><th>Cost</th><th>Actions</th>
+          <th>Name</th><th>Type</th><th>Container</th><th>Lock</th><th>Status</th><th>Tasks</th><th>Cost</th><th>Actions</th>
         </tr></thead><tbody id="orch-agents"></tbody></table>
       </section>
       <section class="card">
@@ -320,4 +322,3 @@
 
   window.OrchestratorPage = { render, cleanup };
 })();
-

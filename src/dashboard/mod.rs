@@ -53,6 +53,8 @@ pub struct DashboardState {
     pub memory_db_cache: Arc<StdMutex<MemoryDbCache>>,
     /// Local fallback orchestrator when MCP-proxy mode is disabled.
     pub orchestrator: Option<Arc<crate::orchestrator::Orchestrator>>,
+    /// In-process MCP service for self-container lifecycle and dashboard-local calls.
+    pub mcp_service: Arc<crate::mcp::tools::NucleusDbMcpService>,
     /// Shared AETHER governor registry across proxy/comms/compute/pty lanes.
     pub governor_registry: Arc<crate::halo::governor_registry::GovernorRegistry>,
     /// Live proxy admission/runtime telemetry wrapper.
@@ -171,6 +173,20 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
             db_path.clone(),
         )))
     };
+    let mcp_service = Arc::new(
+        if let Some(shared_orchestrator) = orchestrator.as_ref() {
+            crate::mcp::tools::NucleusDbMcpService::new_with_runtime(
+                &db_path,
+                vault.clone(),
+                pty_manager.clone(),
+                governor_registry.clone(),
+                (**shared_orchestrator).clone(),
+            )
+        } else {
+            crate::mcp::tools::NucleusDbMcpService::new(&db_path)
+        }
+        .expect("dashboard-local MCP service should initialize"),
+    );
 
     DashboardState {
         db_path,
@@ -191,6 +207,7 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         memory_store: Arc::new(crate::memory::MemoryStore::default()),
         memory_db_cache: Arc::new(StdMutex::new(MemoryDbCache::default())),
         orchestrator,
+        mcp_service,
         governor_registry,
         proxy_governor,
     }

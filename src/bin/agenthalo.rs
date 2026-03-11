@@ -5176,7 +5176,7 @@ fn print_dashboard_usage() {
 fn cmd_models(args: &[String]) -> Result<(), String> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "usage: agenthalo models [status|list|search <query>|pull <model> [--source ollama|vllm]|rm <model> [--source ollama|vllm]|serve [--backend ollama|vllm] [--port PORT] [--model MODEL]|stop [--backend ollama|vllm]|login huggingface [--token hf_xxx]]"
+            "usage: agenthalo models [status|list|search <query>|pull <model> [--source vllm]|rm <model> [--source vllm]|serve [--port PORT] [--model MODEL]|stop|login huggingface [--token hf_xxx]]"
         );
         return Ok(());
     }
@@ -5245,20 +5245,17 @@ fn cmd_models(args: &[String]) -> Result<(), String> {
                 .find(|item| item.index == index)
                 .ok_or_else(|| format!("no search result numbered {index}"))?;
             let mut stdout = io::stdout();
-            let source =
-                if selected.backend == nucleusdb::halo::local_models::LocalBackendType::Vllm {
-                    Some("vllm")
-                } else {
-                    Some("ollama")
-                };
-            let installed =
-                nucleusdb::halo::local_models::pull_model(&selected.model, source, &mut stdout)?;
+            let installed = nucleusdb::halo::local_models::pull_model(
+                &selected.model,
+                Some("vllm"),
+                &mut stdout,
+            )?;
             println!("\nModel ready: {}", installed.model);
             Ok(())
         }
         "pull" => {
             let model = args.get(1).ok_or_else(|| {
-                "usage: agenthalo models pull <model> [--source ollama|vllm]".to_string()
+                "usage: agenthalo models pull <model> [--source vllm]".to_string()
             })?;
             let source = args
                 .iter()
@@ -5271,9 +5268,9 @@ fn cmd_models(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "rm" => {
-            let model = args.get(1).ok_or_else(|| {
-                "usage: agenthalo models rm <model> [--source ollama|vllm]".to_string()
-            })?;
+            let model = args
+                .get(1)
+                .ok_or_else(|| "usage: agenthalo models rm <model> [--source vllm]".to_string())?;
             let source = args
                 .iter()
                 .position(|arg| arg == "--source")
@@ -5284,13 +5281,6 @@ fn cmd_models(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "serve" => {
-            let backend = args
-                .iter()
-                .position(|arg| arg == "--backend")
-                .and_then(|idx| args.get(idx + 1))
-                .map(|value| value.parse::<nucleusdb::halo::local_models::LocalBackendType>())
-                .transpose()?
-                .unwrap_or(nucleusdb::halo::local_models::LocalBackendType::Ollama);
             let port = args
                 .iter()
                 .position(|arg| arg == "--port")
@@ -5308,7 +5298,7 @@ fn cmd_models(args: &[String]) -> Result<(), String> {
                 .cloned();
             let result = nucleusdb::halo::local_models::serve_backend(
                 nucleusdb::halo::local_models::ServeRequest {
-                    backend,
+                    backend: nucleusdb::halo::local_models::LocalBackendType::Vllm,
                     port,
                     model,
                 },
@@ -5331,14 +5321,9 @@ fn cmd_models(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "stop" => {
-            let backend = args
-                .iter()
-                .position(|arg| arg == "--backend")
-                .and_then(|idx| args.get(idx + 1))
-                .map(|value| value.parse::<nucleusdb::halo::local_models::LocalBackendType>())
-                .transpose()?
-                .unwrap_or(nucleusdb::halo::local_models::LocalBackendType::Ollama);
-            let result = nucleusdb::halo::local_models::stop_backend(backend)?;
+            let result = nucleusdb::halo::local_models::stop_backend(
+                nucleusdb::halo::local_models::LocalBackendType::Vllm,
+            )?;
             println!(
                 "{} stopped at {}{}",
                 result.backend.display_name(),
@@ -5491,8 +5476,7 @@ fn cmd_doctor(_args: &[String]) -> Result<(), String> {
 
     let model_status = nucleusdb::halo::local_models::detect_status();
     println!("  Local models:");
-    print_doctor_backend_line(&model_status.ollama);
-    print_doctor_backend_line(&model_status.vllm);
+    print_doctor_backend_line("vLLM", &model_status.backend);
     if model_status.huggingface_token_configured {
         println!("    Hugging Face    TOKEN CONFIGURED");
     } else {
@@ -5536,7 +5520,7 @@ fn format_number_inline(v: u64) -> String {
     out.chars().rev().collect()
 }
 
-fn print_doctor_backend_line(status: &nucleusdb::halo::local_models::BackendStatus) {
+fn print_doctor_backend_line(label: &str, status: &nucleusdb::halo::local_models::BackendStatus) {
     let installed = if status.cli_installed {
         "INSTALLED"
     } else {
@@ -5554,18 +5538,12 @@ fn print_doctor_backend_line(status: &nucleusdb::halo::local_models::BackendStat
         .unwrap_or_default();
     println!(
         "    {:<14} {installed}, {health} @ {}{}",
-        status.backend.display_name(),
-        status.base_url,
-        version
+        label, status.base_url, version
     );
 }
 
 fn print_local_models_status(status: &nucleusdb::halo::local_models::LocalModelsStatus) {
     println!("Local Models");
-    println!(
-        "  Preferred backend: {}",
-        status.config.preferred_backend.display_name()
-    );
     if let Some(gpu) = &status.gpu {
         println!(
             "  GPU: {} ({:.1} GiB {})",
@@ -5582,14 +5560,13 @@ fn print_local_models_status(status: &nucleusdb::halo::local_models::LocalModels
             "not configured"
         }
     );
-    print_backend_status_block(&status.ollama);
-    print_backend_status_block(&status.vllm);
+    print_backend_status_block(&status.backend);
 }
 
 fn print_backend_status_block(status: &nucleusdb::halo::local_models::BackendStatus) {
     println!(
         "\n  {}: {}{}",
-        status.backend.display_name(),
+        "vLLM",
         if status.cli_installed {
             "installed"
         } else {
@@ -5648,18 +5625,25 @@ fn print_search_results(results: &[nucleusdb::halo::local_models::ModelSearchRes
         return;
     }
     println!(
-        "{:<3} {:<12} {:<42} {:<10} {:<10} {:<10}",
-        "#", "Source", "Model", "Size", "Quant", "Downloads"
+        "{:<3} {:<12} {:<40} {:<10} {:<12} {:<10} {:<9}",
+        "#", "Source", "Model", "Size", "Quant", "Downloads", "Fit GPU"
     );
     for item in results {
         println!(
-            "{:<3} {:<12} {:<42} {:<10} {:<10} {:<10}",
+            "{:<3} {:<12} {:<40} {:<10} {:<12} {:<10} {:<9}",
             item.index,
             item.source,
-            truncate(&item.model, 42),
+            truncate(&item.model, 40),
             item.size.clone().unwrap_or_else(|| "-".to_string()),
-            item.quantization.clone().unwrap_or_else(|| "-".to_string()),
-            item.downloads.clone().unwrap_or_else(|| "-".to_string())
+            if item.quantizations.is_empty() {
+                item.quantization.clone().unwrap_or_else(|| "-".to_string())
+            } else {
+                truncate(&item.quantizations.join(","), 12)
+            },
+            item.downloads.clone().unwrap_or_else(|| "-".to_string()),
+            item.fits_gpu
+                .map(|fits| if fits { "yes" } else { "no" })
+                .unwrap_or("-")
         );
     }
 }
@@ -5713,7 +5697,7 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install|wire-mcp|gateway-status]\n                             Agent CLI management and OpenClaw MCP wiring\n  models [status|list|search|pull|serve|stop|rm|login]\n                             Local Ollama/vLLM model discovery, download, and serving\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nControl:\n  governor status [INSTANCE] [--json]\n                             Show live AETHER governor state from the dashboard control plane\n  governor reset [INSTANCE|all] [--json]\n                             Soft-reset runtime/storage governors back to from-rest\n  governor watch [INSTANCE] [--interval SECS] [--json]\n                             Poll governor status for manager loops\n  governor validate --alpha A --beta B --dt DT --eps-min LO --eps-max HI --target T\n                             Validate the AETHER gain condition and formal regime\n  deploy preflight --agent ID [--admission-mode warn|block|force] [--json]\n                             Check CLI readiness, Betti topology drift, and AETHER admission\n  deploy launch --agent ID --mode terminal|cockpit|gui|gui+terminal [--container]\n                [--working-dir DIR] [--admission-mode warn|block|force] [--json]\n                             Launch a cockpit-managed agent session with admission control\n  deploy status <session-id> [--json]\n                             Show current status for a cockpit-managed deploy session\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install|wire-mcp|gateway-status]\n                             Agent CLI management and OpenClaw MCP wiring\n  models [status|list|search|pull|serve|stop|rm|login]\n                             Local vLLM model discovery, download, and serving\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nControl:\n  governor status [INSTANCE] [--json]\n                             Show live AETHER governor state from the dashboard control plane\n  governor reset [INSTANCE|all] [--json]\n                             Soft-reset runtime/storage governors back to from-rest\n  governor watch [INSTANCE] [--interval SECS] [--json]\n                             Poll governor status for manager loops\n  governor validate --alpha A --beta B --dt DT --eps-min LO --eps-max HI --target T\n                             Validate the AETHER gain condition and formal regime\n  deploy preflight --agent ID [--admission-mode warn|block|force] [--json]\n                             Check CLI readiness, Betti topology drift, and AETHER admission\n  deploy launch --agent ID --mode terminal|cockpit|gui|gui+terminal [--container]\n                [--working-dir DIR] [--admission-mode warn|block|force] [--json]\n                             Launch a cockpit-managed agent session with admission control\n  deploy status <session-id> [--json]\n                             Show current status for a cockpit-managed deploy session\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
   NYM_FAIL_CLOSED=0           Legacy equivalent of NYM_FAIL_OPEN=1"
     );
 }

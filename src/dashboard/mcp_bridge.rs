@@ -10,7 +10,9 @@ use std::thread;
 use std::time::Duration;
 
 const MCP_BOOT_TIMEOUT: Duration = Duration::from_secs(5);
-const MCP_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+// Container bring-up and remote MCP forwarding can legitimately take tens of
+// seconds, so the dashboard bridge must not impose a short global timeout.
+const MCP_HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct McpToolInfo {
@@ -185,13 +187,25 @@ fn ensure_live_session(slot: &mut Option<BridgeSession>) -> Result<(), String> {
 }
 
 struct BridgeSession {
-    child: Child,
+    child: Option<Child>,
     endpoint: String,
     secret: String,
 }
 
 impl BridgeSession {
     fn start() -> Result<Self, String> {
+        if let Some((endpoint, secret)) = configured_bridge_target() {
+            let session = Self {
+                child: None,
+                endpoint,
+                secret,
+            };
+            if session.wait_until_ready().is_ok() {
+                let _ = session.call("initialize", json!({}))?;
+                return Ok(session);
+            }
+        }
+
         let bin = resolve_agenthalo_mcp_server_bin()?;
         let port = reserve_local_port()?;
         let endpoint = format!("http://127.0.0.1:{port}");
@@ -206,7 +220,7 @@ impl BridgeSession {
             .spawn()
             .map_err(|e| format!("spawn `{}`: {e}", bin.display()))?;
         let session = Self {
-            child,
+            child: Some(child),
             endpoint,
             secret,
         };
@@ -242,9 +256,12 @@ impl BridgeSession {
     }
 
     fn is_healthy(&mut self) -> bool {
-        match self.child.try_wait() {
-            Ok(Some(_)) | Err(_) => false,
-            Ok(None) => self.health_check(),
+        match self.child.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(Some(_)) | Err(_) => false,
+                Ok(None) => self.health_check(),
+            },
+            None => self.health_check(),
         }
     }
 
@@ -278,8 +295,25 @@ impl BridgeSession {
 
 impl Drop for BridgeSession {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn configured_bridge_target() -> Option<(String, String)> {
+    let secret = crate::halo::orchestrator_proxy::orchestrator_proxy_secret()?;
+    let endpoint = crate::halo::orchestrator_proxy::orchestrator_proxy_endpoint();
+    let base = endpoint
+        .strip_suffix("/mcp")
+        .unwrap_or(endpoint.as_str())
+        .trim_end_matches('/')
+        .to_string();
+    if base.is_empty() {
+        None
+    } else {
+        Some((base, secret))
     }
 }
 
@@ -425,7 +459,8 @@ fn other_type_name(value: &Value) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::classify_tool;
+    use super::{classify_tool, configured_bridge_target};
+    use crate::test_support::{lock_env, EnvVarGuard};
 
     #[test]
     fn classify_tool_applies_onchain_overrides() {
@@ -449,5 +484,18 @@ mod tests {
             classify_tool("agentpmt/search"),
             ("agentpmt".to_string(), "AgentPMT".to_string())
         );
+    }
+
+    #[test]
+    fn configured_bridge_target_prefers_existing_mcp_endpoint() {
+        let _guard = lock_env();
+        let _secret = EnvVarGuard::set("AGENTHALO_MCP_SECRET", Some("bridge-secret"));
+        let _endpoint = EnvVarGuard::set(
+            "AGENTHALO_ORCHESTRATOR_MCP_ENDPOINT",
+            Some("http://127.0.0.1:8390/mcp"),
+        );
+        let (endpoint, secret) = configured_bridge_target().expect("configured target");
+        assert_eq!(endpoint, "http://127.0.0.1:8390");
+        assert_eq!(secret, "bridge-secret");
     }
 }

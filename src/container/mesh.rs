@@ -6,12 +6,17 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 pub const MESH_NETWORK_NAME: &str = "halo-mesh";
 pub const DEFAULT_MCP_PORT: u16 = 3000;
 pub const MESH_REGISTRY_PATH: &str = "/data/mesh/peers.json";
+const MESH_REGISTRY_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const MESH_REGISTRY_LOCK_RETRY: Duration = Duration::from_millis(25);
 
 /// Resolve the peer registry path.
 ///
@@ -92,12 +97,25 @@ impl PeerRegistry {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create registry dir {}: {e}", parent.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o777));
+            }
         }
         let data =
             serde_json::to_vec_pretty(self).map_err(|e| format!("serialize peer registry: {e}"))?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &data)
-            .map_err(|e| format!("write temp registry {}: {e}", tmp.display()))?;
+        path.parent()
+            .ok_or_else(|| format!("peer registry path {} has no parent", path.display()))?;
+        let tmp = unique_temp_path(path);
+        {
+            let mut file = File::create(&tmp)
+                .map_err(|e| format!("create temp registry {}: {e}", tmp.display()))?;
+            file.write_all(&data)
+                .map_err(|e| format!("write temp registry {}: {e}", tmp.display()))?;
+            file.flush()
+                .map_err(|e| format!("flush temp registry {}: {e}", tmp.display()))?;
+        }
         std::fs::rename(&tmp, path).map_err(|e| {
             format!(
                 "rename registry {} -> {}: {e}",
@@ -144,6 +162,74 @@ impl PeerRegistry {
         self.peers.retain(|_, p| p.last_seen >= cutoff);
         before - self.peers.len()
     }
+}
+
+#[derive(Debug)]
+pub struct PeerRegistryLock {
+    path: std::path::PathBuf,
+    _file: File,
+}
+
+impl PeerRegistryLock {
+    pub fn acquire(path: &Path) -> Result<Self, String> {
+        let lock_path = lock_path(path);
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create registry dir {}: {e}", parent.display()))?;
+        }
+        let deadline = std::time::Instant::now() + MESH_REGISTRY_LOCK_TIMEOUT;
+        loop {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "pid={}", std::process::id());
+                    return Ok(Self {
+                        path: lock_path,
+                        _file: file,
+                    });
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "timed out acquiring mesh registry lock {}",
+                            lock_path.display()
+                        ));
+                    }
+                    std::thread::sleep(MESH_REGISTRY_LOCK_RETRY);
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "open mesh registry lock {}: {err}",
+                        lock_path.display()
+                    ));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for PeerRegistryLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn lock_path(path: &Path) -> std::path::PathBuf {
+    let mut lock = path.as_os_str().to_os_string();
+    lock.push(".lock");
+    std::path::PathBuf::from(lock)
+}
+
+fn unique_temp_path(path: &Path) -> std::path::PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("registry.json");
+    parent.join(format!(".{}.{}.tmp", stem, uuid::Uuid::new_v4().simple()))
 }
 
 /// Discover a peer by fetching its POD capabilities endpoint.

@@ -65,6 +65,8 @@ RUN ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" && \
     tar -xzf /tmp/foundry.tar.gz -C /tmp && \
     install -m 0755 /tmp/cast /usr/local/bin/cast
 
+FROM docker:28.5.1-cli AS docker_cli
+
 FROM rust:1.88-slim-trixie AS rust_builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -100,8 +102,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     netcat-openbsd \
+    openssl \
+    python3 \
+    python3-pip \
     tini \
     && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --no-cache-dir --break-system-packages "huggingface_hub[cli]>=0.31,<1"
 
 RUN groupadd --gid 10001 agenthalo && \
     useradd --uid 10001 --gid 10001 --home-dir /data --create-home --shell /usr/sbin/nologin agenthalo
@@ -111,15 +118,14 @@ COPY --from=rust_builder /build/target/release/agenthalo-mcp-server /usr/local/b
 COPY --from=rust_builder /build/target/release/nucleusdb-server /usr/local/bin/nucleusdb-server
 COPY --from=nym_builder /usr/local/bin/nym-socks5-client /usr/local/bin/nym-socks5-client
 COPY --from=foundry_builder /usr/local/bin/cast /usr/local/bin/cast
+COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
 
 COPY --from=wdk_builder --chown=10001:10001 /wdk /opt/wdk-sidecar
 COPY --chown=10001:10001 scripts/agenthalo-entrypoint.sh /usr/local/bin/agenthalo-entrypoint.sh
 COPY --chown=10001:10001 scripts/agenthalo-healthcheck.sh /usr/local/bin/agenthalo-healthcheck.sh
 COPY --chown=10001:10001 scripts/nym-discover-provider.sh /usr/local/bin/nym-discover-provider.sh
 
-RUN mkdir -p "${NOMIC_MODEL_DIR}" && \
-    curl -fL "${NOMIC_MODEL_ONNX_URL}" -o "${NOMIC_MODEL_DIR}/model.onnx" && \
-    curl -fL "${NOMIC_MODEL_TOKENIZER_URL}" -o "${NOMIC_MODEL_DIR}/tokenizer.json"
+RUN mkdir -p "${NOMIC_MODEL_DIR}"
 
 RUN chmod +x /usr/local/bin/agenthalo-entrypoint.sh /usr/local/bin/agenthalo-healthcheck.sh /usr/local/bin/nym-discover-provider.sh && \
     mkdir -p /data /data/logs /data/nym /data/npm-global && \

@@ -89,7 +89,7 @@ const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions
   identification: renderIdentificationPage, communication: renderCommunicationPage, 'nucleusdb-docs': renderNucleusDBDocsPage,
   networking: renderNetworkingPage,
   'mcp-tools': renderMcpToolsPage,
-  trust: renderTrust, nucleusdb: renderNucleusDB, orchestrator: renderOrchestrator, cockpit: renderCockpit, deploy: renderDeploy, models: renderModels };
+  trust: renderTrust, nucleusdb: renderNucleusDB, orchestrator: renderOrchestrator, cockpit: renderCockpit, deploy: renderDeploy, models: renderModels, containers: renderContainers };
 
 const NETWORKS = [
   {
@@ -2274,21 +2274,16 @@ let _modelsSearchQuery = '';
 
 function modelBackendBadge(backend) {
   const normalized = String(backend || '').toLowerCase();
-  if (normalized === 'ollama') return '<span class="badge badge-ok">Ollama</span>';
   if (normalized === 'vllm') return '<span class="badge badge-info">vLLM</span>';
   return `<span class="badge badge-muted">${esc(backend || 'unknown')}</span>`;
 }
 
 function summarizeModelCounts(status) {
-  const ollamaCount = Array.isArray(status?.ollama?.installed_models) ? status.ollama.installed_models.length : 0;
-  const vllmCount = Array.isArray(status?.vllm?.installed_models) ? status.vllm.installed_models.length : 0;
-  return ollamaCount + vllmCount;
+  return Array.isArray(status?.backend?.installed_models) ? status.backend.installed_models.length : 0;
 }
 
 function installedModelsTableRows(status) {
-  const models = []
-    .concat(Array.isArray(status?.ollama?.installed_models) ? status.ollama.installed_models : [])
-    .concat(Array.isArray(status?.vllm?.installed_models) ? status.vllm.installed_models : []);
+  const models = Array.isArray(status?.backend?.installed_models) ? status.backend.installed_models : [];
   if (!models.length) {
     return `<tr><td colspan="6" class="muted">No local models installed.</td></tr>`;
   }
@@ -2301,7 +2296,7 @@ function installedModelsTableRows(status) {
       <td>${esc(model.quantization || '-')}</td>
       <td>
         ${model.served ? '<span class="badge badge-ok">Serving</span>' : '<span class="badge badge-muted">Idle</span>'}
-        <button class="btn btn-sm" style="margin-left:6px" onclick='modelsRemove(${JSON.stringify(String(model.model || ''))}, ${JSON.stringify(String(model.backend === 'vllm' ? 'vllm' : model.backend || ''))})'>Remove</button>
+        <button class="btn btn-sm" style="margin-left:6px" onclick='modelsRemove(${JSON.stringify(String(model.model || ''))})'>Remove</button>
       </td>
     </tr>
   `).join('');
@@ -2309,18 +2304,19 @@ function installedModelsTableRows(status) {
 
 function searchResultsRows(results) {
   if (!results.length) {
-    return `<tr><td colspan="7" class="muted">Run a search to see Ollama and Hugging Face candidates.</td></tr>`;
+    return `<tr><td colspan="8" class="muted">Run a search to see Hugging Face candidates.</td></tr>`;
   }
   return results.map(item => `
     <tr>
       <td>${Number(item.index || 0)}</td>
       <td>${esc(item.source || '-')}</td>
       <td>${esc(item.model || '')}</td>
-      <td>${modelBackendBadge(item.backend)}</td>
       <td>${esc(item.size || '-')}</td>
+      <td>${esc((item.quantizations || []).join(', ') || item.quantization || '-')}</td>
       <td>${esc(item.downloads || '-')}</td>
+      <td>${item.fits_gpu === true ? '<span class="badge badge-ok">Fits</span>' : item.fits_gpu === false ? '<span class="badge badge-warn">Too large</span>' : '<span class="badge badge-muted">Unknown</span>'}</td>
       <td>
-        <button class="btn btn-sm btn-primary" onclick='modelsPull(${JSON.stringify(String(item.model || ''))}, ${JSON.stringify(String(item.backend === 'vllm' ? 'vllm' : item.backend || ''))})'>Pull</button>
+        ${item.installed ? '<span class="badge badge-ok">Installed</span>' : `<button class="btn btn-sm btn-primary" onclick='modelsPull(${JSON.stringify(String(item.model || ''))})'>Pull</button>`}
       </td>
     </tr>
   `).join('');
@@ -2333,25 +2329,22 @@ function backendCard(status) {
     : 'none';
   return `
     <div class="card">
-      <div class="card-label">${esc(status?.backend || 'backend')}</div>
+      <div class="card-label">vLLM</div>
       <div class="card-value" style="font-size:15px">${status?.healthy ? 'Healthy' : 'Unavailable'}</div>
       <div class="card-sub">${status?.cli_installed ? 'CLI installed' : 'CLI missing'}${status?.cli_version ? ` · ${esc(status.cli_version)}` : ''}</div>
       <div class="card-sub">endpoint: ${esc(status?.base_url || '-')}</div>
       <div class="card-sub">installed: ${installedCount} · served: ${served}</div>
       ${status?.error ? `<div class="card-sub" style="color:var(--amber)">${esc(status.error)}</div>` : ''}
       <div style="margin-top:10px">
-        <button class="btn btn-sm ${status?.backend === 'ollama' ? 'btn-primary' : ''}" onclick="modelsServe('ollama')">Serve Ollama</button>
-        <button class="btn btn-sm ${status?.backend === 'vllm' ? 'btn-primary' : ''}" style="margin-left:6px" onclick="modelsServe('vllm')">Serve vLLM</button>
-        <button class="btn btn-sm" style="margin-left:6px" onclick="modelsStop('${esc(String(status?.backend || 'ollama'))}')">Stop</button>
+        <button class="btn btn-sm btn-primary" onclick="modelsServe()">Serve vLLM</button>
+        <button class="btn btn-sm" style="margin-left:6px" onclick="modelsStop()">Stop</button>
       </div>
     </div>
   `;
 }
 
 function summarizeManagedBackends(config) {
-  const managed = Array.isArray(config?.managed) ? config.managed : [];
-  if (!managed.length) return 'none';
-  return managed.map(item => String(item?.backend || '')).filter(Boolean).join(', ') || 'none';
+  return config?.managed ? 'vllm' : 'none';
 }
 
 async function renderModels() {
@@ -2366,8 +2359,8 @@ async function renderModels() {
       <div class="page-title">Models</div>
       <div class="card-grid">
         <div class="card">
-          <div class="card-label">Preferred Backend</div>
-          <div class="card-value" style="font-size:15px">${esc(status?.config?.preferred_backend || 'ollama')}</div>
+          <div class="card-label">Local Models</div>
+          <div class="card-value" style="font-size:15px">vLLM</div>
           <div class="card-sub">managed: ${esc(summarizeManagedBackends(status?.config))}</div>
         </div>
         <div class="card">
@@ -2389,8 +2382,7 @@ async function renderModels() {
 
       <div class="section-header">Backend Health</div>
       <div class="card-grid">
-        ${backendCard(status?.ollama)}
-        ${backendCard(status?.vllm)}
+        ${backendCard(status?.backend)}
       </div>
 
       <div class="section-header">Controls</div>
@@ -2398,7 +2390,7 @@ async function renderModels() {
         <div class="config-row">
           <div>
             <div class="config-label">Search Local Models</div>
-            <div class="config-desc">Search Ollama library and Hugging Face Hub from one surface.</div>
+            <div class="config-desc">Search Hugging Face Hub with GPU-fit hints for the unified vLLM backend.</div>
           </div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
             <input class="input" id="models-search-query" style="min-width:280px" placeholder="code assistant 7b" value="${esc(_modelsSearchQuery)}">
@@ -2428,7 +2420,7 @@ async function renderModels() {
       <div class="section-header">Search Results${_modelsSearchQuery ? ` for "${esc(_modelsSearchQuery)}"` : ''}</div>
       <div class="table-wrap"><table>
         <thead>
-          <tr><th>#</th><th>Source</th><th>Model</th><th>Backend</th><th>Size</th><th>Downloads</th><th>Action</th></tr>
+          <tr><th>#</th><th>Source</th><th>Model</th><th>Size</th><th>Quant</th><th>Downloads</th><th>GPU</th><th>Action</th></tr>
         </thead>
         <tbody>${searchResultsRows(results)}</tbody>
       </table></div>
@@ -2460,13 +2452,11 @@ window.modelsLoginHuggingFace = async function modelsLoginHuggingFace() {
   }
 };
 
-window.modelsServe = async function modelsServe(backend) {
+window.modelsServe = async function modelsServe() {
   try {
-    const payload = { backend };
-    if (backend === 'vllm') {
-      const model = window.prompt('vLLM model to serve (installed HF repo id or path)', '');
-      if (model && String(model).trim()) payload.model = String(model).trim();
-    }
+    const payload = {};
+    const model = window.prompt('vLLM model to serve (installed HF repo id or path)', '');
+    if (model && String(model).trim()) payload.model = String(model).trim();
     await apiPost('/models/serve', payload);
     await renderModels();
   } catch (e) {
@@ -2474,28 +2464,28 @@ window.modelsServe = async function modelsServe(backend) {
   }
 };
 
-window.modelsStop = async function modelsStop(backend) {
+window.modelsStop = async function modelsStop() {
   try {
-    await apiPost('/models/stop', { backend });
+    await apiPost('/models/stop', {});
     await renderModels();
   } catch (e) {
     alert(`Stop failed: ${String(e && e.message || e)}`);
   }
 };
 
-window.modelsPull = async function modelsPull(model, source) {
+window.modelsPull = async function modelsPull(model) {
   try {
-    await apiPost('/models/pull', { model, source });
+    await apiPost('/models/pull', { model, source: 'vllm' });
     await renderModels();
   } catch (e) {
     alert(`Pull failed: ${String(e && e.message || e)}`);
   }
 };
 
-window.modelsRemove = async function modelsRemove(model, source) {
+window.modelsRemove = async function modelsRemove(model) {
   if (!window.confirm(`Remove local model ${model}?`)) return;
   try {
-    await apiPost('/models/rm', { model, source });
+    await apiPost('/models/rm', { model, source: 'vllm' });
     await renderModels();
   } catch (e) {
     alert(`Remove failed: ${String(e && e.message || e)}`);
