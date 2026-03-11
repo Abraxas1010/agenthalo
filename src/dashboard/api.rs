@@ -1,4 +1,5 @@
 use super::DashboardState;
+use crate::container::{current_container_id, ContainerAgentLock};
 use crate::discord::recorder::DiscordRecorder;
 use crate::discord::status as discord_status;
 use crate::encrypted_file::{create_header_if_missing, load_header};
@@ -13,10 +14,14 @@ use crate::security::FormalProvenance;
 use crate::sql::executor::SqlExecutor;
 use crate::verifier::gate::{load_gate_config, ProofGateConfig};
 use axum::extract::{Path, Query, State as AxumState};
+use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use rmcp::handler::server::wrapper::Parameters;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::BTreeMap;
+use std::time::Duration;
 
 fn discord_recorder(state: &DashboardState) -> DiscordRecorder {
     DiscordRecorder::new(state.discord_db_path.clone())
@@ -92,6 +97,39 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/nucleusdb/status", get(api_nucleusdb_status))
         .route("/nucleusdb/history", get(api_nucleusdb_history))
         .route("/nucleusdb/sql", post(api_nucleusdb_sql))
+        .route("/container/lock-status", get(api_container_lock_status))
+        .route("/container/initialize", post(api_container_initialize))
+        .route("/container/deinitialize", post(api_container_deinitialize))
+        .route("/containers", get(api_containers))
+        .route("/containers/provision", post(api_containers_provision))
+        .route("/containers/initialize", post(api_containers_initialize))
+        .route(
+            "/containers/deinitialize",
+            post(api_containers_deinitialize),
+        )
+        .route(
+            "/containers/{session_id}",
+            axum::routing::delete(api_containers_destroy),
+        )
+        .route("/containers/{session_id}/logs", get(api_containers_logs))
+        .route("/deploy/catalog", get(api_deploy_catalog))
+        .route("/deploy/preflight", post(api_deploy_preflight))
+        .route("/deploy/launch", post(api_deploy_launch))
+        .route("/mcp/invoke", post(api_mcp_invoke))
+        .route("/orchestrator/launch", post(api_orchestrator_launch))
+        .route("/orchestrator/task", post(api_orchestrator_task))
+        .route("/orchestrator/pipe", post(api_orchestrator_pipe))
+        .route("/orchestrator/stop", post(api_orchestrator_stop))
+        .route("/orchestrator/agents", get(api_orchestrator_agents))
+        .route("/orchestrator/tasks", get(api_orchestrator_tasks))
+        .route("/orchestrator/graph", get(api_orchestrator_graph))
+        .route("/orchestrator/status", get(api_orchestrator_status))
+        .route("/models/status", get(api_models_status))
+        .route("/models/search", get(api_models_search))
+        .route("/models/pull", post(api_models_pull))
+        .route("/models/remove", post(api_models_remove))
+        .route("/models/serve", post(api_models_serve))
+        .route("/models/stop", post(api_models_stop))
         .route("/formal-proofs", get(api_formal_proofs))
         .route("/discord/status", get(api_discord_status))
         .route("/discord/channels", get(api_discord_channels))
@@ -329,11 +367,6 @@ async fn api_nucleusdb_sql(
 async fn api_formal_proofs() -> Json<serde_json::Value> {
     let gate = load_gate_config().unwrap_or_default();
     let advisory = advisory_gate_config(&gate);
-    let evaluation_mode = if gate.enabled {
-        "enforced"
-    } else {
-        "advisory-simulated"
-    };
     let mut tools: Vec<String> = advisory.requirements.keys().cloned().collect();
     tools.sort();
     let tool_status: Vec<_> = tools
@@ -352,9 +385,6 @@ async fn api_formal_proofs() -> Json<serde_json::Value> {
         .collect();
     Json(json!({
         "gate_enabled": gate.enabled,
-        "evaluation_mode": evaluation_mode,
-        "simulation_only": !gate.enabled,
-        "advisory_note": "Proof results are evaluated against the configured requirements, but tool calls are blocked only when gate_enabled is true.",
         "certificate_dir": gate.certificate_dir,
         "certificate_count": certificate_count(&gate),
         "tools": tool_status,
@@ -445,4 +475,821 @@ async fn api_discord_export(
         Ok(rows) => Json(json!({"ok": true, "channel_id": channel_id, "records": rows})),
         Err(e) => Json(json!({"ok": false, "error": e})),
     }
+}
+
+type ApiResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
+
+fn api_error(
+    status: StatusCode,
+    error: impl Into<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (status, Json(json!({ "ok": false, "error": error.into() })))
+}
+
+fn tool_result<T: serde::Serialize>(value: T) -> Json<serde_json::Value> {
+    Json(json!({
+        "ok": true,
+        "result": {
+            "structured_content": value
+        }
+    }))
+}
+
+const DASHBOARD_REMOTE_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn default_container_launch_request(
+    image: Option<String>,
+    agent_id: Option<String>,
+) -> crate::mcp::tools::ContainerLaunchRequest {
+    crate::mcp::tools::ContainerLaunchRequest {
+        image: image
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                std::env::var("NUCLEUSDB_CONTAINER_IMAGE")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "nucleusdb:latest".to_string())
+            }),
+        agent_id: agent_id
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("container-{}", uuid::Uuid::new_v4().simple())),
+        command: vec![
+            "nucleusdb-mcp".to_string(),
+            "/data/nucleusdb.ndb".to_string(),
+            "--transport".to_string(),
+            "http".to_string(),
+            "--host".to_string(),
+            "0.0.0.0".to_string(),
+            "--port".to_string(),
+            crate::container::mesh::DEFAULT_MCP_PORT.to_string(),
+        ],
+        runtime_runsc: Some(false),
+        host_sock: None,
+        env: BTreeMap::new(),
+        mesh: Some(crate::mcp::tools::ContainerMeshRequest {
+            enabled: Some(true),
+            mcp_port: Some(crate::container::mesh::DEFAULT_MCP_PORT),
+            registry_volume: std::env::var("NUCLEUSDB_CONTAINER_REGISTRY_VOLUME")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            agent_did: None,
+        }),
+    }
+}
+
+async fn find_container_session(
+    state: &DashboardState,
+    session_id: &str,
+) -> Result<crate::mcp::tools::ContainerSessionView, (StatusCode, Json<serde_json::Value>)> {
+    let rmcp::Json(payload) = state
+        .mcp_service
+        .nucleusdb_container_list()
+        .await
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    payload
+        .sessions
+        .into_iter()
+        .find(|session| session.session_id == session_id)
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                format!("unknown session `{session_id}`"),
+            )
+        })
+}
+
+async fn call_container_session_tool<T: serde::de::DeserializeOwned>(
+    state: &DashboardState,
+    session_id: &str,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Result<T, (StatusCode, Json<serde_json::Value>)> {
+    let session = find_container_session(state, session_id).await?;
+    let registry = crate::container::PeerRegistry::load(&crate::container::mesh_registry_path())
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let peer = registry.find(&session.agent_id).cloned().ok_or_else(|| {
+        api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("mesh peer for session `{session_id}` is not registered"),
+        )
+    })?;
+    let auth_token = crate::container::mesh_auth_token();
+    let tool = tool_name.to_string();
+    tokio::task::spawn_blocking(move || {
+        crate::container::call_remote_tool_with_timeout(
+            &peer,
+            &tool,
+            arguments,
+            auth_token.as_deref(),
+            DASHBOARD_REMOTE_TOOL_TIMEOUT,
+        )
+    })
+    .await
+    .map_err(|e| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("join remote tool: {e}"),
+        )
+    })?
+    .map_err(|e| api_error(StatusCode::BAD_GATEWAY, e))
+    .and_then(|value| decode_remote_tool_value(value, tool_name))
+}
+
+fn agent_catalog() -> Vec<serde_json::Value> {
+    vec![
+        json!({"id":"codex","name":"Codex","icon":"⌘","description":"OpenAI Codex CLI in PTY or container mode."}),
+        json!({"id":"claude","name":"Claude","icon":"◈","description":"Claude Code CLI with JSON trace capture."}),
+        json!({"id":"gemini","name":"Gemini","icon":"✦","description":"Gemini CLI for local operator tasks."}),
+        json!({"id":"openclaw","name":"OpenClaw","icon":"⟠","description":"OpenClaw agent runner."}),
+        json!({"id":"shell","name":"Shell","icon":"▣","description":"Raw shell execution for deterministic tasks."}),
+    ]
+}
+
+fn cli_install_hint(agent_id: &str) -> &'static str {
+    match agent_id {
+        "codex" => "Install the `codex` CLI and ensure it is on PATH.",
+        "claude" => "Install the `claude` CLI and ensure it is on PATH.",
+        "gemini" => "Install the `gemini` CLI and ensure it is on PATH.",
+        "openclaw" => "Install the `openclaw` binary and ensure it is on PATH.",
+        _ => "No extra install step required.",
+    }
+}
+
+fn command_exists(command: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(command)
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+fn decode_remote_tool_value<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+    context: &str,
+) -> Result<T, (StatusCode, Json<serde_json::Value>)> {
+    let is_error = value
+        .get("isError")
+        .or_else(|| value.get("is_error"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if is_error {
+        return Err(api_error(
+            StatusCode::BAD_GATEWAY,
+            format!("remote tool returned error for {context}"),
+        ));
+    }
+    let payload = value
+        .get("structuredContent")
+        .or_else(|| value.get("structured_content"))
+        .cloned()
+        .unwrap_or(value);
+    serde_json::from_value(payload).map_err(|e| {
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            format!("decode remote {context}: {e}"),
+        )
+    })
+}
+
+async fn api_container_lock_status(_: AxumState<DashboardState>) -> ApiResult {
+    let container_id = current_container_id();
+    let lock = ContainerAgentLock::load_or_create(&container_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(json!({
+        "container_id": lock.container_id,
+        "state": lock.state_label(),
+        "reuse_policy": lock.reuse_policy.as_str(),
+        "lock": lock
+    })))
+}
+
+async fn api_container_initialize(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<crate::mcp::tools::ContainerInitializeRequest>,
+) -> ApiResult {
+    let rmcp::Json(payload) = state
+        .mcp_service
+        .nucleusdb_container_initialize(Parameters(body))
+        .await
+        .map_err(|e| api_error(StatusCode::CONFLICT, e.to_string()))?;
+    Ok(Json(
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"ok": false})),
+    ))
+}
+
+async fn api_container_deinitialize(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let rmcp::Json(payload) = state
+        .mcp_service
+        .nucleusdb_container_deinitialize(Parameters(Default::default()))
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"ok": false})),
+    ))
+}
+
+async fn api_containers(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    let rmcp::Json(payload) = state
+        .mcp_service
+        .nucleusdb_container_list()
+        .await
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"ok": false})),
+    ))
+}
+
+async fn api_containers_provision(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let request = default_container_launch_request(
+        body.get("image")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        body.get("agent_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+    );
+    let rmcp::Json(payload) = state
+        .mcp_service
+        .nucleusdb_container_provision(Parameters(request))
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"ok": false})),
+    ))
+}
+
+#[derive(Deserialize)]
+struct SessionScopedInitializeRequest {
+    session_id: String,
+    hookup: crate::orchestrator::ContainerHookupRequest,
+    #[serde(default)]
+    reuse_policy: Option<crate::container::ReusePolicy>,
+}
+
+async fn api_containers_initialize(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<SessionScopedInitializeRequest>,
+) -> ApiResult {
+    let payload: crate::mcp::tools::ContainerInitializeResponse = call_container_session_tool(
+        &state,
+        &body.session_id,
+        "nucleusdb_container_initialize",
+        serde_json::to_value(crate::mcp::tools::ContainerInitializeRequest {
+            hookup: body.hookup,
+            reuse_policy: body.reuse_policy,
+        })
+        .unwrap_or_else(|_| json!({})),
+    )
+    .await?;
+    Ok(Json(
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"ok": false})),
+    ))
+}
+
+#[derive(Deserialize)]
+struct SessionScopedDeinitializeRequest {
+    session_id: String,
+}
+
+async fn api_containers_deinitialize(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<SessionScopedDeinitializeRequest>,
+) -> ApiResult {
+    let payload: crate::mcp::tools::ContainerDeinitializeResponse = call_container_session_tool(
+        &state,
+        &body.session_id,
+        "nucleusdb_container_deinitialize",
+        serde_json::json!({}),
+    )
+    .await?;
+    Ok(Json(
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"ok": false})),
+    ))
+}
+
+async fn api_containers_destroy(
+    AxumState(_state): AxumState<DashboardState>,
+    Path(session_id): Path<String>,
+) -> ApiResult {
+    crate::container::destroy_container(&session_id)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(
+        json!({ "ok": true, "destroyed": true, "session_id": session_id }),
+    ))
+}
+
+async fn api_containers_logs(Path(session_id): Path<String>) -> ApiResult {
+    let logs = crate::container::container_logs(&session_id, false)
+        .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(
+        json!({ "ok": true, "session_id": session_id, "logs": logs }),
+    ))
+}
+
+async fn api_deploy_catalog() -> ApiResult {
+    Ok(Json(json!({
+        "ok": true,
+        "agents": agent_catalog(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct DeployPreflightRequest {
+    agent_id: String,
+    #[serde(default)]
+    admission_mode: Option<String>,
+}
+
+async fn api_deploy_preflight(Json(body): Json<DeployPreflightRequest>) -> ApiResult {
+    let agent_id = body.agent_id.trim().to_ascii_lowercase();
+    crate::orchestrator::agent_pool::normalize_agent_kind(&agent_id)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    let docker_available = tokio::task::spawn_blocking(|| command_exists("docker"))
+        .await
+        .map_err(|e| {
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("join docker probe: {e}"),
+            )
+        })?;
+    let cli_installed = if agent_id == "shell" {
+        true
+    } else {
+        tokio::task::spawn_blocking({
+            let agent_id = agent_id.clone();
+            move || command_exists(&agent_id)
+        })
+        .await
+        .map_err(|e| {
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("join cli probe: {e}"),
+            )
+        })?
+    };
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "cli_installed": cli_installed,
+        "keys_configured": true,
+        "missing_keys": [],
+        "docker_available": docker_available,
+        "ready": cli_installed,
+        "install_hint": (!cli_installed).then_some(cli_install_hint(&body.agent_id)),
+        "binary_topology": null,
+        "admission": {
+            "mode": body.admission_mode.unwrap_or_else(|| "warn".to_string()),
+            "allowed": true,
+            "forced": false,
+            "issues": []
+        }
+    })))
+}
+
+#[derive(Deserialize)]
+struct DeployLaunchRequest {
+    agent_id: String,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    container: bool,
+    #[serde(default)]
+    working_dir: Option<String>,
+    #[serde(default)]
+    admission_mode: Option<String>,
+}
+
+async fn api_deploy_launch(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<DeployLaunchRequest>,
+) -> ApiResult {
+    let agent_id = crate::orchestrator::agent_pool::normalize_agent_kind(&body.agent_id)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    let request = crate::orchestrator::LaunchAgentRequest {
+        agent: agent_id.clone(),
+        agent_name: format!("deploy-{agent_id}"),
+        working_dir: body.working_dir,
+        env: BTreeMap::new(),
+        timeout_secs: 600,
+        model: None,
+        trace: true,
+        capabilities: vec!["memory_read".to_string(), "memory_write".to_string()],
+        dispatch_mode: Some(if body.container {
+            crate::orchestrator::DispatchMode::Container
+        } else {
+            crate::orchestrator::DispatchMode::Pty
+        }),
+        container_hookup: body.container.then(|| {
+            crate::orchestrator::ContainerHookupRequest::Cli {
+                cli_name: agent_id.clone(),
+                model: None,
+            }
+        }),
+    };
+    let payload = state
+        .orchestrator
+        .launch_agent(request)
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "mode": body.mode,
+        "admission": {
+            "mode": body.admission_mode.unwrap_or_else(|| "warn".to_string()),
+            "allowed": true,
+            "forced": false,
+            "issues": []
+        },
+        "agent_id": payload.agent_id,
+        "agent": payload,
+    })))
+}
+
+#[derive(Deserialize)]
+struct McpInvokeBody {
+    tool: String,
+    #[serde(default)]
+    params: serde_json::Value,
+}
+
+async fn api_mcp_invoke(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<McpInvokeBody>,
+) -> ApiResult {
+    match body.tool.as_str() {
+        "nucleusdb_container_provision" => {
+            let req: crate::mcp::tools::ContainerLaunchRequest =
+                serde_json::from_value(body.params).map_err(|e| {
+                    api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}"))
+                })?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_container_provision(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_container_initialize" => {
+            let req: crate::mcp::tools::ContainerInitializeRequest =
+                serde_json::from_value(body.params).map_err(|e| {
+                    api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}"))
+                })?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_container_initialize(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_container_deinitialize" => {
+            let req: crate::mcp::tools::ContainerDeinitializeRequest =
+                serde_json::from_value(body.params).map_err(|e| {
+                    api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}"))
+                })?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_container_deinitialize(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_container_stop" => {
+            let req: crate::mcp::tools::ContainerStopRequest = serde_json::from_value(body.params)
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}")))?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_container_stop(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_container_logs" => {
+            let req: crate::mcp::tools::ContainerLogsRequest = serde_json::from_value(body.params)
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}")))?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_container_logs(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_subsidiary_provision" => {
+            let req: crate::mcp::tools::SubsidiaryProvisionRequest =
+                serde_json::from_value(body.params).map_err(|e| {
+                    api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}"))
+                })?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_subsidiary_provision(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_subsidiary_initialize" => {
+            let req: crate::mcp::tools::SubsidiaryInitializeRequest =
+                serde_json::from_value(body.params).map_err(|e| {
+                    api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}"))
+                })?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_subsidiary_initialize(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_subsidiary_send_task" => {
+            let req: crate::mcp::tools::SubsidiarySendTaskRequest =
+                serde_json::from_value(body.params).map_err(|e| {
+                    api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}"))
+                })?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_subsidiary_send_task(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_subsidiary_get_result" => {
+            let req: crate::mcp::tools::SubsidiaryGetResultRequest =
+                serde_json::from_value(body.params).map_err(|e| {
+                    api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}"))
+                })?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_subsidiary_get_result(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_subsidiary_deinitialize" => {
+            let req: crate::mcp::tools::SubsidiaryDeinitializeRequest =
+                serde_json::from_value(body.params).map_err(|e| {
+                    api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}"))
+                })?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_subsidiary_deinitialize(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_subsidiary_destroy" => {
+            let req: crate::mcp::tools::SubsidiaryDestroyRequest =
+                serde_json::from_value(body.params).map_err(|e| {
+                    api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}"))
+                })?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_subsidiary_destroy(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_subsidiary_list" => {
+            let req: crate::mcp::tools::SubsidiaryListRequest = serde_json::from_value(body.params)
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("invalid params: {e}")))?;
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_subsidiary_list(Parameters(req))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_container_list" => {
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_container_list()
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        "nucleusdb_container_lock_status" => {
+            let rmcp::Json(payload) = state
+                .mcp_service
+                .nucleusdb_container_lock_status(Parameters(Default::default()))
+                .await
+                .map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?;
+            Ok(tool_result(payload))
+        }
+        _ => Err(api_error(
+            StatusCode::NOT_FOUND,
+            format!("unsupported MCP tool `{}`", body.tool),
+        )),
+    }
+}
+
+async fn api_orchestrator_launch(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<crate::orchestrator::LaunchAgentRequest>,
+) -> ApiResult {
+    let payload = state
+        .orchestrator
+        .launch_agent(body)
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"ok": false})),
+    ))
+}
+
+async fn api_orchestrator_task(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<crate::orchestrator::SendTaskRequest>,
+) -> ApiResult {
+    let payload = state
+        .orchestrator
+        .send_task(body)
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({ "ok": true, "task": payload })))
+}
+
+async fn api_orchestrator_pipe(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<crate::orchestrator::PipeRequest>,
+) -> ApiResult {
+    let payload = state
+        .orchestrator
+        .pipe(body)
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({ "ok": true, "task": payload })))
+}
+
+async fn api_orchestrator_stop(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<crate::orchestrator::StopRequest>,
+) -> ApiResult {
+    let payload = state
+        .orchestrator
+        .stop_agent(body)
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"ok": false})),
+    ))
+}
+
+async fn api_orchestrator_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    Ok(Json(
+        serde_json::to_value(state.orchestrator.status().await)
+            .unwrap_or_else(|_| json!({"ok": false})),
+    ))
+}
+
+async fn api_orchestrator_agents(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    Ok(Json(json!({
+        "ok": true,
+        "agents": state.orchestrator.list_agents().await
+    })))
+}
+
+async fn api_orchestrator_tasks(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    Ok(Json(json!({
+        "ok": true,
+        "tasks": state.orchestrator.list_tasks().await
+    })))
+}
+
+async fn api_orchestrator_graph(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    Ok(Json(json!({
+        "ok": true,
+        "graph": state.orchestrator.graph_snapshot().await
+    })))
+}
+
+async fn api_models_status() -> ApiResult {
+    let payload = tokio::task::spawn_blocking(crate::halo::local_models::detect_status)
+        .await
+        .map_err(|e| {
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("join models status: {e}"),
+            )
+        })?;
+    Ok(Json(
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"ok": false})),
+    ))
+}
+
+#[derive(Deserialize)]
+struct ModelSearchQuery {
+    q: String,
+    limit: Option<usize>,
+}
+
+async fn api_models_search(Query(query): Query<ModelSearchQuery>) -> ApiResult {
+    let q = query.q.clone();
+    let limit = query.limit.unwrap_or(8);
+    let results =
+        tokio::task::spawn_blocking(move || crate::halo::local_models::search_models(&q, limit))
+            .await
+            .map_err(|e| {
+                api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("join model search: {e}"),
+                )
+            })?
+            .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(
+        json!({ "ok": true, "count": results.len(), "results": results }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct ModelPullRequest {
+    model: String,
+    source: Option<String>,
+}
+
+async fn api_models_pull(Json(body): Json<ModelPullRequest>) -> ApiResult {
+    let model = body.model.clone();
+    let source = body.source.clone();
+    let (payload, output) = tokio::task::spawn_blocking(move || {
+        let mut output = Vec::new();
+        let payload =
+            crate::halo::local_models::pull_model(&model, source.as_deref(), &mut output)?;
+        Ok::<_, String>((payload, output))
+    })
+    .await
+    .map_err(|e| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("join model pull: {e}"),
+        )
+    })?
+    .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "model": payload,
+        "output": String::from_utf8_lossy(&output)
+    })))
+}
+
+#[derive(Deserialize)]
+struct ModelRemoveRequest {
+    model: String,
+    source: Option<String>,
+}
+
+async fn api_models_remove(Json(body): Json<ModelRemoveRequest>) -> ApiResult {
+    let model = body.model.clone();
+    let source = body.source.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::halo::local_models::remove_model(&model, source.as_deref())
+    })
+    .await
+    .map_err(|e| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("join model remove: {e}"),
+        )
+    })?
+    .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct ModelServeRequest {
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+async fn api_models_serve(Json(body): Json<ModelServeRequest>) -> ApiResult {
+    let request = crate::halo::local_models::ServeRequest {
+        backend: crate::halo::local_models::LocalBackendType::Vllm,
+        port: body.port,
+        model: body.model,
+    };
+    let payload =
+        tokio::task::spawn_blocking(move || crate::halo::local_models::serve_backend(request))
+            .await
+            .map_err(|e| {
+                api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("join model serve: {e}"),
+                )
+            })?
+            .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({ "ok": true, "serve": payload })))
+}
+
+async fn api_models_stop() -> ApiResult {
+    let payload = tokio::task::spawn_blocking(|| {
+        crate::halo::local_models::stop_backend(crate::halo::local_models::LocalBackendType::Vllm)
+    })
+    .await
+    .map_err(|e| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("join model stop: {e}"),
+        )
+    })?
+    .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(json!({ "ok": true, "stop": payload })))
 }

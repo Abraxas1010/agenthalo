@@ -7,6 +7,14 @@ use rmcp::transport::streamable_http_server::tower::{
 use std::net::SocketAddr;
 use tower_http::cors::CorsLayer;
 
+struct MeshRegistrationGuard;
+
+impl Drop for MeshRegistrationGuard {
+    fn drop(&mut self) {
+        crate::container::deregister_self_from_mesh();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RemoteServerConfig {
     pub db_path: String,
@@ -25,6 +33,12 @@ impl Default for RemoteServerConfig {
 }
 
 pub async fn run_remote_mcp_server(config: RemoteServerConfig) -> Result<(), String> {
+    let _mesh_registration = if crate::container::mesh_enabled() {
+        crate::container::register_self_in_mesh()?;
+        Some(MeshRegistrationGuard)
+    } else {
+        None
+    };
     let db_path = config.db_path.clone();
     let mcp_service = StreamableHttpService::new(
         move || NucleusDbMcpService::new(&db_path).map_err(std::io::Error::other),
