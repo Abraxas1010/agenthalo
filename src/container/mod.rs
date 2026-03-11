@@ -19,6 +19,7 @@ pub use agent_lock::{
 };
 pub use backend::ContainerBackend;
 pub use builder::{build_container_image, BuildConfig};
+pub use coordination::{mesh_auth_token, DEFAULT_MESH_REGISTRY_VOLUME};
 pub use launcher::{
     container_logs, container_status, destroy_container, launch_container, stop_container, Channel,
     MeshConfig, MonitorConfig, RunConfig, SessionInfo,

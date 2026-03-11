@@ -4,10 +4,14 @@
 //! can reach each other's MCP HTTP endpoints. Peers are discovered via
 //! Docker DNS (container-name:port) and registered in a shared peer list.
 
+use crate::container::coordination::{
+    acquire_pid_lock, prepare_bind_mount_dir, registry_volume_is_named,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
+use std::net::ToSocketAddrs;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -28,6 +32,13 @@ pub fn mesh_registry_path() -> std::path::PathBuf {
         .filter(|v| !v.trim().is_empty())
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(MESH_REGISTRY_PATH))
+}
+
+fn configure_registry_parent(parent: &Path) -> Result<(), String> {
+    if registry_volume_is_named(parent) {
+        return Ok(());
+    }
+    prepare_bind_mount_dir(parent, "mesh registry dir")
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -95,13 +106,7 @@ impl PeerRegistry {
     /// Save registry atomically (write-tmp-rename).
     pub fn save(&self, path: &Path) -> Result<(), String> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create registry dir {}: {e}", parent.display()))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o777));
-            }
+            configure_registry_parent(parent)?;
         }
         let data =
             serde_json::to_vec_pretty(self).map_err(|e| format!("serialize peer registry: {e}"))?;
@@ -111,6 +116,11 @@ impl PeerRegistry {
         {
             let mut file = File::create(&tmp)
                 .map_err(|e| format!("create temp registry {}: {e}", tmp.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            }
             file.write_all(&data)
                 .map_err(|e| format!("write temp registry {}: {e}", tmp.display()))?;
             file.flush()
@@ -123,6 +133,11 @@ impl PeerRegistry {
                 path.display()
             )
         })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 
@@ -173,41 +188,16 @@ pub struct PeerRegistryLock {
 impl PeerRegistryLock {
     pub fn acquire(path: &Path) -> Result<Self, String> {
         let lock_path = lock_path(path);
-        if let Some(parent) = lock_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create registry dir {}: {e}", parent.display()))?;
-        }
-        let deadline = std::time::Instant::now() + MESH_REGISTRY_LOCK_TIMEOUT;
-        loop {
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock_path)
-            {
-                Ok(mut file) => {
-                    let _ = writeln!(file, "pid={}", std::process::id());
-                    return Ok(Self {
-                        path: lock_path,
-                        _file: file,
-                    });
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if std::time::Instant::now() >= deadline {
-                        return Err(format!(
-                            "timed out acquiring mesh registry lock {}",
-                            lock_path.display()
-                        ));
-                    }
-                    std::thread::sleep(MESH_REGISTRY_LOCK_RETRY);
-                }
-                Err(err) => {
-                    return Err(format!(
-                        "open mesh registry lock {}: {err}",
-                        lock_path.display()
-                    ));
-                }
-            }
-        }
+        let file = acquire_pid_lock(
+            &lock_path,
+            MESH_REGISTRY_LOCK_TIMEOUT,
+            MESH_REGISTRY_LOCK_RETRY,
+            "mesh registry",
+        )?;
+        Ok(Self {
+            path: lock_path,
+            _file: file,
+        })
     }
 }
 
@@ -293,6 +283,27 @@ pub fn ping_peer_with_latency(peer: &PeerInfo) -> (bool, u64) {
         Ok(resp) if resp.status() == 200 => (true, elapsed),
         _ => (false, elapsed),
     }
+}
+
+pub fn peer_endpoint_reachable(peer: &PeerInfo, timeout: Duration) -> bool {
+    let Ok(url) = url::Url::parse(&peer.mcp_endpoint) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let Some(port) = url.port_or_known_default() else {
+        return false;
+    };
+    let Ok(addrs) = format!("{host}:{port}").to_socket_addrs() else {
+        return false;
+    };
+    for addr in addrs {
+        if std::net::TcpStream::connect_timeout(&addr, timeout).is_ok() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Call a remote peer's MCP tool via HTTP JSON-RPC.

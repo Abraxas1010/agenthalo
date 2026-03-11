@@ -1,7 +1,8 @@
+use crate::container::coordination::acquire_pid_lock;
 use crate::container::{current_container_id, AgentHookupKind, ReusePolicy};
 use crate::halo::config;
 use serde::{Deserialize, Serialize};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -285,37 +286,16 @@ impl SubsidiaryRegistryLock {
     fn acquire(path: &Path) -> Result<Self, String> {
         let lock_path = lock_path(path);
         ensure_parent_dir(&lock_path)?;
-        let deadline = std::time::Instant::now() + REGISTRY_LOCK_TIMEOUT;
-        loop {
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock_path)
-            {
-                Ok(mut file) => {
-                    let _ = writeln!(file, "pid={}", std::process::id());
-                    return Ok(Self {
-                        path: lock_path,
-                        _file: file,
-                    });
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if std::time::Instant::now() >= deadline {
-                        return Err(format!(
-                            "timed out acquiring subsidiary registry lock {}",
-                            lock_path.display()
-                        ));
-                    }
-                    std::thread::sleep(REGISTRY_LOCK_RETRY);
-                }
-                Err(err) => {
-                    return Err(format!(
-                        "open subsidiary registry lock {}: {err}",
-                        lock_path.display()
-                    ));
-                }
-            }
-        }
+        let file = acquire_pid_lock(
+            &lock_path,
+            REGISTRY_LOCK_TIMEOUT,
+            REGISTRY_LOCK_RETRY,
+            "subsidiary registry",
+        )?;
+        Ok(Self {
+            path: lock_path,
+            _file: file,
+        })
     }
 }
 

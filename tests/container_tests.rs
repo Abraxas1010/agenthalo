@@ -1,6 +1,6 @@
 use nucleusdb::cockpit::pty_manager::PtyManager;
 use nucleusdb::container::builder::parse_channel_list;
-use nucleusdb::container::launcher::{Channel, MonitorConfig};
+use nucleusdb::container::launcher::{Channel, MeshConfig, MonitorConfig};
 use nucleusdb::container::{
     AgentHookup, ApiAgentHookup, CliAgentHookup, ContainerAgentLock, LocalModelHookup,
 };
@@ -33,6 +33,23 @@ fn monitor_config_csv() {
         max_nesting_depth: 3,
     };
     assert_eq!(cfg.channels_csv(), "chat,state");
+}
+
+#[test]
+fn mesh_config_default_respects_operator_env_overrides() {
+    let _guard = lock_env();
+    let _volume = EnvVarGuard::set(
+        "AGENTHALO_CONTAINER_REGISTRY_VOLUME",
+        Some("phase7-mesh-volume"),
+    );
+    let _port = EnvVarGuard::set("AGENTHALO_CONTAINER_MCP_PORT", Some("43123"));
+
+    let cfg = MeshConfig::default();
+    assert_eq!(
+        cfg.registry_volume,
+        std::path::PathBuf::from("phase7-mesh-volume")
+    );
+    assert_eq!(cfg.mcp_port, 43123);
 }
 
 fn trace_shape(events: &[TraceEvent]) -> Vec<(EventType, BTreeSet<String>, BTreeSet<String>)> {

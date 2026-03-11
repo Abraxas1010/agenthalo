@@ -1,10 +1,10 @@
-use crate::container::ContainerBackend;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
-pub const DEFAULT_MESH_REGISTRY_VOLUME: &str = "nucleusdb-mesh";
+pub const DEFAULT_MESH_REGISTRY_VOLUME: &str = "agenthalo-mesh";
 const SHARED_BIND_DIR_MODE: u32 = 0o1777;
 const PRIVATE_LOCK_FILE_MODE: u32 = 0o600;
 
@@ -12,11 +12,6 @@ pub fn mesh_auth_token() -> Option<String> {
     std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            std::env::var("NUCLEUSDB_MCP_SECRET")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-        })
         .or_else(|| {
             std::env::var("AGENTHALO_MCP_SECRET")
                 .ok()
@@ -41,29 +36,25 @@ pub fn prepare_bind_mount_dir(path: &Path, context: &str) -> Result<(), String> 
 }
 
 pub fn prepare_named_volume(volume: &Path, image: &str, context: &str) -> Result<(), String> {
-    let engine = ContainerBackend::detect();
     let volume_name = volume
         .to_str()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("{context} name is empty"))?;
 
-    let create = engine
-        .command()
+    let create = Command::new("docker")
         .args(["volume", "create", volume_name])
         .output()
-        .map_err(|e| format!("create {context} `{volume_name}` with {engine}: {e}"))?;
+        .map_err(|e| format!("create {context} `{volume_name}`: {e}"))?;
     if !create.status.success() {
         return Err(format!(
-            "create {context} `{volume_name}` failed with {}: {}",
-            engine,
+            "create {context} `{volume_name}` failed: {}",
             String::from_utf8_lossy(&create.stderr)
         ));
     }
 
     let chmod_mode = format!("{SHARED_BIND_DIR_MODE:o}");
-    let prep = engine
-        .command()
+    let prep = Command::new("docker")
         .args([
             "run",
             "--rm",
@@ -78,11 +69,10 @@ pub fn prepare_named_volume(volume: &Path, image: &str, context: &str) -> Result
             &format!("mkdir -p /data/mesh && chmod {chmod_mode} /data/mesh"),
         ])
         .output()
-        .map_err(|e| format!("prepare {context} `{volume_name}` with {engine}: {e}"))?;
+        .map_err(|e| format!("prepare {context} `{volume_name}`: {e}"))?;
     if !prep.status.success() {
         return Err(format!(
-            "prepare {context} `{volume_name}` failed with {}: {}",
-            engine,
+            "prepare {context} `{volume_name}` failed: {}",
             String::from_utf8_lossy(&prep.stderr)
         ));
     }

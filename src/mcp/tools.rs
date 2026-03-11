@@ -6,8 +6,8 @@ use crate::container::launcher::{
     stop_container as launcher_stop_container, MeshConfig, RunConfig,
 };
 use crate::container::{
-    current_container_id, AgentHookup, AgentHookupKind, AgentResponse, ApiAgentHookup,
-    CliAgentHookup, ContainerAgentLock, LocalModelHookup, ReusePolicy,
+    current_container_id, mesh_auth_token, AgentHookup, AgentHookupKind, AgentResponse,
+    ApiAgentHookup, CliAgentHookup, ContainerAgentLock, LocalModelHookup, ReusePolicy,
 };
 use crate::halo::admission::{evaluate_launch_admission, AdmissionMode};
 use crate::halo::governor_registry::{
@@ -115,17 +115,6 @@ fn inspect_container_mesh_ip(session_id: &str) -> Result<Option<String>, String>
     } else {
         Ok(Some(ip))
     }
-}
-
-fn mesh_auth_token() -> Option<String> {
-    std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            std::env::var("AGENTHALO_MCP_SECRET")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1087,6 +1076,12 @@ pub struct ContainerSessionView {
     pub reuse_policy: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ContainerLockStatusView {
+    state: String,
+    reuse_policy: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ContainerStatusRequest {
     pub session_id: String,
@@ -1893,28 +1888,41 @@ impl NucleusDbMcpService {
         peer: crate::container::PeerInfo,
     ) -> (Option<String>, Option<String>) {
         let timeout = CONTAINER_LIST_LOCK_STATUS_TIMEOUT;
+        let auth_token = crate::container::mesh_auth_token();
+        let remote_peer = peer.clone();
         let result = tokio::task::spawn_blocking(move || {
             crate::container::mesh::call_remote_tool_with_timeout(
-                &peer,
+                &remote_peer,
                 "nucleusdb_container_lock_status",
                 serde_json::json!({}),
-                None,
+                auth_token.as_deref(),
                 timeout,
             )
         })
         .await;
         match result {
-            Ok(Ok(value)) => (
-                value
-                    .get("state")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                value
-                    .get("reuse_policy")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-            ),
-            _ => (None, None),
+            Ok(Ok(value)) => match Self::decode_remote_tool_value::<ContainerLockStatusView>(
+                value,
+                "container lock status",
+            ) {
+                Ok(view) => (Some(view.state), Some(view.reuse_policy)),
+                Err(_) => {
+                    let reachable = crate::container::mesh::peer_endpoint_reachable(&peer, timeout);
+                    if reachable {
+                        (Some("unknown".to_string()), None)
+                    } else {
+                        (None, None)
+                    }
+                }
+            },
+            _ => {
+                let reachable = crate::container::mesh::peer_endpoint_reachable(&peer, timeout);
+                if reachable {
+                    (Some("unknown".to_string()), None)
+                } else {
+                    (None, None)
+                }
+            }
         }
     }
 
@@ -5660,7 +5668,7 @@ impl NucleusDbMcpService {
         }
 
         // Raw HTTP MCP call path (Part 1 behavior).
-        let auth_token = std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN").ok();
+        let auth_token = mesh_auth_token();
         let result = crate::container::mesh::call_remote_tool(
             peer,
             &req.tool_name,
@@ -5699,7 +5707,7 @@ impl NucleusDbMcpService {
                 None,
             )
         })?;
-        let auth_token = std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN").ok();
+        let auth_token = mesh_auth_token();
         let result =
             crate::container::mesh::exchange_envelope(peer, &req.envelope, auth_token.as_deref())
                 .map_err(|e| McpError::internal_error(e, None))?;
@@ -6903,11 +6911,16 @@ mod tests {
         let elapsed = started.elapsed();
         let max_elapsed = Duration::from_secs(6);
 
-        assert_eq!(response.count, 2);
-        assert!(response
+        let matching = response
             .sessions
             .iter()
-            .all(|view| view.lock_state.is_none()));
+            .filter(|view| session_ids.contains(&view.session_id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 2);
+        assert!(matching
+            .iter()
+            .all(|view| view.lock_state.as_deref() == Some("unknown")));
+        assert!(matching.iter().all(|view| view.reuse_policy.is_none()));
         assert!(elapsed < max_elapsed, "elapsed: {elapsed:?}");
 
         for path in &session_paths {
@@ -6916,6 +6929,249 @@ mod tests {
         for handle in handles {
             let _ = handle.join();
         }
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn container_list_uses_mesh_auth_token_for_lock_status() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _secret = EnvVarRestore::set("AGENTHALO_MCP_SECRET", "mesh-secret");
+        let registry_dir = tempfile::tempdir().expect("tempdir");
+        let registry_path = registry_dir.path().join("peers.json");
+        let _registry = EnvVarRestore::set(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.to_str().expect("utf8 registry path"),
+        );
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind auth lock-status listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking auth listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_flag = shutdown.clone();
+        let handle = std::thread::spawn(move || {
+            while !shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                        let mut request = [0u8; 4096];
+                        let read = std::io::Read::read(&mut stream, &mut request).unwrap_or(0);
+                        let body = String::from_utf8_lossy(&request[..read]);
+                        let body_lower = body.to_ascii_lowercase();
+                        let authorized = body_lower.contains("authorization: bearer mesh-secret");
+                        let (status_line, payload, session) = if !authorized {
+                            (
+                                "HTTP/1.1 401 Unauthorized\r\n",
+                                json!({"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"unauthorized"}}),
+                                None,
+                            )
+                        } else if body.contains("\"method\":\"initialize\"")
+                            || body.contains("\"method\": \"initialize\"")
+                        {
+                            (
+                                "HTTP/1.1 200 OK\r\n",
+                                json!({
+                                    "jsonrpc":"2.0",
+                                    "id":0,
+                                    "result":{"protocolVersion":"2025-03-26","serverInfo":{"name":"mock-auth-lock","version":"test"}}
+                                }),
+                                Some("auth-session".to_string()),
+                            )
+                        } else if body.contains("nucleusdb_container_lock_status") {
+                            (
+                                "HTTP/1.1 200 OK\r\n",
+                                json!({
+                                    "jsonrpc":"2.0",
+                                    "id":1,
+                                    "result":{
+                                        "content":[{"type":"text","text":"{\"state\":\"empty\",\"reuse_policy\":\"reusable\"}"}],
+                                        "isError":false,
+                                        "structuredContent":{"state":"empty","reuse_policy":"reusable"}
+                                    }
+                                }),
+                                None,
+                            )
+                        } else {
+                            (
+                                "HTTP/1.1 404 Not Found\r\n",
+                                json!({"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"unknown mock tool"}}),
+                                None,
+                            )
+                        };
+                        let payload = serde_json::to_string(&payload).expect("encode auth mock");
+                        let mut response = format!(
+                            "{status_line}Content-Type: application/json\r\nContent-Length: {}\r\n",
+                            payload.len()
+                        );
+                        if let Some(session) = session {
+                            response.push_str(&format!("mcp-session-id: {session}\r\n"));
+                        }
+                        response.push_str("\r\n");
+                        let _ = std::io::Write::write_all(
+                            &mut stream,
+                            format!("{response}{payload}").as_bytes(),
+                        );
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let run_dir = std::env::temp_dir().join("nucleusdb-container");
+        std::fs::create_dir_all(&run_dir).expect("create run dir");
+        let session_path = run_dir.join("sess-auth-lock.json");
+        std::fs::write(
+            &session_path,
+            serde_json::to_vec_pretty(&crate::container::launcher::SessionInfo {
+                session_id: "sess-auth-lock".to_string(),
+                container_id: "ctr-auth-lock".to_string(),
+                image: "nucleusdb-agent:test".to_string(),
+                agent_id: "agent-auth-lock".to_string(),
+                host_sock: std::env::temp_dir().join("auth-lock.sock"),
+                started_at_unix: crate::pod::now_unix(),
+                mesh_port: Some(3000),
+            })
+            .expect("encode session"),
+        )
+        .expect("write session");
+
+        let mut registry = crate::container::PeerRegistry::new();
+        registry.register(crate::container::PeerInfo {
+            agent_id: "agent-auth-lock".to_string(),
+            container_name: "container-auth-lock".to_string(),
+            did_uri: None,
+            mcp_endpoint: format!("http://{addr}/mcp"),
+            discovery_endpoint: format!("http://{addr}/.well-known/nucleus-pod"),
+            registered_at: crate::pod::now_unix(),
+            last_seen: crate::pod::now_unix(),
+        });
+        registry.save(&registry_path).expect("save registry");
+
+        let db_path = temp_db_path("container_list_mesh_auth");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let Json(response) = service.container_list().await.expect("container list");
+
+        let matching = response
+            .sessions
+            .iter()
+            .find(|view| view.session_id == "sess-auth-lock")
+            .expect("auth session present");
+        assert_eq!(matching.lock_state.as_deref(), Some("empty"));
+        assert_eq!(matching.reuse_policy.as_deref(), Some("reusable"));
+
+        shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = handle.join();
+        let _ = std::fs::remove_file(session_path);
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn mesh_call_uses_mesh_auth_token_fallback() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _secret = EnvVarRestore::set("AGENTHALO_MCP_SECRET", "mesh-secret");
+        let _mesh_secret = EnvVarRestore::unset("NUCLEUSDB_MESH_AUTH_TOKEN");
+        let registry_dir = tempfile::tempdir().expect("tempdir");
+        let registry_path = registry_dir.path().join("peers.json");
+        let _registry = EnvVarRestore::set(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.to_str().expect("utf8 registry path"),
+        );
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mesh_call");
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking mesh_call");
+        let addr = listener.local_addr().expect("listener addr");
+        let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_flag = shutdown.clone();
+        let handle = std::thread::spawn(move || {
+            while !shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                        let mut request = [0u8; 4096];
+                        let read = std::io::Read::read(&mut stream, &mut request).unwrap_or(0);
+                        let body = String::from_utf8_lossy(&request[..read]);
+                        let authorized = body
+                            .to_ascii_lowercase()
+                            .contains("authorization: bearer mesh-secret");
+                        let payload = if !authorized {
+                            json!({"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"unauthorized"}})
+                        } else if body.contains("\"method\":\"initialize\"")
+                            || body.contains("\"method\": \"initialize\"")
+                        {
+                            json!({
+                                "jsonrpc":"2.0",
+                                "id":0,
+                                "result":{"protocolVersion":"2025-03-26","serverInfo":{"name":"mock-mesh-call","version":"test"}}
+                            })
+                        } else {
+                            json!({
+                                "jsonrpc":"2.0",
+                                "id":1,
+                                "result":{
+                                    "content":[{"type":"text","text":"{\"ok\":true}"}],
+                                    "isError":false,
+                                    "structuredContent":{"ok":true}
+                                }
+                            })
+                        };
+                        let payload = serde_json::to_string(&payload).expect("encode payload");
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            payload.len(),
+                            payload
+                        );
+                        let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let mut registry = crate::container::PeerRegistry::new();
+        registry.register(crate::container::PeerInfo {
+            agent_id: "mesh-auth-peer".to_string(),
+            container_name: "mesh-auth-peer".to_string(),
+            did_uri: None,
+            mcp_endpoint: format!("http://{addr}/mcp"),
+            discovery_endpoint: format!("http://{addr}/.well-known/nucleus-pod"),
+            registered_at: crate::pod::now_unix(),
+            last_seen: crate::pod::now_unix(),
+        });
+        registry.save(&registry_path).expect("save registry");
+
+        let db_path = temp_db_path("mesh_call_auth_fallback");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let Json(response) = service
+            .mesh_call(Parameters(MeshCallRequest {
+                peer_agent_id: "mesh-auth-peer".to_string(),
+                tool_name: "nucleusdb_container_lock_status".to_string(),
+                arguments: json!({}),
+                use_didcomm: false,
+            }))
+            .await
+            .expect("mesh_call");
+        assert_eq!(response.auth_method, "bearer");
+        assert_eq!(
+            response
+                .result
+                .get("structuredContent")
+                .and_then(|v| v.get("ok"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = handle.join();
         cleanup_db_files(&db_path);
     }
 

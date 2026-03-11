@@ -159,6 +159,10 @@ log " Dashboard:      ${DASHBOARD_PORT}"
 log " MCP:            ${MCP_PORT}"
 log "============================================"
 
+if [[ -S /var/run/docker.sock ]]; then
+  log "WARN: host Docker socket is mounted; this container can manage host containers. Run only in trusted operator deployments."
+fi
+
 ensure_self_mesh_connect
 
 # -- Nym mixnet transport (must start before any service that makes outbound requests) --

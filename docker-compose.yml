@@ -1,3 +1,7 @@
+# WARNING:
+# Mounting /var/run/docker.sock grants code inside the operator container
+# effective control over the host Docker daemon. Keep this compose file for
+# trusted operator deployments only.
 services:
   agenthalo:
     build:
@@ -9,12 +13,14 @@ services:
       AGENTHALO_DASHBOARD_PORT: "3100"
       AGENTHALO_MCP_HOST: "0.0.0.0"
       AGENTHALO_MCP_PORT: "8390"
+      AGENTHALO_CONTAINER_REGISTRY_VOLUME: "agenthalo-mesh"
       WDK_SIDECAR_DIR: /opt/wdk-sidecar
       NYM_PROVIDER: "${NYM_PROVIDER:-}"
       NYM_FAIL_OPEN: "${NYM_FAIL_OPEN:-false}"
       NYM_MAX_PROVIDER_ATTEMPTS: "3"
     volumes:
       - agent-data:/data
+      - agenthalo-mesh:/data/mesh
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${DASHBOARD_PORT:-3100}:3100"
@@ -33,3 +39,4 @@ services:
 
 volumes:
   agent-data:
+  agenthalo-mesh:

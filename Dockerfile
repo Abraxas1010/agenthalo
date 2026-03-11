@@ -1,6 +1,11 @@
 # =============================================================================
 # AgentHALO Unified Container
 # =============================================================================
+# Security note:
+# This image includes the Docker CLI for the operator->subsidiary pattern.
+# It only gains host-level Docker control when the host socket is mounted at
+# runtime (for example /var/run/docker.sock in docker-compose.yml).
+# Do not mount that socket for untrusted workloads.
 # Single container runtime:
 # - agenthalo dashboard (3100)
 # - agenthalo-mcp-server (8390)
@@ -101,6 +106,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
+    jq \
     netcat-openbsd \
     openssl \
     python3 \

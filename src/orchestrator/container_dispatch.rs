@@ -2,26 +2,16 @@ use crate::container::agent_lock::ReusePolicy;
 use crate::container::launcher::{destroy_container, launch_container, MeshConfig, RunConfig};
 use crate::container::mesh::{call_remote_tool, mesh_registry_path, PeerRegistry};
 use crate::container::AgentResponse;
-use crate::halo::did::{did_document_to_json, DIDIdentity};
+use crate::container::{mesh_auth_token, DEFAULT_MESH_REGISTRY_VOLUME};
 use crate::orchestrator::dispatch::ContainerHookupRequest;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+#[cfg(test)]
 use std::sync::Mutex;
 use std::time::Duration;
-
-fn mesh_auth_token() -> Option<String> {
-    std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            std::env::var("AGENTHALO_MCP_SECRET")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-        })
-}
 
 #[derive(Debug, Clone)]
 pub struct ContainerProvisionSpec {
@@ -48,82 +38,6 @@ pub struct ProvisionedContainer {
     pub host_sock: String,
     pub started_at_unix: u64,
     pub mesh_port: Option<u16>,
-    pub did_uri: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ProvisionedContainerIdentityRecord {
-    did_uri: String,
-    did_document: serde_json::Value,
-}
-
-fn container_run_dir() -> PathBuf {
-    std::env::temp_dir().join("nucleusdb-container")
-}
-
-fn validate_session_id(session_id: &str) -> Result<(), String> {
-    if session_id.is_empty() {
-        return Err("session id must not be empty".to_string());
-    }
-    if session_id.contains('/') || session_id.contains('\\') || session_id.contains("..") {
-        return Err(format!("invalid session id `{session_id}`"));
-    }
-    Ok(())
-}
-
-fn identity_record_path(session_id: &str) -> Result<PathBuf, String> {
-    validate_session_id(session_id)?;
-    Ok(container_run_dir().join(format!("{session_id}.identity.json")))
-}
-
-pub fn load_identity_record(session_id: &str) -> Result<Option<serde_json::Value>, String> {
-    let path = identity_record_path(session_id)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let bytes = std::fs::read(&path)
-        .map_err(|e| format!("read identity record {}: {e}", path.display()))?;
-    let record: ProvisionedContainerIdentityRecord = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("parse identity record {}: {e}", path.display()))?;
-    Ok(Some(json!({
-        "did_uri": record.did_uri,
-        "did_document": record.did_document,
-    })))
-}
-
-fn persist_identity_record(
-    session_id: &str,
-    identity: &DIDIdentity,
-) -> Result<serde_json::Value, String> {
-    let dir = container_run_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("create container run dir {}: {e}", dir.display()))?;
-    let path = identity_record_path(session_id)?;
-    let record = ProvisionedContainerIdentityRecord {
-        did_uri: identity.did.clone(),
-        did_document: did_document_to_json(&identity.did_document),
-    };
-    let bytes = serde_json::to_vec_pretty(&record)
-        .map_err(|e| format!("serialize identity record {}: {e}", path.display()))?;
-    std::fs::write(&path, bytes)
-        .map_err(|e| format!("write identity record {}: {e}", path.display()))?;
-    Ok(json!({
-        "did_uri": record.did_uri,
-        "did_document": record.did_document,
-    }))
-}
-
-pub fn remove_identity_record(session_id: &str) -> Result<(), String> {
-    let path = identity_record_path(session_id)?;
-    if let Err(error) = std::fs::remove_file(&path) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(format!(
-                "remove identity record {}: {error}",
-                path.display()
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -197,7 +111,7 @@ impl Default for MeshContainerDispatch {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/tmp/nucleusdb-mesh")),
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_MESH_REGISTRY_VOLUME)),
             default_mcp_port: std::env::var("AGENTHALO_CONTAINER_MCP_PORT")
                 .ok()
                 .and_then(|v| v.parse::<u16>().ok())
@@ -283,8 +197,6 @@ impl ContainerDispatch for MeshContainerDispatch {
         } else {
             spec.mcp_port
         };
-        let identity = DIDIdentity::generate()?;
-        let did_uri = identity.did.clone();
         let peer_agent_id = spec.peer_agent_id.clone();
         let env_vars = spec.env.into_iter().collect::<Vec<_>>();
         let info = tokio::task::spawn_blocking(move || {
@@ -299,13 +211,12 @@ impl ContainerDispatch for MeshContainerDispatch {
                     enabled: true,
                     mcp_port,
                     registry_volume,
-                    agent_did: Some(did_uri.clone()),
+                    agent_did: None,
                 }),
             })
         })
         .await
         .map_err(|e| format!("container provision join failure: {e}"))??;
-        let identity_json = persist_identity_record(&info.session_id, &identity)?;
         Ok(ProvisionedContainer {
             session_id: info.session_id,
             container_id: info.container_id,
@@ -314,10 +225,6 @@ impl ContainerDispatch for MeshContainerDispatch {
             host_sock: info.host_sock.display().to_string(),
             started_at_unix: info.started_at_unix,
             mesh_port: info.mesh_port,
-            did_uri: identity_json
-                .get("did_uri")
-                .and_then(|value| value.as_str())
-                .map(str::to_string),
         })
     }
 
@@ -370,23 +277,24 @@ impl ContainerDispatch for MeshContainerDispatch {
         let owned = session_id.to_string();
         tokio::task::spawn_blocking(move || destroy_container(&owned))
             .await
-            .map_err(|e| format!("container destroy join failure: {e}"))??;
-        remove_identity_record(session_id)?;
-        Ok(())
+            .map_err(|e| format!("container destroy join failure: {e}"))?
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
 pub struct InMemoryContainerDispatch {
     inner: Mutex<InMemoryContainerState>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct InMemoryContainerState {
     next: u64,
     sessions: BTreeMap<String, FakeContainer>,
 }
 
+#[cfg(test)]
 struct FakeContainer {
     container_id: String,
     peer_agent_id: String,
@@ -394,33 +302,7 @@ struct FakeContainer {
     reuse_policy: ReusePolicy,
 }
 
-fn persist_in_memory_session(info: &crate::container::launcher::SessionInfo) -> Result<(), String> {
-    let dir = container_run_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("create in-memory container run dir {}: {e}", dir.display()))?;
-    let path = dir.join(format!("{}.json", info.session_id));
-    let bytes = serde_json::to_vec_pretty(info)
-        .map_err(|e| format!("serialize in-memory session {}: {e}", path.display()))?;
-    std::fs::write(&path, bytes)
-        .map_err(|e| format!("write in-memory session {}: {e}", path.display()))
-}
-
-fn persist_in_memory_identity_record(session_id: &str, did_uri: &str) -> Result<(), String> {
-    let path = identity_record_path(session_id)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create in-memory identity dir {}: {e}", parent.display()))?;
-    }
-    let record = ProvisionedContainerIdentityRecord {
-        did_uri: did_uri.to_string(),
-        did_document: json!({ "id": did_uri }),
-    };
-    let bytes = serde_json::to_vec_pretty(&record)
-        .map_err(|e| format!("serialize in-memory identity {}: {e}", path.display()))?;
-    std::fs::write(&path, bytes)
-        .map_err(|e| format!("write in-memory identity {}: {e}", path.display()))
-}
-
+#[cfg(test)]
 #[async_trait]
 impl ContainerDispatch for InMemoryContainerDispatch {
     fn provision_defaults(&self) -> ContainerProvisionDefaults {
@@ -448,16 +330,6 @@ impl ContainerDispatch for InMemoryContainerDispatch {
                 reuse_policy: ReusePolicy::Reusable,
             },
         );
-        persist_in_memory_session(&crate::container::launcher::SessionInfo {
-            session_id: session_id.clone(),
-            container_id: container_id.clone(),
-            image: spec.image.clone(),
-            agent_id: spec.peer_agent_id.clone(),
-            host_sock: PathBuf::from("/tmp/in-memory.sock"),
-            started_at_unix: crate::pod::now_unix(),
-            mesh_port: Some(spec.mcp_port),
-        })?;
-        persist_in_memory_identity_record(&session_id, "did:key:z6MkInMemory")?;
         Ok(ProvisionedContainer {
             session_id,
             container_id,
@@ -466,7 +338,6 @@ impl ContainerDispatch for InMemoryContainerDispatch {
             host_sock: "/tmp/in-memory.sock".to_string(),
             started_at_unix: crate::pod::now_unix(),
             mesh_port: Some(spec.mcp_port),
-            did_uri: Some("did:key:z6MkInMemory".to_string()),
         })
     }
 
@@ -548,16 +419,6 @@ impl ContainerDispatch for InMemoryContainerDispatch {
     async fn destroy(&self, session_id: &str) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         inner.sessions.remove(session_id);
-        let session_path = container_run_dir().join(format!("{session_id}.json"));
-        if let Err(error) = std::fs::remove_file(&session_path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(format!(
-                    "remove in-memory session {}: {error}",
-                    session_path.display()
-                ));
-            }
-        }
-        remove_identity_record(session_id)?;
         Ok(())
     }
 }
@@ -629,19 +490,5 @@ mod tests {
             !inner.sessions.contains_key(&provisioned.session_id),
             "destroy must remove the in-memory session"
         );
-    }
-
-    #[test]
-    fn identity_record_path_rejects_path_traversal_session_ids() {
-        for invalid in ["../escape", "slash/value", "back\\slash", ""] {
-            assert!(
-                load_identity_record(invalid).is_err(),
-                "expected invalid session id `{invalid}` to be rejected"
-            );
-            assert!(
-                remove_identity_record(invalid).is_err(),
-                "expected invalid session id `{invalid}` to be rejected on remove"
-            );
-        }
     }
 }
