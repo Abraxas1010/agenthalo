@@ -335,6 +335,17 @@ pub struct P2PClawEventsRequest {
     pub since: Option<u64>,
 }
 
+/// Generic JSON-envelope response for P2PCLAW tool results.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct P2PClawResponse {
+    /// Whether the operation succeeded.
+    pub ok: bool,
+    /// Human-readable summary.
+    pub message: String,
+    /// Full result payload (tool-specific).
+    pub data: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OrchestratorLaunchRequest {
     /// Agent kind: claude | codex | gemini | openclaw | shell
@@ -5213,12 +5224,13 @@ impl NucleusDbMcpService {
     pub async fn p2pclaw_list_papers(
         &self,
         Parameters(req): Parameters<P2PClawPapersRequest>,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<P2PClawResponse>, McpError> {
         let cfg = crate::halo::p2pclaw::load_config()
             .map_err(|e| McpError::invalid_params(format!("P2PCLAW not configured: {e}"), None))?;
         let papers = crate::halo::p2pclaw::list_papers(&cfg, req.limit)
             .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(Json(serde_json::json!({ "papers": papers })))
+        let count = papers.len();
+        Ok(Json(P2PClawResponse { ok: true, message: format!("{count} paper(s)"), data: serde_json::json!({ "papers": papers }) }))
     }
 
     #[tool(
@@ -5227,12 +5239,13 @@ impl NucleusDbMcpService {
     )]
     pub async fn p2pclaw_list_mempool(
         &self,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<P2PClawResponse>, McpError> {
         let cfg = crate::halo::p2pclaw::load_config()
             .map_err(|e| McpError::invalid_params(format!("P2PCLAW not configured: {e}"), None))?;
         let mempool = crate::halo::p2pclaw::list_mempool(&cfg)
             .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(Json(serde_json::json!({ "mempool": mempool })))
+        let count = mempool.len();
+        Ok(Json(P2PClawResponse { ok: true, message: format!("{count} pending"), data: serde_json::json!({ "mempool": mempool }) }))
     }
 
     #[tool(
@@ -5242,7 +5255,7 @@ impl NucleusDbMcpService {
     pub async fn p2pclaw_publish_paper(
         &self,
         Parameters(req): Parameters<P2PClawPublishRequest>,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<P2PClawResponse>, McpError> {
         if req.title.trim().is_empty() || req.content.trim().is_empty() {
             return Err(McpError::invalid_params("title and content are required", None));
         }
@@ -5250,7 +5263,7 @@ impl NucleusDbMcpService {
             .map_err(|e| McpError::invalid_params(format!("P2PCLAW not configured: {e}"), None))?;
         let result = crate::halo::p2pclaw::publish_paper(&cfg, &req.title, &req.content)
             .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(Json(serde_json::json!({ "result": result })))
+        Ok(Json(P2PClawResponse { ok: true, message: "paper published".into(), data: serde_json::json!({ "result": result }) }))
     }
 
     #[tool(
@@ -5260,7 +5273,7 @@ impl NucleusDbMcpService {
     pub async fn p2pclaw_validate_paper(
         &self,
         Parameters(req): Parameters<P2PClawValidateRequest>,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<P2PClawResponse>, McpError> {
         let cfg = crate::halo::p2pclaw::load_config()
             .map_err(|e| McpError::invalid_params(format!("P2PCLAW not configured: {e}"), None))?;
         let result = crate::halo::p2pclaw::validate_paper(
@@ -5270,7 +5283,7 @@ impl NucleusDbMcpService {
             req.occam_score,
         )
         .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(Json(serde_json::json!({ "result": result })))
+        Ok(Json(P2PClawResponse { ok: true, message: "validation submitted".into(), data: serde_json::json!({ "result": result }) }))
     }
 
     #[tool(
@@ -5280,12 +5293,18 @@ impl NucleusDbMcpService {
     pub async fn p2pclaw_verify_paper(
         &self,
         Parameters(req): Parameters<P2PClawVerifyRequest>,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<P2PClawResponse>, McpError> {
         if req.title.trim().is_empty() || req.content.trim().is_empty() {
             return Err(McpError::invalid_params("title and content are required", None));
         }
         let result = crate::halo::p2pclaw_verify::verify_paper(&req.title, &req.content);
-        Ok(Json(serde_json::json!({ "result": result })))
+        let valid = result.valid;
+        let confidence = result.confidence;
+        Ok(Json(P2PClawResponse {
+            ok: true,
+            message: format!("{} (confidence: {:.1}%)", if valid { "VALID" } else { "INVALID" }, confidence * 100.0),
+            data: serde_json::json!({ "result": result }),
+        }))
     }
 
     #[tool(
@@ -5295,7 +5314,7 @@ impl NucleusDbMcpService {
     pub async fn p2pclaw_send_chat(
         &self,
         Parameters(req): Parameters<P2PClawChatRequest>,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<P2PClawResponse>, McpError> {
         if req.message.trim().is_empty() {
             return Err(McpError::invalid_params("message must not be empty", None));
         }
@@ -5303,7 +5322,7 @@ impl NucleusDbMcpService {
             .map_err(|e| McpError::invalid_params(format!("P2PCLAW not configured: {e}"), None))?;
         crate::halo::p2pclaw::send_chat(&cfg, &req.message, req.channel.as_deref())
             .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(Json(serde_json::json!({ "ok": true })))
+        Ok(Json(P2PClawResponse { ok: true, message: "message sent".into(), data: serde_json::json!({}) }))
     }
 
     #[tool(
@@ -5313,7 +5332,7 @@ impl NucleusDbMcpService {
     pub async fn p2pclaw_search_wheel(
         &self,
         Parameters(req): Parameters<P2PClawSearchRequest>,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<P2PClawResponse>, McpError> {
         if req.query.trim().is_empty() {
             return Err(McpError::invalid_params("query must not be empty", None));
         }
@@ -5321,7 +5340,7 @@ impl NucleusDbMcpService {
             .map_err(|e| McpError::invalid_params(format!("P2PCLAW not configured: {e}"), None))?;
         let result = crate::halo::p2pclaw::search_wheel(&cfg, &req.query)
             .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(Json(serde_json::json!({ "result": result })))
+        Ok(Json(P2PClawResponse { ok: true, message: "search complete".into(), data: serde_json::json!({ "result": result }) }))
     }
 
     #[tool(
@@ -5331,12 +5350,13 @@ impl NucleusDbMcpService {
     pub async fn p2pclaw_poll_events(
         &self,
         Parameters(req): Parameters<P2PClawEventsRequest>,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<P2PClawResponse>, McpError> {
         let cfg = crate::halo::p2pclaw::load_config()
             .map_err(|e| McpError::invalid_params(format!("P2PCLAW not configured: {e}"), None))?;
         let events = crate::halo::p2pclaw::poll_events(&cfg, req.since, None)
             .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(Json(serde_json::json!({ "events": events })))
+        let count = events.len();
+        Ok(Json(P2PClawResponse { ok: true, message: format!("{count} event(s)"), data: serde_json::json!({ "events": events }) }))
     }
 
     #[tool(
@@ -5345,12 +5365,13 @@ impl NucleusDbMcpService {
     )]
     pub async fn p2pclaw_list_investigations(
         &self,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<P2PClawResponse>, McpError> {
         let cfg = crate::halo::p2pclaw::load_config()
             .map_err(|e| McpError::invalid_params(format!("P2PCLAW not configured: {e}"), None))?;
         let investigations = crate::halo::p2pclaw::list_investigations(&cfg)
             .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(Json(serde_json::json!({ "investigations": investigations })))
+        let count = investigations.len();
+        Ok(Json(P2PClawResponse { ok: true, message: format!("{count} investigation(s)"), data: serde_json::json!({ "investigations": investigations }) }))
     }
 
     #[tool(
@@ -5359,12 +5380,12 @@ impl NucleusDbMcpService {
     )]
     pub async fn p2pclaw_status(
         &self,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<P2PClawResponse>, McpError> {
         let cfg = crate::halo::p2pclaw::load_config()
             .map_err(|e| McpError::invalid_params(format!("P2PCLAW not configured: {e}"), None))?;
         let swarm = crate::halo::p2pclaw::ping(&cfg)
             .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(Json(serde_json::json!({ "ok": true, "config": cfg, "swarm": swarm })))
+        Ok(Json(P2PClawResponse { ok: true, message: "connected".into(), data: serde_json::json!({ "config": cfg, "swarm": swarm }) }))
     }
 }
 
