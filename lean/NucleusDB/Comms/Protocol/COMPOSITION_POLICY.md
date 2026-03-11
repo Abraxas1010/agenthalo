@@ -1,11 +1,12 @@
 # DIDComm Composition Policy (AES-GCM Key-Commitment Closure)
 
 Date: 2026-03-03  
-Scope: `src/halo/didcomm.rs`, Lean comms protocol/refinement specs
+Scope: standalone Lean DIDComm policy/refinement specs in this repo; historical
+runtime call-path evidence lived in the parent AgentHALO DIDComm implementation
 
 ## Decision
 
-AgentHALO does **not** use `anoncrypt(authcrypt(...))` envelope composition.
+NucleusDB does **not** use `anoncrypt(authcrypt(...))` envelope composition.
 `authcrypt` and `anoncrypt` are mutually exclusive envelope modes in this runtime profile.
 
 ## Context
@@ -15,7 +16,7 @@ The IOG formal analysis highlights a key-commitment risk in composed DIDComm mod
 - Source: IOG / IACR ePrint 2024/1361, "A Formal Analysis of DIDComm’s Anonymous Message Broadcasting."
 - Finding: combined `anoncrypt(authcrypt(...))` requires key-committing AEAD behavior; AES-GCM is non-key-committing, while AES-CBC-HMAC is key-committing for this attack class.
 
-AgentHALO uses `A256GCM` in both standalone envelope modes (`authcrypt` and `anoncrypt`), so composition must be forbidden to keep the attack precondition unreachable.
+NucleusDB uses `A256GCM` in both standalone envelope modes (`authcrypt` and `anoncrypt`), so composition must be forbidden to keep the attack precondition unreachable.
 
 ## Why Non-Composition Is Safe
 
@@ -24,20 +25,32 @@ The composed mode tries to combine two properties:
 1. sender authentication (inner `authcrypt`)
 2. sender anonymity (outer `anoncrypt`)
 
-AgentHALO achieves the same composition of properties on different layers:
+NucleusDB achieves the same composition of properties on different layers:
 
 - Envelope layer: `authcrypt` provides sender authentication via dual signature verification (Ed25519 + ML-DSA-65).
 - Transport layer: Nym routing provides sender network anonymity for sensitive DIDComm types.
 
 Because anonymity is provided by transport and not by a second envelope layer, the key-commitment precondition from composed-mode attacks is not exercised.
 
-## Evidence (Code + Runtime Shape)
+## Evidence (Standalone Policy Surface)
 
-1. `pack_anoncrypt` has zero production callsites (outside tests) in `src/`.
-2. All outbound handler traffic uses `pack_authcrypt`/`pack_authcrypt_enriched`.
-3. `unpack_with_resolver` rejects nested `kind` forms containing parentheses.
-4. `pack_anoncrypt` is crate-scoped and rejects nested envelope bodies by policy check.
-5. Privacy policy routes sensitive DIDComm message types via maximum privacy (Nym transport path).
+The deleted parent-repo DIDComm runtime implementation originally carried the
+call-path evidence for `pack_anoncrypt`, `pack_authcrypt`, and
+`unpack_with_resolver`. The standalone repo intentionally keeps the formal
+policy surface rather than that historical runtime module. In this standalone
+tree, the evidence is:
+
+1. `lean/NucleusDB/Comms/Protocol/CompositionPolicy.lean` models a closed
+   envelope kind sum (`authcrypt | anoncrypt`) with no nested composed mode.
+2. `lean/NucleusDB/Security/DIDCommRefinement.lean` captures the accept/reject
+   gate shape for single-layer envelope kinds.
+3. `lean/NucleusDB/Comms/Privacy/FailClosedSpec.lean` routes sensitive DIDComm
+   traffic via maximum privacy rather than a second envelope layer.
+4. `lean/NucleusDB/Comms/Privacy/NymLifecycleSpec.lean` constrains Nym
+   degradation so the transport-anonymity assumption is explicit.
+5. The theorem `authcrypt_plus_nym_achieves_both` in
+   `lean/NucleusDB/Comms/Protocol/CompositionPolicy.lean` states the intended
+   replacement for nested-envelope composition.
 
 ## Formal Backing
 

@@ -10,7 +10,8 @@ Runtime-local arithmetic mirror of evidence combination.
 The canonical Bayesian/enriched-category theorem lives in
 `HeytingLean.EpistemicCalculus.Updating.vUpdate_chain_comm`. This module keeps a
 minimal local witness for the concrete false-over-true odds arithmetic used by
-`src/halo/evidence.rs`.
+the historical AgentHALO evidence combiner and retained by standalone NucleusDB
+as a self-contained arithmetic witness.
 -/
 
 /-- Runtime-shaped evidence item in false-over-true odds orientation. -/

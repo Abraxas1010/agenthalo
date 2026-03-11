@@ -126,11 +126,11 @@ tool_output = json.loads(result["result"]["content"][0]["text"])
 | Flag | Behavior |
 |------|----------|
 | `--no-auth` | No authentication required (dev mode). Warning printed at startup. |
-| (default) | Requires `agenthalo auth` credentials or `AGENTHALO_API_KEY` env var |
+| (default) | Requires `NUCLEUSDB_MCP_API_KEY` env var or future auth configuration |
 
 In auth mode, include the API key:
 ```bash
--H "Authorization: Bearer $AGENTHALO_API_KEY"
+-H "Authorization: Bearer $NUCLEUSDB_MCP_API_KEY"
 ```
 
 ---
