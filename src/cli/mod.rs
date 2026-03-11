@@ -71,6 +71,9 @@ pub enum Commands {
     VerifyCertificate {
         path: String,
     },
+    SignCertificate {
+        path: String,
+    },
     SubmitCertificate {
         path: String,
     },

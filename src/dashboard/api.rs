@@ -329,6 +329,11 @@ async fn api_nucleusdb_sql(
 async fn api_formal_proofs() -> Json<serde_json::Value> {
     let gate = load_gate_config().unwrap_or_default();
     let advisory = advisory_gate_config(&gate);
+    let evaluation_mode = if gate.enabled {
+        "enforced"
+    } else {
+        "advisory-simulated"
+    };
     let mut tools: Vec<String> = advisory.requirements.keys().cloned().collect();
     tools.sort();
     let tool_status: Vec<_> = tools
@@ -347,6 +352,9 @@ async fn api_formal_proofs() -> Json<serde_json::Value> {
         .collect();
     Json(json!({
         "gate_enabled": gate.enabled,
+        "evaluation_mode": evaluation_mode,
+        "simulation_only": !gate.enabled,
+        "advisory_note": "Proof results are evaluated against the configured requirements, but tool calls are blocked only when gate_enabled is true.",
         "certificate_dir": gate.certificate_dir,
         "certificate_count": certificate_count(&gate),
         "tools": tool_status,

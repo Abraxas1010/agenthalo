@@ -4,6 +4,7 @@ use nucleusdb::sheaf::coherence;
 use nucleusdb::transparency::ct6962;
 use nucleusdb::vc::ipa;
 use nucleusdb::verifier::gate::load_gate_config;
+use std::collections::HashSet;
 
 fn total_provenance_entries() -> usize {
     security::formal_provenance().len()
@@ -11,6 +12,17 @@ fn total_provenance_entries() -> usize {
         + ipa::formal_provenance().len()
         + coherence::formal_provenance().len()
         + protocol::formal_provenance().len()
+}
+
+fn unique_canonical_paths() -> HashSet<&'static str> {
+    security::formal_provenance()
+        .into_iter()
+        .chain(ct6962::formal_provenance())
+        .chain(ipa::formal_provenance())
+        .chain(coherence::formal_provenance())
+        .chain(protocol::formal_provenance())
+        .map(|(_, heyting_path, _)| heyting_path)
+        .collect()
 }
 
 fn assert_provenance_shape(entries: &[security::FormalProvenance]) {
@@ -69,15 +81,19 @@ fn protocol_layer_has_certificate_and_refinement_basis() {
     let provenance = protocol::formal_provenance();
     assert_provenance_shape(&provenance);
     let names: Vec<_> = provenance.iter().map(|(n, _, _)| *n).collect();
-    assert!(names.contains(&"nucleus_combine_floor_bound"));
-    assert!(names.contains(&"vUpdate_chain_comm"));
     assert!(names.contains(&"step_eq_apply"));
     assert!(names.contains(&"verifyCommitCertificate_sound"));
+    assert_eq!(names.len(), 2);
 }
 
 #[test]
 fn provenance_surface_exposes_fifteen_plus_theorems() {
-    assert!(total_provenance_entries() >= 15);
+    assert!(unique_canonical_paths().len() >= 15);
+}
+
+#[test]
+fn provenance_surface_has_no_duplicate_canonical_entries() {
+    assert_eq!(unique_canonical_paths().len(), total_provenance_entries());
 }
 
 #[test]
@@ -91,6 +107,7 @@ fn proof_gate_config_loads_from_repo() {
 fn proof_gate_requirements_reference_valid_theorem_shapes() {
     let config = load_gate_config().expect("gate config should load");
     let mut requirement_count = 0usize;
+    let mut signed_count = 0usize;
     for (tool, reqs) in &config.requirements {
         assert!(!tool.is_empty());
         for req in reqs {
@@ -99,9 +116,15 @@ fn proof_gate_requirements_reference_valid_theorem_shapes() {
             assert!(req.required_theorem.starts_with("HeytingLean."));
             assert!(req.required_theorem.contains('.'));
             assert!(!req.description.is_empty());
+            assert!(req.expected_statement_hash.is_some());
+            assert!(req.expected_commit_hash.is_some());
+            if req.require_signature {
+                signed_count += 1;
+            }
         }
     }
     assert!(requirement_count >= 10);
+    assert_eq!(signed_count, requirement_count);
 }
 
 #[test]

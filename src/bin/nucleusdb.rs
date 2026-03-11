@@ -39,6 +39,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Commands::Status { db } => cmd_status(&db),
         Commands::Export { db } => cmd_export(&db),
         Commands::VerifyCertificate { path } => cmd_verify_certificate(&path),
+        Commands::SignCertificate { path } => cmd_sign_certificate(&path),
         Commands::SubmitCertificate { path } => cmd_submit_certificate(&path),
     }
 }
@@ -179,6 +180,11 @@ fn cmd_verify_certificate(path: &str) -> Result<(), String> {
         serde_json::to_string_pretty(&result)
             .map_err(|e| format!("serialize verification result: {e}"))?
     );
+    Ok(())
+}
+
+fn cmd_sign_certificate(path: &str) -> Result<(), String> {
+    nucleusdb::verifier::gate::sign_certificate(PathBuf::from(path).as_path())?;
     Ok(())
 }
 

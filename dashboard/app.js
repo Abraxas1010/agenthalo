@@ -118,8 +118,10 @@ async function renderFormalProofs() {
     <div class="stack">
       <div class="grid two">
         <div><strong>Gate enabled</strong><div>${status.gate_enabled}</div></div>
+        <div><strong>Evaluation mode</strong><div>${status.evaluation_mode || 'unknown'}</div></div>
         <div><strong>Certificates</strong><div>${status.certificate_count}</div></div>
       </div>
+      <div><strong>Advisory note</strong><div>${status.advisory_note || 'n/a'}</div></div>
       <table>
         <thead>
           <tr><th>Tool</th><th>Met</th><th>Trust Tier</th><th>Pass</th></tr>

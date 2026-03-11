@@ -1,6 +1,9 @@
 //! Proof gate for tool-level theorem requirements.
 
 use super::checker::{has_theorem, verify_export, TrustTier, VerificationResult};
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
+use ed25519_dalek::Signer as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -92,6 +95,79 @@ fn trust_tier_meets(actual: TrustTier, required: TrustTier) -> bool {
         }
         TrustTier::Legacy => actual != TrustTier::Untrusted,
         TrustTier::Untrusted => true,
+    }
+}
+
+fn requirement_check_from_verification(
+    path: &Path,
+    result: &VerificationResult,
+    req: &ProofRequirement,
+) -> RequirementCheck {
+    let statement_hash_match = req.expected_statement_hash.as_ref().map(|expected| {
+        result
+            .metadata
+            .theorem_statement_sha256
+            .as_deref()
+            .map(|actual| actual == expected)
+            .unwrap_or(false)
+    });
+    let commit_hash_match = req.expected_commit_hash.as_ref().map(|expected| {
+        result
+            .metadata
+            .commit_hash
+            .as_deref()
+            .map(|actual| actual == expected)
+            .unwrap_or(false)
+    });
+    let signature_valid = result.metadata.signature_valid;
+
+    let statement_ok = statement_hash_match.unwrap_or(true);
+    let commit_ok = commit_hash_match.unwrap_or(true);
+    let signature_ok = if req.require_signature {
+        signature_valid.unwrap_or(false)
+    } else {
+        signature_valid.unwrap_or(true)
+    };
+    let tier_ok = req
+        .min_trust_tier
+        .map(|required| trust_tier_meets(result.trust_tier, required))
+        .unwrap_or(true);
+
+    let verified = result.all_checked
+        && result.axioms_trusted
+        && statement_ok
+        && commit_ok
+        && signature_ok
+        && tier_ok;
+
+    let error = if verified {
+        None
+    } else if !result.all_checked {
+        Some("certificate parse/metadata checks failed".to_string())
+    } else if !result.axioms_trusted {
+        Some("untrusted axioms used".to_string())
+    } else if !statement_ok {
+        Some("theorem statement hash mismatch".to_string())
+    } else if !commit_ok {
+        Some("certificate commit hash mismatch".to_string())
+    } else if !signature_ok {
+        Some("certificate signature missing or invalid".to_string())
+    } else if !tier_ok {
+        Some("certificate trust tier does not satisfy requirement".to_string())
+    } else {
+        Some("unknown gate verification failure".to_string())
+    };
+
+    RequirementCheck {
+        theorem_name: req.required_theorem.clone(),
+        found: true,
+        verified,
+        trust_tier: Some(result.trust_tier),
+        statement_hash_match,
+        commit_hash_match,
+        signature_valid,
+        certificate_path: Some(path.display().to_string()),
+        error,
     }
 }
 
@@ -252,72 +328,7 @@ impl ProofGateConfig {
                 continue;
             }
 
-            let statement_hash_match = req.expected_statement_hash.as_ref().map(|expected| {
-                result
-                    .metadata
-                    .theorem_statement_sha256
-                    .as_deref()
-                    .map(|actual| actual == expected)
-                    .unwrap_or(false)
-            });
-            let commit_hash_match = req.expected_commit_hash.as_ref().map(|expected| {
-                result
-                    .metadata
-                    .commit_hash
-                    .as_deref()
-                    .map(|actual| actual == expected)
-                    .unwrap_or(false)
-            });
-            let signature_valid = result.metadata.signature_valid;
-
-            let statement_ok = statement_hash_match.unwrap_or(true);
-            let commit_ok = commit_hash_match.unwrap_or(true);
-            let signature_ok = if req.require_signature {
-                signature_valid.unwrap_or(false)
-            } else {
-                signature_valid.unwrap_or(true)
-            };
-            let tier_ok = req
-                .min_trust_tier
-                .map(|required| trust_tier_meets(result.trust_tier, required))
-                .unwrap_or(true);
-
-            let verified = result.all_checked
-                && result.axioms_trusted
-                && statement_ok
-                && commit_ok
-                && signature_ok
-                && tier_ok;
-
-            let error = if verified {
-                None
-            } else if !result.all_checked {
-                Some("certificate parse/metadata checks failed".to_string())
-            } else if !result.axioms_trusted {
-                Some("untrusted axioms used".to_string())
-            } else if !statement_ok {
-                Some("theorem statement hash mismatch".to_string())
-            } else if !commit_ok {
-                Some("certificate commit hash mismatch".to_string())
-            } else if !signature_ok {
-                Some("certificate signature missing or invalid".to_string())
-            } else if !tier_ok {
-                Some("certificate trust tier does not satisfy requirement".to_string())
-            } else {
-                Some("unknown gate verification failure".to_string())
-            };
-
-            return RequirementCheck {
-                theorem_name: req.required_theorem.clone(),
-                found: true,
-                verified,
-                trust_tier: Some(result.trust_tier),
-                statement_hash_match,
-                commit_hash_match,
-                signature_valid,
-                certificate_path: Some(path.display().to_string()),
-                error,
-            };
+            return requirement_check_from_verification(&path, &result, req);
         }
 
         RequirementCheck {
@@ -334,11 +345,50 @@ impl ProofGateConfig {
     }
 }
 
-fn local_did() -> Option<String> {
+fn local_did_identity() -> Option<crate::did::DIDIdentity> {
     let seed = crate::genesis::load_seed_bytes().ok().flatten()?;
-    crate::did::did_from_genesis_seed(&seed)
-        .ok()
-        .map(|id| id.did)
+    crate::did::did_from_genesis_seed(&seed).ok()
+}
+
+fn local_did() -> Option<String> {
+    local_did_identity().map(|id| id.did)
+}
+
+fn sign_certificate_text(body: &str, identity: &crate::did::DIDIdentity) -> Result<String, String> {
+    let key_multibase = identity
+        .did_document
+        .verification_method
+        .iter()
+        .find(|method| method.type_ == "Ed25519VerificationKey2020")
+        .map(|method| method.public_key_multibase.clone())
+        .ok_or_else(|| {
+            "local DID document is missing an Ed25519 verification method".to_string()
+        })?;
+
+    let mut payload_lines: Vec<String> = Vec::new();
+    for raw in body.lines() {
+        let line = raw.trim_end();
+        if line.starts_with("#META signing_did ")
+            || line.starts_with("#META signing_key_multibase ")
+            || line.starts_with("#META signature_ed25519 ")
+        {
+            return Err("certificate already contains signing metadata".to_string());
+        }
+        if !line.is_empty() {
+            payload_lines.push(line.to_string());
+        }
+    }
+    payload_lines.push(format!("#META signing_did {}", identity.did));
+    payload_lines.push(format!("#META signing_key_multibase {key_multibase}"));
+    let payload = payload_lines.join("\n");
+    let signature = identity
+        .ed25519_signing_key
+        .sign(payload.as_bytes())
+        .to_bytes();
+    Ok(format!(
+        "{payload}\n#META signature_ed25519 {}\n",
+        B64.encode(signature)
+    ))
 }
 
 pub fn load_gate_config() -> Result<ProofGateConfig, String> {
@@ -360,6 +410,19 @@ pub fn load_gate_config() -> Result<ProofGateConfig, String> {
 
 pub fn verify_certificate(path: &Path) -> Result<VerificationResult, String> {
     verify_export(path)
+}
+
+pub fn sign_certificate(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("certificate {} does not exist", path.display()));
+    }
+    let identity = local_did_identity().ok_or_else(|| {
+        "local genesis seed not found; initialize genesis before signing certificates".to_string()
+    })?;
+    let body = std::fs::read_to_string(path)
+        .map_err(|e| format!("read certificate {}: {e}", path.display()))?;
+    let signed = sign_certificate_text(&body, &identity)?;
+    std::fs::write(path, signed).map_err(|e| format!("write certificate {}: {e}", path.display()))
 }
 
 pub fn submit_certificate(path: &Path) -> Result<PathBuf, String> {
@@ -397,6 +460,25 @@ pub fn submit_certificate(path: &Path) -> Result<PathBuf, String> {
         }
     }
 
+    let gate = load_gate_config()?;
+    for req in gate
+        .requirements_for_tool(None)
+        .into_iter()
+        .filter(|req| has_theorem(&verification, &req.required_theorem))
+    {
+        let check = requirement_check_from_verification(path, &verification, &req);
+        if !check.verified {
+            return Err(format!(
+                "certificate {} failed proof requirement `{}`: {}",
+                path.display(),
+                req.required_theorem,
+                check
+                    .error
+                    .unwrap_or_else(|| "unknown gate verification failure".to_string())
+            ));
+        }
+    }
+
     crate::config::ensure_proof_certificates_dir()?;
     let base = path
         .file_name()
@@ -417,12 +499,17 @@ pub fn submit_certificate(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::did::did_from_genesis_seed;
 
     fn write_cert(dir: &Path, name: &str, body: &str) -> PathBuf {
         std::fs::create_dir_all(dir).expect("create cert dir");
         let path = dir.join(name);
         std::fs::write(&path, body).expect("write cert");
         path
+    }
+
+    fn sample_identity() -> crate::did::DIDIdentity {
+        did_from_genesis_seed(&[9u8; 64]).expect("derive did")
     }
 
     fn base_req(tool: &str, theorem: &str) -> ProofRequirement {
@@ -558,5 +645,36 @@ mod tests {
             err.contains("failed metadata checks") || err.contains("invalid Ed25519 signature")
         );
         let _ = std::fs::remove_file(src);
+    }
+
+    #[test]
+    fn signature_requirement_accepts_signed_certificate() {
+        let dir = std::env::temp_dir().join(format!(
+            "proof_gate_sig_{}_{}",
+            std::process::id(),
+            crate::util::now_unix_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let unsigned = "#THM T.Signed\n#AX propext\n#META theorem_statement_sha256 hash\n#META commit_hash deadbeef\n";
+        let signed = sign_certificate_text(unsigned, &sample_identity()).expect("sign certificate");
+        write_cert(&dir, "signed.lean4export", &signed);
+
+        let mut req = base_req("tool_a", "T.Signed");
+        req.require_signature = true;
+        req.expected_statement_hash = Some("hash".to_string());
+        req.expected_commit_hash = Some("deadbeef".to_string());
+
+        let mut reqs = HashMap::new();
+        reqs.insert("tool_a".to_string(), vec![req]);
+        let gate = ProofGateConfig {
+            certificate_dir: dir.clone(),
+            requirements: reqs,
+            enabled: true,
+        };
+        let out = gate.evaluate("tool_a");
+        assert!(out.passed);
+        assert_eq!(out.requirements_met, 1);
+        assert_eq!(out.verification_results[0].signature_valid, Some(true));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

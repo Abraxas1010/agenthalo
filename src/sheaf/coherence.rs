@@ -61,8 +61,8 @@ pub fn formal_provenance() -> Vec<FormalProvenance> {
     vec![
         (
             "verifyCoherence_sound",
-            "HeytingLean.NucleusDB.Sheaf.Coherence.verifyCoherence_sound",
-            Some("HeytingLean.NucleusDB.Sheaf.Coherence.verifyCoherence_sound"),
+            "HeytingLean.NucleusDB.Sheaf.verifyCoherence_sound",
+            Some("HeytingLean.NucleusDB.Sheaf.verifyCoherence_sound"),
         ),
         (
             "refines_preserves_connected",

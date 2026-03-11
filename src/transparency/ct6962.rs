@@ -274,24 +274,24 @@ pub fn formal_provenance() -> Vec<FormalProvenance> {
     vec![
         (
             "verifyInclusionProof_sound",
-            "HeytingLean.NucleusDB.Transparency.CT6962.verifyInclusionProof_sound",
+            "HeytingLean.NucleusDB.Transparency.RFC6962.verifyInclusionProof_sound",
             Some("HeytingLean.NucleusDB.Transparency.RFC6962.verifyInclusionProof_sound"),
         ),
         (
             "verifyAppendOnlyConsistencyProof_implies_size_extension",
-            "HeytingLean.NucleusDB.Transparency.CT6962.verifyAppendOnlyConsistencyProof_implies_size_extension",
+            "HeytingLean.NucleusDB.Transparency.RFC6962.verifyAppendOnlyConsistencyProof_implies_size_extension",
             Some(
                 "HeytingLean.NucleusDB.Transparency.RFC6962.verifyAppendOnlyConsistencyProof_implies_size_extension",
             ),
         ),
         (
             "leafChainRoot_injective",
-            "HeytingLean.NucleusDB.Transparency.CT6962.leafChainRoot_injective",
+            "HeytingLean.NucleusDB.Transparency.RFC6962.leafChainRoot_injective",
             Some("HeytingLean.NucleusDB.Transparency.RFC6962.leafChainRoot_injective"),
         ),
         (
             "consistency_implies_prefix",
-            "HeytingLean.NucleusDB.Transparency.CT6962.consistency_implies_prefix",
+            "HeytingLean.NucleusDB.Transparency.RFC6962.consistency_implies_prefix",
             Some("HeytingLean.NucleusDB.Transparency.RFC6962.consistency_implies_prefix"),
         ),
     ]

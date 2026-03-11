@@ -582,29 +582,14 @@ impl NucleusDb {
 pub fn formal_provenance() -> Vec<FormalProvenance> {
     vec![
         (
-            "nucleus_combine_floor_bound",
-            "HeytingLean.EpistemicCalculus.nucleus_combine_floor_bound",
-            Some("HeytingLean.NucleusDB.Core.NucleusBridge.nucleus_combine_floor_bound"),
-        ),
-        (
-            "vUpdate_chain_comm",
-            "HeytingLean.EpistemicCalculus.Updating.vUpdate_chain_comm",
-            Some("HeytingLean.NucleusDB.Core.NucleusBridge.vUpdate_chain_comm"),
-        ),
-        (
             "step_eq_apply",
             "HeytingLean.NucleusDB.Core.NucleusSystem.step_eq_apply",
             Some("HeytingLean.NucleusDB.Core.NucleusSystem.step_eq_apply"),
         ),
         (
             "verifyCommitCertificate_sound",
-            "HeytingLean.NucleusDB.Core.Certificates.verifyCommitCertificate_sound",
-            Some("HeytingLean.NucleusDB.Core.Certificates.verifyCommitCertificate_sound"),
-        ),
-        (
-            "certificate_to_refinement",
-            "HeytingLean.NucleusDB.Security.Refinement.certificate_to_refinement",
-            Some("HeytingLean.NucleusDB.Security.Refinement.certificate_to_refinement"),
+            "HeytingLean.NucleusDB.Core.verifyCommitCertificate_sound",
+            Some("HeytingLean.NucleusDB.Core.verifyCommitCertificate_sound"),
         ),
     ]
 }

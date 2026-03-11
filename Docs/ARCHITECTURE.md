@@ -102,6 +102,8 @@ These surfaces feed the advisory proof gate (`configs/proof_gate.json`), the ver
 ### Certificate Flow
 
 1. Validate theorem references with `scripts/validate_formal_provenance.sh`.
-2. Generate `.lean4export` certificates with `scripts/generate_proof_certificates.sh`.
-3. Submit certificates through the existing CLI / verifier gate.
+2. Generate signed `.lean4export` provenance attestations with `scripts/generate_proof_certificates.sh`.
+3. Submit certificates through the existing CLI / verifier gate; submission re-checks statement hash, commit hash, and signature requirements for configured theorems.
 4. Keep `enabled: false` in the proof gate until operators are ready to enforce theorem requirements in production.
+
+These certificates bind theorem claims to a specific Heyting commit and declaration line hash. They are not kernel proof replay artifacts.

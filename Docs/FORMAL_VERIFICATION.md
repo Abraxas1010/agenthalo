@@ -46,12 +46,22 @@ The proof gate is configured in `configs/proof_gate.json`.
 Current policy:
 
 - `enabled = false`
-- requirements are populated for advisory evaluation
+- requirements are populated with exact theorem FQNs plus expected statement/commit hashes
+- signatures are required for every configured advisory certificate
 - enforcement remains disabled until certificate generation is part of operator workflow
+- dashboard/API results are simulated against the advisory configuration while enforcement is off
 
 ## Certificates
 
 Certificate files use the existing `.lean4export` parser in `src/verifier/checker.rs`.
+
+Important limitation:
+
+- A `.lean4export` file is a signed metadata attestation about a theorem name, a Heyting commit, and a declaration line hash.
+- It is **not** Lean kernel proof replay.
+- `theorem_statement_sha256` hashes the declaration line only, so it binds the claim text rather than a particular proof term.
+- The current assurance comes from exact FQN resolution, statement/commit binding, and Ed25519 signing of the certificate payload.
+- Treat the certificates as provenance claims bound to a canonical snapshot, not as standalone proof objects.
 
 Generation and validation commands:
 
@@ -68,9 +78,16 @@ Each generated certificate includes:
 - `#META commit_hash`
 - `#META theorem_statement_sha256`
 - `#META generated_at`
+- `#META signing_did`
+- `#META signing_key_multibase`
+- `#META signature_ed25519`
+
+The helper scripts auto-discover the Heyting checkout from `HEYTING_ROOT`, `../heyting`, or `~/Work/heyting`.
+`validate_formal_provenance.sh` also fails if the pinned `expected_commit_hash` values in `configs/proof_gate.json` no longer match live `origin/master` in the Heyting repo.
 
 ## Operator Notes
 
 - Use the Heyting repo as read-only source of theorem truth.
 - Validate provenance before generating certificates.
+- Initialize local genesis material before generating certificates, because signing is mandatory for configured theorem requirements.
 - Prefer targeted Lean and Rust verification in worktrees; do not mutate the shared dirty checkout in place.

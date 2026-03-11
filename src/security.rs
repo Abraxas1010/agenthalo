@@ -329,28 +329,28 @@ pub fn formal_provenance() -> Vec<FormalProvenance> {
         ),
         (
             "validFor_of_bounds",
-            "HeytingLean.NucleusDB.Security.Parameters.validFor_of_bounds",
-            Some("HeytingLean.NucleusDB.Security.Parameters.validFor_of_bounds"),
+            "HeytingLean.NucleusDB.Security.validFor_of_bounds",
+            Some("HeytingLean.NucleusDB.Security.validFor_of_bounds"),
         ),
         (
             "validFor_kzg_requires_setup_id",
-            "HeytingLean.NucleusDB.Security.Parameters.validFor_kzg_requires_setup_id",
-            Some("HeytingLean.NucleusDB.Security.Parameters.validFor_kzg_requires_setup_id"),
+            "HeytingLean.NucleusDB.Security.validFor_kzg_requires_setup_id",
+            Some("HeytingLean.NucleusDB.Security.validFor_kzg_requires_setup_id"),
         ),
         (
             "singleton_bundle_valid",
-            "HeytingLean.NucleusDB.Security.Reductions.singleton_bundle_valid",
-            Some("HeytingLean.NucleusDB.Security.Reductions.singleton_bundle_valid"),
+            "HeytingLean.NucleusDB.Security.singleton_bundle_valid",
+            Some("HeytingLean.NucleusDB.Security.singleton_bundle_valid"),
         ),
         (
             "bundle_member_valid",
-            "HeytingLean.NucleusDB.Security.Reductions.bundle_member_valid",
-            Some("HeytingLean.NucleusDB.Security.Reductions.bundle_member_valid"),
+            "HeytingLean.NucleusDB.Security.bundle_member_valid",
+            Some("HeytingLean.NucleusDB.Security.bundle_member_valid"),
         ),
         (
             "certificate_to_refinement",
-            "HeytingLean.NucleusDB.Security.Refinement.certificate_to_refinement",
-            Some("HeytingLean.NucleusDB.Security.Refinement.certificate_to_refinement"),
+            "HeytingLean.NucleusDB.Security.certificate_to_refinement",
+            Some("HeytingLean.NucleusDB.Security.certificate_to_refinement"),
         ),
     ]
 }
