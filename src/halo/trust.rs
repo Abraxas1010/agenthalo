@@ -13,6 +13,22 @@ pub const EPISTEMIC_TRUST_FORMAL_BASIS: &str =
 pub const EPISTEMIC_TRUST_FORMAL_BASIS_LOCAL: &str =
     "HeytingLean.NucleusDB.Core.EpistemicTrust.combine_floor_respected";
 
+/// Canonical/local theorem-path pair for audit surfaces.
+pub fn epistemic_trust_formal_provenance() -> (&'static str, &'static str) {
+    (
+        EPISTEMIC_TRUST_FORMAL_BASIS,
+        EPISTEMIC_TRUST_FORMAL_BASIS_LOCAL,
+    )
+}
+
+pub fn epistemic_trust_formal_basis() -> &'static str {
+    EPISTEMIC_TRUST_FORMAL_BASIS
+}
+
+pub fn epistemic_trust_formal_basis_local() -> &'static str {
+    EPISTEMIC_TRUST_FORMAL_BASIS_LOCAL
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TrustScoreResult {
     pub score: f64,
@@ -62,20 +78,6 @@ impl EpistemicTrust {
 
     pub fn floor(&self) -> f64 {
         self.floor
-    }
-
-    pub fn formal_basis(&self) -> &'static str {
-        EPISTEMIC_TRUST_FORMAL_BASIS
-    }
-
-    /// Runtime-local mirror theorem for the concrete arithmetic implementation.
-    pub fn formal_basis_local(&self) -> &'static str {
-        EPISTEMIC_TRUST_FORMAL_BASIS_LOCAL
-    }
-
-    /// Canonical/local theorem-path pair for audit surfaces.
-    pub fn formal_provenance(&self) -> (&'static str, &'static str) {
-        (self.formal_basis(), self.formal_basis_local())
     }
 
     /// Nucleus operator N(x)=max(x,floor).

@@ -38,6 +38,14 @@ pub fn attestation_circuit_formal_provenance() -> (&'static str, &'static str) {
     )
 }
 
+pub fn attestation_circuit_formal_basis() -> &'static str {
+    ATTESTATION_CIRCUIT_FORMAL_BASIS
+}
+
+pub fn attestation_circuit_formal_basis_local() -> &'static str {
+    ATTESTATION_CIRCUIT_FORMAL_BASIS_LOCAL
+}
+
 #[derive(Clone, Debug)]
 pub struct AttestationCircuit {
     pub merkle_lo_public: Option<Fr>,

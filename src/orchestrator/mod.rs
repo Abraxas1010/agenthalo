@@ -770,6 +770,8 @@ mod tests {
     #[tokio::test]
     async fn task_state_machine_completes_for_shell() {
         let orchestrator = test_orchestrator();
+        let output_dir = tempfile::tempdir().expect("tempdir");
+        let output_path = output_dir.path().join("orchestrator_shell_output.txt");
         let agent = orchestrator
             .launch_agent(LaunchAgentRequest {
                 agent: "shell".to_string(),
@@ -786,17 +788,19 @@ mod tests {
         let task = orchestrator
             .send_task(SendTaskRequest {
                 agent_id: agent.agent_id,
-                task: "printf 'hello orchestrator'".to_string(),
+                task: format!(
+                    "printf 'hello orchestrator' > '{}' && cat '{}'",
+                    output_path.display(),
+                    output_path.display()
+                ),
                 timeout_secs: Some(30),
                 wait: true,
             })
             .await
             .expect("task");
         assert!(matches!(task.status, TaskStatus::Complete));
-        assert!(task
-            .result
-            .unwrap_or_default()
-            .contains("hello orchestrator"));
+        let output = std::fs::read_to_string(&output_path).expect("orchestrator shell output");
+        assert!(output.contains("hello orchestrator"));
     }
 
     #[tokio::test]
