@@ -11,6 +11,7 @@ use crate::halo::vault::Vault;
 use crate::orchestrator::agent_pool::{AgentPool, LaunchSpec};
 use crate::orchestrator::trace_bridge::collect_task_output;
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub struct ToolCallRecord {
     pub name: String,
     #[serde(default)]
@@ -28,7 +29,7 @@ pub struct ToolCallRecord {
     pub duration_ms: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub struct AgentResponse {
     pub content: String,
     pub model: String,
@@ -38,6 +39,12 @@ pub struct AgentResponse {
     #[serde(default)]
     pub tool_calls: Vec<ToolCallRecord>,
     pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UsageSummary {
+    prompt_tokens: u64,
+    completion_tokens: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -460,6 +467,7 @@ impl AgentHookup for CliAgentHookup {
 
     async fn send_prompt(&self, prompt: &str) -> Result<AgentResponse, String> {
         self.trace.write_prompt_sent(prompt)?;
+        let started = Instant::now();
         let runtime = self.trace.runtime();
         let agent_id = runtime
             .agent_id
@@ -523,7 +531,7 @@ impl AgentHookup for CliAgentHookup {
                     output_tokens: outcome.output_tokens,
                     cost_usd: cost,
                     tool_calls: Vec::new(),
-                    duration_ms: 0,
+                    duration_ms: started.elapsed().as_millis() as u64,
                 }
             }
             Err(error) => {
@@ -978,27 +986,36 @@ fn response_from_body(
     duration_ms: u64,
     cost_usd: f64,
 ) -> AgentResponse {
+    let content = extract_content(body);
     let tool_calls = extract_tool_calls(body);
+    let usage = usage_from_body(body, default_model, &content);
     AgentResponse {
-        content: extract_content(body),
+        content,
         model: body
             .get("model")
             .and_then(|value| value.as_str())
             .unwrap_or(default_model)
             .to_string(),
-        input_tokens: body
-            .get("usage")
-            .and_then(|usage| usage.get("prompt_tokens"))
-            .and_then(|value| value.as_u64())
-            .unwrap_or(estimate_tokens(default_model)),
-        output_tokens: body
-            .get("usage")
-            .and_then(|usage| usage.get("completion_tokens"))
-            .and_then(|value| value.as_u64())
-            .unwrap_or_else(|| estimate_tokens(&extract_content(body))),
+        input_tokens: usage.prompt_tokens,
+        output_tokens: usage.completion_tokens,
         cost_usd,
         tool_calls,
         duration_ms,
+    }
+}
+
+fn usage_from_body(body: &Value, default_model: &str, content: &str) -> UsageSummary {
+    UsageSummary {
+        prompt_tokens: body
+            .get("usage")
+            .and_then(|usage| usage.get("prompt_tokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or_else(|| estimate_tokens(default_model)),
+        completion_tokens: body
+            .get("usage")
+            .and_then(|usage| usage.get("completion_tokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or_else(|| estimate_tokens(content)),
     }
 }
 

@@ -7,7 +7,12 @@ use nucleusdb::container::{
 use nucleusdb::halo::config;
 use nucleusdb::halo::schema::{EventType, TraceEvent};
 use nucleusdb::halo::trace::session_events;
+use nucleusdb::mcp::tools::{
+    NucleusDbMcpService, OrchestratorLaunchRequest, SubsidiaryListRequest,
+};
+use nucleusdb::orchestrator::subsidiary_registry::SubsidiaryRegistry;
 use nucleusdb::test_support::{lock_env, EnvVarGuard, MockOpenAiServer};
+use rmcp::handler::server::wrapper::Parameters;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -129,4 +134,77 @@ async fn agent_hookup_trace_schema_uniformity() {
     );
     assert_eq!(api_shape, cli_shape);
     assert_eq!(local_shape, cli_shape);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn operator_subsidiary_list_filters_owned_sessions() {
+    let _guard = lock_env();
+
+    let home = tempfile::tempdir().expect("home tempdir");
+    let _home = EnvVarGuard::set("AGENTHALO_HOME", home.path().to_str());
+    let _container = EnvVarGuard::set("NUCLEUSDB_MESH_AGENT_ID", Some("operator-container"));
+
+    let db_path = config::halo_dir().join("subsidiary_list_test.ndb");
+    let service = NucleusDbMcpService::new(&db_path).expect("service");
+    let rmcp::Json(operator) = service
+        .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+            agent: "shell".to_string(),
+            agent_name: "operator".to_string(),
+            working_dir: None,
+            env: Default::default(),
+            timeout_secs: Some(30),
+            model: None,
+            trace: Some(false),
+            capabilities: vec!["operator".to_string()],
+            dispatch_mode: None,
+            container_hookup: None,
+            admission_mode: None,
+        }))
+        .await
+        .expect("launch operator");
+
+    let run_dir = std::env::temp_dir().join("nucleusdb-container");
+    std::fs::create_dir_all(&run_dir).expect("create run dir");
+    for (session_id, agent_id) in [
+        ("sess-owned-int", "peer-owned"),
+        ("sess-other-int", "peer-other"),
+    ] {
+        let path = run_dir.join(format!("{session_id}.json"));
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&nucleusdb::container::SessionInfo {
+                session_id: session_id.to_string(),
+                container_id: format!("ctr-{session_id}"),
+                image: "nucleusdb-agent:test".to_string(),
+                agent_id: agent_id.to_string(),
+                host_sock: std::env::temp_dir().join(format!("{session_id}.sock")),
+                started_at_unix: 1,
+                mesh_port: Some(3000),
+            })
+            .expect("encode session"),
+        )
+        .expect("write session");
+    }
+
+    let mut registry = SubsidiaryRegistry::load_or_create(&operator.agent_id).expect("registry");
+    registry.register_provision(
+        "sess-owned-int".to_string(),
+        "ctr-sess-owned-int".to_string(),
+        "peer-owned".to_string(),
+    );
+    registry.save().expect("save registry");
+
+    let rmcp::Json(listed) = service
+        .subsidiary_list(Parameters(SubsidiaryListRequest {
+            operator_agent_id: operator.agent_id.clone(),
+        }))
+        .await
+        .expect("subsidiary list");
+    assert_eq!(listed.count, 1);
+    assert_eq!(listed.subsidiaries[0].session_id, "sess-owned-int");
+
+    let _ = std::fs::remove_file(run_dir.join("sess-owned-int.json"));
+    let _ = std::fs::remove_file(run_dir.join("sess-other-int.json"));
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(format!("{}.wal", db_path.display()));
 }

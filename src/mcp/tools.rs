@@ -5,15 +5,22 @@ use crate::container::launcher::{
     launch_container, list_sessions as list_container_sessions,
     stop_container as launcher_stop_container, MeshConfig, RunConfig,
 };
-use crate::container::{current_container_id, ContainerAgentLock};
+use crate::container::{
+    current_container_id, AgentHookup, AgentHookupKind, AgentResponse, ApiAgentHookup,
+    CliAgentHookup, ContainerAgentLock, LocalModelHookup, ReusePolicy,
+};
 use crate::halo::admission::{evaluate_launch_admission, AdmissionMode};
 use crate::halo::governor_registry::{
     build_default_registry, install_global_registry, GovernorRegistry,
 };
 use crate::immutable::WriteMode;
+use crate::orchestrator::subsidiary_registry::{
+    SubsidiaryRecord, SubsidiaryRegistry, SubsidiaryTaskRecord,
+};
 use crate::orchestrator::{
-    LaunchAgentRequest as OrchLaunchRequest, Orchestrator, PipeRequest as OrchPipeRequest,
-    SendTaskRequest as OrchSendTaskRequest, StopRequest as OrchStopRequest,
+    ContainerHookupRequest, LaunchAgentRequest as OrchLaunchRequest, Orchestrator,
+    PipeRequest as OrchPipeRequest, SendTaskRequest as OrchSendTaskRequest,
+    StopRequest as OrchStopRequest,
 };
 use crate::pcn::{channel_snapshot, ChannelSnapshot, SettlementOp};
 use crate::persistence::{init_wal, load_wal, persist_snapshot_and_sync_wal, truncate_wal};
@@ -50,6 +57,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 struct ServiceState {
@@ -65,7 +73,18 @@ struct ServiceState {
     vault: Option<Arc<crate::halo::vault::Vault>>,
     pty_manager: Arc<crate::cockpit::pty_manager::PtyManager>,
     governor_registry: Arc<GovernorRegistry>,
+    container_runtime: Arc<tokio::sync::Mutex<ContainerRuntime>>,
 }
+
+struct ContainerRuntime {
+    active: Option<ActiveContainerHookup>,
+}
+
+struct ActiveContainerHookup {
+    hookup: Arc<dyn AgentHookup>,
+}
+
+const CONTAINER_LIST_LOCK_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExportFormat {
@@ -299,6 +318,10 @@ pub struct OrchestratorLaunchRequest {
     /// Capability set granted to this agent.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub dispatch_mode: Option<crate::orchestrator::DispatchMode>,
+    #[serde(default)]
+    pub container_hookup: Option<crate::orchestrator::ContainerHookupRequest>,
     /// AETHER admission mode: warn | block | force.
     pub admission_mode: Option<String>,
 }
@@ -1024,6 +1047,10 @@ pub struct ContainerSessionView {
     pub host_sock: String,
     pub started_at_unix: u64,
     pub mesh_port: Option<u16>,
+    #[serde(default)]
+    pub lock_state: Option<String>,
+    #[serde(default)]
+    pub reuse_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1038,6 +1065,38 @@ pub struct ContainerStatusResponse {
     pub running: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerInitializeRequest {
+    pub hookup: ContainerHookupRequest,
+    #[serde(default)]
+    pub reuse_policy: Option<ReusePolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerInitializeResponse {
+    pub container_id: String,
+    pub state: String,
+    pub agent_id: String,
+    pub trace_session_id: Option<String>,
+    pub reuse_policy: ReusePolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerAgentPromptRequest {
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerDeinitializeRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerDeinitializeResponse {
+    pub container_id: String,
+    pub state: String,
+    pub trace_session_id: Option<String>,
+    pub reuse_policy: ReusePolicy,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ContainerLockStatusRequest {}
 
@@ -1045,8 +1104,136 @@ pub struct ContainerLockStatusRequest {}
 pub struct ContainerLockStatusResponse {
     pub container_id: String,
     pub state: String,
-    pub reuse_policy: String,
+    pub reuse_policy: ReusePolicy,
     pub lock: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryProvisionRequest {
+    pub operator_agent_id: String,
+    pub image: String,
+    pub agent_id: String,
+    #[serde(default)]
+    pub command: Vec<String>,
+    pub runtime_runsc: Option<bool>,
+    pub host_sock: Option<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub mesh: Option<ContainerMeshRequest>,
+    pub admission_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryProvisionResponse {
+    pub operator_agent_id: String,
+    pub session_id: String,
+    pub container_id: String,
+    pub agent_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryInitializeRequest {
+    pub operator_agent_id: String,
+    pub session_id: String,
+    pub hookup: ContainerHookupRequest,
+    #[serde(default)]
+    pub reuse_policy: Option<ReusePolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryInitializeResponse {
+    pub operator_agent_id: String,
+    pub session_id: String,
+    pub container_id: String,
+    pub state: String,
+    pub agent_id: String,
+    pub trace_session_id: Option<String>,
+    pub reuse_policy: ReusePolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiarySendTaskRequest {
+    pub operator_agent_id: String,
+    pub session_id: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryGetResultRequest {
+    pub operator_agent_id: String,
+    pub task_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryTaskResponse {
+    pub task_id: String,
+    pub operator_agent_id: String,
+    pub session_id: String,
+    pub status: String,
+    pub model: Option<String>,
+    pub result: Option<String>,
+    pub error: Option<String>,
+    pub trace_session_id: Option<String>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryDeinitializeRequest {
+    pub operator_agent_id: String,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryDeinitializeResponse {
+    pub operator_agent_id: String,
+    pub session_id: String,
+    pub state: String,
+    pub trace_session_id: Option<String>,
+    pub reuse_policy: ReusePolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryDestroyRequest {
+    pub operator_agent_id: String,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryDestroyResponse {
+    pub operator_agent_id: String,
+    pub session_id: String,
+    pub destroyed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryListRequest {
+    pub operator_agent_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryListResponse {
+    pub operator_agent_id: String,
+    pub count: usize,
+    pub subsidiaries: Vec<SubsidiaryView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubsidiaryView {
+    pub session_id: String,
+    pub container_id: String,
+    pub peer_agent_id: String,
+    pub agent_lock_state: String,
+    pub agent_kind: Option<AgentHookupKind>,
+    pub initialized_agent_id: Option<String>,
+    pub trace_session_id: Option<String>,
+    pub reuse_policy: Option<ReusePolicy>,
+    pub provisioned_at_unix: u64,
+    pub initialized_at_unix: Option<u64>,
+    pub container_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1579,6 +1766,168 @@ impl NucleusDbMcpService {
         ))
     }
 
+    fn session_view_with_lock(
+        session: crate::container::launcher::SessionInfo,
+        lock_state: Option<String>,
+        reuse_policy: Option<String>,
+    ) -> ContainerSessionView {
+        ContainerSessionView {
+            session_id: session.session_id,
+            container_id: session.container_id,
+            image: session.image,
+            agent_id: session.agent_id,
+            host_sock: session.host_sock.display().to_string(),
+            started_at_unix: session.started_at_unix,
+            mesh_port: session.mesh_port,
+            lock_state,
+            reuse_policy,
+        }
+    }
+
+    async fn fetch_container_lock_status_view(
+        peer: crate::container::PeerInfo,
+    ) -> (Option<String>, Option<String>) {
+        let timeout = CONTAINER_LIST_LOCK_STATUS_TIMEOUT;
+        let result = tokio::task::spawn_blocking(move || {
+            crate::container::mesh::call_remote_tool_with_timeout(
+                &peer,
+                "nucleusdb_container_lock_status",
+                serde_json::json!({}),
+                None,
+                timeout,
+            )
+        })
+        .await;
+        match result {
+            Ok(Ok(value)) => (
+                value
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                value
+                    .get("reuse_policy")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            ),
+            _ => (None, None),
+        }
+    }
+
+    async fn container_session_views(
+        sessions: Vec<crate::container::launcher::SessionInfo>,
+        registry: crate::container::PeerRegistry,
+    ) -> Result<Vec<ContainerSessionView>, McpError> {
+        let mut join_set = tokio::task::JoinSet::new();
+        let total = sessions.len();
+        for (idx, session) in sessions.into_iter().enumerate() {
+            let peer = registry.find(&session.agent_id).cloned();
+            join_set.spawn(async move {
+                let (lock_state, reuse_policy) = match peer {
+                    Some(peer) => Self::fetch_container_lock_status_view(peer).await,
+                    None => (None, None),
+                };
+                (
+                    idx,
+                    Self::session_view_with_lock(session, lock_state, reuse_policy),
+                )
+            });
+        }
+
+        let mut ordered = vec![None; total];
+        while let Some(joined) = join_set.join_next().await {
+            let (idx, view) = joined.map_err(|e| {
+                McpError::internal_error(format!("join container session view task: {e}"), None)
+            })?;
+            ordered[idx] = Some(view);
+        }
+        Ok(ordered.into_iter().flatten().collect())
+    }
+
+    async fn require_operator_capability(&self, operator_agent_id: &str) -> Result<(), McpError> {
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        orchestrator
+            .require_capability(operator_agent_id, "operator")
+            .await
+            .map_err(|e| McpError::invalid_params(e, None))
+    }
+
+    fn load_operator_registry(operator_agent_id: &str) -> Result<SubsidiaryRegistry, McpError> {
+        SubsidiaryRegistry::load_or_create(operator_agent_id)
+            .map_err(|e| McpError::internal_error(e, None))
+    }
+
+    fn subsidiary_kind_from_hookup(hookup: &ContainerHookupRequest) -> AgentHookupKind {
+        match hookup {
+            ContainerHookupRequest::Cli { cli_name, .. } => AgentHookupKind::Cli {
+                cli_name: cli_name.clone(),
+            },
+            ContainerHookupRequest::Api { provider, .. } => AgentHookupKind::Api {
+                provider: provider.clone(),
+            },
+            ContainerHookupRequest::LocalModel { model_id, .. } => AgentHookupKind::LocalModel {
+                model_id: model_id.clone(),
+            },
+        }
+    }
+
+    fn peer_for_subsidiary(
+        record: &SubsidiaryRecord,
+    ) -> Result<crate::container::PeerInfo, McpError> {
+        let registry =
+            crate::container::PeerRegistry::load(&crate::container::mesh_registry_path())
+                .map_err(|e| McpError::internal_error(e, None))?;
+        registry
+            .find(&record.peer_agent_id)
+            .cloned()
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!(
+                        "subsidiary peer `{}` is not present in the mesh registry",
+                        record.peer_agent_id
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn subsidiary_view(
+        record: &SubsidiaryRecord,
+        sessions: &BTreeMap<String, crate::container::launcher::SessionInfo>,
+    ) -> SubsidiaryView {
+        let container_status = sessions
+            .get(&record.session_id)
+            .and_then(|_| launcher_container_status(&record.session_id).ok());
+        SubsidiaryView {
+            session_id: record.session_id.clone(),
+            container_id: record.container_id.clone(),
+            peer_agent_id: record.peer_agent_id.clone(),
+            agent_lock_state: record.agent_lock_state.clone(),
+            agent_kind: record.agent_kind.clone(),
+            initialized_agent_id: record.initialized_agent_id.clone(),
+            trace_session_id: record.trace_session_id.clone(),
+            reuse_policy: record.reuse_policy,
+            provisioned_at_unix: record.provisioned_at_unix,
+            initialized_at_unix: record.initialized_at_unix,
+            container_status,
+        }
+    }
+
+    fn subsidiary_task_response(task: &SubsidiaryTaskRecord) -> SubsidiaryTaskResponse {
+        SubsidiaryTaskResponse {
+            task_id: task.task_id.clone(),
+            operator_agent_id: task.operator_agent_id.clone(),
+            session_id: task.session_id.clone(),
+            status: task.status.clone(),
+            model: task.model.clone(),
+            result: task.result.clone(),
+            error: task.error.clone(),
+            trace_session_id: task.trace_session_id.clone(),
+            input_tokens: task.input_tokens,
+            output_tokens: task.output_tokens,
+            cost_usd: task.cost_usd,
+        }
+    }
+
     fn run_cast(args: &[String]) -> Result<String, McpError> {
         let mut cmd = Command::new("cast");
         cmd.args(args);
@@ -1802,6 +2151,7 @@ impl NucleusDbMcpService {
             vault,
             pty_manager,
             governor_registry,
+            container_runtime: Arc::new(tokio::sync::Mutex::new(ContainerRuntime { active: None })),
         })
     }
 
@@ -1860,7 +2210,59 @@ impl NucleusDbMcpService {
             vault,
             pty_manager,
             governor_registry,
+            container_runtime: Arc::new(tokio::sync::Mutex::new(ContainerRuntime { active: None })),
         })
+    }
+
+    fn build_container_hookup(
+        hookup: &ContainerHookupRequest,
+        pty_manager: Arc<crate::cockpit::pty_manager::PtyManager>,
+        db_path: &Path,
+    ) -> Result<Arc<dyn AgentHookup>, String> {
+        match hookup {
+            ContainerHookupRequest::Cli { cli_name, model } => {
+                Ok(Arc::new(CliAgentHookup::with_trace_path(
+                    cli_name.clone(),
+                    pty_manager,
+                    model.clone(),
+                    db_path,
+                )?))
+            }
+            ContainerHookupRequest::Api {
+                provider,
+                model,
+                api_key_source,
+                base_url_override,
+            } => Ok(Arc::new(ApiAgentHookup::with_base_url(
+                provider.clone(),
+                model.clone(),
+                api_key_source.clone(),
+                base_url_override.clone(),
+                db_path,
+            )?)),
+            ContainerHookupRequest::LocalModel {
+                model_id,
+                vllm_port,
+                base_url_override,
+            } => Ok(Arc::new(LocalModelHookup::with_base_url(
+                model_id.clone(),
+                vllm_port.unwrap_or(8000),
+                base_url_override.clone(),
+                db_path,
+            )?)),
+        }
+    }
+
+    fn lock_trace_session_id(lock: &ContainerAgentLock) -> Option<String> {
+        match &lock.state {
+            crate::container::ContainerAgentState::Locked {
+                trace_session_id, ..
+            }
+            | crate::container::ContainerAgentState::Deinitializing {
+                trace_session_id, ..
+            } => trace_session_id.clone(),
+            crate::container::ContainerAgentState::Empty => None,
+        }
     }
 
     fn parse_export_format(raw: Option<&str>) -> Result<ExportFormat, McpError> {
@@ -2811,26 +3213,428 @@ impl NucleusDbMcpService {
     }
 
     #[tool(
+        name = "nucleusdb_container_provision",
+        description = "Provision a new EMPTY container ready for a later initialize step. If command is omitted, starts the AgentHALO MCP server entrypoint."
+    )]
+    pub async fn container_provision(
+        &self,
+        Parameters(req): Parameters<ContainerLaunchRequest>,
+    ) -> Result<Json<ContainerLaunchResponse>, McpError> {
+        let admission_mode = AdmissionMode::parse(req.admission_mode.as_deref())
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        let guard = self.state.lock().await;
+        let admission =
+            evaluate_launch_admission(admission_mode, Some(&guard.governor_registry), None);
+        if !admission.allowed {
+            let reason = admission
+                .issues
+                .iter()
+                .map(|issue| issue.message.clone())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            return Err(McpError::invalid_params(
+                format!("AETHER admission policy blocked container provision: {reason}"),
+                None,
+            ));
+        }
+        drop(guard);
+        let host_sock = req
+            .host_sock
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+        let env_vars = req.env.into_iter().collect::<Vec<(String, String)>>();
+        let mesh = req.mesh.map(|cfg| {
+            let mut mesh_cfg = MeshConfig {
+                enabled: cfg.enabled.unwrap_or(true),
+                ..MeshConfig::default()
+            };
+            if let Some(port) = cfg.mcp_port {
+                mesh_cfg.mcp_port = port;
+            }
+            if let Some(path) = cfg
+                .registry_volume
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                mesh_cfg.registry_volume = PathBuf::from(path);
+            }
+            mesh_cfg.agent_did = cfg
+                .agent_did
+                .map(|did| did.trim().to_string())
+                .filter(|did| !did.is_empty());
+            mesh_cfg
+        });
+        let info = launch_container(RunConfig {
+            image: req.image.clone(),
+            agent_id: req.agent_id.clone(),
+            command: if req.command.is_empty() {
+                vec!["agenthalo-mcp-server".to_string()]
+            } else {
+                req.command
+            },
+            use_gvisor: req.runtime_runsc.unwrap_or(false),
+            host_sock,
+            env_vars,
+            mesh,
+        })
+        .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(ContainerLaunchResponse {
+            session_id: info.session_id,
+            container_id: info.container_id,
+            image: info.image,
+            agent_id: info.agent_id,
+            host_sock: info.host_sock.display().to_string(),
+            admission_mode: Some(admission.mode),
+            admission_forced: admission.forced,
+            admission_issues: admission
+                .issues
+                .into_iter()
+                .map(|issue| issue.message)
+                .collect(),
+        }))
+    }
+
+    #[tool(
         name = "nucleusdb_container_list",
         description = "List tracked container sessions launched by NucleusDB tooling."
     )]
     pub async fn container_list(&self) -> Result<Json<ContainerListResponse>, McpError> {
         let sessions = list_container_sessions().map_err(|e| McpError::internal_error(e, None))?;
-        let views = sessions
-            .into_iter()
-            .map(|session| ContainerSessionView {
-                session_id: session.session_id,
-                container_id: session.container_id,
-                image: session.image,
-                agent_id: session.agent_id,
-                host_sock: session.host_sock.display().to_string(),
-                started_at_unix: session.started_at_unix,
-                mesh_port: session.mesh_port,
-            })
-            .collect::<Vec<_>>();
+        let registry =
+            crate::container::PeerRegistry::load(&crate::container::mesh_registry_path())
+                .unwrap_or_default();
+        let views = Self::container_session_views(sessions, registry).await?;
         Ok(Json(ContainerListResponse {
             count: views.len(),
             sessions: views,
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_subsidiary_provision",
+        description = "Operator-only: provision a new EMPTY subsidiary container and register ownership."
+    )]
+    pub async fn subsidiary_provision(
+        &self,
+        Parameters(req): Parameters<SubsidiaryProvisionRequest>,
+    ) -> Result<Json<SubsidiaryProvisionResponse>, McpError> {
+        self.require_operator_capability(&req.operator_agent_id)
+            .await?;
+        let Json(provisioned) = self
+            .container_provision(Parameters(ContainerLaunchRequest {
+                image: req.image,
+                agent_id: req.agent_id,
+                command: req.command,
+                runtime_runsc: req.runtime_runsc,
+                host_sock: req.host_sock,
+                env: req.env,
+                mesh: req.mesh,
+                admission_mode: req.admission_mode,
+            }))
+            .await?;
+        let mut registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        registry.register_provision(
+            provisioned.session_id.clone(),
+            provisioned.container_id.clone(),
+            provisioned.agent_id.clone(),
+        );
+        registry
+            .save()
+            .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(SubsidiaryProvisionResponse {
+            operator_agent_id: req.operator_agent_id,
+            session_id: provisioned.session_id,
+            container_id: provisioned.container_id,
+            agent_id: provisioned.agent_id,
+            status: "empty".to_string(),
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_subsidiary_initialize",
+        description = "Operator-only: initialize an owned EMPTY subsidiary container with an agent hookup."
+    )]
+    pub async fn subsidiary_initialize(
+        &self,
+        Parameters(req): Parameters<SubsidiaryInitializeRequest>,
+    ) -> Result<Json<SubsidiaryInitializeResponse>, McpError> {
+        self.require_operator_capability(&req.operator_agent_id)
+            .await?;
+        let mut registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let owned = registry
+            .assert_owned(&req.session_id)
+            .map_err(|e| McpError::invalid_params(e, None))?
+            .clone();
+        let peer = Self::peer_for_subsidiary(&owned)?;
+        let value = tokio::task::spawn_blocking({
+            let hookup = req.hookup.clone();
+            let reuse_policy = req.reuse_policy.unwrap_or(ReusePolicy::Reusable);
+            move || {
+                crate::container::call_remote_tool_with_timeout(
+                    &peer,
+                    "nucleusdb_container_initialize",
+                    serde_json::json!({
+                        "hookup": hookup,
+                        "reuse_policy": reuse_policy,
+                    }),
+                    None,
+                    Duration::from_secs(30),
+                )
+            }
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("join subsidiary initialize: {e}"), None))?
+        .map_err(|e| McpError::internal_error(e, None))?;
+        let initialized: ContainerInitializeResponse =
+            serde_json::from_value(value).map_err(|e| {
+                McpError::internal_error(format!("decode subsidiary initialize: {e}"), None)
+            })?;
+        registry
+            .register_initialize(
+                &req.session_id,
+                Self::subsidiary_kind_from_hookup(&req.hookup),
+                initialized.agent_id.clone(),
+                initialized.trace_session_id.clone(),
+                initialized.reuse_policy,
+            )
+            .map_err(|e| McpError::internal_error(e, None))?;
+        registry
+            .save()
+            .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(SubsidiaryInitializeResponse {
+            operator_agent_id: req.operator_agent_id,
+            session_id: req.session_id,
+            container_id: initialized.container_id,
+            state: initialized.state,
+            agent_id: initialized.agent_id,
+            trace_session_id: initialized.trace_session_id,
+            reuse_policy: initialized.reuse_policy,
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_subsidiary_send_task",
+        description = "Operator-only: send a prompt to an owned subsidiary agent and persist the result in the subsidiary registry."
+    )]
+    pub async fn subsidiary_send_task(
+        &self,
+        Parameters(req): Parameters<SubsidiarySendTaskRequest>,
+    ) -> Result<Json<SubsidiaryTaskResponse>, McpError> {
+        self.require_operator_capability(&req.operator_agent_id)
+            .await?;
+        if req.prompt.trim().is_empty() {
+            return Err(McpError::invalid_params("prompt must be non-empty", None));
+        }
+        let mut registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let owned = registry
+            .assert_owned(&req.session_id)
+            .map_err(|e| McpError::invalid_params(e, None))?
+            .clone();
+        let peer = Self::peer_for_subsidiary(&owned)?;
+        let prompt = req.prompt.clone();
+        let value = tokio::task::spawn_blocking(move || {
+            crate::container::call_remote_tool_with_timeout(
+                &peer,
+                "nucleusdb_container_agent_prompt",
+                serde_json::json!({ "prompt": prompt }),
+                None,
+                Duration::from_secs(30),
+            )
+        })
+        .await;
+        let task = match value {
+            Ok(Ok(value)) => {
+                let response: AgentResponse = serde_json::from_value(value).map_err(|e| {
+                    McpError::internal_error(format!("decode subsidiary prompt: {e}"), None)
+                })?;
+                registry
+                    .record_task(
+                        &req.session_id,
+                        req.prompt,
+                        "complete".to_string(),
+                        Some(response.model.clone()),
+                        Some(response.content.clone()),
+                        None,
+                        owned.trace_session_id.clone(),
+                        Some(response.input_tokens),
+                        Some(response.output_tokens),
+                        Some(response.cost_usd),
+                    )
+                    .map_err(|e| McpError::internal_error(e, None))?
+            }
+            Ok(Err(err)) => registry
+                .record_task(
+                    &req.session_id,
+                    req.prompt,
+                    "failed".to_string(),
+                    None,
+                    None,
+                    Some(err.clone()),
+                    owned.trace_session_id.clone(),
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(|e| McpError::internal_error(e, None))?,
+            Err(err) => registry
+                .record_task(
+                    &req.session_id,
+                    req.prompt,
+                    "failed".to_string(),
+                    None,
+                    None,
+                    Some(format!("join subsidiary send_task: {err}")),
+                    owned.trace_session_id.clone(),
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(|e| McpError::internal_error(e, None))?,
+        };
+        registry
+            .save()
+            .map_err(|e| McpError::internal_error(e, None))?;
+        if task.status == "failed" {
+            return Err(McpError::internal_error(
+                task.error
+                    .clone()
+                    .unwrap_or_else(|| "subsidiary task failed".to_string()),
+                None,
+            ));
+        }
+        Ok(Json(Self::subsidiary_task_response(&task)))
+    }
+
+    #[tool(
+        name = "nucleusdb_subsidiary_get_result",
+        description = "Operator-only: fetch a persisted subsidiary task result by task id."
+    )]
+    pub async fn subsidiary_get_result(
+        &self,
+        Parameters(req): Parameters<SubsidiaryGetResultRequest>,
+    ) -> Result<Json<SubsidiaryTaskResponse>, McpError> {
+        self.require_operator_capability(&req.operator_agent_id)
+            .await?;
+        let registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let task = registry.task(&req.task_id).ok_or_else(|| {
+            McpError::invalid_params(
+                format!("unknown subsidiary task_id `{}`", req.task_id),
+                None,
+            )
+        })?;
+        if task.operator_agent_id != req.operator_agent_id {
+            return Err(McpError::invalid_params(
+                "subsidiary task does not belong to this operator",
+                None,
+            ));
+        }
+        Ok(Json(Self::subsidiary_task_response(task)))
+    }
+
+    #[tool(
+        name = "nucleusdb_subsidiary_deinitialize",
+        description = "Operator-only: deinitialize an owned subsidiary agent and return it to EMPTY."
+    )]
+    pub async fn subsidiary_deinitialize(
+        &self,
+        Parameters(req): Parameters<SubsidiaryDeinitializeRequest>,
+    ) -> Result<Json<SubsidiaryDeinitializeResponse>, McpError> {
+        self.require_operator_capability(&req.operator_agent_id)
+            .await?;
+        let mut registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let owned = registry
+            .assert_owned(&req.session_id)
+            .map_err(|e| McpError::invalid_params(e, None))?
+            .clone();
+        let peer = Self::peer_for_subsidiary(&owned)?;
+        let value = tokio::task::spawn_blocking(move || {
+            crate::container::call_remote_tool_with_timeout(
+                &peer,
+                "nucleusdb_container_deinitialize",
+                serde_json::json!({}),
+                None,
+                Duration::from_secs(30),
+            )
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("join subsidiary deinitialize: {e}"), None))?
+        .map_err(|e| McpError::internal_error(e, None))?;
+        let response: ContainerDeinitializeResponse =
+            serde_json::from_value(value).map_err(|e| {
+                McpError::internal_error(format!("decode subsidiary deinitialize: {e}"), None)
+            })?;
+        registry
+            .register_deinitialize(&req.session_id, response.reuse_policy)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        registry
+            .save()
+            .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(SubsidiaryDeinitializeResponse {
+            operator_agent_id: req.operator_agent_id,
+            session_id: req.session_id,
+            state: response.state,
+            trace_session_id: response.trace_session_id,
+            reuse_policy: response.reuse_policy,
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_subsidiary_destroy",
+        description = "Operator-only: destroy an owned subsidiary container and remove it from the operator registry."
+    )]
+    pub async fn subsidiary_destroy(
+        &self,
+        Parameters(req): Parameters<SubsidiaryDestroyRequest>,
+    ) -> Result<Json<SubsidiaryDestroyResponse>, McpError> {
+        self.require_operator_capability(&req.operator_agent_id)
+            .await?;
+        let mut registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        registry
+            .assert_owned(&req.session_id)
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        crate::container::destroy_container(&req.session_id)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        registry
+            .remove_subsidiary(&req.session_id)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        registry
+            .save()
+            .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(SubsidiaryDestroyResponse {
+            operator_agent_id: req.operator_agent_id,
+            session_id: req.session_id,
+            destroyed: true,
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_subsidiary_list",
+        description = "Operator-only: list subsidiaries owned by the operator with current status."
+    )]
+    pub async fn subsidiary_list(
+        &self,
+        Parameters(req): Parameters<SubsidiaryListRequest>,
+    ) -> Result<Json<SubsidiaryListResponse>, McpError> {
+        self.require_operator_capability(&req.operator_agent_id)
+            .await?;
+        let registry = Self::load_operator_registry(&req.operator_agent_id)?;
+        let sessions = list_container_sessions()
+            .map_err(|e| McpError::internal_error(e, None))?
+            .into_iter()
+            .map(|session| (session.session_id.clone(), session))
+            .collect::<BTreeMap<_, _>>();
+        let subsidiaries = registry
+            .subsidiaries
+            .iter()
+            .map(|record| Self::subsidiary_view(record, &sessions))
+            .collect::<Vec<_>>();
+        Ok(Json(SubsidiaryListResponse {
+            operator_agent_id: req.operator_agent_id,
+            count: subsidiaries.len(),
+            subsidiaries,
         }))
     }
 
@@ -3049,10 +3853,108 @@ impl NucleusDbMcpService {
         Ok(Json(ContainerLockStatusResponse {
             container_id: lock.container_id.clone(),
             state: lock.state_label().to_string(),
-            reuse_policy: format!("{:?}", lock.reuse_policy).to_ascii_lowercase(),
+            reuse_policy: lock.reuse_policy,
             lock: serde_json::to_value(lock).map_err(|e| {
                 McpError::internal_error(format!("serialize container lock: {e}"), None)
             })?,
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_container_initialize",
+        description = "Initialize the current EMPTY container with an agent hookup. Example: {\"hookup\":{\"kind\":\"cli\",\"cli_name\":\"claude\",\"model\":\"claude-3.7-sonnet\"},\"reuse_policy\":\"reusable\"}"
+    )]
+    pub async fn container_initialize(
+        &self,
+        Parameters(req): Parameters<ContainerInitializeRequest>,
+    ) -> Result<Json<ContainerInitializeResponse>, McpError> {
+        let (container_id, pty_manager, db_path, runtime) = {
+            let guard = self.state.lock().await;
+            (
+                current_container_id(),
+                guard.pty_manager.clone(),
+                guard.db_path.clone(),
+                guard.container_runtime.clone(),
+            )
+        };
+        let hookup = Self::build_container_hookup(&req.hookup, pty_manager, &db_path)
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        let mut lock = ContainerAgentLock::load_or_create(&container_id)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        lock.reuse_policy = req.reuse_policy.unwrap_or(ReusePolicy::Reusable);
+        let agent_id = hookup
+            .start(&mut lock)
+            .await
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        {
+            let mut container_runtime = runtime.lock().await;
+            container_runtime.active = Some(ActiveContainerHookup { hookup });
+        }
+        Ok(Json(ContainerInitializeResponse {
+            container_id: lock.container_id.clone(),
+            state: lock.state_label().to_string(),
+            agent_id,
+            trace_session_id: Self::lock_trace_session_id(&lock),
+            reuse_policy: lock.reuse_policy,
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_container_agent_prompt",
+        description = "Send a prompt to the initialized agent hookup in this container. Example: {\"prompt\":\"Review src/main.rs\"}"
+    )]
+    pub async fn container_agent_prompt(
+        &self,
+        Parameters(req): Parameters<ContainerAgentPromptRequest>,
+    ) -> Result<Json<AgentResponse>, McpError> {
+        if req.prompt.trim().is_empty() {
+            return Err(McpError::invalid_params("prompt must be non-empty", None));
+        }
+        let runtime = { self.state.lock().await.container_runtime.clone() };
+        let hookup = {
+            let container_runtime = runtime.lock().await;
+            container_runtime
+                .active
+                .as_ref()
+                .map(|active| active.hookup.clone())
+        }
+        .ok_or_else(|| McpError::invalid_params("container agent is not initialized", None))?;
+        let response = hookup
+            .send_prompt(&req.prompt)
+            .await
+            .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(response))
+    }
+
+    #[tool(
+        name = "nucleusdb_container_deinitialize",
+        description = "Deinitialize the current container agent hookup and return the lock to EMPTY. Example: {}"
+    )]
+    pub async fn container_deinitialize(
+        &self,
+        _: Parameters<ContainerDeinitializeRequest>,
+    ) -> Result<Json<ContainerDeinitializeResponse>, McpError> {
+        let (container_id, runtime) = {
+            let guard = self.state.lock().await;
+            (current_container_id(), guard.container_runtime.clone())
+        };
+        let hookup = {
+            let mut container_runtime = runtime.lock().await;
+            container_runtime.active.take()
+        }
+        .ok_or_else(|| McpError::invalid_params("container agent is not initialized", None))?;
+        hookup
+            .hookup
+            .stop()
+            .await
+            .map_err(|e| McpError::internal_error(e, None))?;
+        let lock = ContainerAgentLock::load_or_create(&container_id)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(ContainerDeinitializeResponse {
+            container_id: lock.container_id.clone(),
+            state: lock.state_label().to_string(),
+            trace_session_id: Self::lock_trace_session_id(&lock),
+            reuse_policy: lock.reuse_policy,
         }))
     }
 
@@ -4614,6 +5516,8 @@ impl NucleusDbMcpService {
                 model: req.model,
                 trace: req.trace.unwrap_or(true),
                 capabilities: req.capabilities,
+                dispatch_mode: req.dispatch_mode,
+                container_hookup: req.container_hookup,
             })
             .await
             .map_err(|e| McpError::invalid_params(e, None))?;
@@ -5221,7 +6125,7 @@ fn resolve_binary_path(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::env_lock;
+    use crate::test_support::{env_lock, MockOpenAiServer};
     use crate::typed_value::{TypeTag, TypedValue};
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -5290,6 +6194,142 @@ mod tests {
                 std::env::set_var(self.key, prev);
             } else {
                 std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    struct MockContainerToolServer {
+        pub base_url: String,
+        shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl MockContainerToolServer {
+        fn spawn() -> Self {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock container server");
+            listener
+                .set_nonblocking(true)
+                .expect("set mock container nonblocking");
+            let base_url = format!("http://{}", listener.local_addr().expect("mock local addr"));
+            let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let shutdown_flag = shutdown.clone();
+            let handle = std::thread::spawn(move || {
+                while !shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                            let mut request = [0u8; 4096];
+                            let read = std::io::Read::read(&mut stream, &mut request).unwrap_or(0);
+                            let body = String::from_utf8_lossy(&request[..read]);
+                            let (result, session) = if body.contains("\"method\":\"initialize\"")
+                                || body.contains("\"method\": \"initialize\"")
+                            {
+                                (
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": 0,
+                                        "result": {"protocolVersion": "2025-03-26", "serverInfo": {"name": "mock-sub", "version": "test"}}
+                                    }),
+                                    Some("mock-session".to_string()),
+                                )
+                            } else if body.contains("nucleusdb_container_initialize") {
+                                (
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": 1,
+                                        "result": {
+                                            "container_id": "ctr-sub",
+                                            "state": "locked",
+                                            "agent_id": "sub-agent",
+                                            "trace_session_id": "trace-sub",
+                                            "reuse_policy": "single_use"
+                                        }
+                                    }),
+                                    None,
+                                )
+                            } else if body.contains("nucleusdb_container_agent_prompt") {
+                                (
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": 1,
+                                        "result": {
+                                            "content": "subsidiary response",
+                                            "model": "openrouter/test-model",
+                                            "input_tokens": 3,
+                                            "output_tokens": 5,
+                                            "cost_usd": 0.25,
+                                            "tool_calls": [],
+                                            "duration_ms": 12
+                                        }
+                                    }),
+                                    None,
+                                )
+                            } else if body.contains("nucleusdb_container_deinitialize") {
+                                (
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": 1,
+                                        "result": {
+                                            "container_id": "ctr-sub",
+                                            "state": "empty",
+                                            "trace_session_id": null,
+                                            "reuse_policy": "single_use"
+                                        }
+                                    }),
+                                    None,
+                                )
+                            } else {
+                                (
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": 1,
+                                        "error": {"code": -32601, "message": "unknown mock tool"}
+                                    }),
+                                    None,
+                                )
+                            };
+                            let payload = serde_json::to_string(&result).expect("encode mock");
+                            let mut response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+                                payload.len()
+                            );
+                            if let Some(session) = session {
+                                response.push_str(&format!("mcp-session-id: {session}\r\n"));
+                            }
+                            response.push_str("\r\n");
+                            let _ = std::io::Write::write_all(
+                                &mut stream,
+                                format!("{response}{payload}").as_bytes(),
+                            );
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(25));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                base_url,
+                shutdown,
+                handle: Some(handle),
+            }
+        }
+    }
+
+    impl Drop for MockContainerToolServer {
+        fn drop(&mut self) {
+            self.shutdown
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = std::net::TcpStream::connect(
+                self.base_url
+                    .trim_start_matches("http://")
+                    .parse::<std::net::SocketAddr>()
+                    .expect("mock socket addr"),
+            );
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
             }
         }
     }
@@ -5449,10 +6489,366 @@ mod tests {
             .expect("container lock status");
         assert_eq!(resp.container_id, "mcp-container");
         assert_eq!(resp.state, "empty");
-        assert_eq!(resp.reuse_policy, "reusable");
+        assert_eq!(resp.reuse_policy, ReusePolicy::Reusable);
         assert_eq!(resp.lock["container_id"], "mcp-container");
         assert_eq!(resp.lock["state"]["state"], "empty");
 
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn container_initialize_prompt_deinitialize_roundtrip() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarRestore::set("AGENTHALO_HOME", home.path().to_str().expect("utf8 home"));
+        let _container = EnvVarRestore::set("NUCLEUSDB_MESH_AGENT_ID", "mcp-runtime");
+        let server = MockOpenAiServer::spawn("openrouter/test-model", "container api response");
+        let db_path = temp_db_path("container_roundtrip");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(initialized) = service
+            .container_initialize(Parameters(ContainerInitializeRequest {
+                hookup: ContainerHookupRequest::Api {
+                    provider: "openrouter".to_string(),
+                    model: "openrouter/test-model".to_string(),
+                    api_key_source: "unused".to_string(),
+                    base_url_override: Some(server.base_url.clone()),
+                },
+                reuse_policy: Some(ReusePolicy::SingleUse),
+            }))
+            .await
+            .expect("initialize container hookup");
+        assert_eq!(initialized.container_id, "mcp-runtime");
+        assert_eq!(initialized.state, "locked");
+        assert_eq!(initialized.reuse_policy, ReusePolicy::SingleUse);
+        assert!(initialized.trace_session_id.is_some());
+
+        let Json(response) = service
+            .container_agent_prompt(Parameters(ContainerAgentPromptRequest {
+                prompt: "review this module".to_string(),
+            }))
+            .await
+            .expect("container prompt");
+        assert_eq!(response.content, "container api response");
+        assert_eq!(response.model, "openrouter/test-model");
+
+        let Json(deinitialized) = service
+            .container_deinitialize(Parameters(ContainerDeinitializeRequest {}))
+            .await
+            .expect("deinitialize container hookup");
+        assert_eq!(deinitialized.container_id, "mcp-runtime");
+        assert_eq!(deinitialized.state, "empty");
+        assert_eq!(deinitialized.reuse_policy, ReusePolicy::SingleUse);
+        assert!(deinitialized.trace_session_id.is_none());
+
+        let err = service
+            .container_agent_prompt(Parameters(ContainerAgentPromptRequest {
+                prompt: "should fail after deinit".to_string(),
+            }))
+            .await
+            .err()
+            .expect("prompt after deinitialize must fail");
+        assert!(format!("{err:?}").contains("not initialized"));
+
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn container_list_bounds_remote_lock_status_lookup_latency() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let registry_dir = tempfile::tempdir().expect("tempdir");
+        let registry_path = registry_dir.path().join("peers.json");
+        let _registry = EnvVarRestore::set(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.to_str().expect("utf8 registry path"),
+        );
+
+        let run_dir = std::env::temp_dir().join("nucleusdb-container");
+        std::fs::create_dir_all(&run_dir).expect("create run dir");
+        let session_ids = ["sess-hang-a", "sess-hang-b"];
+        let session_paths = [
+            run_dir.join(format!("{}.json", session_ids[0])),
+            run_dir.join(format!("{}.json", session_ids[1])),
+        ];
+
+        let listeners = (0..2)
+            .map(|_| std::net::TcpListener::bind("127.0.0.1:0").expect("bind hanging listener"))
+            .collect::<Vec<_>>();
+        let addrs = listeners
+            .iter()
+            .map(|listener| listener.local_addr().expect("listener addr"))
+            .collect::<Vec<_>>();
+        let handles = listeners
+            .into_iter()
+            .map(|listener| {
+                std::thread::spawn(move || {
+                    if let Ok((_stream, _addr)) = listener.accept() {
+                        std::thread::sleep(Duration::from_secs(5));
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for (idx, path) in session_paths.iter().enumerate() {
+            let session = crate::container::launcher::SessionInfo {
+                session_id: session_ids[idx].to_string(),
+                container_id: format!("ctr-hang-{idx}"),
+                image: "nucleusdb-agent:test".to_string(),
+                agent_id: format!("agent-hang-{idx}"),
+                host_sock: std::env::temp_dir().join(format!("hang-{idx}.sock")),
+                started_at_unix: crate::pod::now_unix(),
+                mesh_port: Some(3000 + idx as u16),
+            };
+            std::fs::write(
+                path,
+                serde_json::to_vec_pretty(&session).expect("encode session"),
+            )
+            .expect("write session");
+        }
+
+        let mut registry = crate::container::PeerRegistry::new();
+        for (idx, addr) in addrs.iter().enumerate() {
+            registry.register(crate::container::PeerInfo {
+                agent_id: format!("agent-hang-{idx}"),
+                container_name: format!("container-hang-{idx}"),
+                did_uri: None,
+                mcp_endpoint: format!("http://{addr}/mcp"),
+                discovery_endpoint: format!("http://{addr}/.well-known/nucleus-pod"),
+                registered_at: crate::pod::now_unix(),
+                last_seen: crate::pod::now_unix(),
+            });
+        }
+        registry.save(&registry_path).expect("save registry");
+
+        let db_path = temp_db_path("container_list_timeout");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let started = tokio::time::Instant::now();
+        let Json(response) = service.container_list().await.expect("container list");
+        let elapsed = started.elapsed();
+        let max_elapsed = Duration::from_secs(6);
+
+        assert_eq!(response.count, 2);
+        assert!(response
+            .sessions
+            .iter()
+            .all(|view| view.lock_state.is_none()));
+        assert!(elapsed < max_elapsed, "elapsed: {elapsed:?}");
+
+        for path in &session_paths {
+            let _ = std::fs::remove_file(path);
+        }
+        for handle in handles {
+            let _ = handle.join();
+        }
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn subsidiary_roundtrip_tracks_only_owned_sessions() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarRestore::set("AGENTHALO_HOME", home.path().to_str().expect("utf8 home"));
+        let _container = EnvVarRestore::set("NUCLEUSDB_MESH_AGENT_ID", "operator-container");
+        let registry_dir = tempfile::tempdir().expect("registry tempdir");
+        let registry_path = registry_dir.path().join("peers.json");
+        let _registry = EnvVarRestore::set(
+            "NUCLEUSDB_MESH_REGISTRY",
+            registry_path.to_str().expect("utf8 registry path"),
+        );
+
+        let db_path = temp_db_path("subsidiary_roundtrip");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let Json(operator) = service
+            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                agent: "shell".to_string(),
+                agent_name: "operator".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: Some(30),
+                model: None,
+                trace: Some(false),
+                capabilities: vec!["operator".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
+                admission_mode: None,
+            }))
+            .await
+            .expect("launch operator");
+
+        let run_dir = std::env::temp_dir().join("nucleusdb-container");
+        std::fs::create_dir_all(&run_dir).expect("create run dir");
+        let owned_session_id = "sess-owned-phase4";
+        let unowned_session_id = "sess-unowned-phase4";
+        for (session_id, agent_id) in [
+            (owned_session_id, "peer-owned"),
+            (unowned_session_id, "peer-unowned"),
+        ] {
+            let path = run_dir.join(format!("{session_id}.json"));
+            std::fs::write(
+                &path,
+                serde_json::to_vec_pretty(&crate::container::launcher::SessionInfo {
+                    session_id: session_id.to_string(),
+                    container_id: format!("ctr-{session_id}"),
+                    image: "nucleusdb-agent:test".to_string(),
+                    agent_id: agent_id.to_string(),
+                    host_sock: std::env::temp_dir().join(format!("{session_id}.sock")),
+                    started_at_unix: crate::pod::now_unix(),
+                    mesh_port: Some(3000),
+                })
+                .expect("encode session"),
+            )
+            .expect("write session");
+        }
+
+        let mock = MockContainerToolServer::spawn();
+        let mut peers = crate::container::PeerRegistry::new();
+        peers.register(crate::container::PeerInfo {
+            agent_id: "peer-owned".to_string(),
+            container_name: "peer-owned".to_string(),
+            did_uri: None,
+            mcp_endpoint: format!("{}/mcp", mock.base_url),
+            discovery_endpoint: format!("{}/.well-known/nucleus-pod", mock.base_url),
+            registered_at: crate::pod::now_unix(),
+            last_seen: crate::pod::now_unix(),
+        });
+        peers.save(&registry_path).expect("save peer registry");
+
+        let mut registry =
+            SubsidiaryRegistry::load_or_create(&operator.agent_id).expect("subsidiary registry");
+        registry.register_provision(
+            owned_session_id.to_string(),
+            "ctr-sess-owned-phase4".to_string(),
+            "peer-owned".to_string(),
+        );
+        registry.save().expect("save operator registry");
+
+        let Json(initialized) = service
+            .subsidiary_initialize(Parameters(SubsidiaryInitializeRequest {
+                operator_agent_id: operator.agent_id.clone(),
+                session_id: owned_session_id.to_string(),
+                hookup: ContainerHookupRequest::Api {
+                    provider: "openrouter".to_string(),
+                    model: "openrouter/test-model".to_string(),
+                    api_key_source: "unused".to_string(),
+                    base_url_override: None,
+                },
+                reuse_policy: Some(ReusePolicy::SingleUse),
+            }))
+            .await
+            .expect("subsidiary initialize");
+        assert_eq!(initialized.state, "locked");
+        assert_eq!(initialized.reuse_policy, ReusePolicy::SingleUse);
+
+        let Json(task) = service
+            .subsidiary_send_task(Parameters(SubsidiarySendTaskRequest {
+                operator_agent_id: operator.agent_id.clone(),
+                session_id: owned_session_id.to_string(),
+                prompt: "review this".to_string(),
+            }))
+            .await
+            .expect("subsidiary send_task");
+        assert_eq!(task.status, "complete");
+        assert_eq!(task.result.as_deref(), Some("subsidiary response"));
+
+        let Json(loaded_task) = service
+            .subsidiary_get_result(Parameters(SubsidiaryGetResultRequest {
+                operator_agent_id: operator.agent_id.clone(),
+                task_id: task.task_id.clone(),
+            }))
+            .await
+            .expect("subsidiary get_result");
+        assert_eq!(loaded_task.task_id, task.task_id);
+        assert_eq!(loaded_task.cost_usd, Some(0.25));
+
+        let Json(listed) = service
+            .subsidiary_list(Parameters(SubsidiaryListRequest {
+                operator_agent_id: operator.agent_id.clone(),
+            }))
+            .await
+            .expect("subsidiary list");
+        assert_eq!(listed.count, 1);
+        assert_eq!(listed.subsidiaries[0].session_id, owned_session_id);
+
+        let Json(deinitialized) = service
+            .subsidiary_deinitialize(Parameters(SubsidiaryDeinitializeRequest {
+                operator_agent_id: operator.agent_id.clone(),
+                session_id: owned_session_id.to_string(),
+            }))
+            .await
+            .expect("subsidiary deinitialize");
+        assert_eq!(deinitialized.state, "empty");
+        assert_eq!(deinitialized.reuse_policy, ReusePolicy::SingleUse);
+
+        let Json(destroyed) = service
+            .subsidiary_destroy(Parameters(SubsidiaryDestroyRequest {
+                operator_agent_id: operator.agent_id.clone(),
+                session_id: owned_session_id.to_string(),
+            }))
+            .await
+            .expect("subsidiary destroy");
+        assert!(destroyed.destroyed);
+        assert!(!run_dir.join(format!("{owned_session_id}.json")).exists());
+
+        let Json(listed_after) = service
+            .subsidiary_list(Parameters(SubsidiaryListRequest {
+                operator_agent_id: operator.agent_id.clone(),
+            }))
+            .await
+            .expect("subsidiary list after destroy");
+        assert_eq!(listed_after.count, 0);
+
+        let _ = service
+            .orchestrator_stop(Parameters(OrchestratorStopRequest {
+                agent_id: operator.agent_id.clone(),
+                force: Some(true),
+            }))
+            .await;
+        let _ = std::fs::remove_file(run_dir.join(format!("{unowned_session_id}.json")));
+        cleanup_db_files(&db_path);
+    }
+
+    #[tokio::test]
+    async fn subsidiary_tools_reject_unowned_session() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarRestore::set("AGENTHALO_HOME", home.path().to_str().expect("utf8 home"));
+        let _container = EnvVarRestore::set("NUCLEUSDB_MESH_AGENT_ID", "operator-container");
+
+        let db_path = temp_db_path("subsidiary_unowned");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+        let Json(operator) = service
+            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                agent: "shell".to_string(),
+                agent_name: "operator".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: Some(30),
+                model: None,
+                trace: Some(false),
+                capabilities: vec!["operator".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
+                admission_mode: None,
+            }))
+            .await
+            .expect("launch operator");
+
+        let err = service
+            .subsidiary_destroy(Parameters(SubsidiaryDestroyRequest {
+                operator_agent_id: operator.agent_id.clone(),
+                session_id: "sess-unknown".to_string(),
+            }))
+            .await
+            .err()
+            .expect("unknown subsidiary must fail");
+        assert!(format!("{err:?}").contains("does not own subsidiary session"));
+
+        let _ = service
+            .orchestrator_stop(Parameters(OrchestratorStopRequest {
+                agent_id: operator.agent_id.clone(),
+                force: Some(true),
+            }))
+            .await;
         cleanup_db_files(&db_path);
     }
 
@@ -5894,6 +7290,8 @@ mod tests {
                 model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string(), "memory_write".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
                 admission_mode: None,
             }))
             .await
@@ -5940,6 +7338,8 @@ mod tests {
                 model: None,
                 trace: Some(true),
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
                 admission_mode: None,
             }))
             .await
@@ -5997,6 +7397,8 @@ mod tests {
                 model: None,
                 trace: Some(false),
                 capabilities: vec!["bogus_capability".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
                 admission_mode: None,
             }))
             .await;
@@ -6028,6 +7430,8 @@ mod tests {
                 model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
                 admission_mode: None,
             }))
             .await
@@ -6042,6 +7446,8 @@ mod tests {
                 model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
                 admission_mode: None,
             }))
             .await
@@ -6095,6 +7501,8 @@ mod tests {
                 model: None,
                 trace: Some(false),
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
                 admission_mode: None,
             }))
             .await

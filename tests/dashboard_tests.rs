@@ -16,6 +16,7 @@ use nucleusdb::memory::MemoryStore;
 use nucleusdb::persistence::{default_wal_path, persist_snapshot_and_sync_wal};
 use nucleusdb::protocol::{NucleusDb, VcBackend};
 use nucleusdb::state::State;
+use nucleusdb::test_support::{lock_env, EnvVarGuard};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -23,52 +24,12 @@ use serde_json::{json, Value};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use tower::ServiceExt;
 
 fn temp_db_path(tag: &str) -> PathBuf {
     let stamp = format!("{}-{}-{}", tag, std::process::id(), now_unix_secs());
     std::env::temp_dir().join(format!("dashboard_test_{stamp}.ndb"))
-}
-
-fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-    let mutex = env_lock();
-    let guard = mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    mutex.clear_poison();
-    guard
-}
-
-struct EnvVarGuard {
-    key: &'static str,
-    prev: Option<String>,
-}
-
-impl EnvVarGuard {
-    fn set(key: &'static str, value: Option<&str>) -> Self {
-        let prev = std::env::var(key).ok();
-        match value {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
-        }
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        if let Some(v) = self.prev.as_ref() {
-            std::env::set_var(self.key, v);
-        } else {
-            std::env::remove_var(self.key);
-        }
-    }
 }
 
 fn oauth_state_from_url(oauth_url: &str) -> String {
@@ -3549,6 +3510,70 @@ async fn api_p2pclaw_briefing_requires_authentication() {
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn api_p2pclaw_verify_returns_real_verification_payload() {
+    let (state, db_path) = test_state("api_p2pclaw_verify");
+    let (status, body) = api_post(
+        state,
+        "/p2pclaw/verify",
+        json!({
+            "title": "Structured Verification",
+            "content": "# Main Theorem\nTheorem. Suppose a verifier receives a structured proof sketch.\nProof. Because the draft contains assumptions, claims, and proof language, the verification bridge extracts claims and computes a proof hash.\n\n# Discussion\nTherefore the result is consistent and reviewable. [1]"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "verify failed: {body}");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["verification"]["valid"], true);
+    assert_eq!(
+        body["verification"]["proof_hash"]
+            .as_str()
+            .unwrap_or("")
+            .len(),
+        64
+    );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_mcp_tools_lists_live_catalog() {
+    let (state, db_path) = test_state("api_mcp_tools");
+    let (status, body) = api_get(state, "/mcp/tools?limit=500").await;
+    assert_eq!(status, StatusCode::OK, "mcp tools failed: {body}");
+    assert_eq!(body["ok"], true);
+    let total = body["total"].as_u64().unwrap_or(0);
+    assert!(
+        total >= 50,
+        "dashboard MCP catalog should expose at least 50 tools, got {total}: {body}"
+    );
+    let tools = body["tools"].as_array().expect("tools array");
+    assert!(
+        tools.iter().any(|tool| tool["name"] == "nucleusdb_status"),
+        "catalog should contain nucleusdb_status: {body}"
+    );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_mcp_invoke_returns_real_tool_data() {
+    let (state, db_path) = test_state("api_mcp_invoke");
+    let (status, body) = api_post(
+        state,
+        "/mcp/invoke",
+        json!({"tool": "nucleusdb_status", "params": {}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "mcp invoke failed: {body}");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["result"]["tool"], "nucleusdb_status");
+    assert_eq!(body["result"]["is_error"], false);
+    assert_eq!(
+        body["result"]["structured_content"]["backend"], "binary_merkle",
+        "tool should return real structured status payload: {body}"
+    );
+    let _ = std::fs::remove_file(&db_path);
 }
 
 #[tokio::test]

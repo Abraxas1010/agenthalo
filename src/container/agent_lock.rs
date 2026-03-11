@@ -1,4 +1,5 @@
 use crate::halo::config;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::path::PathBuf;
@@ -22,7 +23,7 @@ pub enum ContainerAgentState {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(tag = "hookup", rename_all = "snake_case")]
 pub enum AgentHookupKind {
     Cli { cli_name: String },
@@ -30,7 +31,7 @@ pub enum AgentHookupKind {
     LocalModel { model_id: String },
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReusePolicy {
     Reusable,
@@ -64,6 +65,15 @@ pub struct DeinitContext {
 impl Default for ReusePolicy {
     fn default() -> Self {
         Self::Reusable
+    }
+}
+
+impl ReusePolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reusable => "reusable",
+            Self::SingleUse => "single_use",
+        }
     }
 }
 

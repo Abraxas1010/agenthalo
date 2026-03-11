@@ -1255,32 +1255,17 @@ pub fn decode_oauth_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        let mutex = env_lock();
-        let guard = mutex
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        mutex.clear_poison();
-        guard
-    }
+    use crate::test_support::{lock_env, EnvVarGuard};
 
     struct TmpHomeGuard {
         path: std::path::PathBuf,
-        previous_home: Option<String>,
+        home_guard: EnvVarGuard,
         _guard: std::sync::MutexGuard<'static, ()>,
     }
 
     impl TmpHomeGuard {
         fn new(tag: &str) -> Self {
             let guard = lock_env();
-            let previous_home = std::env::var("AGENTHALO_HOME").ok();
             let path = std::env::temp_dir().join(format!(
                 "identity_ledger_{}_{}_{}",
                 tag,
@@ -1289,10 +1274,10 @@ mod tests {
             ));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).expect("create tmp");
-            std::env::set_var("AGENTHALO_HOME", &path);
+            let home_guard = EnvVarGuard::set("AGENTHALO_HOME", path.to_str());
             Self {
                 path,
-                previous_home,
+                home_guard,
                 _guard: guard,
             }
         }
@@ -1300,43 +1285,13 @@ mod tests {
 
     impl Drop for TmpHomeGuard {
         fn drop(&mut self) {
-            if let Some(prev) = self.previous_home.as_deref() {
-                std::env::set_var("AGENTHALO_HOME", prev);
-            } else {
-                std::env::remove_var("AGENTHALO_HOME");
-            }
+            let _ = &self.home_guard;
             let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 
     fn set_tmp_home(tag: &str) -> TmpHomeGuard {
         TmpHomeGuard::new(tag)
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: Option<&str>) -> Self {
-            let previous = std::env::var(key).ok();
-            match value {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
-            }
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = self.previous.as_deref() {
-                std::env::set_var(self.key, v);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
     }
 
     #[test]

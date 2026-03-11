@@ -1605,6 +1605,31 @@ async fn mcp(
                     }
                 }),
                 json!({
+                    "name": "nucleusdb_container_provision",
+                    "description": "Provision an EMPTY container ready for a later initialize step.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "image": {"type": "string"},
+                            "agent_id": {"type": "string"},
+                            "command": {"type": "array", "items": {"type": "string"}, "default": []},
+                            "runtime_runsc": {"type": "boolean", "default": false},
+                            "host_sock": {"type": "string"},
+                            "env": {"type": "object", "additionalProperties": {"type": "string"}},
+                            "mesh": {
+                                "type": "object",
+                                "properties": {
+                                    "enabled": {"type": "boolean", "default": true},
+                                    "mcp_port": {"type": "integer"},
+                                    "registry_volume": {"type": "string"},
+                                    "agent_did": {"type": "string"}
+                                }
+                            }
+                        },
+                        "required": ["image", "agent_id"]
+                    }
+                }),
+                json!({
                     "name": "nucleusdb_container_launch",
                     "description": "Launch a monitored container session with optional mesh/env configuration.",
                     "inputSchema": {
@@ -1635,6 +1660,37 @@ async fn mcp(
                     "inputSchema": {"type": "object", "properties": {}}
                 }),
                 json!({
+                    "name": "nucleusdb_container_lock_status",
+                    "description": "Return the current container agent lock state for this runtime.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }),
+                json!({
+                    "name": "nucleusdb_container_initialize",
+                    "description": "Initialize the current EMPTY container with an agent hookup.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "hookup": {"type": "object"},
+                            "reuse_policy": {"type": "string"}
+                        },
+                        "required": ["hookup"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_container_agent_prompt",
+                    "description": "Send a prompt to the initialized agent hookup in this container.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"prompt": {"type": "string"}},
+                        "required": ["prompt"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_container_deinitialize",
+                    "description": "Deinitialize the current container agent hookup and return the lock to EMPTY.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }),
+                json!({
                     "name": "nucleusdb_container_status",
                     "description": "Get status for a tracked container session.",
                     "inputSchema": {
@@ -1662,6 +1718,99 @@ async fn mcp(
                             "follow": {"type": "boolean", "default": false}
                         },
                         "required": ["session_id"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_subsidiary_provision",
+                    "description": "Operator-only: provision an owned EMPTY subsidiary container.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "operator_agent_id": {"type": "string"},
+                            "image": {"type": "string"},
+                            "agent_id": {"type": "string"},
+                            "command": {"type": "array", "items": {"type": "string"}},
+                            "runtime_runsc": {"type": "boolean"},
+                            "host_sock": {"type": "string"},
+                            "env": {"type": "object"},
+                            "mesh": {"type": "object"},
+                            "admission_mode": {"type": "string"}
+                        },
+                        "required": ["operator_agent_id", "image", "agent_id"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_subsidiary_initialize",
+                    "description": "Operator-only: initialize an owned subsidiary container.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "operator_agent_id": {"type": "string"},
+                            "session_id": {"type": "string"},
+                            "hookup": {"type": "object"},
+                            "reuse_policy": {"type": "string"}
+                        },
+                        "required": ["operator_agent_id", "session_id", "hookup"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_subsidiary_send_task",
+                    "description": "Operator-only: send a task to an owned subsidiary agent.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "operator_agent_id": {"type": "string"},
+                            "session_id": {"type": "string"},
+                            "prompt": {"type": "string"}
+                        },
+                        "required": ["operator_agent_id", "session_id", "prompt"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_subsidiary_get_result",
+                    "description": "Operator-only: fetch a persisted subsidiary task result.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "operator_agent_id": {"type": "string"},
+                            "task_id": {"type": "string"}
+                        },
+                        "required": ["operator_agent_id", "task_id"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_subsidiary_deinitialize",
+                    "description": "Operator-only: deinitialize an owned subsidiary agent.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "operator_agent_id": {"type": "string"},
+                            "session_id": {"type": "string"}
+                        },
+                        "required": ["operator_agent_id", "session_id"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_subsidiary_destroy",
+                    "description": "Operator-only: destroy an owned subsidiary container.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "operator_agent_id": {"type": "string"},
+                            "session_id": {"type": "string"}
+                        },
+                        "required": ["operator_agent_id", "session_id"]
+                    }
+                }),
+                json!({
+                    "name": "nucleusdb_subsidiary_list",
+                    "description": "Operator-only: list subsidiaries owned by the operator.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "operator_agent_id": {"type": "string"}
+                        },
+                        "required": ["operator_agent_id"]
                     }
                 }),
             ];
@@ -1944,6 +2093,18 @@ fn p2pclaw_tool_defs_for_listing() -> Vec<Value> {
                 "required": ["query"]
             }
         }),
+        json!({
+            "name": "p2pclaw_verify_paper",
+            "description": "Run local structural verification on a P2PCLAW paper draft before publishing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "content": {"type": "string"}
+                },
+                "required": ["title", "content"]
+            }
+        }),
     ]
 }
 
@@ -2048,6 +2209,7 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "p2pclaw_send_chat" => tool_p2pclaw_send_chat(arguments),
         "p2pclaw_list_investigations" => tool_p2pclaw_list_investigations(arguments),
         "p2pclaw_search_wheel" => tool_p2pclaw_search_wheel(arguments),
+        "p2pclaw_verify_paper" => tool_p2pclaw_verify_paper(arguments),
         "p2pclaw_configure" => tool_p2pclaw_configure(arguments),
         "mesh_peers" => tool_mesh_peers(arguments),
         "mesh_ping" => tool_mesh_ping(arguments),
@@ -2071,8 +2233,20 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "nucleusdb_history" => tool_nucleusdb_history(arguments),
         "nucleusdb_export" => tool_nucleusdb_export(arguments),
         "nucleusdb_execute_sql" => tool_nucleusdb_execute_sql(arguments),
+        "nucleusdb_container_provision" => tool_nucleusdb_container_provision(arguments),
         "nucleusdb_container_launch" => tool_nucleusdb_container_launch(arguments),
         "nucleusdb_container_list" => tool_nucleusdb_container_list(arguments),
+        "nucleusdb_container_lock_status" => tool_nucleusdb_container_lock_status(arguments),
+        "nucleusdb_container_initialize" => tool_nucleusdb_container_initialize(arguments),
+        "nucleusdb_container_agent_prompt" => tool_nucleusdb_container_agent_prompt(arguments),
+        "nucleusdb_container_deinitialize" => tool_nucleusdb_container_deinitialize(arguments),
+        "nucleusdb_subsidiary_provision" => tool_nucleusdb_subsidiary_provision(arguments),
+        "nucleusdb_subsidiary_initialize" => tool_nucleusdb_subsidiary_initialize(arguments),
+        "nucleusdb_subsidiary_send_task" => tool_nucleusdb_subsidiary_send_task(arguments),
+        "nucleusdb_subsidiary_get_result" => tool_nucleusdb_subsidiary_get_result(arguments),
+        "nucleusdb_subsidiary_deinitialize" => tool_nucleusdb_subsidiary_deinitialize(arguments),
+        "nucleusdb_subsidiary_destroy" => tool_nucleusdb_subsidiary_destroy(arguments),
+        "nucleusdb_subsidiary_list" => tool_nucleusdb_subsidiary_list(arguments),
         "nucleusdb_container_status" => tool_nucleusdb_container_status(arguments),
         "nucleusdb_container_stop" => tool_nucleusdb_container_stop(arguments),
         "nucleusdb_container_logs" => tool_nucleusdb_container_logs(arguments),
@@ -6070,6 +6244,26 @@ fn tool_p2pclaw_search_wheel(arguments: Value) -> Result<Value, String> {
     }))
 }
 
+fn tool_p2pclaw_verify_paper(arguments: Value) -> Result<Value, String> {
+    let title = arguments
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "title is required".to_string())?;
+    let content = arguments
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "content is required".to_string())?;
+    let verification = nucleusdb::halo::p2pclaw_verify::verify_paper(title, content);
+    Ok(json!({
+        "status": "ok",
+        "verification": verification
+    }))
+}
+
 fn tool_p2pclaw_configure(arguments: Value) -> Result<Value, String> {
     let mut cfg = p2pclaw::load_or_default();
     if let Some(endpoint_url) = arguments.get("endpoint_url").and_then(|v| v.as_str()) {
@@ -6610,6 +6804,8 @@ fn tool_orchestrator_launch(arguments: Value) -> Result<Value, String> {
                 model: req.model,
                 trace: req.trace.unwrap_or(true),
                 capabilities: req.capabilities,
+                dispatch_mode: req.dispatch_mode,
+                container_hookup: req.container_hookup,
             })
             .await?;
         Ok(json!({
@@ -6856,6 +7052,19 @@ fn tool_nucleusdb_execute_sql(arguments: Value) -> Result<Value, String> {
     })
 }
 
+fn tool_nucleusdb_container_provision(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::ContainerLaunchRequest =
+        parse_tool_args(arguments, "nucleusdb_container_provision")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .container_provision(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_container_provision: {e}"))
+    })
+}
+
 fn tool_nucleusdb_container_launch(arguments: Value) -> Result<Value, String> {
     let req: nucleusdb::mcp::tools::ContainerLaunchRequest =
         parse_tool_args(arguments, "nucleusdb_container_launch")?;
@@ -6936,6 +7145,149 @@ fn tool_nucleusdb_container_list(_arguments: Value) -> Result<Value, String> {
         "count": rows.len(),
         "sessions": rows,
     }))
+}
+
+fn tool_nucleusdb_container_lock_status(_arguments: Value) -> Result<Value, String> {
+    run_local_nucleusdb_call(|service| async move {
+        let rmcp::Json(response) = service
+            .container_lock_status(rmcp::handler::server::wrapper::Parameters(
+                nucleusdb::mcp::tools::ContainerLockStatusRequest::default(),
+            ))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_container_lock_status: {e}"))
+    })
+}
+
+fn tool_nucleusdb_container_initialize(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::ContainerInitializeRequest =
+        parse_tool_args(arguments, "nucleusdb_container_initialize")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .container_initialize(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_container_initialize: {e}"))
+    })
+}
+
+fn tool_nucleusdb_container_agent_prompt(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::ContainerAgentPromptRequest =
+        parse_tool_args(arguments, "nucleusdb_container_agent_prompt")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .container_agent_prompt(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_container_agent_prompt: {e}"))
+    })
+}
+
+fn tool_nucleusdb_container_deinitialize(_arguments: Value) -> Result<Value, String> {
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .container_deinitialize(rmcp::handler::server::wrapper::Parameters(
+                nucleusdb::mcp::tools::ContainerDeinitializeRequest {},
+            ))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_container_deinitialize: {e}"))
+    })
+}
+
+fn tool_nucleusdb_subsidiary_provision(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::SubsidiaryProvisionRequest =
+        parse_tool_args(arguments, "nucleusdb_subsidiary_provision")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .subsidiary_provision(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_subsidiary_provision: {e}"))
+    })
+}
+
+fn tool_nucleusdb_subsidiary_initialize(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::SubsidiaryInitializeRequest =
+        parse_tool_args(arguments, "nucleusdb_subsidiary_initialize")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .subsidiary_initialize(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_subsidiary_initialize: {e}"))
+    })
+}
+
+fn tool_nucleusdb_subsidiary_send_task(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::SubsidiarySendTaskRequest =
+        parse_tool_args(arguments, "nucleusdb_subsidiary_send_task")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .subsidiary_send_task(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_subsidiary_send_task: {e}"))
+    })
+}
+
+fn tool_nucleusdb_subsidiary_get_result(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::SubsidiaryGetResultRequest =
+        parse_tool_args(arguments, "nucleusdb_subsidiary_get_result")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .subsidiary_get_result(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_subsidiary_get_result: {e}"))
+    })
+}
+
+fn tool_nucleusdb_subsidiary_deinitialize(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::SubsidiaryDeinitializeRequest =
+        parse_tool_args(arguments, "nucleusdb_subsidiary_deinitialize")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .subsidiary_deinitialize(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_subsidiary_deinitialize: {e}"))
+    })
+}
+
+fn tool_nucleusdb_subsidiary_destroy(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::SubsidiaryDestroyRequest =
+        parse_tool_args(arguments, "nucleusdb_subsidiary_destroy")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .subsidiary_destroy(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_subsidiary_destroy: {e}"))
+    })
+}
+
+fn tool_nucleusdb_subsidiary_list(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::SubsidiaryListRequest =
+        parse_tool_args(arguments, "nucleusdb_subsidiary_list")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .subsidiary_list(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response)
+            .map_err(|e| format!("serialize nucleusdb_subsidiary_list: {e}"))
+    })
 }
 
 fn tool_nucleusdb_container_status(arguments: Value) -> Result<Value, String> {

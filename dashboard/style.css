@@ -5210,3 +5210,211 @@ input:focus, select:focus, textarea:focus {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+.mcp-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mcp-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mcp-summary-card {
+  min-width: 140px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  background: rgba(14, 22, 10, 0.92);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mcp-summary-card span,
+.mcp-summary-card small {
+  color: var(--text-dim);
+}
+
+.mcp-summary-card strong {
+  font-size: 28px;
+}
+
+.mcp-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.mcp-category-bar,
+.p2p-tabs {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mcp-category-chip,
+.p2p-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  background: rgba(12, 18, 9, 0.92);
+  color: var(--text);
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.mcp-category-chip strong {
+  color: var(--accent);
+}
+
+.mcp-category-chip.is-active,
+.mcp-tool-row.is-selected,
+.p2p-tab.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(111, 255, 136, 0.18) inset;
+}
+
+.mcp-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.95fr) minmax(360px, 1.05fr);
+  gap: 16px;
+}
+
+.mcp-left,
+.mcp-right {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mcp-tool-group {
+  border: 1px solid var(--border);
+  background: rgba(10, 16, 8, 0.94);
+  padding: 12px;
+}
+
+.mcp-tool-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.mcp-tool-list,
+.p2p-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mcp-tool-row {
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid rgba(129, 160, 123, 0.18);
+  background: rgba(16, 24, 12, 0.94);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.mcp-tool-row-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-bottom: 4px;
+}
+
+.mcp-tool-row-desc,
+.p2p-list-meta {
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mcp-meta-grid,
+.mcp-schema-grid,
+.p2p-route-grid,
+.p2p-doc-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.mcp-meta-grid {
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  margin: 12px 0;
+}
+
+.mcp-meta-grid span {
+  display: block;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.mcp-schema-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.mcp-json,
+.mcp-result,
+.p2p-architecture {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(5, 10, 4, 0.96);
+  border: 1px solid rgba(103, 130, 97, 0.24);
+  padding: 12px;
+  overflow: auto;
+}
+
+.mcp-invoke-json,
+.p2-large-textarea {
+  min-height: 180px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.p2p-list-item,
+.p2p-route-card {
+  border: 1px solid rgba(129, 160, 123, 0.18);
+  padding: 12px;
+  background: rgba(12, 18, 9, 0.88);
+}
+
+.p2p-list-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.p2p-list-json {
+  max-height: 180px;
+}
+
+.p2p-route-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  margin: 14px 0;
+}
+
+.p2p-route-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.p2p-route-head code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--accent);
+}
+
+@media (max-width: 960px) {
+  .mcp-header,
+  .mcp-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mcp-layout {
+    grid-template-columns: 1fr;
+  }
+}

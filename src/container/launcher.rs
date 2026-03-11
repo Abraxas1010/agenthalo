@@ -235,6 +235,25 @@ pub fn stop_container(session_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn destroy_container(session_id: &str) -> Result<(), String> {
+    let out = Command::new("docker")
+        .arg("rm")
+        .arg("-f")
+        .arg(session_id)
+        .output()
+        .map_err(|e| format!("failed to run docker rm -f: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let missing = stderr.contains("No such container") || stderr.contains("No such object");
+        if !missing {
+            return Err(format!("docker rm -f failed: {}", stderr));
+        }
+    }
+    let meta = run_dir().join(format!("{session_id}.json"));
+    let _ = std::fs::remove_file(meta);
+    Ok(())
+}
+
 pub fn container_logs(session_id: &str, follow: bool) -> Result<String, String> {
     let mut cmd = Command::new("docker");
     cmd.arg("logs");

@@ -49,6 +49,7 @@ pub mod orchestrator_proxy;
 pub mod p2p_discovery;
 pub mod p2p_node;
 pub mod p2pclaw;
+pub mod p2pclaw_verify;
 pub mod password;
 pub mod pinata;
 pub mod policy_registry;

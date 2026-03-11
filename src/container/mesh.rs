@@ -216,6 +216,22 @@ pub fn call_remote_tool(
     arguments: serde_json::Value,
     auth_token: Option<&str>,
 ) -> Result<serde_json::Value, String> {
+    call_remote_tool_with_timeout(
+        peer,
+        tool_name,
+        arguments,
+        auth_token,
+        std::time::Duration::from_secs(30),
+    )
+}
+
+pub fn call_remote_tool_with_timeout(
+    peer: &PeerInfo,
+    tool_name: &str,
+    arguments: serde_json::Value,
+    auth_token: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, String> {
     let initialize_payload = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 0,
@@ -227,12 +243,13 @@ pub fn call_remote_tool(
         }
     });
     let (initialize_body, session_id) =
-        call_remote_rpc(peer, &initialize_payload, auth_token, None).map_err(|e| {
-            format!(
-                "mesh_call initialize handshake with {} failed: {e}",
-                peer.agent_id
-            )
-        })?;
+        call_remote_rpc_with_timeout(peer, &initialize_payload, auth_token, None, timeout)
+            .map_err(|e| {
+                format!(
+                    "mesh_call initialize handshake with {} failed: {e}",
+                    peer.agent_id
+                )
+            })?;
     if let Some(err) = initialize_body.get("error") {
         return Err(format!(
             "remote initialize error: {}",
@@ -249,8 +266,9 @@ pub fn call_remote_tool(
             "arguments": arguments
         }
     });
-    let (body, _) = call_remote_rpc(peer, &payload, auth_token, session_id.as_deref())
-        .map_err(|e| format!("mesh_call to {} tool {tool_name}: {e}", peer.agent_id))?;
+    let (body, _) =
+        call_remote_rpc_with_timeout(peer, &payload, auth_token, session_id.as_deref(), timeout)
+            .map_err(|e| format!("mesh_call to {} tool {tool_name}: {e}", peer.agent_id))?;
     if let Some(err) = body.get("error") {
         return Err(format!(
             "remote tool error: {}",
@@ -263,16 +281,16 @@ pub fn call_remote_tool(
         .unwrap_or(serde_json::Value::Null))
 }
 
-fn call_remote_rpc(
+fn call_remote_rpc_with_timeout(
     peer: &PeerInfo,
     payload: &serde_json::Value,
     auth_token: Option<&str>,
     session_id: Option<&str>,
+    timeout: std::time::Duration,
 ) -> Result<(serde_json::Value, Option<String>), String> {
     use crate::halo::http_client;
-    let mut req =
-        http_client::post_with_timeout(&peer.mcp_endpoint, std::time::Duration::from_secs(30))?
-            .header("Accept", "application/json, text/event-stream");
+    let mut req = http_client::post_with_timeout(&peer.mcp_endpoint, timeout)?
+        .header("Accept", "application/json, text/event-stream");
     if let Some(token) = auth_token {
         req = req.header("Authorization", &format!("Bearer {token}"));
     }

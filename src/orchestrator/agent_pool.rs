@@ -357,7 +357,7 @@ impl AgentPool {
     }
 }
 
-fn normalize_agent_kind(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_agent_kind(raw: &str) -> Result<String, String> {
     let kind = raw.trim().to_ascii_lowercase();
     match kind.as_str() {
         "claude" | "codex" | "gemini" | "openclaw" | "shell" => Ok(kind),
@@ -415,7 +415,7 @@ fn model_args_for_kind(kind: &str, model: &str) -> Vec<String> {
     }
 }
 
-fn normalize_capabilities(mut capabilities: Vec<String>) -> Vec<String> {
+pub(crate) fn normalize_capabilities(mut capabilities: Vec<String>) -> Vec<String> {
     if capabilities.is_empty() {
         capabilities = vec!["memory_read".to_string(), "memory_write".to_string()];
     }
@@ -428,7 +428,7 @@ fn normalize_capabilities(mut capabilities: Vec<String>) -> Vec<String> {
     set.into_iter().collect()
 }
 
-fn validate_capabilities(capabilities: &[String]) -> Result<(), String> {
+pub(crate) fn validate_capabilities(capabilities: &[String]) -> Result<(), String> {
     let allowed = BTreeSet::from_iter(
         [
             "*",
@@ -438,6 +438,7 @@ fn validate_capabilities(capabilities: &[String]) -> Result<(), String> {
             "sql_write",
             "container_launch",
             "orchestrator_pipe",
+            "operator",
         ]
         .into_iter()
         .map(str::to_string),
@@ -512,6 +513,11 @@ mod tests {
     fn capability_validation_rejects_unknown() {
         let err = validate_capabilities(&["invalid_cap".to_string()]).expect_err("must reject");
         assert!(err.contains("unknown capability"));
+    }
+
+    #[test]
+    fn capability_validation_accepts_operator() {
+        validate_capabilities(&["operator".to_string()]).expect("operator capability allowed");
     }
 
     #[test]

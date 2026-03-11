@@ -88,6 +88,7 @@ const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
   identification: renderIdentificationPage, communication: renderCommunicationPage, 'nucleusdb-docs': renderNucleusDBDocsPage,
   networking: renderNetworkingPage,
+  'mcp-tools': renderMcpToolsPage,
   trust: renderTrust, nucleusdb: renderNucleusDB, orchestrator: renderOrchestrator, cockpit: renderCockpit, deploy: renderDeploy, models: renderModels };
 
 const NETWORKS = [
@@ -117,6 +118,54 @@ const NETWORKS = [
   },
 ];
 let _networkingSelected = 'p2pclaw';
+let _p2pclawTab = 'config';
+
+const P2PCLAW_TABS = [
+  { id: 'config', label: 'Config' },
+  { id: 'status', label: 'Status' },
+  { id: 'papers', label: 'Papers' },
+  { id: 'mempool', label: 'Mempool' },
+  { id: 'events', label: 'Events' },
+  { id: 'investigations', label: 'Investigations' },
+  { id: 'docs', label: 'Docs' },
+];
+
+const P2PCLAW_DOC_ROUTES = [
+  ['GET', '/api/p2pclaw/status', 'Live hive metrics and connection status.'],
+  ['GET', '/api/p2pclaw/briefing', 'Markdown briefing feed from the hive.'],
+  ['POST', '/api/p2pclaw/configure', 'Persist endpoint, identity, auth secret, and tier.'],
+  ['GET', '/api/p2pclaw/papers', 'Verified paper feed from La Rueda.'],
+  ['POST', '/api/p2pclaw/papers/publish', 'Publish a draft into the hive.'],
+  ['POST', '/api/p2pclaw/verify', 'Local structural verification bridge for drafts.'],
+  ['GET', '/api/p2pclaw/mempool', 'Unvalidated drafts awaiting votes.'],
+  ['POST', '/api/p2pclaw/papers/validate', 'Submit approve/reject with optional Occam score.'],
+  ['GET', '/api/p2pclaw/events', 'Recent chat/publication/validation event stream.'],
+  ['POST', '/api/p2pclaw/chat', 'Send a message into the research hive.'],
+  ['GET', '/api/p2pclaw/wheel', 'Similarity check against prior work.'],
+  ['GET', '/api/p2pclaw/investigations', 'Current investigation queue snapshot.'],
+];
+
+function p2pList(items, emptyLabel) {
+  const rows = Array.isArray(items) ? items : [];
+  if (!rows.length) {
+    return `<div class="card-sub">${esc(emptyLabel)}</div>`;
+  }
+  return `
+    <div class="p2p-list">
+      ${rows.map((item) => `
+        <article class="p2p-list-item">
+          <div class="p2p-list-title">${esc(item.title || item.paper_id || item.id || item.kind || 'untitled')}</div>
+          <div class="p2p-list-meta">
+            ${(item.status ? `status=${esc(item.status)}` : '')}
+            ${(item.author ? ` | author=${esc(item.author)}` : '')}
+            ${(item.timestamp ? ` | ts=${esc(String(item.timestamp))}` : '')}
+          </div>
+          <pre class="network-briefing p2p-list-json">${esc(JSON.stringify(item, null, 2))}</pre>
+        </article>
+      `).join('')}
+    </div>
+  `;
+}
 
 // Genesis + Overview hub + Identification pages — rendering logic in genesis-docs.js (loaded after app.js)
 function renderGenesisPage() {
@@ -177,6 +226,19 @@ async function renderNetworkingPage() {
   const p2enabled = !!(cards.find((n) => n.id === 'p2pclaw') || {}).enabled;
   const swarm = (p2status && p2status.swarm) || {};
 
+  let tabPayload = null;
+  let tabError = '';
+  if (_networkingSelected === 'p2pclaw') {
+    try {
+      if (_p2pclawTab === 'papers') tabPayload = await api('/p2pclaw/papers?limit=20');
+      if (_p2pclawTab === 'mempool') tabPayload = await api('/p2pclaw/mempool');
+      if (_p2pclawTab === 'events') tabPayload = await api('/p2pclaw/events?limit=20');
+      if (_p2pclawTab === 'investigations') tabPayload = await api('/p2pclaw/investigations');
+    } catch (err) {
+      tabError = String(err && err.message || err || 'failed to load tab');
+    }
+  }
+
   const cardsHtml = cards.map((n) => {
     const selected = _networkingSelected === n.id;
     const status = n.comingSoon
@@ -197,60 +259,195 @@ async function renderNetworkingPage() {
   const detailsHtml = _networkingSelected !== 'p2pclaw'
     ? '<div class="card"><div class="card-label">Coming Soon</div><div class="card-sub">This network integration is reserved for a future release.</div></div>'
     : `
+      <div class="p2p-tabs">
+        ${P2PCLAW_TABS.map((tab) => `
+          <button class="p2p-tab${tab.id === _p2pclawTab ? ' is-active' : ''}" data-p2-tab="${esc(tab.id)}">${esc(tab.label)}</button>
+        `).join('')}
+      </div>
       <div class="networking-detail-grid">
-        <section class="card networking-config-card">
-          <div class="card-label">P2PCLAW Configuration</div>
-          <div class="card-sub">Enable integration and configure endpoint + agent identity.</div>
-          <div class="network-form-row network-toggle-row">
-            <label class="network-toggle-label">Enable P2PCLAW</label>
-            <label class="switch">
-              <input type="checkbox" id="p2pclaw-enabled-toggle" ${p2enabled ? 'checked' : ''}>
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="network-form-row">
-            <label for="p2-endpoint-url">Endpoint URL</label>
-            <input class="input" id="p2-endpoint-url" value="${esc(p2cfg.endpoint_url || 'https://p2pclaw.com')}" placeholder="https://p2pclaw.com">
-          </div>
-          <div class="network-form-row">
-            <label for="p2-agent-name">Agent Name</label>
-            <input class="input" id="p2-agent-name" value="${esc(p2cfg.agent_name || 'AgentHALO')}" placeholder="AgentHALO">
-          </div>
-          <div class="network-form-row">
-            <label for="p2-agent-id">Agent ID</label>
-            <input class="input" id="p2-agent-id" value="${esc(p2cfg.agent_id || 'agenthalo')}" placeholder="agenthalo-alice">
-          </div>
-          <div class="network-form-row">
-            <label for="p2-auth-secret">Auth Secret (optional)</label>
-            <input class="input" id="p2-auth-secret" type="password" placeholder="Shared HMAC secret">
-          </div>
-          <div class="network-form-row">
-            <label>Tier</label>
-            <div class="network-tier-row">
-              <label><input type="radio" name="p2-tier" value="tier1" ${(p2cfg.tier || 'tier1') === 'tier1' ? 'checked' : ''}> Tier 1 (Free)</label>
-              <label><input type="radio" name="p2-tier" value="tier2" ${(p2cfg.tier || 'tier1') === 'tier2' ? 'checked' : ''}> Tier 2 (Prepaid)</label>
+        ${_p2pclawTab === 'config' ? `
+          <section class="card networking-config-card">
+            <div class="card-label">P2PCLAW Configuration</div>
+            <div class="card-sub">Enable integration and configure endpoint + agent identity.</div>
+            <div class="network-form-row network-toggle-row">
+              <label class="network-toggle-label">Enable P2PCLAW</label>
+              <label class="switch">
+                <input type="checkbox" id="p2pclaw-enabled-toggle" ${p2enabled ? 'checked' : ''}>
+                <span class="slider"></span>
+              </label>
             </div>
-          </div>
-          <div class="network-form-actions">
-            <button class="btn" id="p2-test-btn">Test Connection</button>
-            <button class="btn btn-primary" id="p2-save-btn">Save</button>
-          </div>
-          <div id="p2-config-msg" class="networking-msg">${p2error ? esc(p2error) : ''}</div>
-        </section>
-        <section class="card networking-status-card">
-          <div class="card-label">Hive Status</div>
-          <div class="card-sub">Real-time metrics from /api/p2pclaw/status</div>
-          <div class="network-stat-grid">
-            <div class="network-stat"><span>Active Agents</span><strong id="p2-stat-agents">${Number(swarm.agents || 0)}</strong></div>
-            <div class="network-stat"><span>Papers</span><strong id="p2-stat-papers">${Number(swarm.papers || 0)}</strong></div>
-            <div class="network-stat"><span>Mempool</span><strong id="p2-stat-mempool">${Number(swarm.mempool || 0)}</strong></div>
-            <div class="network-stat"><span>Last Event</span><strong id="p2-stat-last">${esc(String(swarm.last_event_ts || '-'))}</strong></div>
-          </div>
-          <div class="network-form-actions" style="margin-top:10px">
-            <button class="btn btn-sm" id="p2-briefing-btn">Load Briefing</button>
-          </div>
-          <pre id="p2-briefing" class="network-briefing">No briefing loaded.</pre>
-        </section>
+            <div class="network-form-row">
+              <label for="p2-endpoint-url">Endpoint URL</label>
+              <input class="input" id="p2-endpoint-url" value="${esc(p2cfg.endpoint_url || 'https://p2pclaw.com')}" placeholder="https://p2pclaw.com">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-agent-name">Agent Name</label>
+              <input class="input" id="p2-agent-name" value="${esc(p2cfg.agent_name || 'AgentHALO')}" placeholder="AgentHALO">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-agent-id">Agent ID</label>
+              <input class="input" id="p2-agent-id" value="${esc(p2cfg.agent_id || 'agenthalo')}" placeholder="agenthalo-alice">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-auth-secret">Auth Secret (optional)</label>
+              <input class="input" id="p2-auth-secret" type="password" placeholder="Shared HMAC secret">
+            </div>
+            <div class="network-form-row">
+              <label>Tier</label>
+              <div class="network-tier-row">
+                <label><input type="radio" name="p2-tier" value="tier1" ${(p2cfg.tier || 'tier1') === 'tier1' ? 'checked' : ''}> Tier 1 (Free)</label>
+                <label><input type="radio" name="p2-tier" value="tier2" ${(p2cfg.tier || 'tier1') === 'tier2' ? 'checked' : ''}> Tier 2 (Prepaid)</label>
+              </div>
+            </div>
+            <div class="network-form-actions">
+              <button class="btn" id="p2-test-btn">Test Connection</button>
+              <button class="btn btn-primary" id="p2-save-btn">Save</button>
+            </div>
+            <div id="p2-config-msg" class="networking-msg">${p2error ? esc(p2error) : ''}</div>
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'status' ? `
+          <section class="card networking-status-card">
+            <div class="card-label">Hive Status</div>
+            <div class="card-sub">Real-time metrics from /api/p2pclaw/status</div>
+            <div class="network-stat-grid">
+              <div class="network-stat"><span>Active Agents</span><strong id="p2-stat-agents">${Number(swarm.agents || 0)}</strong></div>
+              <div class="network-stat"><span>Papers</span><strong id="p2-stat-papers">${Number(swarm.papers || 0)}</strong></div>
+              <div class="network-stat"><span>Mempool</span><strong id="p2-stat-mempool">${Number(swarm.mempool || 0)}</strong></div>
+              <div class="network-stat"><span>Last Event</span><strong id="p2-stat-last">${esc(String(swarm.last_event_ts || '-'))}</strong></div>
+            </div>
+            <div class="network-form-actions" style="margin-top:10px">
+              <button class="btn btn-sm" id="p2-briefing-btn">Load Briefing</button>
+            </div>
+            <pre id="p2-briefing" class="network-briefing">No briefing loaded.</pre>
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'papers' ? `
+          <section class="card">
+            <div class="card-label">Verified Papers</div>
+            <div class="card-sub">Backed by /api/p2pclaw/papers.</div>
+            ${tabError ? `<div class="networking-msg err">${esc(tabError)}</div>` : p2pList(tabPayload && tabPayload.papers, 'No papers returned.')}
+          </section>
+          <section class="card">
+            <div class="card-label">Draft Bridge</div>
+            <div class="card-sub">Verify locally before you publish into the hive.</div>
+            <div class="network-form-row">
+              <label for="p2-paper-title">Title</label>
+              <input class="input" id="p2-paper-title" placeholder="A theorem-ready title">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-paper-content">Content</label>
+              <textarea class="input p2-large-textarea" id="p2-paper-content" placeholder="Structured paper draft"></textarea>
+            </div>
+            <div class="network-form-actions">
+              <button class="btn" id="p2-verify-draft-btn">Verify Draft</button>
+              <button class="btn btn-primary" id="p2-publish-btn">Publish</button>
+            </div>
+            <pre id="p2-paper-result" class="network-briefing">No draft verification run yet.</pre>
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'mempool' ? `
+          <section class="card">
+            <div class="card-label">Mempool</div>
+            <div class="card-sub">Papers awaiting validation.</div>
+            ${tabError ? `<div class="networking-msg err">${esc(tabError)}</div>` : p2pList(tabPayload && tabPayload.papers, 'Mempool is empty.')}
+          </section>
+          <section class="card">
+            <div class="card-label">Validation Bridge</div>
+            <div class="card-sub">Submit a real validation decision through /api/p2pclaw/papers/validate.</div>
+            <div class="network-form-row">
+              <label for="p2-validate-id">Paper ID</label>
+              <input class="input" id="p2-validate-id" placeholder="paper id">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-validate-approve">Decision</label>
+              <select class="input" id="p2-validate-approve">
+                <option value="true">Approve</option>
+                <option value="false">Reject</option>
+              </select>
+            </div>
+            <div class="network-form-row">
+              <label for="p2-occam-score">Occam Score (optional)</label>
+              <input class="input" id="p2-occam-score" type="number" step="0.01" placeholder="0.85">
+            </div>
+            <div class="network-form-actions">
+              <button class="btn btn-primary" id="p2-validate-btn">Submit Validation</button>
+            </div>
+            <pre id="p2-validate-result" class="network-briefing">No validation submitted yet.</pre>
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'events' ? `
+          <section class="card">
+            <div class="card-label">Event Stream</div>
+            <div class="card-sub">Recent hive activity, plus chat and wheel lookups.</div>
+            ${tabError ? `<div class="networking-msg err">${esc(tabError)}</div>` : p2pList(tabPayload && tabPayload.events, 'No recent events returned.')}
+          </section>
+          <section class="card">
+            <div class="card-label">Chat + Similarity</div>
+            <div class="network-form-row">
+              <label for="p2-chat-message">Chat Message</label>
+              <input class="input" id="p2-chat-message" placeholder="Message to the research hive">
+            </div>
+            <div class="network-form-row">
+              <label for="p2-chat-channel">Channel</label>
+              <input class="input" id="p2-chat-channel" value="research" placeholder="research">
+            </div>
+            <div class="network-form-actions">
+              <button class="btn" id="p2-chat-btn">Send Chat</button>
+            </div>
+            <div class="network-form-row">
+              <label for="p2-wheel-query">Wheel Query</label>
+              <input class="input" id="p2-wheel-query" placeholder="Related work query">
+            </div>
+            <div class="network-form-actions">
+              <button class="btn btn-primary" id="p2-wheel-btn">Check Wheel</button>
+            </div>
+            <pre id="p2-events-result" class="network-briefing">No chat or wheel action yet.</pre>
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'investigations' ? `
+          <section class="card">
+            <div class="card-label">Investigations</div>
+            <div class="card-sub">Current investigation queue.</div>
+            ${tabError ? `<div class="networking-msg err">${esc(tabError)}</div>` : p2pList(tabPayload && tabPayload.investigations, 'No investigations returned.')}
+          </section>
+        ` : ''}
+        ${_p2pclawTab === 'docs' ? `
+          <section class="card p2p-docs-card">
+            <div class="card-label">P2PCLAW Hub Docs</div>
+            <div class="card-sub">This tab documents the implemented dashboard routes and the local verification bridge.</div>
+            <pre class="p2p-architecture">Browser Dashboard
+      |
+      +-- /api/p2pclaw/* --------------> AgentHALO dashboard backend
+      |                                      |
+      |                                      +-- local verify bridge (/api/p2pclaw/verify)
+      |                                      +-- remote hive gateway (status, papers, mempool, events)
+      |
+      +-- /api/mcp/* ------------------> live child-process MCP bridge
+                                             |
+                                             +-- agenthalo-mcp-server (stdio)
+                                             +-- p2pclaw_* / nucleusdb_* / orchestrator_* tools</pre>
+            <div class="p2p-route-grid">
+              ${P2PCLAW_DOC_ROUTES.map(([method, route, desc]) => `
+                <article class="p2p-route-card">
+                  <div class="p2p-route-head"><span class="badge">${esc(method)}</span><code>${esc(route)}</code></div>
+                  <div class="card-sub">${esc(desc)}</div>
+                </article>
+              `).join('')}
+            </div>
+            <div class="p2p-doc-grid">
+              <div class="card">
+                <div class="card-label">Verification Bridge</div>
+                <div class="card-sub">Drafts are checked locally for structure, claim extraction, completeness, consistency, and a deterministic proof hash before they are pushed into the remote hive.</div>
+              </div>
+              <div class="card">
+                <div class="card-label">MCP Reference</div>
+                <div class="card-sub">The dashboard MCP catalog talks to the real <code>agenthalo-mcp-server</code>, not a static registry snapshot.</div>
+                <div class="network-form-actions"><a class="btn btn-primary" href="#/mcp-tools/p2pclaw">Open P2PCLAW MCP Tools</a></div>
+              </div>
+            </div>
+          </section>
+        ` : ''}
       </div>`;
 
   content.innerHTML = `
@@ -269,6 +466,13 @@ async function renderNetworkingPage() {
     });
   });
   if (_networkingSelected !== 'p2pclaw') return;
+
+  $$('[data-p2-tab]').forEach((el) => {
+    el.addEventListener('click', () => {
+      _p2pclawTab = el.dataset.p2Tab || 'config';
+      renderNetworkingPage();
+    });
+  });
 
   const msgEl = $('#p2-config-msg');
   const setMsg = (text, ok) => {
@@ -342,6 +546,95 @@ async function renderNetworkingPage() {
         if (target) target.textContent = String(res && res.briefing_markdown || 'No briefing content.');
       } catch (err) {
         if (target) target.textContent = String(err && err.message || err || 'Failed to load briefing.');
+      }
+    });
+  }
+
+  const verifyBtn = $('#p2-verify-draft-btn');
+  if (verifyBtn) {
+    verifyBtn.addEventListener('click', async () => {
+      const target = $('#p2-paper-result');
+      const payload = {
+        title: ($('#p2-paper-title')?.value || '').trim(),
+        content: ($('#p2-paper-content')?.value || '').trim(),
+      };
+      if (target) target.textContent = 'Verifying draft...';
+      try {
+        const res = await apiPost('/p2pclaw/verify', payload);
+        if (target) target.textContent = JSON.stringify(res.verification || res, null, 2);
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'verification failed');
+      }
+    });
+  }
+
+  const publishBtn = $('#p2-publish-btn');
+  if (publishBtn) {
+    publishBtn.addEventListener('click', async () => {
+      const target = $('#p2-paper-result');
+      const payload = {
+        title: ($('#p2-paper-title')?.value || '').trim(),
+        content: ($('#p2-paper-content')?.value || '').trim(),
+      };
+      if (target) target.textContent = 'Publishing paper...';
+      try {
+        const res = await apiPost('/p2pclaw/papers/publish', payload);
+        if (target) target.textContent = JSON.stringify(res.result || res, null, 2);
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'publish failed');
+      }
+    });
+  }
+
+  const validateBtn = $('#p2-validate-btn');
+  if (validateBtn) {
+    validateBtn.addEventListener('click', async () => {
+      const target = $('#p2-validate-result');
+      const occam = ($('#p2-occam-score')?.value || '').trim();
+      const payload = {
+        paper_id: ($('#p2-validate-id')?.value || '').trim(),
+        approve: ($('#p2-validate-approve')?.value || 'true') === 'true',
+      };
+      if (occam) payload.occam_score = Number(occam);
+      if (target) target.textContent = 'Submitting validation...';
+      try {
+        const res = await apiPost('/p2pclaw/papers/validate', payload);
+        if (target) target.textContent = JSON.stringify(res.result || res, null, 2);
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'validation failed');
+      }
+    });
+  }
+
+  const chatBtn = $('#p2-chat-btn');
+  if (chatBtn) {
+    chatBtn.addEventListener('click', async () => {
+      const target = $('#p2-events-result');
+      const payload = {
+        message: ($('#p2-chat-message')?.value || '').trim(),
+        channel: ($('#p2-chat-channel')?.value || '').trim() || 'research',
+      };
+      if (target) target.textContent = 'Sending chat...';
+      try {
+        const res = await apiPost('/p2pclaw/chat', payload);
+        if (target) target.textContent = JSON.stringify(res, null, 2);
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'chat failed');
+      }
+    });
+  }
+
+  const wheelBtn = $('#p2-wheel-btn');
+  if (wheelBtn) {
+    wheelBtn.addEventListener('click', async () => {
+      const target = $('#p2-events-result');
+      const query = ($('#p2-wheel-query')?.value || '').trim();
+      if (target) target.textContent = 'Checking wheel...';
+      try {
+        const res = await api(`/p2pclaw/wheel?query=${encodeURIComponent(query)}`);
+        if (target) target.textContent = JSON.stringify(res.result || res, null, 2);
+      } catch (err) {
+        if (target) target.textContent = String(err && err.message || err || 'wheel lookup failed');
       }
     });
   }

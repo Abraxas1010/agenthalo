@@ -1,12 +1,25 @@
 pub mod a2a;
 pub mod agent_pool;
+pub mod container_dispatch;
+pub mod dispatch;
+pub mod subsidiary_registry;
 pub mod task;
 pub mod task_graph;
 pub mod trace_bridge;
 
+pub use dispatch::{ContainerHookupRequest, DispatchMode};
+
 use crate::cockpit::pty_manager::PtyManager;
+use crate::container::agent_lock::ReusePolicy;
 use crate::halo::vault::Vault;
-use crate::orchestrator::agent_pool::{AgentPool, ContainerBudget, LaunchSpec, ManagedAgent};
+use crate::orchestrator::agent_pool::{
+    normalize_capabilities, validate_capabilities, AgentPool, ContainerBudget, LaunchSpec,
+    ManagedAgent,
+};
+use crate::orchestrator::container_dispatch::{
+    ContainerDeinitializeSpec, ContainerDispatch, ContainerInitializeSpec, ContainerPromptSpec,
+    ContainerProvisionSpec, MeshContainerDispatch,
+};
 use crate::orchestrator::task::{Task, TaskStatus, TaskUsage};
 use crate::orchestrator::task_graph::{PipeTransform, TaskEdge, TaskGraph};
 use schemars::JsonSchema;
@@ -14,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaunchAgentRequest {
@@ -28,6 +42,10 @@ pub struct LaunchAgentRequest {
     pub trace: bool,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub dispatch_mode: Option<DispatchMode>,
+    #[serde(default)]
+    pub container_hookup: Option<ContainerHookupRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,13 +112,28 @@ pub struct Orchestrator {
     inner: Arc<OrchestratorInner>,
 }
 
-#[derive(Debug)]
 struct OrchestratorInner {
     pool: AgentPool,
+    container_dispatch: Arc<dyn ContainerDispatch>,
+    container_agents: tokio::sync::Mutex<BTreeMap<String, ManagedAgent>>,
+    container_sessions: tokio::sync::Mutex<BTreeMap<String, ContainerAgentSession>>,
     tasks: tokio::sync::Mutex<BTreeMap<String, Task>>,
     graph: tokio::sync::Mutex<TaskGraph>,
     trace_db_path: PathBuf,
     background_runs: tokio::sync::Mutex<BTreeMap<String, tokio::task::JoinHandle<()>>>,
+}
+
+impl std::fmt::Debug for OrchestratorInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrchestratorInner").finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ContainerAgentSession {
+    session_id: String,
+    peer_agent_id: String,
+    reuse_policy: ReusePolicy,
 }
 
 const MAX_TASK_TIMEOUT_SECS: u64 = 3600;
@@ -127,9 +160,28 @@ impl Orchestrator {
         trace_db_path: PathBuf,
         budget: ContainerBudget,
     ) -> Self {
+        Self::with_budget_and_container_dispatch(
+            pty_manager,
+            vault,
+            trace_db_path,
+            budget,
+            Arc::new(MeshContainerDispatch::default()),
+        )
+    }
+
+    pub fn with_budget_and_container_dispatch(
+        pty_manager: Arc<PtyManager>,
+        vault: Option<Arc<Vault>>,
+        trace_db_path: PathBuf,
+        budget: ContainerBudget,
+        container_dispatch: Arc<dyn ContainerDispatch>,
+    ) -> Self {
         Self {
             inner: Arc::new(OrchestratorInner {
                 pool: AgentPool::with_budget(pty_manager, vault, budget),
+                container_dispatch,
+                container_agents: tokio::sync::Mutex::new(BTreeMap::new()),
+                container_sessions: tokio::sync::Mutex::new(BTreeMap::new()),
                 tasks: tokio::sync::Mutex::new(BTreeMap::new()),
                 graph: tokio::sync::Mutex::new(TaskGraph::default()),
                 trace_db_path,
@@ -139,19 +191,24 @@ impl Orchestrator {
     }
 
     pub async fn launch_agent(&self, req: LaunchAgentRequest) -> Result<ManagedAgent, String> {
-        self.inner
-            .pool
-            .launch(LaunchSpec {
-                agent: req.agent,
-                agent_name: req.agent_name,
-                working_dir: req.working_dir,
-                env: req.env,
-                timeout_secs: req.timeout_secs.clamp(5, MAX_TASK_TIMEOUT_SECS),
-                model: req.model,
-                trace: req.trace,
-                capabilities: req.capabilities,
-            })
-            .await
+        match req.dispatch_mode.unwrap_or_else(DispatchMode::from_env) {
+            DispatchMode::Pty => {
+                self.inner
+                    .pool
+                    .launch(LaunchSpec {
+                        agent: req.agent,
+                        agent_name: req.agent_name,
+                        working_dir: req.working_dir,
+                        env: req.env,
+                        timeout_secs: req.timeout_secs.clamp(5, MAX_TASK_TIMEOUT_SECS),
+                        model: req.model,
+                        trace: req.trace,
+                        capabilities: req.capabilities,
+                    })
+                    .await
+            }
+            DispatchMode::Container => self.launch_container_agent(req).await,
+        }
     }
 
     pub async fn send_task(&self, req: SendTaskRequest) -> Result<Task, String> {
@@ -290,6 +347,14 @@ impl Orchestrator {
             .get_task(&task_id)
             .await
             .ok_or_else(|| format!("unknown task {task_id}"))?;
+        if self.is_container_agent(&task.agent_id).await {
+            let result = self
+                .run_container_task(task_id.clone(), task, timeout_override)
+                .await;
+            self.clear_background_run(&task_id).await;
+            self.prune_tasks().await;
+            return result;
+        }
         let execution = self
             .inner
             .pool
@@ -419,6 +484,279 @@ impl Orchestrator {
         out
     }
 
+    async fn launch_container_agent(
+        &self,
+        req: LaunchAgentRequest,
+    ) -> Result<ManagedAgent, String> {
+        let hookup = match req.container_hookup.clone() {
+            Some(hookup) => hookup,
+            None => ContainerHookupRequest::infer_cli(&req.agent, req.model.clone())?,
+        };
+        validate_capabilities(&req.capabilities)?;
+        let kind = hookup.agent_type();
+        let budget = self.inner.pool.budget().clone();
+        if !budget.allowed_kinds.is_empty()
+            && !budget.allowed_kinds.iter().any(|allowed| allowed == &kind)
+        {
+            return Err(format!(
+                "agent kind '{}' not allowed by container budget (allowed: {:?})",
+                kind, budget.allowed_kinds
+            ));
+        }
+        let total_agents =
+            self.inner.pool.list().await.len() + self.inner.container_agents.lock().await.len();
+        if total_agents >= budget.max_agents {
+            return Err(format!(
+                "container budget exceeded: max {} agents",
+                budget.max_agents
+            ));
+        }
+        let defaults = self.inner.container_dispatch.provision_defaults();
+        let peer_agent_id = format!(
+            "container-{}-{}",
+            crate::pod::now_unix(),
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        );
+        let provisioned = self
+            .inner
+            .container_dispatch
+            .provision(ContainerProvisionSpec {
+                image: defaults.image,
+                peer_agent_id: peer_agent_id.clone(),
+                mcp_port: defaults.mcp_port,
+                registry_volume: defaults.registry_volume,
+                env: BTreeMap::new(),
+            })
+            .await?;
+        let initialized = self
+            .inner
+            .container_dispatch
+            .initialize(ContainerInitializeSpec {
+                peer_agent_id: peer_agent_id.clone(),
+                reuse_policy: ReusePolicy::Reusable,
+                hookup: hookup.clone(),
+            })
+            .await?;
+        let agent_id = format!(
+            "ctr-{}-{}",
+            crate::pod::now_unix(),
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        );
+        let managed = ManagedAgent {
+            agent_id: agent_id.clone(),
+            agent_name: if req.agent_name.trim().is_empty() {
+                hookup.agent_type()
+            } else {
+                req.agent_name.trim().to_string()
+            },
+            agent_type: hookup.agent_type(),
+            pty_session_id: None,
+            capabilities: normalize_capabilities(req.capabilities),
+            status: crate::orchestrator::agent_pool::AgentStatus::Idle,
+            launched_at: crate::pod::now_unix(),
+            timeout_secs: req.timeout_secs.clamp(5, MAX_TASK_TIMEOUT_SECS),
+            model: hookup.model(),
+            working_dir: req.working_dir,
+            tasks_completed: 0,
+            total_cost_usd: 0.0,
+            trace_enabled: req.trace,
+            command: String::new(),
+            static_args: Vec::new(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+        };
+        self.inner
+            .container_agents
+            .lock()
+            .await
+            .insert(agent_id.clone(), managed.clone());
+        self.inner.container_sessions.lock().await.insert(
+            agent_id,
+            ContainerAgentSession {
+                session_id: provisioned.session_id,
+                peer_agent_id,
+                reuse_policy: initialized.reuse_policy,
+            },
+        );
+        Ok(managed)
+    }
+
+    async fn is_container_agent(&self, agent_id: &str) -> bool {
+        self.inner
+            .container_agents
+            .lock()
+            .await
+            .contains_key(agent_id)
+    }
+
+    async fn run_container_task(
+        &self,
+        task_id: String,
+        task: Task,
+        timeout_override: Option<u64>,
+    ) -> Result<(), String> {
+        let session = self
+            .inner
+            .container_sessions
+            .lock()
+            .await
+            .get(&task.agent_id)
+            .cloned()
+            .ok_or_else(|| format!("missing container session metadata for {}", task.agent_id))?;
+        let pty_busy_count = self
+            .inner
+            .pool
+            .list()
+            .await
+            .into_iter()
+            .filter(|agent| {
+                matches!(
+                    agent.status,
+                    crate::orchestrator::agent_pool::AgentStatus::Busy { .. }
+                )
+            })
+            .count();
+        let timeout_secs = {
+            let mut agents = self.inner.container_agents.lock().await;
+            let busy_count = pty_busy_count
+                + agents
+                    .values()
+                    .filter(|agent| {
+                        matches!(
+                            agent.status,
+                            crate::orchestrator::agent_pool::AgentStatus::Busy { .. }
+                        )
+                    })
+                    .count();
+            if busy_count >= self.inner.pool.budget().max_concurrent_busy {
+                return Err(format!(
+                    "concurrent busy limit reached ({}/{})",
+                    busy_count,
+                    self.inner.pool.budget().max_concurrent_busy
+                ));
+            }
+            let agent = agents
+                .get_mut(&task.agent_id)
+                .ok_or_else(|| format!("unknown agent_id {}", task.agent_id))?;
+            if matches!(
+                agent.status,
+                crate::orchestrator::agent_pool::AgentStatus::Stopped { .. }
+            ) {
+                return Err(format!("agent {} is stopped", task.agent_id));
+            }
+            if matches!(
+                agent.status,
+                crate::orchestrator::agent_pool::AgentStatus::Busy { .. }
+            ) {
+                return Err(format!("agent {} is busy", task.agent_id));
+            }
+            let timeout_secs = timeout_override
+                .unwrap_or(agent.timeout_secs)
+                .clamp(1, MAX_TASK_TIMEOUT_SECS);
+            agent.status = crate::orchestrator::agent_pool::AgentStatus::Busy {
+                task_id: task.task_id.clone(),
+            };
+            timeout_secs
+        };
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            self.inner
+                .container_dispatch
+                .send_prompt(ContainerPromptSpec {
+                    peer_agent_id: session.peer_agent_id.clone(),
+                    prompt: task.prompt.clone(),
+                }),
+        )
+        .await;
+        let result = match outcome {
+            Ok(Ok(response)) => {
+                let mut updated = task.clone();
+                updated.mark_complete(
+                    response.content.clone(),
+                    0,
+                    TaskUsage {
+                        input_tokens: response.input_tokens,
+                        output_tokens: response.output_tokens,
+                        estimated_cost_usd: response.cost_usd,
+                    },
+                    None,
+                );
+                updated.answer = Some(response.content.clone());
+                {
+                    let mut tasks = self.inner.tasks.lock().await;
+                    tasks.insert(task_id.clone(), updated.clone());
+                }
+                {
+                    let mut graph = self.inner.graph.lock().await;
+                    graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
+                }
+                {
+                    let mut agents = self.inner.container_agents.lock().await;
+                    if let Some(agent) = agents.get_mut(&task.agent_id) {
+                        agent.status = crate::orchestrator::agent_pool::AgentStatus::Idle;
+                        agent.tasks_completed = agent.tasks_completed.saturating_add(1);
+                        agent.total_cost_usd += response.cost_usd.max(0.0);
+                    }
+                }
+                let followups = self.collect_followups(&updated).await;
+                for (source_task_id, target_agent_id, transformed) in followups {
+                    let new_task = self.create_task(target_agent_id.clone(), transformed).await;
+                    let new_task_id = new_task.task_id.clone();
+                    {
+                        let mut graph = self.inner.graph.lock().await;
+                        graph.set_generated_task(
+                            &source_task_id,
+                            &target_agent_id,
+                            new_task_id.clone(),
+                        );
+                    }
+                    let _ = Box::pin(self.run_task(new_task_id, None)).await;
+                }
+                Ok(())
+            }
+            Ok(Err(err)) => {
+                let mut updated = task;
+                updated.mark_failed(err.clone(), None);
+                {
+                    let mut tasks = self.inner.tasks.lock().await;
+                    tasks.insert(task_id.clone(), updated.clone());
+                }
+                {
+                    let mut graph = self.inner.graph.lock().await;
+                    graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
+                }
+                {
+                    let mut agents = self.inner.container_agents.lock().await;
+                    if let Some(agent) = agents.get_mut(&updated.agent_id) {
+                        agent.status = crate::orchestrator::agent_pool::AgentStatus::Idle;
+                    }
+                }
+                Err(err)
+            }
+            Err(_) => {
+                let err = format!("container task timed out after {timeout_secs}s");
+                let mut updated = task;
+                updated.mark_timeout(err.clone());
+                {
+                    let mut tasks = self.inner.tasks.lock().await;
+                    tasks.insert(task_id.clone(), updated.clone());
+                }
+                {
+                    let mut graph = self.inner.graph.lock().await;
+                    graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
+                }
+                {
+                    let mut agents = self.inner.container_agents.lock().await;
+                    if let Some(agent) = agents.get_mut(&updated.agent_id) {
+                        agent.status = crate::orchestrator::agent_pool::AgentStatus::Idle;
+                    }
+                }
+                Err(err)
+            }
+        };
+        result
+    }
+
     pub async fn pipe(&self, req: PipeRequest) -> Result<Option<Task>, String> {
         let transform = PipeTransform::parse(req.transform.as_deref(), req.task_prefix.as_deref())?;
         let source = self
@@ -459,11 +797,21 @@ impl Orchestrator {
     }
 
     pub async fn list_agents(&self) -> Vec<ManagedAgent> {
-        self.inner.pool.list().await
+        let mut agents = self.inner.pool.list().await;
+        let mut containers = self
+            .inner
+            .container_agents
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        agents.append(&mut containers);
+        agents
     }
 
     pub async fn status(&self) -> OrchestratorStatus {
-        let agents = self.inner.pool.list().await;
+        let agents = self.list_agents().await;
         let agents_busy = agents
             .iter()
             .filter(|agent| {
@@ -572,6 +920,47 @@ impl Orchestrator {
     }
 
     pub async fn stop_agent(&self, req: StopRequest) -> Result<StopResult, String> {
+        if self.is_container_agent(&req.agent_id).await {
+            self.cancel_inflight_for_agent(&req.agent_id).await;
+            let session = self
+                .inner
+                .container_sessions
+                .lock()
+                .await
+                .get(&req.agent_id)
+                .cloned()
+                .ok_or_else(|| {
+                    format!("missing container session metadata for {}", req.agent_id)
+                })?;
+            let deinit = self
+                .inner
+                .container_dispatch
+                .deinitialize(ContainerDeinitializeSpec {
+                    peer_agent_id: session.peer_agent_id.clone(),
+                })
+                .await?;
+            if req.force || session.reuse_policy == ReusePolicy::SingleUse {
+                self.inner
+                    .container_dispatch
+                    .destroy(&session.session_id)
+                    .await?;
+            }
+            let stopped = {
+                let mut agents = self.inner.container_agents.lock().await;
+                let agent = agents
+                    .get_mut(&req.agent_id)
+                    .ok_or_else(|| format!("unknown agent_id {}", req.agent_id))?;
+                agent.status =
+                    crate::orchestrator::agent_pool::AgentStatus::Stopped { exit_code: 0 };
+                agent.clone()
+            };
+            return Ok(StopResult {
+                agent_id: stopped.agent_id,
+                status: "stopped".to_string(),
+                trace_session_id: deinit.trace_session_id,
+                attestation_ready: true,
+            });
+        }
         self.cancel_inflight_for_agent(&req.agent_id).await;
         let agent = self.inner.pool.stop(&req.agent_id, req.force).await?;
         Ok(StopResult {
@@ -594,6 +983,26 @@ impl Orchestrator {
     }
 
     pub async fn require_capability(&self, agent_id: &str, capability: &str) -> Result<(), String> {
+        if let Some(agent) = self
+            .inner
+            .container_agents
+            .lock()
+            .await
+            .get(agent_id)
+            .cloned()
+        {
+            let allowed = agent
+                .capabilities
+                .iter()
+                .any(|c| c == "*" || c == capability);
+            if allowed {
+                return Ok(());
+            }
+            return Err(format!(
+                "agent '{}' lacks capability '{}'",
+                agent.agent_name, capability
+            ));
+        }
         self.inner.pool.capability_check(agent_id, capability).await
     }
 
@@ -702,7 +1111,13 @@ fn load_local_identity_for_a2a() -> Result<crate::halo::did::DIDIdentity, String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::container::{PeerInfo, PeerRegistry};
+    use crate::container::{AgentResponse, PeerInfo, PeerRegistry};
+    use crate::orchestrator::container_dispatch::{
+        ContainerDeinitializeResult, ContainerDeinitializeSpec, ContainerDispatch,
+        ContainerInitializeSpec, ContainerPromptSpec, ContainerProvisionDefaults,
+        ContainerProvisionSpec, InMemoryContainerDispatch, InitializedContainerAgent,
+        ProvisionedContainer,
+    };
     use crate::test_support::env_lock;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -746,6 +1161,98 @@ mod tests {
         Orchestrator::new(pty, None, PathBuf::from("/tmp/orch_trace_test.ndb"))
     }
 
+    fn test_container_orchestrator() -> Orchestrator {
+        let pty = Arc::new(PtyManager::new(8));
+        Orchestrator::with_budget_and_container_dispatch(
+            pty,
+            None,
+            PathBuf::from("/tmp/orch_container_trace_test.ndb"),
+            ContainerBudget::default(),
+            Arc::new(InMemoryContainerDispatch::default()),
+        )
+    }
+
+    struct SlowContainerDispatch;
+
+    #[async_trait::async_trait]
+    impl ContainerDispatch for SlowContainerDispatch {
+        fn provision_defaults(&self) -> ContainerProvisionDefaults {
+            ContainerProvisionDefaults {
+                image: "nucleusdb-agent:test".to_string(),
+                registry_volume: PathBuf::from("/tmp/slow-dispatch"),
+                mcp_port: 7331,
+            }
+        }
+
+        async fn provision(
+            &self,
+            spec: ContainerProvisionSpec,
+        ) -> Result<ProvisionedContainer, String> {
+            Ok(ProvisionedContainer {
+                session_id: "sess-slow".to_string(),
+                container_id: "ctr-slow".to_string(),
+                image: spec.image,
+                peer_agent_id: spec.peer_agent_id,
+                host_sock: "/tmp/slow.sock".to_string(),
+                started_at_unix: crate::pod::now_unix(),
+                mesh_port: Some(spec.mcp_port),
+            })
+        }
+
+        async fn initialize(
+            &self,
+            spec: ContainerInitializeSpec,
+        ) -> Result<InitializedContainerAgent, String> {
+            Ok(InitializedContainerAgent {
+                container_id: "ctr-slow".to_string(),
+                agent_id: format!("{}-agent", spec.peer_agent_id),
+                state: "locked".to_string(),
+                trace_session_id: Some("trace-slow".to_string()),
+                reuse_policy: spec.reuse_policy,
+            })
+        }
+
+        async fn send_prompt(&self, _spec: ContainerPromptSpec) -> Result<AgentResponse, String> {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Ok(AgentResponse {
+                content: "late response".to_string(),
+                model: "slow-model".to_string(),
+                input_tokens: 1,
+                output_tokens: 1,
+                cost_usd: 0.0,
+                tool_calls: Vec::new(),
+                duration_ms: 2000,
+            })
+        }
+
+        async fn deinitialize(
+            &self,
+            _spec: ContainerDeinitializeSpec,
+        ) -> Result<ContainerDeinitializeResult, String> {
+            Ok(ContainerDeinitializeResult {
+                container_id: "ctr-slow".to_string(),
+                state: "empty".to_string(),
+                trace_session_id: None,
+                reuse_policy: ReusePolicy::Reusable,
+            })
+        }
+
+        async fn destroy(&self, _session_id: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn test_slow_container_orchestrator() -> Orchestrator {
+        let pty = Arc::new(PtyManager::new(8));
+        Orchestrator::with_budget_and_container_dispatch(
+            pty,
+            None,
+            PathBuf::from("/tmp/orch_container_timeout_test.ndb"),
+            ContainerBudget::default(),
+            Arc::new(SlowContainerDispatch),
+        )
+    }
+
     #[tokio::test]
     async fn launch_and_list_agent() {
         let orchestrator = test_orchestrator();
@@ -759,12 +1266,228 @@ mod tests {
                 model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
             })
             .await
             .expect("launch");
         assert_eq!(agent.agent_name, "tester");
         let all = orchestrator.list_agents().await;
         assert_eq!(all.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn container_launch_send_stop_roundtrip_cli() {
+        let orchestrator = test_container_orchestrator();
+        let agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "container-shell".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: Some("shell-model".to_string()),
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: Some(DispatchMode::Container),
+                container_hookup: None,
+            })
+            .await
+            .expect("launch container cli");
+        assert_eq!(agent.agent_type, "shell");
+        assert_eq!(agent.model.as_deref(), Some("shell-model"));
+
+        let task = orchestrator
+            .send_task(SendTaskRequest {
+                agent_id: agent.agent_id.clone(),
+                task: "review this diff".to_string(),
+                timeout_secs: Some(30),
+                wait: true,
+            })
+            .await
+            .expect("run container cli task");
+        assert!(matches!(task.status, TaskStatus::Complete));
+        assert_eq!(task.result.as_deref(), Some("cli:shell:review this diff"));
+
+        let stopped = orchestrator
+            .stop_agent(StopRequest {
+                agent_id: agent.agent_id.clone(),
+                force: false,
+            })
+            .await
+            .expect("stop container cli");
+        assert_eq!(stopped.status, "stopped");
+
+        let err = orchestrator
+            .send_task(SendTaskRequest {
+                agent_id: agent.agent_id,
+                task: "should fail".to_string(),
+                timeout_secs: Some(30),
+                wait: true,
+            })
+            .await
+            .expect_err("stopped container agent must reject tasks");
+        assert!(err.contains("stopped"));
+    }
+
+    #[tokio::test]
+    async fn container_launch_send_stop_roundtrip_api() {
+        let orchestrator = test_container_orchestrator();
+        let agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "container-api".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: true,
+                capabilities: vec!["memory_read".to_string(), "memory_write".to_string()],
+                dispatch_mode: Some(DispatchMode::Container),
+                container_hookup: Some(ContainerHookupRequest::Api {
+                    provider: "openrouter".to_string(),
+                    model: "openrouter/test-model".to_string(),
+                    api_key_source: "test-key".to_string(),
+                    base_url_override: Some("http://127.0.0.1:18080".to_string()),
+                }),
+            })
+            .await
+            .expect("launch container api");
+        assert_eq!(agent.agent_type, "openrouter");
+        assert_eq!(agent.model.as_deref(), Some("openrouter/test-model"));
+
+        let task = orchestrator
+            .send_task(SendTaskRequest {
+                agent_id: agent.agent_id.clone(),
+                task: "summarize".to_string(),
+                timeout_secs: Some(30),
+                wait: true,
+            })
+            .await
+            .expect("run container api task");
+        assert!(matches!(task.status, TaskStatus::Complete));
+        assert_eq!(task.result.as_deref(), Some("api:openrouter:summarize"));
+
+        let stopped = orchestrator
+            .stop_agent(StopRequest {
+                agent_id: agent.agent_id,
+                force: false,
+            })
+            .await
+            .expect("stop container api");
+        assert_eq!(stopped.status, "stopped");
+    }
+
+    #[tokio::test]
+    async fn container_launch_send_stop_roundtrip_local_model() {
+        let orchestrator = test_container_orchestrator();
+        let agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "container-local".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: true,
+                capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: Some(DispatchMode::Container),
+                container_hookup: Some(ContainerHookupRequest::LocalModel {
+                    model_id: "meta-llama/Llama-3.1-8B-Instruct".to_string(),
+                    vllm_port: Some(8000),
+                    base_url_override: Some("http://127.0.0.1:18081".to_string()),
+                }),
+            })
+            .await
+            .expect("launch container local model");
+        assert_eq!(agent.agent_type, "local_model");
+        assert_eq!(
+            agent.model.as_deref(),
+            Some("meta-llama/Llama-3.1-8B-Instruct")
+        );
+
+        let task = orchestrator
+            .send_task(SendTaskRequest {
+                agent_id: agent.agent_id.clone(),
+                task: "write tests".to_string(),
+                timeout_secs: Some(30),
+                wait: true,
+            })
+            .await
+            .expect("run container local task");
+        assert!(matches!(task.status, TaskStatus::Complete));
+        assert_eq!(
+            task.result.as_deref(),
+            Some("local:meta-llama/Llama-3.1-8B-Instruct:write tests")
+        );
+
+        let stopped = orchestrator
+            .stop_agent(StopRequest {
+                agent_id: agent.agent_id,
+                force: true,
+            })
+            .await
+            .expect("force stop container local");
+        assert_eq!(stopped.status, "stopped");
+    }
+
+    #[tokio::test]
+    async fn container_task_timeout_marks_timeout_and_recovers_agent() {
+        let orchestrator = test_slow_container_orchestrator();
+        let agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "container-timeout".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 1,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: Some(DispatchMode::Container),
+                container_hookup: Some(ContainerHookupRequest::Cli {
+                    cli_name: "shell".to_string(),
+                    model: None,
+                }),
+            })
+            .await
+            .expect("launch slow container agent");
+
+        let err = orchestrator
+            .send_task(SendTaskRequest {
+                agent_id: agent.agent_id.clone(),
+                task: "timeout me".to_string(),
+                timeout_secs: Some(1),
+                wait: true,
+            })
+            .await
+            .err()
+            .expect("container task should time out");
+        assert!(err.contains("timed out"));
+
+        let tasks = orchestrator.list_tasks().await;
+        assert!(
+            tasks.iter().any(|task| {
+                task.agent_id == agent.agent_id && task.status == TaskStatus::Timeout
+            }),
+            "expected timeout task for {}",
+            agent.agent_id
+        );
+
+        let managed = orchestrator
+            .list_agents()
+            .await
+            .into_iter()
+            .find(|candidate| candidate.agent_id == agent.agent_id)
+            .expect("agent still listed after timeout");
+        assert!(
+            matches!(
+                managed.status,
+                crate::orchestrator::agent_pool::AgentStatus::Idle
+            ),
+            "expected idle agent after timeout, got {:?}",
+            managed.status
+        );
     }
 
     #[tokio::test]
@@ -782,6 +1505,8 @@ mod tests {
                 model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
             })
             .await
             .expect("launch");
@@ -816,6 +1541,8 @@ mod tests {
                 model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
             })
             .await
             .expect("launch");
@@ -860,6 +1587,8 @@ mod tests {
                 model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
             })
             .await
             .expect("launch");
@@ -982,6 +1711,8 @@ mod tests {
                 model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
             })
             .await
             .expect("launch first");
@@ -995,6 +1726,8 @@ mod tests {
                 model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
             })
             .await
             .expect("launch second");
@@ -1054,6 +1787,8 @@ mod tests {
                 model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
             })
             .await
             .expect("launch busy");
@@ -1067,6 +1802,8 @@ mod tests {
                 model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
             })
             .await
             .expect("launch idle");
@@ -1080,6 +1817,8 @@ mod tests {
                 model: None,
                 trace: false,
                 capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
             })
             .await
             .expect("launch stopped");

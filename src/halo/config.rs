@@ -20,6 +20,10 @@ pub fn agent_lock_path() -> PathBuf {
     halo_dir().join("container_agent_lock.json")
 }
 
+pub fn subsidiaries_registry_path() -> PathBuf {
+    halo_dir().join("subsidiaries.json")
+}
+
 pub fn local_models_config_path() -> PathBuf {
     halo_dir().join("local_models.json")
 }

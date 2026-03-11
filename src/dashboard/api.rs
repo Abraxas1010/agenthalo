@@ -9,6 +9,7 @@
 //! `state.db_lock` before opening the database to prevent concurrent-open
 //! errors when the browser fires parallel requests (e.g. Promise.all).
 
+use super::mcp_bridge;
 use super::DashboardState;
 use crate::cli::default_witness_cfg;
 use crate::cockpit::deploy::{self, LaunchRequest};
@@ -30,6 +31,7 @@ use crate::halo::http_client;
 use crate::halo::metrics::diversity::{build_snapshot, extract_tool_counts};
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::p2pclaw;
+use crate::halo::p2pclaw_verify;
 use crate::halo::pq::has_wallet;
 use crate::halo::schema::{
     EventType, SessionMetadata, SessionStatus as HaloSessionStatus, TraceEvent,
@@ -120,6 +122,19 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/p2pclaw/configure", post(api_p2pclaw_configure))
         .route("/p2pclaw/status", get(api_p2pclaw_status))
         .route("/p2pclaw/briefing", get(api_p2pclaw_briefing))
+        .route("/p2pclaw/papers", get(api_p2pclaw_papers))
+        .route("/p2pclaw/mempool", get(api_p2pclaw_mempool))
+        .route("/p2pclaw/papers/publish", post(api_p2pclaw_publish))
+        .route("/p2pclaw/papers/validate", post(api_p2pclaw_validate))
+        .route("/p2pclaw/verify", post(api_p2pclaw_verify))
+        .route("/p2pclaw/events", get(api_p2pclaw_events))
+        .route("/p2pclaw/chat", post(api_p2pclaw_chat))
+        .route("/p2pclaw/wheel", get(api_p2pclaw_wheel))
+        .route("/p2pclaw/investigations", get(api_p2pclaw_investigations))
+        .route("/mcp/tools", get(api_mcp_tools))
+        .route("/mcp/tools/{name}", get(api_mcp_tool_detail))
+        .route("/mcp/invoke", post(api_mcp_invoke))
+        .route("/mcp/categories", get(api_mcp_categories))
         // Config
         .route("/config", get(api_config))
         .route("/config/wrap", post(api_config_wrap))
@@ -398,6 +413,56 @@ struct P2PClawConfigureRequest {
     agent_name: Option<String>,
     auth_secret: Option<String>,
     tier: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct P2PClawListQuery {
+    limit: Option<u64>,
+    since: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct P2PClawPublishRequest {
+    title: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct P2PClawValidateRequest {
+    paper_id: String,
+    approve: bool,
+    occam_score: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct P2PClawChatRequest {
+    message: String,
+    channel: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct P2PClawWheelQuery {
+    q: Option<String>,
+    query: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct P2PClawVerifyRequest {
+    title: String,
+    content: String,
+}
+
+#[derive(Deserialize, Default)]
+struct McpToolsQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct McpInvokeRequest {
+    tool: String,
+    #[serde(default)]
+    params: Value,
 }
 
 #[derive(Deserialize)]
@@ -803,6 +868,10 @@ struct OrchestratorLaunchApiRequest {
     trace: Option<bool>,
     #[serde(default)]
     capabilities: Vec<String>,
+    #[serde(default)]
+    dispatch_mode: Option<crate::orchestrator::DispatchMode>,
+    #[serde(default)]
+    container_hookup: Option<crate::orchestrator::ContainerHookupRequest>,
     #[serde(default)]
     admission_mode: Option<String>,
 }
@@ -4442,6 +4511,8 @@ async fn api_orch_launch(
             model: req.model,
             trace: req.trace.unwrap_or(true),
             capabilities: req.capabilities,
+            dispatch_mode: req.dispatch_mode,
+            container_hookup: req.container_hookup,
         })
         .await
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
@@ -4865,6 +4936,237 @@ async fn api_p2pclaw_briefing(AxumState(state): AxumState<DashboardState>) -> Ap
     Ok(Json(json!({
         "ok": true,
         "briefing_markdown": briefing
+    })))
+}
+
+async fn api_p2pclaw_papers(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<P2PClawListQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let papers = p2pclaw::list_papers(&cfg, query.limit)
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "count": papers.len(),
+        "papers": papers
+    })))
+}
+
+async fn api_p2pclaw_mempool(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let papers = p2pclaw::list_mempool(&cfg).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "count": papers.len(),
+        "papers": papers
+    })))
+}
+
+async fn api_p2pclaw_publish(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawPublishRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let title = req.title.trim();
+    let content = req.content.trim();
+    if title.is_empty() || content.is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "title and content are required",
+        ));
+    }
+    let result = p2pclaw::publish_paper(&cfg, title, content)
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "result": result
+    })))
+}
+
+async fn api_p2pclaw_validate(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawValidateRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let paper_id = req.paper_id.trim();
+    if paper_id.is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "paper_id is required"));
+    }
+    let result = p2pclaw::validate_paper(&cfg, paper_id, req.approve, req.occam_score)
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "result": result
+    })))
+}
+
+async fn api_p2pclaw_verify(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawVerifyRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let title = req.title.trim();
+    let content = req.content.trim();
+    if title.is_empty() || content.is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "title and content are required",
+        ));
+    }
+    let verification = p2pclaw_verify::verify_paper(title, content);
+    Ok(Json(json!({
+        "ok": true,
+        "verification": verification
+    })))
+}
+
+async fn api_p2pclaw_events(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<P2PClawListQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let events = p2pclaw::poll_events(&cfg, query.since, query.limit)
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "count": events.len(),
+        "events": events
+    })))
+}
+
+async fn api_p2pclaw_chat(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawChatRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let message = req.message.trim();
+    if message.is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "message is required"));
+    }
+    let channel = req
+        .channel
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    p2pclaw::send_chat(&cfg, message, channel).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "sent": true,
+        "channel": channel.unwrap_or("research")
+    })))
+}
+
+async fn api_p2pclaw_wheel(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<P2PClawWheelQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let needle = query
+        .query
+        .as_deref()
+        .or(query.q.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, "query is required"))?;
+    let result =
+        p2pclaw::search_wheel(&cfg, needle).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "query": needle,
+        "result": result
+    })))
+}
+
+async fn api_p2pclaw_investigations(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let investigations =
+        p2pclaw::list_investigations(&cfg).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "count": investigations.len(),
+        "investigations": investigations
+    })))
+}
+
+async fn api_mcp_tools(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<McpToolsQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let catalog = mcp_bridge::tool_catalog()
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    let total = catalog.len();
+    let offset = query.offset.unwrap_or(0).min(total);
+    let limit = query.limit.unwrap_or(50).max(1);
+    let tools = catalog
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "ok": true,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "count": tools.len(),
+        "tools": tools
+    })))
+}
+
+async fn api_mcp_tool_detail(
+    AxumState(state): AxumState<DashboardState>,
+    Path(name): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let tool = mcp_bridge::tool_detail(&name)
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    match tool {
+        Some(tool) => Ok(Json(json!({
+            "ok": true,
+            "tool": tool
+        }))),
+        None => Err(api_err(StatusCode::NOT_FOUND, "MCP tool not found")),
+    }
+}
+
+async fn api_mcp_invoke(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<McpInvokeRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let tool = req.tool.trim();
+    if tool.is_empty() {
+        return Err(api_err(StatusCode::BAD_REQUEST, "tool is required"));
+    }
+    let result = mcp_bridge::invoke_tool(tool, req.params)
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "result": result
+    })))
+}
+
+async fn api_mcp_categories(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let categories = mcp_bridge::category_summary()
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "count": categories.len(),
+        "categories": categories
     })))
 }
 
