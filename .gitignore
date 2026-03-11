@@ -27,6 +27,7 @@
 
 # Internal ops accounting (not for public release)
 /Docs/ops/
+/Docs/integration/
 
 # Sidecar dependencies
 /wdk-sidecar/node_modules/
