@@ -3,8 +3,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 const EPS: f64 = 1e-12;
+/// Canonical theorem path used for external assurance claims.
 pub const EVIDENCE_COMBINATION_FORMAL_BASIS: &str =
     "HeytingLean.EpistemicCalculus.Updating.vUpdate_chain_comm";
+/// Runtime-local mirror theorem for the concrete odds-fold implementation.
+pub const EVIDENCE_COMBINATION_FORMAL_BASIS_LOCAL: &str =
+    "HeytingLean.NucleusDB.Core.EvidenceFusion.combineEvidence_comm";
 
 /// Tool-provided evidence for a hypothesis.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -37,6 +41,23 @@ pub struct EvidenceCombination {
     pub posterior_odds_false_over_true: f64,
     pub posterior_probability_true: f64,
     pub steps: Vec<EvidenceStep>,
+}
+
+impl EvidenceCombination {
+    /// Canonical theorem path for the abstract Bayesian updating argument.
+    pub fn formal_basis() -> &'static str {
+        EVIDENCE_COMBINATION_FORMAL_BASIS
+    }
+
+    /// Runtime-local arithmetic mirror of the same order-independence property.
+    pub fn formal_basis_local() -> &'static str {
+        EVIDENCE_COMBINATION_FORMAL_BASIS_LOCAL
+    }
+
+    /// Canonical/local theorem-path pair for audit surfaces.
+    pub fn formal_provenance() -> (&'static str, &'static str) {
+        (Self::formal_basis(), Self::formal_basis_local())
+    }
 }
 
 /// Odds update in false-over-true orientation:

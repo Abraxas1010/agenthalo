@@ -12,6 +12,14 @@ use sha2::{Digest, Sha512};
 const EVM_GATE_DOMAIN: &str = "agenthalo.evm_gate.v1";
 pub const EVM_GATE_FORMAL_BASIS: &str =
     "HeytingLean.NucleusDB.Crypto.EVMGate.evm_sign_requires_dual_auth";
+/// Runtime-local mirror theorem for the nucleusdb gate state machine.
+pub const EVM_GATE_FORMAL_BASIS_LOCAL: &str =
+    "HeytingLean.NucleusDB.Comms.Identity.EVMGate.evm_sign_requires_dual_auth";
+
+/// Canonical/local theorem-path pair for PQ-gated EVM signing.
+pub fn evm_gate_formal_provenance() -> (&'static str, &'static str) {
+    (EVM_GATE_FORMAL_BASIS, EVM_GATE_FORMAL_BASIS_LOCAL)
+}
 
 /// Authorization request — the agent intends to sign this EVM payload.
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -6,8 +6,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Canonical theorem path used for external assurance claims.
 pub const EPISTEMIC_TRUST_FORMAL_BASIS: &str =
     "HeytingLean.EpistemicCalculus.NucleusBridge.nucleus_combine_floor_bound";
+/// Runtime-local mirror theorem for the arithmetic implementation in this repo.
+pub const EPISTEMIC_TRUST_FORMAL_BASIS_LOCAL: &str =
+    "HeytingLean.NucleusDB.Core.EpistemicTrust.combine_floor_respected";
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TrustScoreResult {
@@ -62,6 +66,16 @@ impl EpistemicTrust {
 
     pub fn formal_basis(&self) -> &'static str {
         EPISTEMIC_TRUST_FORMAL_BASIS
+    }
+
+    /// Runtime-local mirror theorem for the concrete arithmetic implementation.
+    pub fn formal_basis_local(&self) -> &'static str {
+        EPISTEMIC_TRUST_FORMAL_BASIS_LOCAL
+    }
+
+    /// Canonical/local theorem-path pair for audit surfaces.
+    pub fn formal_provenance(&self) -> (&'static str, &'static str) {
+        (self.formal_basis(), self.formal_basis_local())
     }
 
     /// Nucleus operator N(x)=max(x,floor).

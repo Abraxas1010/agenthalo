@@ -4,6 +4,15 @@ namespace HeytingLean
 namespace NucleusDB
 namespace Core
 
+/-!
+Runtime-local arithmetic mirror of evidence combination.
+
+The canonical Bayesian/enriched-category theorem lives in
+`HeytingLean.EpistemicCalculus.Updating.vUpdate_chain_comm`. This module keeps a
+minimal local witness for the concrete false-over-true odds arithmetic used by
+`src/halo/evidence.rs`.
+-/
+
 /-- Runtime-shaped evidence item in false-over-true odds orientation. -/
 structure EvidenceLikelihood where
   likelihoodGivenTrue : Rat

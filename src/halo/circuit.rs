@@ -23,8 +23,20 @@ use serde::{Deserialize, Serialize};
 const CIRCUIT_SETUP_DOMAIN: &str = "agenthalo.circuit.setup.v1";
 const CIRCUIT_PROVE_DOMAIN: &str = "agenthalo.circuit.prove.v1";
 const MAX_EVENTS_DEFAULT: usize = 256;
+/// Canonical theorem path used for external assurance claims.
 pub const ATTESTATION_CIRCUIT_FORMAL_BASIS: &str =
     "HeytingLean.NucleusDB.Circuit.AttestationR1CS.attestation_circuit_satisfiable";
+/// Runtime-local mirror theorem for the nucleusdb attestation slot model.
+pub const ATTESTATION_CIRCUIT_FORMAL_BASIS_LOCAL: &str =
+    "HeytingLean.NucleusDB.TrustLayer.AttestationCircuit.attestation_circuit_satisfiable";
+
+/// Canonical/local theorem-path pair for audit surfaces.
+pub fn attestation_circuit_formal_provenance() -> (&'static str, &'static str) {
+    (
+        ATTESTATION_CIRCUIT_FORMAL_BASIS,
+        ATTESTATION_CIRCUIT_FORMAL_BASIS_LOCAL,
+    )
+}
 
 #[derive(Clone, Debug)]
 pub struct AttestationCircuit {

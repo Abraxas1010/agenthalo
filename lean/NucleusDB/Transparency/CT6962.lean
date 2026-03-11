@@ -217,7 +217,7 @@ theorem consistency_implies_prefix
         leafChainRoot S newLeaves = π.newRoot := hNewRoot
         _ = replayAppendPath S π.oldRoot π.path := hReplay
         _ = replayAppendPath S (leafChainRoot S oldLeaves) π.path := by
-              simpa [hOldRoot]
+              simp [hOldRoot]
         _ = leafChainRoot S (oldLeaves ++ π.path) := by
               symm
               exact leafChainRoot_append S oldLeaves π.path
