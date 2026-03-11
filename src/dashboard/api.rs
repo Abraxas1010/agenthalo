@@ -5024,9 +5024,26 @@ async fn api_p2pclaw_verify(
         claims: vec![],
         agent_id: None,
     });
+    let verification_json = serde_json::json!({
+        "verified": verification.verified,
+        "valid": verification.verified,
+        "proof_hash": verification.proof_hash,
+        "verification_level": verification.verification_level,
+        "structural_score": verification.structural_score,
+        "consistency_score": verification.consistency_score,
+        "completeness_score": verification.completeness_score,
+        "word_count": verification.word_count,
+        "sections_found": verification.sections_found,
+        "claims_extracted": verification.claims_extracted,
+        "violations": verification.violations,
+        "lean_blocks_found": verification.lean_blocks_found,
+        "lean_blocks_checked": verification.lean_blocks_checked,
+        "elapsed_ms": verification.elapsed_ms,
+        "engine": verification.engine,
+    });
     Ok(Json(json!({
         "ok": true,
-        "verification": verification
+        "verification": verification_json
     })))
 }
 

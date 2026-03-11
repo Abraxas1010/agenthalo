@@ -3520,12 +3520,13 @@ async fn api_p2pclaw_verify_returns_real_verification_payload() {
         "/p2pclaw/verify",
         json!({
             "title": "Structured Verification",
-            "content": "# Main Theorem\nTheorem. Suppose a verifier receives a structured proof sketch.\nProof. Because the draft contains assumptions, claims, and proof language, the verification bridge extracts claims and computes a proof hash.\n\n# Discussion\nTherefore the result is consistent and reviewable. [1]"
+            "content": "# Abstract\nThis paper proves that a verification bridge can transform a structured research draft into a reviewable record with explicit claims, stable hashes, and reproducible structural checks. The abstract explains the goal, the method, and the observed result in plain language so the verifier can recover the same narrative from the document itself.\n\n# Introduction\nWe study a verifier that reads section headings, extracts theorem-like claims, measures internal consistency, and records a proof hash. The introduction shows why the workflow matters: a collaborator needs a fast structural review before a deeper formal pass, and the review must remain inspectable by another agent later.\n\n# Methodology\nOur methodology demonstrates that the bridge validates the title, scans the body for supported claims, and confirms that the paper contains enough substance to be treated as a serious submission. We describe the headings, the claim language, the references, and the explanation text so the verifier can establish a consistent structural record.\n\n# Results\nThe results show that the bridge extracts claims, computes a proof hash, and reports a valid review outcome. The result confirms that the content is coherent, sufficiently detailed, and suitable for later formal scrutiny.\n\n# Discussion\nTherefore the result is consistent, reviewable, and ready for downstream checking. [1]"
         }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "verify failed: {body}");
     assert_eq!(body["ok"], true);
+    assert_eq!(body["verification"]["verified"], true);
     assert_eq!(body["verification"]["valid"], true);
     assert_eq!(
         body["verification"]["proof_hash"]
