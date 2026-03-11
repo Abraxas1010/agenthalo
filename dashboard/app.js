@@ -83,6 +83,23 @@ async function generateCodeChallenge(verifier) {
   return base64urlEncode(hash);
 }
 
+// -- Container & MCP Tools page delegates (must be top-level for hoisting) ----
+function renderContainersPage() {
+  if (typeof window.renderContainers === 'function') {
+    window.renderContainers();
+  } else {
+    content.innerHTML = '<div class="loading">Containers module not loaded.</div>';
+  }
+}
+
+function renderMcpToolsPageRoute() {
+  if (typeof window.renderMcpToolsPage === 'function') {
+    window.renderMcpToolsPage();
+  } else {
+    content.innerHTML = '<div class="loading">MCP Tools module not loaded.</div>';
+  }
+}
+
 // -- Routing ------------------------------------------------------------------
 const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
@@ -6356,23 +6373,6 @@ window.ndbSetAppendOnly = async function() {
     }
 
     draw();
-  }
-
-  // --- Container & MCP Tools page delegates ---
-  function renderContainersPage() {
-    if (typeof window.renderContainers === 'function') {
-      window.renderContainers();
-    } else {
-      content.innerHTML = '<div class="loading">Containers module not loaded.</div>';
-    }
-  }
-
-  function renderMcpToolsPageRoute() {
-    if (typeof window.renderMcpToolsPage === 'function') {
-      window.renderMcpToolsPage();
-    } else {
-      content.innerHTML = '<div class="loading">MCP Tools module not loaded.</div>';
-    }
   }
 
   // Expose for use after NucleusDB tab renders
