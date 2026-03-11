@@ -107,6 +107,7 @@ fn cmd_mcp(db_path: &str, transport: &str, host: &str, port: u16) -> Result<(), 
         rt.block_on(run_remote_mcp_server(RemoteServerConfig {
             db_path: db_path.to_string(),
             listen_addr,
+            auth: nucleusdb::mcp::server::auth::AuthConfig::default(),
             endpoint_path: "/mcp".to_string(),
         }))
     } else {

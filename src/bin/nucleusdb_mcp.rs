@@ -31,6 +31,7 @@ async fn async_main(args: Vec<String>) {
         run_remote_mcp_server(RemoteServerConfig {
             db_path,
             listen_addr,
+            auth: nucleusdb::mcp::server::auth::AuthConfig::default(),
             endpoint_path: "/mcp".to_string(),
         })
         .await

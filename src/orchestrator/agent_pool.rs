@@ -1,12 +1,11 @@
 use crate::cockpit::pty_manager::PtyManager;
 use crate::halo::vault::Vault;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Idle,
@@ -14,7 +13,7 @@ pub enum AgentStatus {
     Stopped { exit_code: i32 },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ManagedAgent {
     pub agent_id: String,
     pub agent_name: String,
@@ -62,7 +61,7 @@ pub struct TaskExecution {
 }
 
 /// Per-instance budget controlling how many agents can be managed.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct ContainerBudget {
     /// Maximum total agents (across all kinds).
     pub max_agents: usize,

@@ -4,23 +4,14 @@
 //! can reach each other's MCP HTTP endpoints. Peers are discovered via
 //! Docker DNS (container-name:port) and registered in a shared peer list.
 
-use crate::container::coordination::{
-    acquire_pid_lock, prepare_bind_mount_dir, registry_volume_is_named,
-};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::Write;
-use std::net::ToSocketAddrs;
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
 
 pub const MESH_NETWORK_NAME: &str = "halo-mesh";
 pub const DEFAULT_MCP_PORT: u16 = 3000;
 pub const MESH_REGISTRY_PATH: &str = "/data/mesh/peers.json";
-const MESH_REGISTRY_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
-const MESH_REGISTRY_LOCK_RETRY: Duration = Duration::from_millis(25);
 
 /// Resolve the peer registry path.
 ///
@@ -32,13 +23,6 @@ pub fn mesh_registry_path() -> std::path::PathBuf {
         .filter(|v| !v.trim().is_empty())
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(MESH_REGISTRY_PATH))
-}
-
-fn configure_registry_parent(parent: &Path) -> Result<(), String> {
-    if registry_volume_is_named(parent) {
-        return Ok(());
-    }
-    prepare_bind_mount_dir(parent, "mesh registry dir")
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,26 +90,14 @@ impl PeerRegistry {
     /// Save registry atomically (write-tmp-rename).
     pub fn save(&self, path: &Path) -> Result<(), String> {
         if let Some(parent) = path.parent() {
-            configure_registry_parent(parent)?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create registry dir {}: {e}", parent.display()))?;
         }
         let data =
             serde_json::to_vec_pretty(self).map_err(|e| format!("serialize peer registry: {e}"))?;
-        path.parent()
-            .ok_or_else(|| format!("peer registry path {} has no parent", path.display()))?;
-        let tmp = unique_temp_path(path);
-        {
-            let mut file = File::create(&tmp)
-                .map_err(|e| format!("create temp registry {}: {e}", tmp.display()))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-            }
-            file.write_all(&data)
-                .map_err(|e| format!("write temp registry {}: {e}", tmp.display()))?;
-            file.flush()
-                .map_err(|e| format!("flush temp registry {}: {e}", tmp.display()))?;
-        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &data)
+            .map_err(|e| format!("write temp registry {}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, path).map_err(|e| {
             format!(
                 "rename registry {} -> {}: {e}",
@@ -133,11 +105,6 @@ impl PeerRegistry {
                 path.display()
             )
         })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-        }
         Ok(())
     }
 
@@ -177,49 +144,6 @@ impl PeerRegistry {
         self.peers.retain(|_, p| p.last_seen >= cutoff);
         before - self.peers.len()
     }
-}
-
-#[derive(Debug)]
-pub struct PeerRegistryLock {
-    path: std::path::PathBuf,
-    _file: File,
-}
-
-impl PeerRegistryLock {
-    pub fn acquire(path: &Path) -> Result<Self, String> {
-        let lock_path = lock_path(path);
-        let file = acquire_pid_lock(
-            &lock_path,
-            MESH_REGISTRY_LOCK_TIMEOUT,
-            MESH_REGISTRY_LOCK_RETRY,
-            "mesh registry",
-        )?;
-        Ok(Self {
-            path: lock_path,
-            _file: file,
-        })
-    }
-}
-
-impl Drop for PeerRegistryLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-fn lock_path(path: &Path) -> std::path::PathBuf {
-    let mut lock = path.as_os_str().to_os_string();
-    lock.push(".lock");
-    std::path::PathBuf::from(lock)
-}
-
-fn unique_temp_path(path: &Path) -> std::path::PathBuf {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let stem = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("registry.json");
-    parent.join(format!(".{}.{}.tmp", stem, uuid::Uuid::new_v4().simple()))
 }
 
 /// Discover a peer by fetching its POD capabilities endpoint.
@@ -285,27 +209,6 @@ pub fn ping_peer_with_latency(peer: &PeerInfo) -> (bool, u64) {
     }
 }
 
-pub fn peer_endpoint_reachable(peer: &PeerInfo, timeout: Duration) -> bool {
-    let Ok(url) = url::Url::parse(&peer.mcp_endpoint) else {
-        return false;
-    };
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    let Some(port) = url.port_or_known_default() else {
-        return false;
-    };
-    let Ok(addrs) = format!("{host}:{port}").to_socket_addrs() else {
-        return false;
-    };
-    for addr in addrs {
-        if std::net::TcpStream::connect_timeout(&addr, timeout).is_ok() {
-            return true;
-        }
-    }
-    false
-}
-
 /// Call a remote peer's MCP tool via HTTP JSON-RPC.
 pub fn call_remote_tool(
     peer: &PeerInfo,
@@ -352,26 +255,6 @@ pub fn call_remote_tool_with_timeout(
             "remote initialize error: {}",
             serde_json::to_string(err).unwrap_or_default()
         ));
-    }
-    if let Some(session_id) = session_id.as_deref() {
-        let initialized_payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-            "params": {}
-        });
-        send_remote_notification_with_timeout(
-            peer,
-            &initialized_payload,
-            auth_token,
-            Some(session_id),
-            timeout,
-        )
-        .map_err(|e| {
-            format!(
-                "mesh_call initialized notification with {} failed: {e}",
-                peer.agent_id
-            )
-        })?;
     }
 
     let payload = serde_json::json!({
@@ -428,27 +311,6 @@ fn call_remote_rpc_with_timeout(
         .map_err(|e| format!("read remote MCP response body: {e}"))?;
     let parsed = parse_mcp_response_body(&body_text)?;
     Ok((parsed, response_session_id))
-}
-
-fn send_remote_notification_with_timeout(
-    peer: &PeerInfo,
-    payload: &serde_json::Value,
-    auth_token: Option<&str>,
-    session_id: Option<&str>,
-    timeout: std::time::Duration,
-) -> Result<(), String> {
-    use crate::halo::http_client;
-    let mut req = http_client::post_with_timeout(&peer.mcp_endpoint, timeout)?
-        .header("Accept", "application/json, text/event-stream");
-    if let Some(token) = auth_token {
-        req = req.header("Authorization", &format!("Bearer {token}"));
-    }
-    if let Some(session) = session_id {
-        req = req.header("mcp-session-id", session);
-    }
-    req.send_json(payload)
-        .map_err(|e| format!("remote MCP notification failed: {e}"))?;
-    Ok(())
 }
 
 fn parse_mcp_response_body(body: &str) -> Result<serde_json::Value, String> {
@@ -673,20 +535,6 @@ mod tests {
                     "id: 0\ndata:\n\nid: 1\ndata: {\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"ok\":true}}\n\n".to_string(),
                 );
             }
-            if method == "notifications/initialized" {
-                let session = headers
-                    .get("mcp-session-id")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or_default();
-                if session != "sess-test" {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        HeaderMap::new(),
-                        "{\"error\":\"missing session\"}".to_string(),
-                    );
-                }
-                return (StatusCode::ACCEPTED, HeaderMap::new(), String::new());
-            }
 
             let session = headers
                 .get("mcp-session-id")
@@ -741,11 +589,7 @@ mod tests {
         let calls = state.calls.lock().await.clone();
         assert_eq!(
             calls,
-            vec![
-                "initialize".to_string(),
-                "notifications/initialized".to_string(),
-                "tools/call".to_string()
-            ]
+            vec!["initialize".to_string(), "tools/call".to_string()]
         );
         server.abort();
     }

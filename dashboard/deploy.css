@@ -1,0 +1,81 @@
+/* AgentHALO Deploy styles */
+
+.deploy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.deploy-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.deploy-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.deploy-card-icon {
+  font-size: 20px;
+}
+
+.deploy-card-name {
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.deploy-card-desc {
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-bottom: 12px;
+}
+
+.deploy-card-status {
+  margin-bottom: 12px;
+}
+
+.deploy-card-status .status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+.deploy-card-status .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-dot.green { background: var(--green); }
+.status-dot.red { background: var(--red); }
+.status-dot.grey { background: var(--text-dim); }
+
+.deploy-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.deploy-banner {
+  border: 1px solid var(--border);
+  background: rgba(255, 184, 48, 0.06);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-top: 10px;
+  font-size: 11px;
+}
+
+@media (max-width: 768px) {
+  .deploy-grid {
+    grid-template-columns: 1fr;
+  }
+}

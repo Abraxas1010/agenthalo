@@ -1,6 +1,7 @@
 use crate::mcp::tools::NucleusDbMcpService;
 use rmcp::{transport::stdio, ServiceExt};
 
+pub mod auth;
 pub mod remote;
 
 pub async fn run_mcp_server(db_path: &str) -> Result<(), String> {

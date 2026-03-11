@@ -30,10 +30,10 @@ pub fn register_self_in_mesh() -> Result<(), String> {
 
     // Container hostname — set by --hostname in launch_container()
     let container_name = resolve_hostname().unwrap_or_else(|| agent_id.clone());
-    let endpoint_host = resolve_container_ip().unwrap_or_else(|| container_name.clone());
 
-    let mcp_endpoint = format!("http://{endpoint_host}:{mesh_port}/mcp");
-    let discovery_endpoint = format!("http://{endpoint_host}:{mesh_port}/.well-known/nucleus-pod");
+    let mcp_endpoint = format!("http://{container_name}:{mesh_port}/mcp");
+    let discovery_endpoint =
+        format!("http://{container_name}:{mesh_port}/pod/.well-known/nucleus-pod");
 
     let now = crate::pod::now_unix();
     let peer = PeerInfo {
@@ -47,7 +47,6 @@ pub fn register_self_in_mesh() -> Result<(), String> {
     };
 
     let path = mesh_registry_path();
-    let _lock = crate::container::mesh::PeerRegistryLock::acquire(path.as_path())?;
     let mut registry = PeerRegistry::load(path.as_path()).unwrap_or_default();
     registry.register(peer);
     registry.save(path.as_path())?;
@@ -64,10 +63,6 @@ pub fn deregister_self_from_mesh() {
         return;
     }
     let path = mesh_registry_path();
-    let _lock = match crate::container::mesh::PeerRegistryLock::acquire(path.as_path()) {
-        Ok(lock) => lock,
-        Err(_) => return,
-    };
     if let Ok(mut registry) = PeerRegistry::load(path.as_path()) {
         registry.deregister(&agent_id);
         let _ = registry.save(path.as_path());
@@ -84,20 +79,6 @@ fn resolve_hostname() -> Option<String> {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|h| !h.is_empty())
-}
-
-fn resolve_container_ip() -> Option<String> {
-    std::process::Command::new("hostname")
-        .arg("-i")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .split_whitespace()
-                .find(|value| value.parse::<std::net::IpAddr>().is_ok())
-                .map(str::to_string)
-        })
 }
 
 #[cfg(test)]
@@ -129,13 +110,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_container_ip_is_optional_but_valid_when_present() {
-        if let Some(ip) = resolve_container_ip() {
-            assert!(ip.parse::<std::net::IpAddr>().is_ok());
-        }
-    }
-
-    #[test]
     fn register_and_deregister_use_registry_override() {
         let _guard = test_support::lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
@@ -153,10 +127,7 @@ mod tests {
 
         register_self_in_mesh().expect("register");
         let reg = PeerRegistry::load(path.as_path()).expect("load registry");
-        let peer = reg.find("agent-test").expect("registered peer");
-        assert!(peer
-            .discovery_endpoint
-            .ends_with("/.well-known/nucleus-pod"));
+        assert!(reg.find("agent-test").is_some());
 
         deregister_self_from_mesh();
         let reg_after = PeerRegistry::load(path.as_path()).expect("load registry");

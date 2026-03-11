@@ -1,6 +1,5 @@
 use crate::comms::envelope::{unwrap_orchestrator_result, OrchestratorResultEnvelope};
 use crate::container::mesh::{call_remote_tool, mesh_registry_path, PeerRegistry};
-use crate::container::mesh_auth_token;
 use crate::halo::did::DIDIdentity;
 use crate::pod::capability::CapabilityToken;
 
@@ -30,7 +29,7 @@ pub fn delegate_task_to_peer(
             "wait": true,
             "timeout_secs": timeout_secs,
         }),
-        mesh_auth_token().as_deref(),
+        None,
     )?;
     unwrap_orchestrator_result(result)
 }

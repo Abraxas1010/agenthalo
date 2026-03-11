@@ -1,10 +1,10 @@
 [package]
 name = "nucleusdb"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "NucleusDB — verifiable database with cryptographic commitments, monotone extension proofs, immutable append-only mode, and Discord recording."
+description = "Agent H.A.L.O. — Human-AI Agent Lifecycle Orchestrator. Tamper-proof observability for AI agents, built on NucleusDB (verifiable database with vector commitments, post-quantum signatures, and Certificate Transparency)."
 license = "Apoth3osis-License-Stack-v1"
-repository = "https://github.com/Abraxas1010/nucleusdb"
+repository = "https://github.com/Abraxas1010/agenthalo"
 
 [lib]
 name = "nucleusdb"
@@ -30,8 +30,23 @@ path = "src/bin/nucleusdb_mcp.rs"
 name = "nucleusdb-discord"
 path = "src/bin/nucleusdb_discord.rs"
 
+[[bin]]
+name = "agenthalo"
+path = "src/bin/agenthalo.rs"
+
+[[bin]]
+name = "agenthalo-mcp-server"
+path = "src/bin/agenthalo_mcp_server.rs"
+
 [features]
-default = []
+default = ["puf-server"]
+puf-server = []
+puf-tpm = ["dep:tss-esapi"]
+puf-dgx = ["puf-server"]
+puf-browser = []
+container-runtime = []
+zk-compute = ["dep:risc0-zkvm"]
+nym-native = ["dep:nym-sdk"]
 
 [dependencies]
 axum = { version = "0.8.6", features = ["ws"] }
@@ -49,6 +64,7 @@ ark-groth16 = "0.5.0"
 ark-relations = "0.5.1"
 ark-serialize = "0.5.0"
 ark-snark = "0.5.0"
+k256 = { version = "0.13", features = ["ecdsa"] }
 num-bigint = "0.4"
 rand_chacha = "0.3"
 rand_core = "0.6"
@@ -73,6 +89,7 @@ base64 = "0.22"
 jsonwebtoken = "9"
 schemars = "1"
 chrono = "0.4"
+tss-esapi = { version = "7", optional = true, default-features = false }
 dirs = "6"
 webbrowser = "1"
 ureq = { version = "3", features = ["json", "socks-proxy"] }
@@ -81,11 +98,13 @@ deunicode = "1"
 rust-embed = "8"
 mime_guess = "2"
 tokio-stream = "0.1"
+portable-pty = "0.9"
 aes-gcm = "0.10"
 hkdf = "0.12"
 hex = "0.4"
 argon2 = "0.5"
 bip39 = "2.1"
+bip32 = { version = "0.5", features = ["mnemonic"] }
 sha3 = "0.10"
 getrandom = "0.2"
 futures-util = "0.3"
@@ -97,11 +116,29 @@ subtle = "2.6"
 ndarray = "0.17"
 ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls"] }
 tokenizers = "0.20"
+risc0-zkvm = { version = "1.2", optional = true }
+libp2p = { version = "0.54", features = [
+    "tokio",
+    "tcp",
+    "noise",
+    "yamux",
+    "kad",
+    "gossipsub",
+    "mdns",
+    "identify",
+    "autonat",
+    "relay",
+    "dcutr",
+    "macros",
+    "request-response",
+    "ed25519",
+    "serde",
+] }
+nym-sdk = { version = "1.20.4", optional = true }
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "cache", "rustls_backend"] }
 poise = "0.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-portable-pty = "0.8"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
@@ -109,3 +146,6 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+
+[patch.crates-io]
+cipher = { path = "vendor/cipher-0.5.1-patched" }

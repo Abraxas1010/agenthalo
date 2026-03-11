@@ -1,7 +1,3 @@
-use crate::container::coordination::{
-    mesh_auth_token, prepare_bind_mount_dir, prepare_named_volume, registry_volume_is_named,
-    DEFAULT_MESH_REGISTRY_VOLUME,
-};
 use crate::container::mesh;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -47,8 +43,7 @@ pub struct MeshConfig {
     pub enabled: bool,
     /// MCP port to expose on the mesh network.
     pub mcp_port: u16,
-    /// Shared peer registry mount source. Absolute paths are bind mounts;
-    /// relative names are treated as Docker-managed named volumes.
+    /// Path to shared peer registry volume on host.
     pub registry_volume: PathBuf,
     /// Agent DID URI (populated at launch from genesis seed).
     pub agent_did: Option<String>,
@@ -58,26 +53,8 @@ impl Default for MeshConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            mcp_port: std::env::var("NUCLEUSDB_CONTAINER_MCP_PORT")
-                .ok()
-                .and_then(|v| v.parse::<u16>().ok())
-                .or_else(|| {
-                    std::env::var("AGENTHALO_CONTAINER_MCP_PORT")
-                        .ok()
-                        .and_then(|v| v.parse::<u16>().ok())
-                })
-                .unwrap_or(mesh::DEFAULT_MCP_PORT),
-            registry_volume: std::env::var("NUCLEUSDB_CONTAINER_REGISTRY_VOLUME")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var("AGENTHALO_CONTAINER_REGISTRY_VOLUME")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                        .map(PathBuf::from)
-                })
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_MESH_REGISTRY_VOLUME)),
+            mcp_port: mesh::DEFAULT_MCP_PORT,
+            registry_volume: PathBuf::from("/tmp/nucleusdb-mesh"),
             agent_did: None,
         }
     }
@@ -119,29 +96,13 @@ fn now_unix_secs() -> u64 {
 }
 
 fn make_session_id() -> String {
-    format!("sess-{}", uuid::Uuid::new_v4())
+    let pid = std::process::id();
+    let ts = now_unix_secs();
+    format!("sess-{ts}-{pid}")
 }
 
 fn run_dir() -> PathBuf {
     std::env::temp_dir().join("nucleusdb-container")
-}
-
-fn env_contains(env_vars: &[(String, String)], key: &str) -> bool {
-    env_vars.iter().any(|(existing, _)| existing == key)
-}
-
-fn direct_mcp_server_command(command: &[String]) -> bool {
-    command
-        .first()
-        .map(|value| {
-            value == "nucleusdb-mcp"
-                || value.ends_with("/nucleusdb-mcp")
-                || value.ends_with("\\nucleusdb-mcp")
-                || value == "agenthalo-mcp-server"
-                || value.ends_with("/agenthalo-mcp-server")
-                || value.ends_with("\\agenthalo-mcp-server")
-        })
-        .unwrap_or(false)
 }
 
 pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
@@ -167,28 +128,6 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
         cmd.arg("--runtime").arg("runsc");
     }
 
-    let mut env_vars = cfg.env_vars.clone();
-    if direct_mcp_server_command(&cfg.command) {
-        if !env_contains(&env_vars, "NUCLEUSDB_MCP_HOST") {
-            env_vars.push(("NUCLEUSDB_MCP_HOST".to_string(), "0.0.0.0".to_string()));
-        }
-        if !env_contains(&env_vars, "AGENTHALO_MCP_HOST") {
-            env_vars.push(("AGENTHALO_MCP_HOST".to_string(), "0.0.0.0".to_string()));
-        }
-        let shared_secret = mesh_auth_token();
-        if let Some(secret) = shared_secret {
-            if !env_contains(&env_vars, "NUCLEUSDB_MCP_SECRET") {
-                env_vars.push(("NUCLEUSDB_MCP_SECRET".to_string(), secret.clone()));
-            }
-            if !env_contains(&env_vars, "AGENTHALO_MCP_SECRET") {
-                env_vars.push(("AGENTHALO_MCP_SECRET".to_string(), secret.clone()));
-            }
-            if !env_contains(&env_vars, "NUCLEUSDB_MESH_AUTH_TOKEN") {
-                env_vars.push(("NUCLEUSDB_MESH_AUTH_TOKEN".to_string(), secret));
-            }
-        }
-    }
-
     // Mesh networking: shared Docker network + MCP port exposure
     let mut mesh_port_out: Option<u16> = None;
     if let Some(mesh_cfg) = &cfg.mesh {
@@ -203,10 +142,6 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
                 .arg(format!("NUCLEUSDB_MESH_PORT={}", mesh_cfg.mcp_port));
             cmd.arg("-e")
                 .arg(format!("NUCLEUSDB_MESH_AGENT_ID={}", cfg.agent_id));
-            cmd.arg("-e").arg(format!(
-                "NUCLEUSDB_CONTAINER_MCP_PORT={}",
-                mesh_cfg.mcp_port
-            ));
             cmd.arg("-e")
                 .arg(format!("AGENTHALO_MCP_PORT={}", mesh_cfg.mcp_port));
             cmd.arg("-e")
@@ -217,15 +152,12 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
                 cmd.arg("-e").arg(format!("NUCLEUSDB_MESH_DID={did}"));
             }
 
-            if registry_volume_is_named(&mesh_cfg.registry_volume) {
-                prepare_named_volume(
-                    &mesh_cfg.registry_volume,
-                    &cfg.image,
-                    "mesh registry volume",
-                )?;
-            } else {
-                prepare_bind_mount_dir(&mesh_cfg.registry_volume, "mesh registry dir")?;
-            }
+            std::fs::create_dir_all(&mesh_cfg.registry_volume).map_err(|e| {
+                format!(
+                    "create mesh registry dir {}: {e}",
+                    mesh_cfg.registry_volume.display()
+                )
+            })?;
             cmd.arg("-v")
                 .arg(format!("{}:/data/mesh", mesh_cfg.registry_volume.display()));
 
@@ -233,17 +165,12 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
         }
     }
 
-    for (key, value) in &env_vars {
+    for (key, value) in &cfg.env_vars {
         cmd.arg("-e").arg(format!("{key}={value}"));
     }
-    if let Some((entrypoint, args)) = cfg.command.split_first() {
-        cmd.arg("--entrypoint").arg(entrypoint);
-        cmd.arg(&cfg.image);
-        for arg in args {
-            cmd.arg(arg);
-        }
-    } else {
-        cmd.arg(&cfg.image);
+    cmd.arg(&cfg.image);
+    for arg in &cfg.command {
+        cmd.arg(arg);
     }
     let out = cmd
         .output()
@@ -385,16 +312,4 @@ pub fn ensure_sidecar_binary(path: &Path) -> Result<(), String> {
         "sidecar binary missing at {} (build it before container build)",
         path.display()
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::make_session_id;
-    use std::collections::HashSet;
-
-    #[test]
-    fn make_session_id_is_unique_across_back_to_back_calls() {
-        let ids: HashSet<_> = (0..16).map(|_| make_session_id()).collect();
-        assert_eq!(ids.len(), 16);
-    }
 }

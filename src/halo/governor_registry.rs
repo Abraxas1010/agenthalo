@@ -298,6 +298,9 @@ pub fn build_default_registry() -> Arc<GovernorRegistry> {
             eps_max: 50.0,
             target: 2.0,
             formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.lyapunov_descent".to_string(),
+            ki: 0.0,
+            kb: 0.0,
+            adaptive: None,
         },
         GovernorConfig {
             instance_id: "gov-comms".to_string(),
@@ -308,6 +311,9 @@ pub fn build_default_registry() -> Arc<GovernorRegistry> {
             eps_max: 32.0,
             target: 10.0,
             formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+            ki: 0.0,
+            kb: 0.0,
+            adaptive: None,
         },
         GovernorConfig {
             instance_id: "gov-compute".to_string(),
@@ -318,6 +324,9 @@ pub fn build_default_registry() -> Arc<GovernorRegistry> {
             eps_max: 10.0,
             target: 8.0,
             formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+            ki: 0.0,
+            kb: 0.0,
+            adaptive: None,
         },
         GovernorConfig {
             instance_id: "gov-cost".to_string(),
@@ -328,6 +337,9 @@ pub fn build_default_registry() -> Arc<GovernorRegistry> {
             eps_max: 10.0,
             target: 1.0,
             formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+            ki: 0.0,
+            kb: 0.0,
+            adaptive: None,
         },
         GovernorConfig {
             instance_id: "gov-pty".to_string(),
@@ -338,6 +350,9 @@ pub fn build_default_registry() -> Arc<GovernorRegistry> {
             eps_max: 900.0,
             target: 120.0,
             formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+            ki: 0.0,
+            kb: 0.0,
+            adaptive: None,
         },
     ];
 
@@ -381,6 +396,9 @@ mod tests {
                 target: 2.0,
                 formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.lyapunov_descent"
                     .to_string(),
+                ki: 0.0,
+                kb: 0.0,
+                adaptive: None,
             })
             .expect("register");
         registry

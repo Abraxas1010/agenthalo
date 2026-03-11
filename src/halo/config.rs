@@ -1,21 +1,15 @@
 use std::path::PathBuf;
 
 pub fn halo_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("NUCLEUSDB_HOME") {
-        return PathBuf::from(p);
-    }
     if let Ok(p) = std::env::var("AGENTHALO_HOME") {
         return PathBuf::from(p);
     }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".nucleusdb")
+        .join(".agenthalo")
 }
 
 pub fn db_path() -> PathBuf {
-    if let Ok(p) = std::env::var("NUCLEUSDB_TRACE_DB_PATH") {
-        return PathBuf::from(p);
-    }
     if let Ok(p) = std::env::var("AGENTHALO_DB_PATH") {
         return PathBuf::from(p);
     }
@@ -183,7 +177,9 @@ pub fn ensure_halo_dir() -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create halo dir: {e}"))?;
     #[cfg(unix)]
     {
-        chmod_private_dir(&dir).map_err(|error| format!("set halo dir permissions: {error}"))?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("set halo dir permissions: {e}"))?;
     }
     Ok(())
 }
@@ -206,9 +202,10 @@ pub fn ensure_agent_credentials_dir() -> Result<(), String> {
         .map_err(|e| format!("create agent credentials dir {}: {e}", path.display()))?;
     #[cfg(unix)]
     {
-        chmod_private_dir(&path).map_err(|error| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
             format!(
-                "chmod agent credentials dir {} to 0700: {error}",
+                "chmod agent credentials dir {} to 0700: {e}",
                 path.display()
             )
         })?;
@@ -222,9 +219,10 @@ pub fn ensure_proof_certificates_dir() -> Result<(), String> {
         .map_err(|e| format!("create proof certificates dir {}: {e}", path.display()))?;
     #[cfg(unix)]
     {
-        chmod_private_dir(&path).map_err(|error| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
             format!(
-                "chmod proof certificates dir {} to 0700: {error}",
+                "chmod proof certificates dir {} to 0700: {e}",
                 path.display()
             )
         })?;
@@ -234,18 +232,4 @@ pub fn ensure_proof_certificates_dir() -> Result<(), String> {
 
 pub fn ensure_circuit_dir() -> Result<(), String> {
     std::fs::create_dir_all(circuit_dir()).map_err(|e| format!("create circuit dir: {e}"))
-}
-
-#[cfg(unix)]
-fn chmod_private_dir(path: &PathBuf) -> Result<(), std::io::Error> {
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
-        // Bind-mounted data dirs may be owned by a different host UID/GID.
-        // If chmod is denied but the directory already exists, continue.
-        if error.kind() != std::io::ErrorKind::PermissionDenied {
-            return Err(error);
-        }
-    }
-    Ok(())
 }

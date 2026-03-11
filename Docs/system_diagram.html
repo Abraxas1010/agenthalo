@@ -1,0 +1,1464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent H.A.L.O. / NucleusDB — System Architecture</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-hover: #1c2128;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --accent-blue: #58a6ff;
+    --accent-green: #3fb950;
+    --accent-orange: #f0883e;
+    --accent-purple: #d2a8ff;
+    --accent-red: #f85149;
+    --accent-yellow: #e3b341;
+    --nav-width: 280px;
+    --header-height: 64px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+
+  /* ── Header ── */
+  header {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--header-height);
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+    z-index: 100;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  header .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  header .logo svg {
+    width: 32px;
+    height: 32px;
+  }
+
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.3px;
+  }
+
+  header h1 span {
+    color: var(--text-dim);
+    font-weight: 400;
+  }
+
+  header .badge {
+    margin-left: 16px;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--accent-blue);
+    border: 1px solid rgba(88, 166, 255, 0.3);
+    letter-spacing: 0.5px;
+  }
+
+  /* ── Navigation ── */
+  nav {
+    position: fixed;
+    top: var(--header-height);
+    left: 0;
+    bottom: 0;
+    width: var(--nav-width);
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 16px 0;
+    z-index: 90;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  nav::-webkit-scrollbar { width: 6px; }
+  nav::-webkit-scrollbar-track { background: transparent; }
+  nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  nav .nav-group {
+    padding: 8px 16px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+  }
+
+  nav a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px 8px 20px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 13px;
+    border-left: 3px solid transparent;
+    transition: all 0.15s ease;
+  }
+
+  nav a:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+
+  nav a.active {
+    color: var(--accent-blue);
+    border-left-color: var(--accent-blue);
+    background: rgba(88, 166, 255, 0.08);
+  }
+
+  nav a .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* ── Main Content ── */
+  main {
+    margin-left: var(--nav-width);
+    margin-top: var(--header-height);
+    padding: 40px 48px 80px;
+    max-width: 1200px;
+  }
+
+  section {
+    margin-bottom: 64px;
+    scroll-margin-top: calc(var(--header-height) + 24px);
+  }
+
+  section .section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+
+  section .section-number {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--bg-card);
+    background: var(--accent-blue);
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  section h2 {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.3px;
+  }
+
+  section .description {
+    color: var(--text-dim);
+    font-size: 14px;
+    margin-bottom: 24px;
+    padding-left: 40px;
+  }
+
+  /* ── Diagram Cards ── */
+  .diagram-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    transition: border-color 0.2s ease;
+  }
+
+  .diagram-card:hover {
+    border-color: var(--accent-blue);
+  }
+
+  .diagram-card .card-body {
+    padding: 32px;
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+  }
+
+  .diagram-card .card-body .mermaid {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .diagram-card .card-body .mermaid svg {
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* ── Separator ── */
+  .section-sep {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border) 20%, var(--border) 80%, transparent);
+    margin: 48px 0;
+  }
+
+  /* ── Scroll-to-top ── */
+  .scroll-top {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: all 0.2s ease;
+    z-index: 80;
+  }
+
+  .scroll-top.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .scroll-top:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent-blue);
+    color: var(--accent-blue);
+  }
+
+  /* ── Mobile ── */
+  @media (max-width: 960px) {
+    :root { --nav-width: 0px; }
+    nav { display: none; }
+    main { padding: 24px 16px 60px; }
+  }
+
+  /* ── Print ── */
+  @media print {
+    header, nav, .scroll-top { display: none; }
+    main { margin: 0; padding: 20px; max-width: none; }
+    .diagram-card { break-inside: avoid; border: 1px solid #ddd; }
+    section { margin-bottom: 32px; }
+  }
+
+  /* Override Mermaid dark theme label colors for readability */
+  .diagram-card .mermaid .nodeLabel,
+  .diagram-card .mermaid .edgeLabel,
+  .diagram-card .mermaid .label {
+    color: var(--text) !important;
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <div class="logo">
+    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="16" cy="16" r="14" stroke="#58a6ff" stroke-width="2" fill="none"/>
+      <circle cx="16" cy="16" r="6" fill="#58a6ff" opacity="0.3"/>
+      <circle cx="16" cy="16" r="3" fill="#58a6ff"/>
+      <line x1="16" y1="2" x2="16" y2="8" stroke="#58a6ff" stroke-width="1.5"/>
+      <line x1="16" y1="24" x2="16" y2="30" stroke="#58a6ff" stroke-width="1.5"/>
+      <line x1="2" y1="16" x2="8" y2="16" stroke="#58a6ff" stroke-width="1.5"/>
+      <line x1="24" y1="16" x2="30" y2="16" stroke="#58a6ff" stroke-width="1.5"/>
+    </svg>
+    <h1>Agent H.A.L.O. <span>/ NucleusDB</span></h1>
+  </div>
+  <span class="badge">SYSTEM ARCHITECTURE</span>
+</header>
+
+<!-- ── Navigation ── -->
+<nav id="sidebar">
+  <div class="nav-group">Overview</div>
+  <a href="#s1"><span class="dot" style="background:#58a6ff"></span>System Context</a>
+  <a href="#s2"><span class="dot" style="background:#f78166"></span>Binary Targets</a>
+  <a href="#s3"><span class="dot" style="background:#3fb950"></span>Module Architecture</a>
+
+  <div class="nav-group" style="margin-top:16px">Core Engine</div>
+  <a href="#s4"><span class="dot" style="background:#f78166"></span>NucleusDB Core</a>
+  <a href="#s5"><span class="dot" style="background:#d2a8ff"></span>HALO Subsystem</a>
+
+  <div class="nav-group" style="margin-top:16px">Runtime</div>
+  <a href="#s6"><span class="dot" style="background:#f0883e"></span>Cockpit & Orchestrator</a>
+  <a href="#s7"><span class="dot" style="background:#3fb950"></span>Proxy & Local Models</a>
+  <a href="#s8"><span class="dot" style="background:#d2a8ff"></span>PQ Crypto Stack</a>
+
+  <div class="nav-group" style="margin-top:16px">Infrastructure</div>
+  <a href="#s9"><span class="dot" style="background:#58a6ff"></span>Container & Mesh</a>
+  <a href="#s10"><span class="dot" style="background:#3fb950"></span>Dashboard Frontend</a>
+  <a href="#s11"><span class="dot" style="background:#58a6ff"></span>MCP Tool Surface</a>
+
+  <div class="nav-group" style="margin-top:16px">Verification & Data</div>
+  <a href="#s12"><span class="dot" style="background:#d2a8ff"></span>Lean 4 Proofs</a>
+  <a href="#s13"><span class="dot" style="background:#e3b341"></span>On-Chain Attestation</a>
+  <a href="#s14"><span class="dot" style="background:#58a6ff"></span>Memory Recall Pipeline</a>
+  <a href="#s15"><span class="dot" style="background:#8b949e"></span>Complete File Map</a>
+</nav>
+
+<!-- ── Main Content ── -->
+<main>
+
+<!-- ════════════════════════════════ 1 ════════════════════════════════ -->
+<section id="s1">
+  <div class="section-header">
+    <span class="section-number">1</span>
+    <h2>Top-Level System Context</h2>
+  </div>
+  <p class="description">Who uses the system, and what external systems does it touch.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+graph TB
+    subgraph Users
+        OP((Operator))
+        DEV((Developer))
+    end
+
+    subgraph External
+        OR[OpenRouter API]
+        OL[Ollama Backend]
+        VL[vLLM Backend]
+        BC[Base L2 Chain]
+        NYM[Nym Mixnet]
+        IPFS[IPFS / Bitswap]
+        CT[CT Log Server]
+    end
+
+    subgraph "Agent H.A.L.O. / NucleusDB"
+        HALO[HALO Platform]
+    end
+
+    OP -- "Dashboard / CLI" --> HALO
+    DEV -- "MCP tools / TUI" --> HALO
+    HALO -- "LLM proxy" --> OR
+    HALO -- "Local inference" --> OL
+    HALO -- "Local inference" --> VL
+    HALO -- "On-chain attestation" --> BC
+    HALO -- "Anonymous routing" --> NYM
+    HALO -- "Content distribution" --> IPFS
+    HALO -- "Certificate transparency" --> CT
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 2 ════════════════════════════════ -->
+<section id="s2">
+  <div class="section-header">
+    <span class="section-number" style="background:#f78166">2</span>
+    <h2>Binary Targets & Entry Points</h2>
+  </div>
+  <p class="description">The six executables and how they share a single library crate.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+graph LR
+    subgraph "Binary Targets"
+        NDB["nucleusdb\nCLI REPL"]
+        SRV["nucleusdb-server\nMulti-tenant HTTP"]
+        TUI_B["nucleusdb-tui\nTerminal UI"]
+        NMCP["nucleusdb-mcp\nMCP Tool Server"]
+        AH["agenthalo\nHALO CLI"]
+        AHMCP["agenthalo-mcp-server\nHALO MCP Server"]
+    end
+
+    subgraph "Shared Library"
+        LIB["nucleusdb crate\nsrc/lib.rs"]
+    end
+
+    NDB --> LIB
+    SRV --> LIB
+    TUI_B --> LIB
+    NMCP --> LIB
+    AH --> LIB
+    AHMCP --> LIB
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 3 ════════════════════════════════ -->
+<section id="s3">
+  <div class="section-header">
+    <span class="section-number" style="background:#3fb950">3</span>
+    <h2>High-Level Module Architecture</h2>
+  </div>
+  <p class="description">Major subsystems and their data flow (C4 Level 2).</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+graph TB
+    subgraph CLI["CLI / Entry Points"]
+        AHCLI[agenthalo CLI]
+        NDBCLI[nucleusdb CLI]
+    end
+
+    subgraph Dashboard["Dashboard - axum"]
+        DAPI["API Handlers\ndashboard/api.rs"]
+        DUI["Frontend SPA\ndashboard/*.js"]
+        DASSETS[rust-embed Assets]
+    end
+
+    subgraph MCP["MCP Servers"]
+        MCPT["NucleusDB MCP\nmcp/tools.rs"]
+        MCPS["MCP Server Framework\nmcp/server/"]
+    end
+
+    subgraph Orchestrator["Orchestrator"]
+        OMOD["Orchestrator Core\norchestrator/mod.rs"]
+        APOOL["Agent Pool\nagent_pool.rs"]
+        TGRAPH["Task Graph DAG\ntask_graph.rs"]
+        TBRIDGE["Trace Bridge\ntrace_bridge.rs"]
+        A2A_ORCH["A2A Mesh Delegation\na2a.rs"]
+    end
+
+    subgraph Cockpit["Cockpit"]
+        PTY["PTY Manager\npty_manager.rs"]
+        WSB["WebSocket Bridge\nws_bridge.rs"]
+        DEP["Deploy Catalog\ndeploy.rs"]
+        ADM["Admission Policy\nadmission.rs"]
+    end
+
+    subgraph HALO_S["HALO Subsystem"]
+        direction TB
+        ID[Identity & PQ Crypto]
+        P2P[P2P Mesh & Comms]
+        OBS[Observability & Trace]
+        TRUST_S[Trust ZK & Attestation]
+        TSCORE_S[P2P Trust Score & Diode Floor]
+        EPIST[Epistemic Calculi]
+        PROXY_S[API Proxy]
+        LMOD_S[Local Models]
+        VAULT_S[Encrypted Vault]
+        GOV_S[Governor Registry]
+        POLREG_S[Policy Registry]
+    end
+
+    subgraph NDB_S["NucleusDB Core"]
+        direction TB
+        PROTO[Protocol Layer]
+        COMMIT_S[Commitment Schemes]
+        DATA_S[Data Layer]
+        ACCESS_S[Access & Multi-tenancy]
+    end
+
+    subgraph External_S["External Subsystems"]
+        CONT[Container Runtime]
+        SWARM_S[Swarm / Bitswap]
+        LEAN_S[Lean 4 Proofs]
+        CONTRACTS_S[Solidity Contracts]
+    end
+
+    AHCLI --> HALO_S
+    AHCLI --> Dashboard
+    AHCLI --> Orchestrator
+    NDBCLI --> NDB_S
+
+    DUI -- "HTTP/WS" --> DAPI
+    DAPI --> HALO_S
+    DAPI --> NDB_S
+    DAPI --> Orchestrator
+    DAPI --> Cockpit
+
+    MCPT --> NDB_S
+    MCPT --> HALO_S
+    MCPT --> Orchestrator
+
+    OMOD --> APOOL
+    OMOD --> TGRAPH
+    APOOL --> PTY
+    TBRIDGE --> OBS
+
+    DEP --> ADM
+    ADM --> GOV_S
+    WSB --> PTY
+
+    PROXY_S --> VAULT_S
+    PROXY_S --> LMOD_S
+    LMOD_S -.-> OBS
+
+    POLREG_S --> GOV_S
+    POLREG_S --> TRUST_S
+    POLREG_S --> TSCORE_S
+    TSCORE_S --> ID
+
+    HALO_S --> NDB_S
+    OBS --> NDB_S
+    TRUST_S --> NDB_S
+
+    CONT -.-> SWARM_S
+    LEAN_S -.-> CONTRACTS_S
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 4 ════════════════════════════════ -->
+<section id="s4">
+  <div class="section-header">
+    <span class="section-number" style="background:#f78166">4</span>
+    <h2>NucleusDB Core &mdash; Internal Structure</h2>
+  </div>
+  <p class="description">The verifiable database engine: protocol, commitment, data, and access layers.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+graph TB
+    subgraph Protocol["Protocol Layer"]
+        NDBP["NucleusDb Trait\nprotocol.rs"]
+        STATE["State + Delta\nstate.rs"]
+        PERSIST["Snapshot + WAL\npersistence.rs"]
+        KEYMAP["Key-to-Index Map\nkeymap.rs"]
+        IMMUT["Append-Only Keys\nimmutable.rs"]
+    end
+
+    subgraph Commitment["Commitment & Verification"]
+        IPA["IPA Backend\nvc/ipa.rs"]
+        KZG["KZG Backend\nvc/kzg.rs"]
+        MERKLE["Binary Merkle\nvc/binary_merkle.rs"]
+        WITNESS["Witness Signatures\nEd25519 + ML-DSA-65"]
+        SEC["Security Profiles\nsecurity.rs"]
+        TRANS["CT Log Integration\ntransparency/"]
+    end
+
+    subgraph Data["Data Layer"]
+        TV["8 Typed Values\ntyped_value.rs"]
+        TM["Type Map\ntype_map.rs"]
+        VI["Vector Index kNN\nvector_index.rs"]
+        BLOB_D["Blob Store SHA-256\nblob_store.rs"]
+        SQL_D["SQL Parser + Executor\nsql/"]
+        MEM_D["Memory Store\nmemory.rs"]
+        EMB["Embeddings\nembeddings.rs"]
+    end
+
+    subgraph Access["Access Control"]
+        POD["Solid POD Protocol\npod/"]
+        MT["Multi-tenant RBAC\nmultitenant.rs"]
+        LIC["CAB License Gate\nlicense.rs"]
+    end
+
+    NDBP --> STATE
+    NDBP --> KEYMAP
+    NDBP --> IMMUT
+    STATE --> PERSIST
+
+    NDBP -- "commit proof" --> IPA
+    NDBP -- "commit proof" --> KZG
+    NDBP -- "commit proof" --> MERKLE
+    NDBP -- "sign" --> WITNESS
+    IPA --> SEC
+    KZG --> SEC
+
+    SQL_D --> NDBP
+    VI --> EMB
+    MEM_D --> VI
+    MEM_D --> BLOB_D
+    MEM_D --> EMB
+    TV --> TM
+    NDBP --> TV
+
+    POD --> NDBP
+    MT --> NDBP
+    MT --> LIC
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 5 ════════════════════════════════ -->
+<section id="s5">
+  <div class="section-header">
+    <span class="section-number" style="background:#d2a8ff;color:#0d1117">5</span>
+    <h2>HALO Subsystem &mdash; Internal Structure</h2>
+  </div>
+  <p class="description">Sovereign agent identity, PQ crypto, communication, observability, trust, and serving.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+graph TB
+    subgraph Identity["Identity & Post-Quantum Crypto"]
+        DID["DID Document\nEd25519 + ML-DSA-65"]
+        GSEED["Genesis Seed\nBIP-39 Mnemonic"]
+        GENTROPY["Genesis Entropy"]
+        IDLEDGER["Identity Ledger\nHash-chained SHA-512"]
+        IDTIER_5["Identity Tiers\nMaxSafe / LessSafe / LowSecurity"]
+        PQ_5["PQ Wallet\nML-DSA-65"]
+        HASH_5["Hash Dispatch\nSHA-256 / SHA-512"]
+        HKEM_5["Hybrid KEM\nX25519 + ML-KEM-768"]
+        EVMW_5["EVM Wallet\nsecp256k1 BIP-32"]
+        EVMG_5["EVM PQ Gate\nDual-sign before secp256k1"]
+        TWINE_5["Twine Anchor\nCURBy-Q Triple-signed"]
+    end
+
+    subgraph Comms["P2P Mesh & Communication"]
+        P2PN_5["libp2p Swarm\nNoise XX + Gossipsub + Kademlia"]
+        P2PD_5["Discovery\nDHT + GossipPrivacy"]
+        A2AB_5["A2A Bridge\nDIDComm HTTP"]
+        DCOMM_5["DIDComm v2\nHybrid KEM Authcrypt"]
+        DCOMMH_5["DIDComm Handler"]
+        STARTUP_5["Full Stack Bootstrap"]
+        NYMM_5["Nym SOCKS5 Proxy"]
+        NYMN_5["Nym Native Sphinx"]
+    end
+
+    subgraph Observe["Observability & Trace"]
+        SCHEMA_5["TraceEvent Schema"]
+        TRACE_5["TraceWriter / Reader\nredb-backed"]
+        WRAP_5["Agent Wrapper\nstdin/stdout intercept"]
+        RUNNER_5["Process Runner"]
+        DETECT_5["Agent Auto-detect"]
+        VIEWER_5["Session Exporter"]
+        ADAPT_5["Adapters\nClaude / Codex / Gemini / Generic"]
+    end
+
+    subgraph TrustZK["Trust, ZK & Attestation"]
+        ATTEST_5["Session Attestation\nMerkle SHA-512"]
+        TRUSTS_5["Production Trust\nquery_trust_score()"]
+        TSCORE_5["P2P Trust Score\nDiode floor + decay"]
+        DIODE_5["Diode Floor\nmax(trust, floor) clamp"]
+        CIRC_5["Groth16 ZK Circuits\nBN254 arkworks"]
+        CIRCPOL_5["Circuit Policy\nDev vs Prod"]
+        ZKCOMP_5["ZK Compute Receipts"]
+        ZKCRED_5["ZK Credentials\nAnonymous Membership"]
+        AUDIT_5["Solidity Static Analysis"]
+    end
+
+    subgraph Epistemic["Epistemic Calculi"]
+        DIVERS_5["Tsallis Diversity\nStrategy diversity gauge"]
+        EVID_5["Evidence Combiner\nBayesian odds-update"]
+        UNCERT_5["Uncertainty Translation\nProbability / CF / Possibility"]
+        TTOPO_5["Trace Topology\nH0 Persistence Rips"]
+    end
+
+    subgraph ServingProxy["Serving & Proxy"]
+        PRXY_5["API Proxy\nOpenAI-compat multi-provider"]
+        LMOD_5["Local Models\nOllama + vLLM"]
+        VLT_5["Encrypted Vault\nAES-256-GCM"]
+        PRICE_5["Token Pricing"]
+        X402M_5["HTTP 402 Payments"]
+        GOV_5["Governor Registry\nAETHER gain/stability"]
+        GOVTEL_5["Governor Telemetry"]
+        CHEV_5["Chebyshev Evictor"]
+        ADM_5["Admission Policy\nWarn / Block / Force"]
+        POLREG_5["Policy Registry\nVersioned governance snapshot"]
+    end
+
+    GSEED --> DID
+    GENTROPY --> GSEED
+    DID --> PQ_5
+    DID --> HKEM_5
+    EVMG_5 --> EVMW_5
+    EVMG_5 --> PQ_5
+    TWINE_5 --> DID
+
+    P2PN_5 --> P2PD_5
+    P2PN_5 --> DCOMM_5
+    DCOMM_5 --> HKEM_5
+    DCOMMH_5 --> DCOMM_5
+    A2AB_5 --> DCOMM_5
+    STARTUP_5 --> P2PN_5
+    STARTUP_5 --> NYMM_5
+    NYMN_5 --> NYMM_5
+
+    WRAP_5 --> ADAPT_5
+    WRAP_5 --> SCHEMA_5
+    RUNNER_5 --> WRAP_5
+    DETECT_5 --> RUNNER_5
+    SCHEMA_5 --> TRACE_5
+    VIEWER_5 --> TRACE_5
+
+    ATTEST_5 --> TRACE_5
+    TRUSTS_5 --> TRACE_5
+    CIRC_5 --> CIRCPOL_5
+    ZKCRED_5 --> CIRC_5
+
+    DIVERS_5 --> TRACE_5
+    TTOPO_5 --> TRACE_5
+    EVID_5 --> TRUSTS_5
+
+    PRXY_5 --> VLT_5
+    PRXY_5 --> LMOD_5
+    PRXY_5 --> PRICE_5
+    PRXY_5 --> X402M_5
+    ADM_5 --> GOV_5
+    GOV_5 --> GOVTEL_5
+    CHEV_5 --> GOV_5
+    POLREG_5 --> GOV_5
+    POLREG_5 --> TRUSTS_5
+    POLREG_5 --> TSCORE_5
+    POLREG_5 --> CHEV_5
+
+    IDTIER_5 --> TRUSTS_5
+    IDTIER_5 --> TSCORE_5
+    DIODE_5 --> TRUSTS_5
+    DIODE_5 --> TSCORE_5
+    DIODE_5 --> IDTIER_5
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 6 ════════════════════════════════ -->
+<section id="s6">
+  <div class="section-header">
+    <span class="section-number" style="background:#f0883e;color:#0d1117">6</span>
+    <h2>Cockpit & Orchestrator &mdash; Agent Lifecycle</h2>
+  </div>
+  <p class="description">How agents are launched, admitted, managed via PTY, and traced.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+sequenceDiagram
+    participant Browser as Browser xterm.js
+    participant Dashboard as Dashboard API
+    participant Deploy as Deploy Catalog
+    participant Admission as Admission Policy
+    participant Governor as Governor Registry
+    participant Orch as Orchestrator
+    participant Pool as Agent Pool
+    participant PTY as PTY Manager
+    participant Trace as Trace Bridge
+    participant TraceDB as Trace Store redb
+
+    Browser->>Dashboard: POST /deploy/launch
+    Dashboard->>Admission: evaluate_launch_admission
+    Admission->>Governor: snapshot_one gov-compute, gov-pty
+    Governor-->>Admission: GovernorSnapshot
+    Admission-->>Dashboard: AdmissionReport
+
+    alt allowed = true
+        Dashboard->>Deploy: launch agent_id, cwd
+        Deploy->>PTY: create_session
+        PTY-->>Deploy: session_id
+        Deploy-->>Dashboard: status active
+        Dashboard-->>Browser: 200 OK
+
+        Browser->>Dashboard: WS /cockpit/ws/session_id
+        Dashboard->>PTY: subscribe
+
+        loop Terminal I/O
+            Browser->>PTY: keystrokes Binary
+            PTY-->>Browser: terminal output Binary
+        end
+
+        Note over Orch,Pool: Orchestrator wraps PTY for multi-agent tasks
+        Orch->>Pool: launch LaunchSpec
+        Pool->>PTY: create_session
+        Orch->>Pool: send_task prompt
+        Pool->>PTY: write_to_pty
+        PTY-->>Trace: output stream
+        Trace->>TraceDB: append TraceEvent
+        Pool-->>Orch: TaskResult
+    else allowed = false
+        Dashboard-->>Browser: 403 Blocked + issues
+    end
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 7 ════════════════════════════════ -->
+<section id="s7">
+  <div class="section-header">
+    <span class="section-number" style="background:#3fb950;color:#0d1117">7</span>
+    <h2>Proxy & Local Model Routing</h2>
+  </div>
+  <p class="description">Request routing through the API proxy with hint-only local model resolution.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+flowchart TB
+    REQ[/"Incoming Chat Request"/]
+
+    REQ --> RESOLVE{"resolve_backend\n_for_request"}
+
+    RESOLVE --> CHK_LOCAL{"starts with\nlocal/ ?"}
+    CHK_LOCAL -- Yes --> LOCAL_ROUTE["resolve_local_route"]
+
+    CHK_LOCAL -- No --> CHK_SLASH{"contains / ?"}
+    CHK_SLASH -- Yes --> HINT_CHECK{"installed_backend\n_for_model\nhint-only, zero network"}
+    HINT_CHECK -- found --> LOCAL_ROUTE
+    HINT_CHECK -- not found --> OPENROUTER
+
+    CHK_SLASH -- No --> CHK_CLOUD{"looks_like_openrouter\n_cloud_model?\nclaude/gpt/gemini/..."}
+    CHK_CLOUD -- Yes --> OPENROUTER["OpenRouter API\nvia Vault key"]
+    CHK_CLOUD -- No --> HINT_CHECK2{"installed_backend\n_for_model"}
+    HINT_CHECK2 -- found --> LOCAL_ROUTE
+    HINT_CHECK2 -- not found --> OPENROUTER
+
+    LOCAL_ROUTE --> LOCAL_BACKEND{Backend Type}
+    LOCAL_BACKEND -- Ollama --> OLLAMA["Ollama\nlocalhost:11434"]
+    LOCAL_BACKEND -- vLLM --> VLLM["vLLM\nlocalhost:8000"]
+
+    subgraph "Hint-Only Resolution"
+        direction TB
+        H1["1. Check HF model path on disk"]
+        H2["2. Check in-process model cache"]
+        H3["3. Check persisted installed_hints"]
+        H1 --> H2 --> H3
+    end
+
+    HINT_CHECK -.-> H1
+    HINT_CHECK2 -.-> H1
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 8 ════════════════════════════════ -->
+<section id="s8">
+  <div class="section-header">
+    <span class="section-number" style="background:#d2a8ff;color:#0d1117">8</span>
+    <h2>Post-Quantum Cryptographic Stack</h2>
+  </div>
+  <p class="description">Key hierarchy from genesis ceremony through signing/encryption to protocol use.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+graph TB
+    subgraph Genesis["Genesis Ceremony"]
+        ENTROPY_8["Entropy Sources\nsystem + user + hardware"]
+        MNEMONIC_8["BIP-39 Mnemonic\n24 words"]
+        SEED_8["Genesis Secret Seed"]
+    end
+
+    subgraph Derivation["Key Derivation"]
+        ED_8["Ed25519 Keypair\nClassical signing"]
+        MLDSA_8["ML-DSA-65 Keypair\nPost-quantum signing"]
+        X25519_8["X25519 Keypair\nClassical ECDH"]
+        MLKEM_8["ML-KEM-768 Keypair\nPost-quantum KEM"]
+        BIP32_8["BIP-32 secp256k1\nEVM wallet"]
+    end
+
+    subgraph Operations["Operations"]
+        DUAL_SIGN_8["Dual Signature\nEd25519 + ML-DSA-65"]
+        HYBRID_ENC_8["Hybrid Encrypt\nX25519 + ML-KEM-768\nHKDF-SHA-512\nAES-256-GCM"]
+        PQ_GATE_8["PQ-Gated EVM Sign\nDual-sign auth\nsecp256k1 ECDSA"]
+        VAULT_ENC_8["Vault Encrypt\nHKDF-SHA-256 from seed\nAES-256-GCM"]
+    end
+
+    subgraph Protocols["Protocols"]
+        DIDCOMM_8["DIDComm v2\nAuthcrypt / Anoncrypt"]
+        IDCHAIN_8["Identity Ledger\nSHA-512 hash chain"]
+        ATTEST_PQ_8["Session Attestation\nMerkle root SHA-512"]
+        TWINE_PQ_8["Twine Anchor\nTriple-signed CURBy-Q"]
+        EVM_TX_8["EVM Transactions\nBase L2"]
+    end
+
+    ENTROPY_8 --> MNEMONIC_8 --> SEED_8
+    SEED_8 --> ED_8
+    SEED_8 --> MLDSA_8
+    SEED_8 --> X25519_8
+    SEED_8 --> MLKEM_8
+    SEED_8 --> BIP32_8
+
+    ED_8 --> DUAL_SIGN_8
+    MLDSA_8 --> DUAL_SIGN_8
+    X25519_8 --> HYBRID_ENC_8
+    MLKEM_8 --> HYBRID_ENC_8
+    DUAL_SIGN_8 --> PQ_GATE_8
+    BIP32_8 --> PQ_GATE_8
+    SEED_8 --> VAULT_ENC_8
+
+    HYBRID_ENC_8 --> DIDCOMM_8
+    DUAL_SIGN_8 --> IDCHAIN_8
+    DUAL_SIGN_8 --> ATTEST_PQ_8
+    DUAL_SIGN_8 --> TWINE_PQ_8
+    PQ_GATE_8 --> EVM_TX_8
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 9 ════════════════════════════════ -->
+<section id="s9">
+  <div class="section-header">
+    <span class="section-number">9</span>
+    <h2>Container & Mesh Networking</h2>
+  </div>
+  <p class="description">Docker container lifecycle with P2P mesh and Bitswap content exchange.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+graph TB
+    subgraph ContainerLC["Container Lifecycle"]
+        BUILD_9["Image Builder\nbuilder.rs"]
+        LAUNCH_9["Container Launcher\nlauncher.rs"]
+        SHIM_9["Container Shim\nshim/"]
+        SIDECAR_9["WDK Sidecar\nwdk-sidecar/\nNode.js"]
+    end
+
+    subgraph MeshNet["Mesh Network"]
+        MESH_9["Mesh Registry\nmesh.rs"]
+        MINIT_9["Mesh Init\nregister/deregister self"]
+        PEER_9["Peer Discovery\nping + latency"]
+        REMOTE_9["Remote Tool Call\ncross-container MCP"]
+        ENV_9["DIDComm Envelope\nexchange"]
+    end
+
+    subgraph SwarmBit["Swarm / Bitswap"]
+        CHUNK_9["Chunk Engine\ncontent-split"]
+        CSTORE_9["Chunk Store\nlocal cache"]
+        BSWAP_9["Bitswap Protocol\npeer exchange"]
+        MANIFEST_9["Manifest Builder\nverify integrity"]
+    end
+
+    BUILD_9 --> LAUNCH_9
+    LAUNCH_9 --> SHIM_9
+    LAUNCH_9 --> SIDECAR_9
+    LAUNCH_9 --> MINIT_9
+
+    MINIT_9 --> MESH_9
+    MESH_9 --> PEER_9
+    MESH_9 --> REMOTE_9
+    MESH_9 --> ENV_9
+
+    CHUNK_9 --> CSTORE_9
+    CSTORE_9 --> BSWAP_9
+    MANIFEST_9 --> CHUNK_9
+
+    REMOTE_9 -.-> BSWAP_9
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 10 ════════════════════════════════ -->
+<section id="s10">
+  <div class="section-header">
+    <span class="section-number" style="background:#3fb950;color:#0d1117">10</span>
+    <h2>Dashboard Frontend Architecture</h2>
+  </div>
+  <p class="description">SPA page routing and module structure.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+graph TB
+    subgraph Shell["HTML Shell"]
+        INDEX_10["index.html\nSidebar nav + content div"]
+    end
+
+    subgraph Core10["Core SPA"]
+        APP_10["app.js\nRouter + Page renderers"]
+    end
+
+    subgraph PageMod["Page Modules IIFE"]
+        COCKPIT_JS_10["cockpit.js\nCockpitManager\nDiversity gauge\nTrace topology chart"]
+        DEPLOY_JS_10["deploy.js\nAgent cards\nPreflight + Launch\nAdmission controls"]
+        ORCH_JS_10["orchestrator.js\nAgent/Task tables\nGraph topology"]
+        GENESIS_JS_10["genesis-docs.js\nDocumentation pages"]
+    end
+
+    subgraph Vendor10["Vendor"]
+        XTERM_10["xterm.js\n+ fit + webgl addons"]
+        CHARTJS_10["Chart.js"]
+    end
+
+    subgraph Pages10["Pages"]
+        P_OVER_10["#/overview"]
+        P_SESS_10["#/sessions"]
+        P_COST_10["#/costs"]
+        P_CONF_10["#/config"]
+        P_TRUST_10["#/trust"]
+        P_NDB_10["#/nucleusdb"]
+        P_COCK_10["#/cockpit"]
+        P_DEP_10["#/deploy"]
+        P_MOD_10["#/models"]
+    end
+
+    INDEX_10 --> APP_10
+    APP_10 --> P_OVER_10
+    APP_10 --> P_SESS_10
+    APP_10 --> P_COST_10
+    APP_10 --> P_CONF_10
+    APP_10 --> P_TRUST_10
+    APP_10 --> P_NDB_10
+    APP_10 --> P_COCK_10
+    APP_10 --> P_DEP_10
+    APP_10 --> P_MOD_10
+
+    P_COCK_10 --> COCKPIT_JS_10
+    P_DEP_10 --> DEPLOY_JS_10
+    COCKPIT_JS_10 --> XTERM_10
+    COCKPIT_JS_10 --> CHARTJS_10
+    P_COST_10 --> CHARTJS_10
+
+    APP_10 -.-> ORCH_JS_10
+    APP_10 -.-> GENESIS_JS_10
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 11 ════════════════════════════════ -->
+<section id="s11">
+  <div class="section-header">
+    <span class="section-number">11</span>
+    <h2>MCP Tool Surface</h2>
+  </div>
+  <p class="description">Tools exposed to AI agents via Model Context Protocol.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+graph TB
+    subgraph MCPFw["MCP Server Framework"]
+        RMCP_11["rmcp crate\nJSON-RPC transport"]
+        AUTH_MCP_11["Auth Layer\nserver/auth.rs"]
+        REMOTE_MCP_11["Remote Bridge\nserver/remote.rs"]
+    end
+
+    subgraph NDBTools["NucleusDB Tools"]
+        T_GET_11["nucleusdb_get"]
+        T_SET_11["nucleusdb_set"]
+        T_DEL_11["nucleusdb_delete"]
+        T_SQL_11["nucleusdb_sql"]
+        T_VEC_11["nucleusdb_vector_search"]
+        T_BLOB_11["nucleusdb_blob_store / _get"]
+        T_MEM_11["nucleusdb_memorize / _recall"]
+        T_CHUNK_11["nucleusdb_chunk / _reassemble"]
+        T_VCS_11["nucleusdb_work_record_*"]
+        T_VERIFY_11["nucleusdb_verify"]
+    end
+
+    subgraph OrchTools["Orchestrator Tools"]
+        T_LAUNCH_11["orchestrator_launch"]
+        T_TASK_11["orchestrator_send_task"]
+        T_PIPE_11["orchestrator_pipe"]
+        T_GRAPH_11["orchestrator_graph"]
+        T_MESH_11["orchestrator_mesh_status"]
+        T_STOP_11["orchestrator_stop"]
+    end
+
+    subgraph HALOTools["HALO Tools"]
+        T_ATTEST_11["agenthalo_attest"]
+        T_TRUST_11["agenthalo_trust"]
+        T_EVID_11["agenthalo_evidence_combine"]
+        T_UNCERT_11["agenthalo_uncertainty_translate"]
+        T_DEPLOY_11["deploy_preflight / _launch"]
+        T_ADMIT_11["agenthalo_admission_check"]
+    end
+
+    subgraph ContTools["Container Tools"]
+        T_CLNCH_11["container_launch"]
+        T_CLOGS_11["container_logs"]
+        T_CSTOP_11["container_stop"]
+        T_CMESH_11["mesh_*"]
+    end
+
+    RMCP_11 --> AUTH_MCP_11
+    RMCP_11 --> REMOTE_MCP_11
+
+    RMCP_11 --> T_GET_11
+    RMCP_11 --> T_LAUNCH_11
+    RMCP_11 --> T_ATTEST_11
+    RMCP_11 --> T_CLNCH_11
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 12 ════════════════════════════════ -->
+<section id="s12">
+  <div class="section-header">
+    <span class="section-number" style="background:#d2a8ff;color:#0d1117">12</span>
+    <h2>Lean 4 Formal Verification Layer</h2>
+  </div>
+  <p class="description">Proof modules in Lean 4 that back the Rust runtime guarantees.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+graph LR
+    subgraph LeanProofs["Lean 4 Proofs - lean/NucleusDB/"]
+        CORE_L_12["Core\nBase types & axioms"]
+        CRYPTO_L_12["Crypto\nHash, KEM, signatures"]
+        COMMIT_L_12["Commitment\nIPA, KZG proofs"]
+        GENESIS_L_12["Genesis\nSeed ceremony"]
+        IDENTITY_L_12["Identity\nDID, ledger"]
+        TRUST_L_12["TrustLayer\nNucleus operator\nHeyting algebra"]
+        COMMS_L_12["Comms\nDIDComm, hybrid KEM"]
+        SECURITY_L_12["Security\nParameter sets"]
+        SHEAF_L_12["Sheaf\nCoherence conditions"]
+        TRANS_L_12["Transparency\nCT log"]
+        PCN_L_12["PaymentChannels"]
+        CONTRACTS_L_12["Contracts\nEVM verification"]
+        ADV_L_12["Adversarial\nSecurity games"]
+        BRIDGE_L_12["Bridge\nRust to Lean binding"]
+        INTEG_L_12["Integration\nEnd-to-end properties"]
+    end
+
+    CORE_L_12 --> CRYPTO_L_12
+    CORE_L_12 --> COMMIT_L_12
+    CRYPTO_L_12 --> GENESIS_L_12
+    GENESIS_L_12 --> IDENTITY_L_12
+    IDENTITY_L_12 --> TRUST_L_12
+    CRYPTO_L_12 --> COMMS_L_12
+    CRYPTO_L_12 --> SECURITY_L_12
+    TRUST_L_12 --> SHEAF_L_12
+    COMMIT_L_12 --> TRANS_L_12
+    IDENTITY_L_12 --> CONTRACTS_L_12
+    SECURITY_L_12 --> ADV_L_12
+    BRIDGE_L_12 --> INTEG_L_12
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 13 ════════════════════════════════ -->
+<section id="s13">
+  <div class="section-header">
+    <span class="section-number" style="background:#e3b341;color:#0d1117">13</span>
+    <h2>On-Chain Attestation Flow</h2>
+  </div>
+  <p class="description">Session attestation to Base L2 with PQ-gated EVM signing.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+sequenceDiagram
+    participant Agent as Agent Session
+    participant Trace as Trace Store
+    participant Attest as Attestation Engine
+    participant ZK as Groth16 Prover
+    participant Wallet as EVM Wallet PQ-Gated
+    participant Contract as TrustVerifier.sol
+    participant Chain as Base L2
+
+    Agent->>Trace: Complete session events logged
+    Trace->>Attest: Build Merkle tree SHA-512
+    Attest->>Attest: Compute session root hash
+
+    opt ZK Proof Required
+        Attest->>ZK: Generate Groth16 proof BN254
+        ZK-->>Attest: proof and public inputs
+    end
+
+    Attest->>Wallet: Request EVM signature
+    Note over Wallet: PQ Gate: Ed25519 + ML-DSA-65 must both sign
+    Wallet-->>Attest: secp256k1 signature
+
+    Attest->>Contract: submitAttestation root, proof, sig
+    Contract->>Contract: verify Groth16 proof on-chain
+    Contract->>Chain: Store attestation record
+    Chain-->>Contract: tx receipt
+    Contract-->>Attest: attestation confirmed
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 14 ════════════════════════════════ -->
+<section id="s14">
+  <div class="section-header">
+    <span class="section-number">14</span>
+    <h2>Memory Recall Pipeline</h2>
+  </div>
+  <p class="description">How agent memory is stored, chunked, embedded, and recalled with fused reranking.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+flowchart TB
+    STORE_14["memorize text, tags"]
+    CHUNK_14["Chunk text\noverlap windows"]
+    EMBED_14["Generate embedding\n384-dim model"]
+    KV_14["Store in NucleusDB\nmem:chunk:* keys"]
+    VEC_14["Index in Vector Store"]
+    BLOB_14["Store blob\nSHA-256 addressed"]
+
+    RECALL_14["recall query, k"]
+    QEXP_14["Query Expansion\noptional LLM"]
+    VSEARCH_14["Vector kNN search\n4x candidate pool"]
+    ACCESS_14["Access-aware read\nget_typed_touching"]
+    RERANK_14["Fused rerank\nsimilarity 0.50\n+ biencoder 0.28\n+ lexical 0.12\n+ negation 0.10"]
+    RESULT_14["Top-k results\nmax 20"]
+
+    STORE_14 --> CHUNK_14 --> EMBED_14 --> KV_14
+    KV_14 --> VEC_14
+    KV_14 --> BLOB_14
+
+    RECALL_14 --> QEXP_14 --> VSEARCH_14 --> ACCESS_14 --> RERANK_14 --> RESULT_14
+    </pre>
+  </div></div>
+</section>
+
+<div class="section-sep"></div>
+
+<!-- ════════════════════════════════ 15 ════════════════════════════════ -->
+<section id="s15">
+  <div class="section-header">
+    <span class="section-number" style="background:#8b949e;color:#0d1117">15</span>
+    <h2>Complete File Map</h2>
+  </div>
+  <p class="description">Module-to-file reference for the entire codebase.</p>
+  <div class="diagram-card"><div class="card-body">
+    <pre class="mermaid">
+mindmap
+  root(("NucleusDB /\nAgent HALO"))
+    src/
+      bin/
+        nucleusdb.rs
+        nucleusdb_server.rs
+        nucleusdb_tui.rs
+        nucleusdb_mcp.rs
+        agenthalo.rs
+        agenthalo_mcp_server.rs
+      protocol.rs
+      state.rs
+      persistence.rs
+      keymap.rs
+      immutable.rs
+      typed_value.rs
+      type_map.rs
+      vector_index.rs
+      blob_store.rs
+      memory.rs
+      embeddings.rs
+      security.rs
+      witness.rs
+      materialize.rs
+      commitment/
+      vc/
+        ipa.rs
+        kzg.rs
+        binary_merkle.rs
+      sql/
+      pod/
+      multitenant.rs
+      license.rs
+      transparency/
+      halo/
+        Identity
+          did.rs
+          genesis_seed.rs
+          pq.rs
+          hash.rs
+          hybrid_kem.rs
+          evm_wallet.rs
+          evm_gate.rs
+          twine_anchor.rs
+        Comms
+          p2p_node.rs
+          a2a_bridge.rs
+          didcomm.rs
+          startup.rs
+          nym.rs
+        Observe
+          schema.rs
+          trace.rs
+          wrap.rs
+          runner.rs
+          detect.rs
+          adapters/
+        Trust
+          attest.rs
+          trust.rs
+          trust_score.rs
+          policy_registry.rs
+          identity.rs
+          identity_ledger.rs
+          circuit.rs
+          zk_compute.rs
+          zk_credential.rs
+        Epistemic
+          evidence.rs
+          uncertainty.rs
+          trace_topology.rs
+          diversity.rs
+        Serving
+          proxy.rs
+          local_models.rs
+          vault.rs
+          pricing.rs
+          admission.rs
+          governor.rs
+          governor_registry.rs
+          governor_telemetry.rs
+          chebyshev_evictor.rs
+      cockpit/
+        pty_manager.rs
+        ws_bridge.rs
+        deploy.rs
+      orchestrator/
+        agent_pool.rs
+        task.rs
+        task_graph.rs
+        trace_bridge.rs
+        a2a.rs
+      mcp/
+        tools.rs
+        server/
+      container/
+        builder.rs
+        launcher.rs
+        mesh.rs
+        sidecar.rs
+      swarm/
+        bitswap.rs
+        chunk_engine.rs
+        chunk_store.rs
+      puf/
+        core.rs
+        dgx.rs
+        tpm.rs
+      pcn/
+      sheaf/
+      trust/
+        composite_cab.rs
+        onchain.rs
+      vcs/
+      verifier/
+    dashboard/
+      index.html
+      app.js
+      cockpit.js
+      deploy.js
+      orchestrator.js
+      style.css
+    contracts/
+      TrustVerifier.sol
+      Groth16VerifierAdapter.sol
+    lean/NucleusDB/
+      Core
+      Crypto
+      Commitment
+      Genesis
+      Identity
+      TrustLayer
+      Comms
+      Security
+      Sheaf
+      Adversarial
+      Bridge
+    wdk-sidecar/
+    </pre>
+  </div></div>
+</section>
+
+</main>
+
+<!-- ── Scroll to top ── -->
+<button class="scroll-top" id="scrollTop" title="Back to top">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="18 15 12 9 6 15"/>
+  </svg>
+</button>
+
+<!-- ── Mermaid ── -->
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#161b22',
+      primaryColor: '#1f6feb',
+      primaryTextColor: '#c9d1d9',
+      primaryBorderColor: '#30363d',
+      lineColor: '#58a6ff',
+      secondaryColor: '#238636',
+      tertiaryColor: '#21262d',
+      noteTextColor: '#c9d1d9',
+      noteBkgColor: '#161b22',
+      noteBorderColor: '#30363d',
+      actorTextColor: '#c9d1d9',
+      actorBkg: '#161b22',
+      actorBorder: '#58a6ff',
+      signalColor: '#c9d1d9',
+      signalTextColor: '#c9d1d9',
+      labelTextColor: '#c9d1d9',
+      loopTextColor: '#c9d1d9',
+      edgeLabelBackground: '#161b22',
+      clusterBkg: '#0d1117',
+      clusterBorder: '#30363d',
+      titleColor: '#c9d1d9',
+      nodeTextColor: '#c9d1d9',
+    },
+    flowchart: {
+      htmlLabels: true,
+      curve: 'basis',
+      padding: 16,
+      nodeSpacing: 40,
+      rankSpacing: 50,
+    },
+    sequence: {
+      mirrorActors: false,
+      bottomMarginAdj: 1,
+      actorFontSize: 13,
+      messageFontSize: 13,
+      noteFontSize: 12,
+      useMaxWidth: true,
+    },
+    mindmap: {
+      padding: 16,
+      useMaxWidth: true,
+    },
+  });
+
+  // ── Scroll spy for nav ──
+  const sections = document.querySelectorAll('section[id]');
+  const navLinks = document.querySelectorAll('nav a');
+  const scrollBtn = document.getElementById('scrollTop');
+
+  function updateNav() {
+    let current = '';
+    for (const section of sections) {
+      if (section.getBoundingClientRect().top <= 120) {
+        current = section.id;
+      }
+    }
+    navLinks.forEach(link => {
+      link.classList.toggle('active', link.getAttribute('href') === '#' + current);
+    });
+    scrollBtn.classList.toggle('visible', window.scrollY > 400);
+  }
+
+  window.addEventListener('scroll', updateNav, { passive: true });
+  scrollBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+
+  // ── Smooth scroll for nav links ──
+  navLinks.forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const target = document.querySelector(link.getAttribute('href'));
+      if (target) target.scrollIntoView({ behavior: 'smooth' });
+    });
+  });
+
+  updateNav();
+</script>
+
+</body>
+</html>

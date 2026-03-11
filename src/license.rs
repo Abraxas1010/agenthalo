@@ -34,11 +34,17 @@ const DOMAIN_LICENSE_V2: &[u8] = b"NucleusDB.License.v2|";
 const DOMAIN_FOUNDATION: &[u8] = b"NucleusDB.CAB.Foundation|";
 const DOMAIN_COMPLIANCE: &[u8] = b"NucleusDB.License.Compliance|";
 
-/// Minimal standalone compliance witness used by the license path.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Compliance witness for PCN channel validation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PcnComplianceWitness {
     pub feasibility_root: [u8; 32],
     pub replay_seq: u64,
+    #[serde(default)]
+    pub channel_count: u64,
+    #[serde(default)]
+    pub valid_channels: u64,
+    #[serde(default)]
+    pub invalid_channels: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
