@@ -5210,3 +5210,134 @@ input:focus, select:focus, textarea:focus {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* ================================================================
+   P2PCLAW Hub Page
+   ================================================================ */
+.nav-icon-img {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  vertical-align: middle;
+  margin-right: 6px;
+  object-fit: cover;
+  filter: brightness(0.85) saturate(0.8);
+}
+.nav-link:hover .nav-icon-img,
+.nav-link.active .nav-icon-img { filter: brightness(1) saturate(1); }
+
+.p2pclaw-hub { padding: 16px; }
+.p2pclaw-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.p2pclaw-header img {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+}
+.p2pclaw-header h2 {
+  margin: 0;
+  color: var(--accent);
+  font-size: 20px;
+}
+.p2pclaw-header .p2pclaw-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.p2pclaw-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+@media (max-width: 900px) { .p2pclaw-grid { grid-template-columns: 1fr; } }
+
+.p2pclaw-stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.p2pclaw-stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  text-align: center;
+}
+.p2pclaw-stat .p2pclaw-stat-value {
+  font-size: 28px;
+  font-weight: bold;
+  color: var(--accent);
+}
+.p2pclaw-stat .p2pclaw-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.p2pclaw-papers-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+.p2pclaw-paper-item {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.p2pclaw-paper-item:hover { background: var(--bg-hover); }
+.p2pclaw-paper-title { color: var(--text); font-size: 13px; }
+.p2pclaw-paper-meta { color: var(--text-dim); font-size: 11px; }
+
+.p2pclaw-verify-form { display: flex; flex-direction: column; gap: 8px; }
+.p2pclaw-verify-form textarea {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  font-family: inherit;
+  font-size: 12px;
+  resize: vertical;
+  min-height: 80px;
+}
+.p2pclaw-verify-form input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+}
+.p2pclaw-verify-result {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.p2pclaw-verify-result.verified { border-color: var(--green); }
+.p2pclaw-verify-result.failed { border-color: var(--red, #e63030); }
+
+.p2pclaw-mcp-tools {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.p2pclaw-tool-item {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.p2pclaw-tool-name { color: var(--accent); font-weight: bold; }
+.p2pclaw-tool-desc { color: var(--text-muted); margin-top: 2px; }

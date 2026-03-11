@@ -1,0 +1,14 @@
+{
+  "name": "p2pclaw-mcp-sidecar",
+  "version": "1.0.0",
+  "description": "AgentHALO-managed P2PCLAW MCP sidecar — proxies tool calls to the P2PCLAW gateway with auth + tracing",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "express": "^5.2.1"
+  }
+}

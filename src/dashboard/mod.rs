@@ -56,6 +56,8 @@ pub struct DashboardState {
     pub governor_registry: Arc<crate::halo::governor_registry::GovernorRegistry>,
     /// Live proxy admission/runtime telemetry wrapper.
     pub proxy_governor: Arc<crate::halo::proxy::ProxyGovernorRuntime>,
+    /// P2PCLAW frontend (Next.js) lifecycle manager.
+    pub p2pclaw_frontend: Arc<StdMutex<crate::halo::p2pclaw_frontend::P2PClawFrontendManager>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +194,9 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         orchestrator,
         governor_registry,
         proxy_governor,
+        p2pclaw_frontend: Arc::new(StdMutex::new(
+            crate::halo::p2pclaw_frontend::P2PClawFrontendManager::new(),
+        )),
     }
 }
 
@@ -202,6 +207,11 @@ pub fn build_router(state: DashboardState) -> Router {
     Router::new()
         .nest("/api", api_router)
         .route("/events", get(api::sse_handler))
+        // P2PCLAW frontend reverse-proxy (Next.js)
+        .route(
+            "/p2pclaw-app/{*path}",
+            axum::routing::any(api::p2pclaw_frontend_proxy),
+        )
         .fallback(get(assets::static_handler))
         .with_state(state)
 }

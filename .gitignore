@@ -30,6 +30,9 @@
 
 # Sidecar dependencies
 /wdk-sidecar/node_modules/
+/vendor/p2pclaw-mcp/node_modules/
+/vendor/p2pclaw-frontend/node_modules/
+/vendor/p2pclaw-frontend/.next/
 
 # OS
 .DS_Store

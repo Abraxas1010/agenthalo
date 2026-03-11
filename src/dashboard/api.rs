@@ -118,6 +118,12 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/p2pclaw/configure", post(api_p2pclaw_configure))
         .route("/p2pclaw/status", get(api_p2pclaw_status))
         .route("/p2pclaw/briefing", get(api_p2pclaw_briefing))
+        .route("/p2pclaw/verify", post(api_p2pclaw_verify))
+        .route("/p2pclaw/papers", get(api_p2pclaw_papers))
+        .route("/p2pclaw/mempool", get(api_p2pclaw_mempool))
+        .route("/p2pclaw/mcp/status", get(api_p2pclaw_mcp_status))
+        .route("/p2pclaw/mcp/tools", get(api_p2pclaw_mcp_tools))
+        .route("/p2pclaw/mcp/call", post(api_p2pclaw_mcp_call))
         // Config
         .route("/config", get(api_config))
         .route("/config/wrap", post(api_config_wrap))
@@ -4853,6 +4859,212 @@ async fn api_p2pclaw_briefing(AxumState(state): AxumState<DashboardState>) -> Ap
         "ok": true,
         "briefing_markdown": briefing
     })))
+}
+
+/// Verify a paper using AgentHALO's real structural verifier (replaces mock heytingVerifier.js).
+async fn api_p2pclaw_verify(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<crate::halo::p2pclaw_verify::VerificationRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let result = crate::halo::p2pclaw_verify::verify_paper(&req);
+    Ok(Json(json!({
+        "ok": true,
+        "verification": result
+    })))
+}
+
+/// List papers from P2PCLAW gateway.
+async fn api_p2pclaw_papers(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let papers = p2pclaw::list_papers(&cfg, Some(50))
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "papers": papers
+    })))
+}
+
+/// List mempool papers from P2PCLAW gateway.
+async fn api_p2pclaw_mempool(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let mempool = p2pclaw::list_mempool(&cfg)
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "mempool": mempool
+    })))
+}
+
+/// Get MCP sidecar status (check if the P2PCLAW MCP sidecar is running).
+async fn api_p2pclaw_mcp_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw::load_or_default();
+    let available = crate::halo::p2pclaw_mcp::P2PClawMcpManager::is_available();
+    Ok(Json(json!({
+        "ok": true,
+        "available": available,
+        "gateway": cfg.endpoint_url,
+    })))
+}
+
+/// List tools available via the P2PCLAW MCP sidecar.
+async fn api_p2pclaw_mcp_tools(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw::load_or_default();
+    let mgr = crate::halo::p2pclaw_mcp::P2PClawMcpManager::new(
+        &cfg.endpoint_url,
+        &cfg.agent_id,
+        &cfg.agent_name,
+    );
+    if !mgr.is_running() {
+        return Ok(Json(json!({
+            "ok": false,
+            "error": "P2PCLAW MCP sidecar is not running. Install dependencies: cd vendor/p2pclaw-mcp && npm install"
+        })));
+    }
+    let tools = mgr
+        .list_tools()
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "tools": tools
+    })))
+}
+
+/// Call a P2PCLAW MCP tool via the sidecar.
+async fn api_p2pclaw_mcp_call(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<Value>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let name = req
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, "missing 'name' field"))?
+        .to_string();
+    let arguments = req.get("arguments").cloned().unwrap_or(json!({}));
+
+    let cfg = p2pclaw::load_or_default();
+    let mgr = crate::halo::p2pclaw_mcp::P2PClawMcpManager::new(
+        &cfg.endpoint_url,
+        &cfg.agent_id,
+        &cfg.agent_name,
+    );
+    if !mgr.is_running() {
+        return Err(api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "P2PCLAW MCP sidecar not running",
+        ));
+    }
+
+    let result = mgr
+        .call_tool(&name, &arguments)
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "result": result
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// P2PCLAW Frontend Reverse-Proxy
+// ---------------------------------------------------------------------------
+
+/// Reverse-proxy handler: forwards all `/p2pclaw-app/*` requests to the
+/// Next.js frontend running on localhost. The frontend manager is started
+/// on first request if available.
+pub async fn p2pclaw_frontend_proxy(
+    AxumState(state): AxumState<DashboardState>,
+    Path(path): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    use axum::body::Body;
+
+    // Attempt to start the frontend on first request (lazy init).
+    {
+        let mut mgr = match state.p2pclaw_frontend.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("P2PCLAW frontend lock poisoned: {e}"),
+                )
+                    .into_response();
+            }
+        };
+        if !mgr.is_running() {
+            if let Err(e) = mgr.start() {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": format!("P2PCLAW frontend unavailable: {e}"),
+                        "hint": "Install the frontend: cd vendor/p2pclaw-frontend && npm install && npm run build"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Build the upstream URL, preserving query string.
+    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let upstream_path = format!("/{path}{query}");
+
+    // Proxy the request in a blocking context (ureq is sync).
+    let port = state
+        .p2pclaw_frontend
+        .lock()
+        .map(|g| g.port())
+        .unwrap_or(7422);
+
+    let result = tokio::task::spawn_blocking(move || {
+        let url = format!("http://127.0.0.1:{port}{upstream_path}");
+        let agent = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(std::time::Duration::from_secs(15)))
+                .build(),
+        );
+        let mut resp = agent.get(&url).call().map_err(|e| format!("{e}"))?;
+
+        let status = resp.status().as_u16();
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("text/html")
+            .to_string();
+
+        let body = resp
+            .body_mut()
+            .read_to_vec()
+            .map_err(|e| format!("read body: {e}"))?;
+
+        Ok::<_, String>((status, content_type, body))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((status, content_type, body))) => {
+            let axum_status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+            (
+                axum_status,
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                Body::from(body),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => (StatusCode::BAD_GATEWAY, format!("P2PCLAW frontend error: {e}"))
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("proxy task failed: {e}"),
+        )
+            .into_response(),
+    }
 }
 
 async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {

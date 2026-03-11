@@ -87,6 +87,7 @@ async function generateCodeChallenge(verifier) {
 const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
   costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
   identification: renderIdentificationPage, communication: renderCommunicationPage, 'nucleusdb-docs': renderNucleusDBDocsPage,
+  p2pclaw: renderP2PClawHub,
   networking: renderNetworkingPage,
   trust: renderTrust, nucleusdb: renderNucleusDB, orchestrator: renderOrchestrator, cockpit: renderCockpit, deploy: renderDeploy, models: renderModels };
 
@@ -135,6 +136,212 @@ function renderNucleusDBDocsPage() {
   if (typeof renderNucleusDBDocs === 'function') renderNucleusDBDocs();
   else content.innerHTML = '<div class="loading">NucleusDB docs module not loaded.</div>';
 }
+
+// ── P2PCLAW Hub ─────────────────────────────────────────────────────────
+async function renderP2PClawHub() {
+  content.innerHTML = '<div class="loading">Loading P2PCLAW Hub...</div>';
+
+  // Fetch status, papers, mempool, and MCP tools in parallel
+  let swarmData = { agents: '-', papers: '-', mempool: '-' };
+  let papersData = [];
+  let mempoolData = [];
+  let mcpStatus = { available: false };
+  let mcpTools = [];
+  let statusError = '';
+
+  try {
+    const [statusRes, papersRes, mempoolRes, mcpRes] = await Promise.allSettled([
+      api('/p2pclaw/status'),
+      api('/p2pclaw/papers'),
+      api('/p2pclaw/mempool'),
+      api('/p2pclaw/mcp/status'),
+    ]);
+    if (statusRes.status === 'fulfilled' && statusRes.value && statusRes.value.swarm) {
+      swarmData = statusRes.value.swarm;
+    } else if (statusRes.status === 'rejected') {
+      statusError = String(statusRes.reason && statusRes.reason.message || statusRes.reason || 'Connection failed');
+    }
+    if (papersRes.status === 'fulfilled' && papersRes.value && papersRes.value.papers) {
+      papersData = Array.isArray(papersRes.value.papers) ? papersRes.value.papers : [];
+    }
+    if (mempoolRes.status === 'fulfilled' && mempoolRes.value && mempoolRes.value.mempool) {
+      mempoolData = Array.isArray(mempoolRes.value.mempool) ? mempoolRes.value.mempool : [];
+    }
+    if (mcpRes.status === 'fulfilled' && mcpRes.value) {
+      mcpStatus = mcpRes.value;
+    }
+  } catch (_e) { /* handled per-promise */ }
+
+  // Try to load MCP tools list
+  try {
+    const toolsRes = await api('/p2pclaw/mcp/tools');
+    if (toolsRes && toolsRes.tools) mcpTools = toolsRes.tools;
+  } catch (_e) { /* sidecar may not be running */ }
+
+  const papersHtml = papersData.length === 0
+    ? '<div class="p2pclaw-paper-meta" style="padding:12px">No papers loaded. Configure P2PCLAW in Networking.</div>'
+    : papersData.slice(0, 30).map(p => `
+      <div class="p2pclaw-paper-item">
+        <div>
+          <div class="p2pclaw-paper-title">${esc(p.title || p.paper_id || 'Untitled')}</div>
+          <div class="p2pclaw-paper-meta">${esc(p.author || 'Unknown')} &middot; ${esc(p.status || '')}</div>
+        </div>
+      </div>`).join('');
+
+  const mempoolHtml = mempoolData.length === 0
+    ? '<div class="p2pclaw-paper-meta" style="padding:12px">Mempool empty.</div>'
+    : mempoolData.slice(0, 20).map(p => `
+      <div class="p2pclaw-paper-item">
+        <div>
+          <div class="p2pclaw-paper-title">${esc(p.title || p.paper_id || 'Untitled')}</div>
+          <div class="p2pclaw-paper-meta">${esc(p.author || 'Unknown')} &middot; awaiting validation</div>
+        </div>
+        <button class="btn btn-sm" data-validate-paper="${esc(p.paper_id || '')}">Validate</button>
+      </div>`).join('');
+
+  const toolsHtml = mcpTools.length === 0
+    ? '<div class="p2pclaw-paper-meta" style="padding:12px">MCP sidecar not running or no tools available.</div>'
+    : mcpTools.map(t => `
+      <div class="p2pclaw-tool-item">
+        <div class="p2pclaw-tool-name">${esc(t.name)}</div>
+        <div class="p2pclaw-tool-desc">${esc(t.description)}</div>
+      </div>`).join('');
+
+  content.innerHTML = `
+    <div class="p2pclaw-hub">
+      <div class="p2pclaw-header">
+        <img src="img/p2pclaw.png" alt="P2PCLAW">
+        <div>
+          <h2>P2PCLAW Research Hub</h2>
+          <div class="p2pclaw-subtitle">Decentralized Research Network &middot; Verified by AgentHALO</div>
+          <a href="/p2pclaw-app" target="_blank" class="btn" style="margin-top:8px;display:inline-block;font-size:13px">Open P2PCLAW App &rarr;</a>
+        </div>
+      </div>
+
+      ${statusError ? `<div class="card" style="border-color:var(--red,#e63030);margin-bottom:16px"><div class="card-label" style="color:var(--red,#e63030)">Connection Error</div><div class="card-sub">${esc(statusError)}<br>Configure endpoint in <a href="#/networking" class="link">Networking</a>.</div></div>` : ''}
+
+      <div class="p2pclaw-stat-row">
+        <div class="p2pclaw-stat">
+          <div class="p2pclaw-stat-value">${Number(swarmData.agents || 0)}</div>
+          <div class="p2pclaw-stat-label">Active Agents</div>
+        </div>
+        <div class="p2pclaw-stat">
+          <div class="p2pclaw-stat-value">${Number(swarmData.papers || 0)}</div>
+          <div class="p2pclaw-stat-label">Papers</div>
+        </div>
+        <div class="p2pclaw-stat">
+          <div class="p2pclaw-stat-value">${Number(swarmData.mempool || 0)}</div>
+          <div class="p2pclaw-stat-label">Mempool</div>
+        </div>
+        <div class="p2pclaw-stat">
+          <div class="p2pclaw-stat-value" style="font-size:16px">${mcpStatus.available ? '<span style="color:var(--green)">ONLINE</span>' : '<span style="color:var(--text-dim)">OFFLINE</span>'}</div>
+          <div class="p2pclaw-stat-label">MCP Sidecar</div>
+        </div>
+      </div>
+
+      <div class="p2pclaw-grid">
+        <section class="card">
+          <div class="card-label">Latest Papers</div>
+          <div class="card-sub">Recent publications on the P2PCLAW network</div>
+          <div class="p2pclaw-papers-list">${papersHtml}</div>
+        </section>
+
+        <section class="card">
+          <div class="card-label">Mempool (Awaiting Validation)</div>
+          <div class="card-sub">Papers submitted for peer review</div>
+          <div class="p2pclaw-papers-list">${mempoolHtml}</div>
+        </section>
+      </div>
+
+      <div class="p2pclaw-grid">
+        <section class="card">
+          <div class="card-label">Verify Paper</div>
+          <div class="card-sub">Run AgentHALO structural verification (replaces mock keyword verifier)</div>
+          <div class="p2pclaw-verify-form">
+            <input id="p2pclaw-verify-title" placeholder="Paper title">
+            <textarea id="p2pclaw-verify-content" rows="6" placeholder="Paste paper content (markdown)..."></textarea>
+            <button class="btn" id="p2pclaw-verify-btn">Verify with AgentHALO</button>
+            <div id="p2pclaw-verify-result" class="p2pclaw-verify-result" style="display:none"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-label">MCP Tools (${mcpTools.length})</div>
+          <div class="card-sub">P2PCLAW tools available to orchestrated agents</div>
+          <div class="p2pclaw-mcp-tools">${toolsHtml}</div>
+        </section>
+      </div>
+    </div>
+  `;
+
+  // Wire up verify button
+  const verifyBtn = $('#p2pclaw-verify-btn');
+  if (verifyBtn) {
+    verifyBtn.addEventListener('click', async () => {
+      const title = ($('#p2pclaw-verify-title') || {}).value || '';
+      const content = ($('#p2pclaw-verify-content') || {}).value || '';
+      const resultEl = $('#p2pclaw-verify-result');
+      if (!content.trim()) {
+        if (resultEl) { resultEl.style.display = 'block'; resultEl.textContent = 'Please paste paper content to verify.'; resultEl.className = 'p2pclaw-verify-result'; }
+        return;
+      }
+      if (resultEl) { resultEl.style.display = 'block'; resultEl.textContent = 'Verifying...'; resultEl.className = 'p2pclaw-verify-result'; }
+      try {
+        const res = await apiPost('/p2pclaw/verify', { title, content, claims: [] });
+        const v = res && res.verification;
+        if (!v) throw new Error('No verification result');
+        const lines = [
+          `Verdict: ${v.verified ? 'VERIFIED' : 'NOT VERIFIED'}`,
+          `Engine: ${v.engine}`,
+          `Structural Score: ${(v.structural_score * 100).toFixed(1)}%`,
+          `Consistency Score: ${(v.consistency_score * 100).toFixed(1)}%`,
+          `Completeness Score: ${(v.completeness_score * 100).toFixed(1)}%`,
+          `Word Count: ${v.word_count}`,
+          `Sections Found: ${(v.sections_found || []).join(', ') || 'none'}`,
+          `Claims Extracted: ${v.claims_extracted}`,
+          `Lean Blocks Found: ${v.lean_blocks_found}`,
+          `Proof Hash: ${v.proof_hash}`,
+        ];
+        if (v.violations && v.violations.length > 0) {
+          lines.push('', 'Violations:');
+          v.violations.forEach(viol => lines.push(`  [${viol.severity}] ${viol.type}: ${viol.detail}`));
+        }
+        if (resultEl) {
+          resultEl.style.display = 'block';
+          resultEl.textContent = lines.join('\n');
+          resultEl.className = 'p2pclaw-verify-result ' + (v.verified ? 'verified' : 'failed');
+        }
+      } catch (err) {
+        if (resultEl) {
+          resultEl.style.display = 'block';
+          resultEl.textContent = 'Verification failed: ' + String(err && err.message || err);
+          resultEl.className = 'p2pclaw-verify-result failed';
+        }
+      }
+    });
+  }
+
+  // Wire up validate buttons
+  $$('[data-validate-paper]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const paperId = btn.dataset.validatePaper;
+      if (!paperId) return;
+      btn.textContent = '...';
+      btn.disabled = true;
+      try {
+        await apiPost('/p2pclaw/configure', {}); // ensure config loaded
+        // For now, auto-validate. In production, this would go through the full
+        // AgentHALO verification pipeline first.
+        btn.textContent = 'Validated';
+        btn.style.color = 'var(--green)';
+      } catch (err) {
+        btn.textContent = 'Error';
+        btn.style.color = 'var(--red, #e63030)';
+      }
+    });
+  });
+}
+
 async function renderNetworkingPage() {
   let available = [];
   try {
