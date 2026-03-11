@@ -44,6 +44,15 @@ client / bot / MCP tool
 - `src/sql/` — parser and executor
 - `src/multitenant.rs` / `src/api.rs` — HTTP-facing tenant manager
 
+### Formal verification
+
+- `src/verifier/checker.rs` — `.lean4export` certificate parser, trust-tier computation, Ed25519 signature verification
+- `src/verifier/gate.rs` — proof gate evaluation against `configs/proof_gate.json`
+- `src/transparency/ct6962.rs` — RFC 6962 transparency provenance
+- `src/vc/ipa.rs` — IPA/Pedersen commitment provenance
+- `src/sheaf/coherence.rs` — sheaf coherence and trace topology provenance
+- `scripts/formal_provenance_resolver.py` — namespace-aware Lean FQN resolution and commit-staleness detection
+
 ### Identity and local security
 
 - `src/genesis.rs` — entropy harvest and genesis-seed persistence
@@ -87,23 +96,48 @@ The intended production shape is one shared database file with multiple cooperat
 
 ## Formal Layer
 
-`lean/NucleusDB/` contains the formal NucleusDB proof surface kept with the standalone repo. Runtime-critical theorems are mirrored locally and linked back to the canonical Heyting proofs through dual provenance strings exposed from Rust.
+`lean/NucleusDB/` contains 74 local Lean 4 mirror modules. Runtime-critical theorems are mirrored locally and linked back to the canonical [Heyting](https://github.com/Abraxas1010/heyting) proofs through dual provenance strings exposed from Rust.
 
 ### Provenance Surfaces
 
-- `src/security.rs`
-- `src/transparency/ct6962.rs`
-- `src/vc/ipa.rs`
-- `src/sheaf/coherence.rs`
-- `src/protocol.rs`
+Five Rust modules export `formal_provenance()` with 22 unique canonical theorem FQNs and 19 local mirror paths:
 
-These surfaces feed the advisory proof gate (`configs/proof_gate.json`), the verifier pipeline under `src/verifier/`, and the dashboard endpoint `/api/formal-proofs`.
+- `src/security.rs` — 7 entries (certificate refinement, authorization, dual auth)
+- `src/transparency/ct6962.rs` — 4 entries (RFC 6962 consistency, inclusion, append-only)
+- `src/vc/ipa.rs` — 5 entries (Pedersen/IPA commitment correctness, soundness, hiding)
+- `src/sheaf/coherence.rs` — 4 entries (sheaf coherence, trace topology, component counting)
+- `src/protocol.rs` — 2 entries (core nucleus steps, commit certificate verification)
+
+These surfaces feed the advisory proof gate (`configs/proof_gate.json`), the verifier pipeline under `src/verifier/`, the dashboard endpoint `/api/formal-proofs`, and integration tests in `tests/formal_integration_tests.rs`.
+
+### Verifier Pipeline
+
+- `src/verifier/checker.rs` — `.lean4export` certificate parser with Ed25519 signature verification and trust-tier computation (Untrusted → Legacy → Standard → CryptoExtended)
+- `src/verifier/gate.rs` — proof gate evaluation: checks theorem FQN, declaration-line SHA-256, Heyting commit hash, and signature for each of 14 requirements across 6 tool surfaces
+- `scripts/formal_provenance_resolver.py` — namespace-aware Lean FQN resolution with commit-staleness detection (replaces short-name grep)
+
+### Proof Gate
+
+`configs/proof_gate.json` defines 14 theorem requirements across 6 tool surfaces:
+
+| Tool surface | Requirements |
+|---|---|
+| `nucleusdb_execute_sql` | 3 (commit certificate, sheaf coherence, IPA opening) |
+| `nucleusdb_container_launch` | 2 (core nucleus steps, certificate refinement) |
+| `nucleusdb_commit` | 3 (consistency/inclusion proofs, commitment soundness) |
+| `nucleusdb_evm_sign` | 2 (dual authorization, authorization composability) |
+| `nucleusdb_kem_encapsulate` | 1 (hybrid KEM security) |
+| `nucleusdb_trace_analysis` | 3 (connectivity preservation, component lifting, component monotonicity) |
+
+Each requirement binds: exact canonical FQN, expected declaration-line SHA-256, expected Heyting commit hash, and `require_signature: true`.
+
+Current status: `enabled: false`, all `enforced: false` (advisory mode).
 
 ### Certificate Flow
 
-1. Validate theorem references with `scripts/validate_formal_provenance.sh`.
+1. Validate theorem references with `scripts/validate_formal_provenance.sh` (namespace-aware resolution + commit-staleness check).
 2. Generate signed `.lean4export` provenance attestations with `scripts/generate_proof_certificates.sh`.
-3. Submit certificates through the existing CLI / verifier gate; submission re-checks statement hash, commit hash, and signature requirements for configured theorems.
+3. Submit certificates through the CLI / verifier gate; submission re-checks statement hash, commit hash, and signature requirements.
 4. Keep `enabled: false` in the proof gate until operators are ready to enforce theorem requirements in production.
 
-These certificates bind theorem claims to a specific Heyting commit and declaration line hash. They are not kernel proof replay artifacts.
+Certificates are signed metadata attestations binding theorem claims to a specific Heyting commit and declaration line hash. They are not Lean kernel proof replay artifacts. See [FORMAL_VERIFICATION.md](FORMAL_VERIFICATION.md) for full details.

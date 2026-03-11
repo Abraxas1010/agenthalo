@@ -17,7 +17,7 @@
 ![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)
 ![Lean 4](https://img.shields.io/badge/Lean%204-formal%20proofs-blue.svg)
 
-[Quick Start](#quick-start) · [Discord Bot](#discord-bot) · [SQL Interface](#sql-interface) · [MCP Server](#mcp-server) · [Dashboard](#dashboard) · [Architecture](#architecture) · [Security](#security)
+[Quick Start](#quick-start) · [Discord Bot](#discord-bot) · [SQL Interface](#sql-interface) · [MCP Server](#mcp-server) · [Dashboard](#dashboard) · [Formal Verification](#formal-verification) · [Architecture](#architecture) · [Security](#security)
 
 <sub>Part of the <a href="https://www.apoth3osis.io/projects"><strong>MENTAT</strong></a> stack — Layer 1 foundation. Also powers <a href="https://github.com/Abraxas1010/agenthalo">Agent H.A.L.O.</a>.</sub>
 
@@ -174,6 +174,28 @@ Sections:
 
 The CRT visual language is retained intentionally: scanlines, grain, rough borders, and terminal color contrast are part of the product identity rather than leftover styling.
 
+## Formal Verification
+
+NucleusDB bridges runtime operations to machine-checked Lean 4 proofs maintained in the [Heyting](https://github.com/Abraxas1010/heyting) proof repo. The system provides three layers:
+
+1. **Provenance surfaces** — five Rust modules (`security.rs`, `protocol.rs`, `ct6962.rs`, `vc/ipa.rs`, `sheaf/coherence.rs`) export `formal_provenance()` linking 22 runtime operations to canonical Heyting theorem FQNs and 19 local Lean mirror paths
+2. **Proof gate** — `configs/proof_gate.json` defines 14 theorem requirements across 6 tool surfaces, each bound to an exact declaration-line SHA-256, Heyting commit hash, and Ed25519 signature requirement
+3. **Certificate pipeline** — `.lean4export` signed provenance attestations validated by `src/verifier/` against statement hash, commit hash, and signature
+
+Current status: advisory mode (`enabled: false`). The gate evaluates certificates but does not block operations. Dashboard and API simulate results and label them as advisory.
+
+Validation and certificate generation:
+
+```bash
+./scripts/validate_formal_provenance.sh                # namespace-aware FQN resolution + commit-staleness check
+./scripts/generate_proof_certificates.sh               # generate + sign + submit certificates
+cargo run --bin nucleusdb -- verify-certificate <file>  # verify a single certificate
+```
+
+Local Lean mirrors live under `lean/NucleusDB/` (74 files). They are self-contained and do not import Heyting modules.
+
+Full details: [Docs/FORMAL_VERIFICATION.md](Docs/FORMAL_VERIFICATION.md).
+
 ## Architecture
 
 ```text
@@ -198,6 +220,8 @@ Core subsystems:
 - `src/sql/` — parser and executor
 - `src/persistence.rs` — snapshots plus WAL
 - `src/blob_store.rs` / `src/vector_index.rs` — content-addressed blobs and embeddings
+- `src/verifier/` — certificate parser, proof gate evaluation, Ed25519 signature verification
+- `src/transparency/` / `src/vc/` / `src/sheaf/` — formal provenance surfaces
 - `src/mcp/` — agent control surface
 - `src/dashboard/` — web dashboard
 - `src/discord/` — recorder, recovery, slash commands
@@ -215,6 +239,7 @@ Cryptographic and operational surfaces currently in use:
 - append-only seal chaining via `immutable.rs`
 - AES-GCM encrypted local files for identity/genesis/vault state
 - Argon2-based password-derived master keys
+- Ed25519-signed formal provenance certificates binding runtime operations to Lean 4 theorems (advisory mode)
 
 Operational guidance:
 
@@ -232,6 +257,8 @@ Core regression suites retained in this standalone repo:
 - `tests/keymap_tests.rs`
 - `tests/persistence_compat_tests.rs`
 - `tests/cli_smoke_tests.rs`
+- `tests/discord_tests.rs`
+- `tests/formal_integration_tests.rs` — 11 tests covering provenance surfaces, gate config, certificate requirements, and duplicate detection
 
 Run them with:
 
@@ -242,9 +269,13 @@ cargo test
 ## Repository Layout
 
 - `src/` — Rust implementation
+- `src/verifier/` — certificate parser and proof gate
 - `dashboard/` — embedded frontend assets
 - `deploy/` — systemd units, Docker entrypoint, environment templates
-- `lean/NucleusDB/` — formal proof surfaces
+- `configs/` — proof gate configuration (`proof_gate.json`)
+- `lean/NucleusDB/` — 74 local Lean 4 mirror modules
+- `scripts/` — formal provenance validation, certificate generation
+- `tests/` — integration and regression tests
 - `artifacts/` — shipped trusted setup artifacts
 
 ## License
