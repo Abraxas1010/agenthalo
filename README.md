@@ -43,11 +43,13 @@ We humbly thank the collective intelligence of humanity for providing the techno
 <br>
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
-![Tests](https://img.shields.io/badge/tests-1055%20passing-brightgreen.svg)
-![Lean 4](https://img.shields.io/badge/Lean%204-137%20modules-blue.svg)
+![Tests](https://img.shields.io/badge/tests-960%2B%20passing-brightgreen.svg)
+![Lean 4](https://img.shields.io/badge/Lean%204-141%20modules-blue.svg)
 ![Chain](https://img.shields.io/badge/chain-Base%20L2-orange.svg)
 
 [The Problem](#the-problem) · [Quick Start](#quick-start) · [Web Dashboard](#web-dashboard) · [Orchestrator](#orchestrator) · [Sovereign Identity](#sovereign-identity) · [The Algebraic Foundation](#the-algebraic-foundation) · [NucleusDB](#nucleusdb) · [Architecture](#architecture) · [Contributing](CONTRIBUTING.md)
+
+<sub>Part of the <a href="https://www.apoth3osis.io/projects"><strong>MENTAT</strong></a> stack — Layer 2 (Trust & Containment). Built on <a href="https://github.com/Abraxas1010/heyting">HeytingLean</a> (Layer 1: Verification Foundation).</sub>
 
 ---
 
@@ -78,7 +80,7 @@ This is the gap H.A.L.O. exists to close.
 </p>
 
 <p align="center">
-  <strong>962 declarations</strong> &middot; <strong>286 theorems</strong> &middot; <strong>36 lemmas</strong> &middot; <strong>134 structures</strong> &middot; <strong>137 files</strong> &middot; <strong>15 families</strong><br>
+  <strong>962 declarations</strong> &middot; <strong>286 theorems</strong> &middot; <strong>36 lemmas</strong> &middot; <strong>134 structures</strong> &middot; <strong>141 files</strong> &middot; <strong>15 families</strong><br>
   <sub>Every claim below is machine-checked. Neural firing visualizes the proof dependency lattice.</sub>
 </p>
 
@@ -231,7 +233,7 @@ A real-time observability dashboard embedded in the binary — no npm, no CDN, n
 | **Overview** | Live KPIs (sessions, tokens, cost, active agents), recent sessions, epistemic trust status |
 | **Sessions** | Filterable list, drill-down to full event timeline, export, attest |
 | **Costs** | Daily cost chart, agent distribution, model comparison, paid operations |
-| **Configuration** | Toggle agent wrapping and x402 payments from the browser |
+| **Configuration** | Toggle agent wrapping, tool proxy, and provider settings from the browser |
 | **Trust** | Attestation list, one-click verify, create attestations |
 | **NucleusDB** | Browse the verifiable store, execute SQL, view commit history |
 | **Cockpit** | Launch and manage agent sessions in browser-based xterm.js terminals, diversity gauge, trace topology |
@@ -387,7 +389,7 @@ A cloud dashboard can show you what it claims happened. It cannot prove the log 
 | **Works offline** | No | Yes |
 | **Agent support** | Framework-specific SDKs | Wraps any CLI agent directly |
 | **MCP native** | No | Yes — 24 native + proxied tools over HTTP, 11 tools over stdio |
-| **Formal verification** | No | 131 Lean 4 modules with sheaf-theoretic proofs |
+| **Formal verification** | No | 141 Lean 4 modules with sheaf-theoretic proofs — backed by [HeytingLean](https://github.com/Abraxas1010/heyting) |
 
 H.A.L.O. doesn't replace evaluation frameworks or cloud analytics for teams that want them. It provides the missing foundation: a **sovereign, tamper-evident record** that you control, that you can verify, and that exists whether or not you're online.
 
@@ -461,85 +463,13 @@ agenthalo config tool-proxy refresh
 agenthalo config tool-proxy status
 ```
 
-### H.A.L.O. Feature Gating
-
-H.A.L.O.'s own features (attest, audit, trust, sign) are gated by the **CAB license system**, not by AgentPMT credits. P2PCLAW mints a Cryptographic Assurance Bundle after payment — NucleusDB verifies it locally against a baked-in foundation commitment. No phone-home. No license server. The math is the gatekeeper.
-
-### Pricing
-
-| Tier | Price | Capabilities |
-|------|-------|-------------|
-| **Free** | $0 | CLI, SQL, BinaryMerkle backend, Claude/Codex/Gemini wrapping |
-| **Starter** | $49/month | + MCP server, TUI, custom agent wrapping |
-| **Professional** | $149/month | + IPA backend, HTTP multi-tenant API |
-| **Enterprise** | $499/month | + KZG backend, container runtime, on-chain attestation |
-
----
-
-## x402direct — Stablecoin Payments for Agents
-
-<p align="center">
-  <a href="https://www.x402direct.org"><strong>x402direct.org</strong></a>
-</p>
-
-[x402direct](https://www.x402direct.org) is a peer-to-peer stablecoin payment protocol that uses HTTP 402 responses and UPC (Unified Payment Contract) smart contracts on Base. When an agent encounters a 402 Payment Required response, H.A.L.O. can handle the payment flow automatically.
-
-### Integration
-
-H.A.L.O. integrates x402direct at two levels:
-
-**1. Via AgentPMT (recommended)** — The `agentpmt/x402_pay` tool handles the full payment lifecycle: detect 402 response, select payment option, check balance, execute UPC payment, submit proof, access resource. Zero agent-side code needed.
-
-**2. Native validation** — The `x402_check` MCP tool parses and validates x402 payment requests locally. It checks protocol version, CAIP-10 addressing, known networks (Base mainnet and Base Sepolia), and token contract addresses — all without sending a transaction.
-
-```bash
-# Enable x402 integration
-agenthalo x402 enable
-
-# Configure UPC contract and network
-agenthalo x402 config --network base-sepolia --upc-contract 0x...
-
-# Check status
-agenthalo x402 status
-
-# Validate a 402 response body
-echo '{"x402version":"direct.1.0.0","nonce":42,...}' | agenthalo x402 check
-```
-
-### Supported Networks
-
-| Network | Chain ID | USDC Address |
-|---------|----------|-------------|
-| Base Mainnet | `eip155:8453` | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
-| Base Sepolia | `eip155:84532` | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
-
-### How x402 Works with H.A.L.O.
-
-```
-Agent requests protected resource
-        ↓
-Server returns 402 Payment Required (x402direct JSON)
-        ↓
-H.A.L.O. validates the payment request (x402_check)
-        ↓
-AgentPMT executes payment via UPC smart contract (x402_pay)
-        ↓
-H.A.L.O. records the payment in its tamper-evident trace
-        ↓
-Agent submits tx hash + nonce as proof → server grants access
-```
-
-Every x402 payment flows through H.A.L.O.'s trace, giving you a complete audit trail of autonomous agent spending — cryptographically sealed.
-
-> **Protocol reference:** [x402direct-public](https://github.com/Apoth3osis-ai/x402direct-public) on GitHub.
-
 ---
 
 ## The Algebraic Foundation
 
 Most databases describe their correctness properties in English. NucleusDB proves them in Lean 4 using the mathematics of sheaf theory — the same framework algebraic geometers use to describe how local observations compose into global structure.
 
-This is not a marketing claim. It is 137 Lean 4 modules, type-checked by the Lean kernel, that formally prove the properties NucleusDB relies on. We are not aware of any other database — verifiable or otherwise — that provides this level of mathematical foundation.
+This is not a marketing claim. It is 141 Lean 4 modules, type-checked by the Lean kernel, that formally prove the properties NucleusDB relies on. The formal specifications draw on the broader [HeytingLean](https://github.com/Abraxas1010/heyting) framework — a 3,300+ file, 760,000+ line Lean 4 formalization covering nucleus algebra, category theory, cryptography, and cross-kernel translation across six proof assistants. We are not aware of any other database — verifiable or otherwise — that provides this level of mathematical foundation.
 
 ### Why Sheaves
 
@@ -712,7 +642,7 @@ For a full orchestrator smoke run over real MCP HTTP:
 scripts/orchestrator_mcp_smoke.sh
 ```
 
-More details: `Docs/ops/mcp_streamable_http.md` and `Docs/ops/orchestrator_debugging_playbook.md`.
+See `src/mcp/server/remote.rs` for transport implementation details.
 
 **Dual authentication** (CAB + OAuth 2.1):
 - **CAB-as-bearer-token**: Hardware-anchored agent identity verified on-chain
@@ -799,7 +729,7 @@ Phase 5 scripts:
   ├──────────────────────────────────────────────────────────────┤
   │                                                              │
   │   On-Chain Trust (Base L2)       Formal Spec (Lean 4)        │
-  │     TrustVerifier.sol              131 modules               │
+  │     TrustVerifier.sol              141 modules               │
   │     TrustVerifierMultiChain.sol    Sheaf coherence,          │
   │     Groth16VerifierAdapter.sol     Chain transport/gluing,   │
   │     circuits/ (circom)             Fork evidence, Identity,  │
@@ -808,7 +738,7 @@ Phase 5 scripts:
   └──────────────────────────────────────────────────────────────┘
 ```
 
-**205 Rust source files** | **94,000+ lines** | **10,000+ lines of tests** | **20 Solidity contracts** | **131 Lean 4 modules**
+**211 Rust source files** | **100,000+ lines** | **9,200+ lines of tests** | **20 Solidity contracts** | **141 Lean 4 modules**
 
 ## Security
 
@@ -839,18 +769,18 @@ When `APPEND_ONLY` is active:
 
 ## Testing
 
-1055 tests passing (2026-03-08 snapshot), 0 failures, 0 warnings:
+960+ tests (2026-03-10 snapshot):
 
 ```bash
-cargo test                        # 1016 Rust tests
+cargo test                        # 924 Rust tests
 cd contracts && forge test        # 39 Solidity tests
 ```
 
 | Suite | Tests |
 |-------|-------|
-| Rust (unit + integration + binary tests) | 1016 |
+| Rust (unit + integration + binary tests) | 924 |
 | Solidity (Foundry) | 39 |
-| **Total** | **1055** |
+| **Total** | **963** |
 
 ## Known Limitations
 
