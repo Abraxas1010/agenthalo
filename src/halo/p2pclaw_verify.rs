@@ -11,7 +11,7 @@
 //! | Fake Lean proof string            | Real proof hash of actual content     |
 //! | `occamScore` = lexical diversity  | Structural complexity analysis        |
 //! | No audit trail                    | HALO trace event for every verify     |
-//! | SHA-256 of boilerplate            | Merkle hash of claims + evidence      |
+//! | SHA-256 of boilerplate            | Deterministic hash of title + claims + content |
 //!
 //! ## Verification Levels
 //!
@@ -36,24 +36,58 @@ const MAX_CONTRADICTION_RATIO: f64 = 0.5;
 
 /// Keywords that indicate positive claims.
 const POSITIVE_KW: &[&str] = &[
-    "prove", "proves", "proved", "demonstrate", "demonstrates",
-    "show", "shows", "shown", "confirm", "confirms", "establish",
-    "establishes", "validate", "validates", "reveal", "reveals",
+    "prove",
+    "proves",
+    "proved",
+    "demonstrate",
+    "demonstrates",
+    "show",
+    "shows",
+    "shown",
+    "confirm",
+    "confirms",
+    "establish",
+    "establishes",
+    "validate",
+    "validates",
+    "reveal",
+    "reveals",
 ];
 
 /// Keywords that indicate negative/contradictory claims.
 const NEGATIVE_KW: &[&str] = &[
-    "disprove", "disproves", "contradict", "contradicts",
-    "refute", "refutes", "invalidate", "invalidates",
-    "falsify", "falsifies",
+    "disprove",
+    "disproves",
+    "contradict",
+    "contradicts",
+    "refute",
+    "refutes",
+    "invalidate",
+    "invalidates",
+    "falsify",
+    "falsifies",
 ];
 
 /// Section headings that indicate well-structured papers.
 const STRUCTURE_HEADINGS: &[&str] = &[
-    "abstract", "introduction", "background", "methodology", "method",
-    "methods", "results", "discussion", "conclusion", "references",
-    "related work", "experimental", "experiments", "evaluation",
-    "proof", "theorem", "lemma", "definition",
+    "abstract",
+    "introduction",
+    "background",
+    "methodology",
+    "method",
+    "methods",
+    "results",
+    "discussion",
+    "conclusion",
+    "references",
+    "related work",
+    "experimental",
+    "experiments",
+    "evaluation",
+    "proof",
+    "theorem",
+    "lemma",
+    "definition",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -201,10 +235,7 @@ pub fn verify_paper(req: &VerificationRequest) -> VerificationResult {
     // ── Completeness: do claims have textual support? ───────────────────
     let mut supported_claims = 0u32;
     for claim in &claims {
-        let claim_terms: Vec<&str> = claim
-            .split_whitespace()
-            .filter(|w| w.len() > 4)
-            .collect();
+        let claim_terms: Vec<&str> = claim.split_whitespace().filter(|w| w.len() > 4).collect();
         if claim_terms.is_empty() {
             continue;
         }
@@ -246,7 +277,7 @@ pub fn verify_paper(req: &VerificationRequest) -> VerificationResult {
         + lean_bonus)
         .min(1.0);
 
-    // ── Proof hash (Merkle of title + claims + content hash) ────────────
+    // ── Proof hash (deterministic digest of title + claims + content hash) ──
     let mut hasher = Sha256::new();
     hasher.update(req.title.as_bytes());
     hasher.update(b"|");
@@ -287,11 +318,24 @@ pub fn verify_paper(req: &VerificationRequest) -> VerificationResult {
 /// Extract implicit claims from paper content.
 fn extract_claims(content: &str) -> Vec<String> {
     let claim_markers = [
-        "we prove", "we show", "we demonstrate", "this paper",
-        "our results", "we establish", "the theorem", "we verify",
-        "it follows", "therefore", "we conclude", "the proof",
-        "we propose", "our approach", "we introduce", "this work",
-        "our contribution", "we present",
+        "we prove",
+        "we show",
+        "we demonstrate",
+        "this paper",
+        "our results",
+        "we establish",
+        "the theorem",
+        "we verify",
+        "it follows",
+        "therefore",
+        "we conclude",
+        "the proof",
+        "we propose",
+        "our approach",
+        "we introduce",
+        "this work",
+        "our contribution",
+        "we present",
     ];
 
     content
@@ -322,7 +366,14 @@ fn find_lean_blocks(content: &str) -> Vec<&str> {
     }
 
     // Also detect inline Lean keywords outside code blocks
-    let lean_keywords = ["theorem ", "lemma ", "def ", "structure ", "instance ", "import Mathlib"];
+    let lean_keywords = [
+        "theorem ",
+        "lemma ",
+        "def ",
+        "structure ",
+        "instance ",
+        "import Mathlib",
+    ];
     if blocks.is_empty() {
         for kw in lean_keywords {
             if content.contains(kw) {
@@ -349,7 +400,10 @@ mod tests {
         };
         let result = verify_paper(&req);
         assert!(!result.verified);
-        assert!(result.violations.iter().any(|v| v.violation_type == "INSUFFICIENT_LENGTH"));
+        assert!(result
+            .violations
+            .iter()
+            .any(|v| v.violation_type == "INSUFFICIENT_LENGTH"));
     }
 
     #[test]
@@ -396,7 +450,10 @@ mod tests {
             agent_id: None,
         };
         let result = verify_paper(&req);
-        assert!(result.violations.iter().any(|v| v.violation_type == "INTERNAL_CONTRADICTION"));
+        assert!(result
+            .violations
+            .iter()
+            .any(|v| v.violation_type == "INTERNAL_CONTRADICTION"));
     }
 
     #[test]

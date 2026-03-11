@@ -4878,8 +4878,8 @@ async fn api_p2pclaw_verify(
 async fn api_p2pclaw_papers(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
     let cfg = p2pclaw_load_config_for_api()?;
-    let papers = p2pclaw::list_papers(&cfg, Some(50))
-        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    let papers =
+        p2pclaw::list_papers(&cfg, Some(50)).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
     Ok(Json(json!({
         "ok": true,
         "papers": papers
@@ -4890,12 +4890,37 @@ async fn api_p2pclaw_papers(AxumState(state): AxumState<DashboardState>) -> ApiR
 async fn api_p2pclaw_mempool(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
     let cfg = p2pclaw_load_config_for_api()?;
-    let mempool = p2pclaw::list_mempool(&cfg)
-        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    let mempool = p2pclaw::list_mempool(&cfg).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
     Ok(Json(json!({
         "ok": true,
         "mempool": mempool
     })))
+}
+
+fn with_p2pclaw_mcp_manager<T>(
+    state: &DashboardState,
+    auto_start: bool,
+    f: impl FnOnce(&mut crate::halo::p2pclaw_mcp::P2PClawMcpManager) -> Result<T, String>,
+) -> Result<T, (StatusCode, Json<Value>)> {
+    let cfg = p2pclaw::load_or_default();
+    let mut mgr = state
+        .p2pclaw_mcp
+        .lock()
+        .map_err(|e| internal_err(format!("P2PCLAW MCP lock poisoned: {e}")))?;
+    mgr.sync_config(&cfg.endpoint_url, &cfg.agent_id, &cfg.agent_name);
+
+    if auto_start && !mgr.is_running() {
+        mgr.start().map_err(|e| {
+            api_err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!(
+                    "P2PCLAW MCP sidecar unavailable: {e}. Install dependencies: cd vendor/p2pclaw-mcp && npm install"
+                ),
+            )
+        })?;
+    }
+
+    f(&mut mgr).map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))
 }
 
 /// Get MCP sidecar status (check if the P2PCLAW MCP sidecar is running).
@@ -4903,31 +4928,21 @@ async fn api_p2pclaw_mcp_status(AxumState(state): AxumState<DashboardState>) -> 
     require_sensitive_access(&state)?;
     let cfg = p2pclaw::load_or_default();
     let available = crate::halo::p2pclaw_mcp::P2PClawMcpManager::is_available();
+    let running = with_p2pclaw_mcp_manager(&state, false, |mgr| Ok(mgr.is_running()))?;
     Ok(Json(json!({
         "ok": true,
         "available": available,
+        "running": running,
+        "status": if running { "running" } else if available { "ready" } else { "offline" },
         "gateway": cfg.endpoint_url,
+        "agent_id": cfg.agent_id,
     })))
 }
 
 /// List tools available via the P2PCLAW MCP sidecar.
 async fn api_p2pclaw_mcp_tools(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
-    let cfg = p2pclaw::load_or_default();
-    let mgr = crate::halo::p2pclaw_mcp::P2PClawMcpManager::new(
-        &cfg.endpoint_url,
-        &cfg.agent_id,
-        &cfg.agent_name,
-    );
-    if !mgr.is_running() {
-        return Ok(Json(json!({
-            "ok": false,
-            "error": "P2PCLAW MCP sidecar is not running. Install dependencies: cd vendor/p2pclaw-mcp && npm install"
-        })));
-    }
-    let tools = mgr
-        .list_tools()
-        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    let tools = with_p2pclaw_mcp_manager(&state, true, |mgr| mgr.list_tools())?;
     Ok(Json(json!({
         "ok": true,
         "tools": tools
@@ -4947,22 +4962,7 @@ async fn api_p2pclaw_mcp_call(
         .to_string();
     let arguments = req.get("arguments").cloned().unwrap_or(json!({}));
 
-    let cfg = p2pclaw::load_or_default();
-    let mgr = crate::halo::p2pclaw_mcp::P2PClawMcpManager::new(
-        &cfg.endpoint_url,
-        &cfg.agent_id,
-        &cfg.agent_name,
-    );
-    if !mgr.is_running() {
-        return Err(api_err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "P2PCLAW MCP sidecar not running",
-        ));
-    }
-
-    let result = mgr
-        .call_tool(&name, &arguments)
-        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    let result = with_p2pclaw_mcp_manager(&state, true, |mgr| mgr.call_tool(&name, &arguments))?;
 
     Ok(Json(json!({
         "ok": true,
@@ -4977,9 +4977,24 @@ async fn api_p2pclaw_mcp_call(
 /// Reverse-proxy handler: forwards all `/p2pclaw-app/*` requests to the
 /// Next.js frontend running on localhost. The frontend manager is started
 /// on first request if available.
+pub async fn p2pclaw_frontend_proxy_root(
+    AxumState(state): AxumState<DashboardState>,
+    req: axum::extract::Request,
+) -> Response {
+    p2pclaw_frontend_proxy_inner(state, String::new(), req).await
+}
+
 pub async fn p2pclaw_frontend_proxy(
     AxumState(state): AxumState<DashboardState>,
     Path(path): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    p2pclaw_frontend_proxy_inner(state, path, req).await
+}
+
+async fn p2pclaw_frontend_proxy_inner(
+    state: DashboardState,
+    path: String,
     req: axum::extract::Request,
 ) -> Response {
     use axum::body::Body;
@@ -5010,9 +5025,40 @@ pub async fn p2pclaw_frontend_proxy(
         }
     }
 
-    // Build the upstream URL, preserving query string.
-    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let (parts, body) = req.into_parts();
+    let method = parts.method.clone();
+    let query = parts
+        .uri
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
     let upstream_path = format!("/{path}{query}");
+    let body_bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("P2PCLAW frontend request body error: {e}"),
+            )
+                .into_response();
+        }
+    };
+    let forwarded_headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .filter_map(|(name, value)| {
+            if matches!(
+                name.as_str(),
+                "host" | "connection" | "content-length" | "transfer-encoding"
+            ) {
+                return None;
+            }
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect();
 
     // Proxy the request in a blocking context (ureq is sync).
     let port = state
@@ -5026,15 +5072,94 @@ pub async fn p2pclaw_frontend_proxy(
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
                 .timeout_global(Some(std::time::Duration::from_secs(15)))
+                .http_status_as_error(false)
                 .build(),
         );
-        let mut resp = agent.get(&url).call().map_err(|e| format!("{e}"))?;
+        let method_name = method.as_str().to_string();
+
+        fn apply_headers<Any>(
+            mut req: ureq::RequestBuilder<Any>,
+            headers: &[(String, String)],
+        ) -> ureq::RequestBuilder<Any> {
+            for (name, value) in headers {
+                req = req.header(name, value);
+            }
+            req
+        }
+
+        let mut resp = match method_name.as_str() {
+            "GET" => apply_headers(
+                agent.get(&url).config().http_status_as_error(false).build(),
+                &forwarded_headers,
+            )
+            .call()
+            .map_err(|e| format!("{e}"))?,
+            "HEAD" => apply_headers(
+                agent
+                    .head(&url)
+                    .config()
+                    .http_status_as_error(false)
+                    .build(),
+                &forwarded_headers,
+            )
+            .call()
+            .map_err(|e| format!("{e}"))?,
+            "POST" => apply_headers(
+                agent
+                    .post(&url)
+                    .config()
+                    .http_status_as_error(false)
+                    .build(),
+                &forwarded_headers,
+            )
+            .send(body_bytes.as_ref())
+            .map_err(|e| format!("{e}"))?,
+            "PUT" => apply_headers(
+                agent.put(&url).config().http_status_as_error(false).build(),
+                &forwarded_headers,
+            )
+            .send(body_bytes.as_ref())
+            .map_err(|e| format!("{e}"))?,
+            "PATCH" => apply_headers(
+                agent
+                    .patch(&url)
+                    .config()
+                    .http_status_as_error(false)
+                    .build(),
+                &forwarded_headers,
+            )
+            .send(body_bytes.as_ref())
+            .map_err(|e| format!("{e}"))?,
+            "DELETE" => apply_headers(
+                agent
+                    .delete(&url)
+                    .config()
+                    .http_status_as_error(false)
+                    .build(),
+                &forwarded_headers,
+            )
+            .call()
+            .map_err(|e| format!("{e}"))?,
+            "OPTIONS" => apply_headers(
+                agent
+                    .options(&url)
+                    .config()
+                    .http_status_as_error(false)
+                    .build(),
+                &forwarded_headers,
+            )
+            .call()
+            .map_err(|e| format!("{e}"))?,
+            other => {
+                return Err(format!("unsupported proxied method: {other}"));
+            }
+        };
 
         let status = resp.status().as_u16();
         let content_type = resp
             .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
+            .get(ureq::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
             .unwrap_or("text/html")
             .to_string();
 
@@ -5057,7 +5182,10 @@ pub async fn p2pclaw_frontend_proxy(
             )
                 .into_response()
         }
-        Ok(Err(e)) => (StatusCode::BAD_GATEWAY, format!("P2PCLAW frontend error: {e}"))
+        Ok(Err(e)) => (
+            StatusCode::BAD_GATEWAY,
+            format!("P2PCLAW frontend error: {e}"),
+        )
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -8981,7 +9109,146 @@ fn resolve_binary(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
     use axum::extract::Query;
+    use axum::http::{Request, StatusCode};
+    use std::io::{Read, Write};
+    use std::path::PathBuf;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tower::ServiceExt;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let prev = std::env::var(key).ok();
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.prev {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn temp_path(tag: &str, ext: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "agenthalo_dashboard_api_{tag}_{}_{}.{}",
+            std::process::id(),
+            now_unix_secs(),
+            ext
+        ))
+    }
+
+    fn test_dashboard_state(tag: &str) -> DashboardState {
+        let db_path = temp_path(tag, "ndb");
+        let creds_path = temp_path(tag, "json");
+        save_credentials(
+            &creds_path,
+            &crate::halo::auth::Credentials {
+                api_key: None,
+                oauth_token: Some("test-oauth-token".to_string()),
+                oauth_provider: Some("github".to_string()),
+                user_id: Some(format!("dashboard-api-{tag}")),
+                created_at: now_unix_secs(),
+            },
+        )
+        .expect("write test credentials");
+        crate::dashboard::build_state(db_path, creds_path)
+    }
+
+    fn free_port() -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind free port");
+        listener.local_addr().expect("free port addr").port()
+    }
+
+    async fn read_http_request(stream: &mut TcpStream) -> Option<(String, Vec<u8>)> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let header_end = loop {
+            let read = stream.read(&mut chunk).await.expect("read request");
+            if read == 0 {
+                if buf.is_empty() {
+                    return None;
+                }
+                panic!("unexpected EOF while reading request");
+            }
+            buf.extend_from_slice(&chunk[..read]);
+            if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+        let content_length = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("content-length") {
+                    value.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        while buf.len() < header_end + content_length {
+            let read = stream.read(&mut chunk).await.expect("read request body");
+            assert!(read > 0, "unexpected EOF while reading request body");
+            buf.extend_from_slice(&chunk[..read]);
+        }
+        Some((head, buf[header_end..header_end + content_length].to_vec()))
+    }
+
+    fn read_http_request_blocking(stream: &mut std::net::TcpStream) -> Option<(String, Vec<u8>)> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let header_end = loop {
+            let read = stream.read(&mut chunk).expect("read blocking request");
+            if read == 0 {
+                if buf.is_empty() {
+                    return None;
+                }
+                panic!("unexpected EOF while reading blocking request");
+            }
+            buf.extend_from_slice(&chunk[..read]);
+            if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+        let content_length = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("content-length") {
+                    value.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        while buf.len() < header_end + content_length {
+            let read = stream.read(&mut chunk).expect("read blocking request body");
+            assert!(
+                read > 0,
+                "unexpected EOF while reading blocking request body"
+            );
+            buf.extend_from_slice(&chunk[..read]);
+        }
+        Some((head, buf[header_end..header_end + content_length].to_vec()))
+    }
 
     #[test]
     fn stream_trace_response_includes_billing_and_stream_metadata() {
@@ -9105,5 +9372,219 @@ mod tests {
             normalize_openrouter_exchange_inputs(&req).expect("expected trimmed values");
         assert_eq!(code, "code-123");
         assert_eq!(verifier, "verifier-xyz");
+    }
+
+    #[tokio::test]
+    async fn p2pclaw_frontend_proxy_forwards_post_method_body_and_query() {
+        let _guard = crate::test_support::lock_env();
+        let port = free_port();
+        let _port_guard = EnvVarGuard::set("P2PCLAW_FRONTEND_PORT", Some(&port.to_string()));
+        let state = test_dashboard_state("p2pclaw_frontend_post");
+
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("bind frontend test listener");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept frontend request");
+                let Some((head, body)) = read_http_request(&mut stream).await else {
+                    continue;
+                };
+                stream
+                    .write_all(
+                        b"HTTP/1.1 201 Created\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nproxied",
+                    )
+                    .await
+                    .expect("write frontend response");
+                tx.send((head, body)).expect("send captured request");
+                break;
+            }
+        });
+
+        let app = crate::dashboard::build_router(state);
+        let req_body = br#"{"message":"hello"}"#;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/p2pclaw-app/api/chat?mode=test")
+                    .header("content-type", "application/json")
+                    .body(Body::from(req_body.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .expect("proxy response");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(resp.into_body(), 1024)
+            .await
+            .expect("read proxy body");
+        assert_eq!(&body[..], b"proxied");
+
+        let (head, body) = rx.await.expect("captured request");
+        let head_lower = head.to_ascii_lowercase();
+        assert!(head.starts_with("POST /api/chat?mode=test HTTP/1.1"));
+        assert!(head_lower.contains("content-type: application/json"));
+        assert_eq!(body, req_body);
+    }
+
+    #[tokio::test]
+    async fn p2pclaw_frontend_proxy_root_maps_to_upstream_root() {
+        let _guard = crate::test_support::lock_env();
+        let port = free_port();
+        let _port_guard = EnvVarGuard::set("P2PCLAW_FRONTEND_PORT", Some(&port.to_string()));
+        let state = test_dashboard_state("p2pclaw_frontend_root");
+
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("bind frontend root listener");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("accept frontend root request");
+                let Some((head, _body)) = read_http_request(&mut stream).await else {
+                    continue;
+                };
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 4\r\nConnection: close\r\n\r\nroot",
+                    )
+                    .await
+                    .expect("write frontend root response");
+                tx.send(head).expect("send captured root request");
+                break;
+            }
+        });
+
+        let app = crate::dashboard::build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/p2pclaw-app")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("root proxy response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024)
+            .await
+            .expect("read root body");
+        assert_eq!(&body[..], b"root");
+
+        let head = rx.await.expect("captured root request");
+        assert!(head.starts_with("GET / HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn p2pclaw_mcp_status_reports_running_state() {
+        let _guard = crate::test_support::lock_env();
+        let port = free_port();
+        let _port_guard = EnvVarGuard::set("P2PCLAW_MCP_PORT", Some(&port.to_string()));
+        let _token_guard = EnvVarGuard::set("P2PCLAW_MCP_AUTH_TOKEN", Some("status-token"));
+        let state = test_dashboard_state("p2pclaw_mcp_manager");
+
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", port)).expect("bind mcp test listener");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || loop {
+            let (mut stream, _) = listener.accept().expect("accept mcp request");
+            let Some((head, _body)) = read_http_request_blocking(&mut stream) else {
+                continue;
+            };
+            let payload = r#"{"status":"ok","version":"1.0.0","gateway":"https://p2pclaw.test","agent_id":"agenthalo"}"#;
+            let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write mcp response");
+            tx.send(head).expect("send captured mcp request");
+            break;
+        });
+
+        let Json(status_body) = api_p2pclaw_mcp_status(AxumState(state))
+            .await
+            .expect("mcp status response");
+        assert_eq!(status_body["running"], true);
+        assert_eq!(status_body["status"], "running");
+        let head = rx.await.expect("captured mcp request");
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("x-agenthalo-p2pclaw-token: status-token"),
+            "missing status auth token header: {head}"
+        );
+    }
+
+    #[tokio::test]
+    async fn p2pclaw_mcp_tools_share_persistent_manager_identity() {
+        let _guard = crate::test_support::lock_env();
+        let port = free_port();
+        let _port_guard = EnvVarGuard::set("P2PCLAW_MCP_PORT", Some(&port.to_string()));
+        let _token_guard = EnvVarGuard::set("P2PCLAW_MCP_AUTH_TOKEN", None);
+        let state = test_dashboard_state("p2pclaw_mcp_tools");
+        let expected_token = state
+            .p2pclaw_mcp
+            .lock()
+            .expect("lock p2pclaw mcp")
+            .auth_token()
+            .to_string();
+
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", port)).expect("bind mcp tools listener");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let mut heads = Vec::new();
+            loop {
+                let (mut stream, _) = listener.accept().expect("accept mcp tools request");
+                let Some((head, _body)) = read_http_request_blocking(&mut stream) else {
+                    continue;
+                };
+                let path = head
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_string();
+                let payload = if path == "/tools" {
+                    r#"{"tools":[{"name":"p2pclaw_swarm_status","description":"status","inputSchema":{"type":"object"}}]}"#
+                } else {
+                    r#"{"status":"ok","version":"1.0.0","gateway":"https://p2pclaw.test","agent_id":"agenthalo"}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write mcp tools response");
+                heads.push(head);
+                if path == "/tools" {
+                    tx.send(heads).expect("send captured mcp tool requests");
+                    break;
+                }
+            }
+        });
+
+        let Json(tools_body) = api_p2pclaw_mcp_tools(AxumState(state))
+            .await
+            .expect("mcp tools response");
+        assert_eq!(tools_body["ok"], true);
+        assert_eq!(tools_body["tools"][0]["name"], "p2pclaw_swarm_status");
+
+        let expected_header =
+            format!("x-agenthalo-p2pclaw-token: {}", expected_token).to_ascii_lowercase();
+        for head in rx.await.expect("captured mcp tool requests") {
+            assert!(
+                head.to_ascii_lowercase().contains(&expected_header),
+                "missing shared auth token in request: {head}"
+            );
+        }
     }
 }

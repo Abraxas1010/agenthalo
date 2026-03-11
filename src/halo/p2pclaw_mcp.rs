@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 const DEFAULT_PORT: u16 = 7421;
 const SIDECAR_DIR: &str = "vendor/p2pclaw-mcp";
 const SIDECAR_DIR_ENV: &str = "P2PCLAW_MCP_DIR";
+const PORT_ENV: &str = "P2PCLAW_MCP_PORT";
 const AUTH_TOKEN_ENV: &str = "P2PCLAW_MCP_AUTH_TOKEN";
 const AUTH_HEADER: &str = "x-agenthalo-p2pclaw-token";
 
@@ -61,6 +62,10 @@ pub struct ToolResultContent {
 
 impl P2PClawMcpManager {
     pub fn new(gateway_url: &str, agent_id: &str, agent_name: &str) -> Self {
+        let port = std::env::var(PORT_ENV)
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(DEFAULT_PORT);
         let auth_token = std::env::var(AUTH_TOKEN_ENV)
             .ok()
             .map(|v| v.trim().to_string())
@@ -73,7 +78,7 @@ impl P2PClawMcpManager {
             });
         Self {
             child: None,
-            port: DEFAULT_PORT,
+            port,
             auth_token,
             gateway_url: gateway_url.to_string(),
             agent_id: agent_id.to_string(),
@@ -124,14 +129,33 @@ impl P2PClawMcpManager {
         format!("http://127.0.0.1:{}{}", self.port, path)
     }
 
+    pub(crate) fn sync_config(&mut self, gateway_url: &str, agent_id: &str, agent_name: &str) {
+        let config_changed = self.gateway_url != gateway_url
+            || self.agent_id != agent_id
+            || self.agent_name != agent_name;
+        if !config_changed {
+            return;
+        }
+
+        if self.child.is_some() {
+            self.stop();
+        }
+        self.gateway_url = gateway_url.to_string();
+        self.agent_id = agent_id.to_string();
+        self.agent_name = agent_name.to_string();
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn auth_token(&self) -> &str {
+        &self.auth_token
+    }
+
     /// Start the sidecar process. Blocks until ready or timeout (10s).
     pub fn start(&mut self) -> Result<(), String> {
         if self.is_running() {
             return Ok(());
         }
-        if self.child.is_none()
-            && std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok()
-        {
+        if self.child.is_none() && std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
             return Err(format!(
                 "P2PCLAW MCP port {} already bound — set {} to match or choose another port",
                 self.port, AUTH_TOKEN_ENV
@@ -233,7 +257,12 @@ impl P2PClawMcpManager {
     }
 
     /// Proxy a raw request to the P2PCLAW gateway via the sidecar.
-    pub fn gateway_proxy(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    pub fn gateway_proxy(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value, String> {
         let url = self.api_url(&format!("/gateway/{}", path.trim_start_matches('/')));
         let result = match method.to_uppercase().as_str() {
             "GET" => {

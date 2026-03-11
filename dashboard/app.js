@@ -206,6 +206,11 @@ async function renderP2PClawHub() {
         <div class="p2pclaw-tool-name">${esc(t.name)}</div>
         <div class="p2pclaw-tool-desc">${esc(t.description)}</div>
       </div>`).join('');
+  const mcpBadge = mcpStatus.running
+    ? '<span style="color:var(--green)">ONLINE</span>'
+    : mcpStatus.available
+      ? '<span style="color:var(--amber,#ff9a30)">READY</span>'
+      : '<span style="color:var(--text-dim)">OFFLINE</span>';
 
   content.innerHTML = `
     <div class="p2pclaw-hub">
@@ -234,7 +239,7 @@ async function renderP2PClawHub() {
           <div class="p2pclaw-stat-label">Mempool</div>
         </div>
         <div class="p2pclaw-stat">
-          <div class="p2pclaw-stat-value" style="font-size:16px">${mcpStatus.available ? '<span style="color:var(--green)">ONLINE</span>' : '<span style="color:var(--text-dim)">OFFLINE</span>'}</div>
+          <div class="p2pclaw-stat-value" style="font-size:16px">${mcpBadge}</div>
           <div class="p2pclaw-stat-label">MCP Sidecar</div>
         </div>
       </div>

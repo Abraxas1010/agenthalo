@@ -84,9 +84,7 @@ impl P2PClawFrontendManager {
         if self.is_running() {
             return Ok(());
         }
-        if self.child.is_none()
-            && std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok()
-        {
+        if self.child.is_none() && std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
             // Port already in use — assume it's a manually started instance
             return Ok(());
         }
