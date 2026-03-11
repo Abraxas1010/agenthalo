@@ -52,6 +52,9 @@ pub struct VectorIndexStats {
     pub governor_oscillating: bool,
     pub governor_gain_violated: bool,
     pub governor_clamp_active: bool,
+    pub governor_integral: f64,
+    pub governor_controller_mode: String,
+    pub governor_adaptive_regime: String,
     pub formal_basis: String,
 }
 
@@ -246,6 +249,9 @@ impl VectorIndex {
             governor_oscillating: self.memory_governor.oscillating,
             governor_gain_violated: gain_violated,
             governor_clamp_active: self.memory_governor.clamp_active,
+            governor_integral: self.memory_governor.integral,
+            governor_controller_mode: self.memory_governor.controller_mode().to_string(),
+            governor_adaptive_regime: self.memory_governor.adaptive_regime_label().to_string(),
             formal_basis: self.memory_governor.config.formal_basis.clone(),
         }
     }
@@ -353,6 +359,9 @@ pub(crate) fn default_vector_memory_governor_config() -> GovernorConfig {
         eps_max: 512.0,
         target: default_vector_ceiling() as f64,
         formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+        ki: 0.001,
+        kb: 0.0316, // sqrt(0.001)
+        adaptive: Some(crate::governor::AdaptiveGainSchedule::default()),
     }
 }
 
