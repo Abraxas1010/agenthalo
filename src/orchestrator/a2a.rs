@@ -1,18 +1,8 @@
 use crate::comms::envelope::{unwrap_orchestrator_result, OrchestratorResultEnvelope};
 use crate::container::mesh::{call_remote_tool, mesh_registry_path, PeerRegistry};
+use crate::container::mesh_auth_token;
 use crate::halo::did::DIDIdentity;
 use crate::pod::capability::CapabilityToken;
-
-fn mesh_auth_token() -> Option<String> {
-    std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            std::env::var("AGENTHALO_MCP_SECRET")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-        })
-}
 
 /// Delegate a task to a remote mesh peer.
 ///

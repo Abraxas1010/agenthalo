@@ -5448,23 +5448,32 @@ async fn api_mcp_invoke(
 }
 
 fn should_invoke_dashboard_local_mcp_tool(state: &DashboardState, tool: &str) -> bool {
-    state.orchestrator.is_some()
+    let always_local = matches!(
+        tool,
+        "nucleusdb_status"
+            | "nucleusdb_container_list"
+            | "nucleusdb_container_lock_status"
+            | "nucleusdb_container_initialize"
+            | "nucleusdb_container_agent_prompt"
+            | "nucleusdb_container_deinitialize"
+            | "mesh_peers"
+            | "mesh_ping"
+            | "mesh_call"
+            | "mesh_exchange_envelope"
+            | "mesh_grant"
+    );
+    let shared_orchestrator_local = state.orchestrator.is_some()
         && matches!(
             tool,
-            "nucleusdb_status"
-                | "nucleusdb_container_list"
-                | "nucleusdb_container_lock_status"
-                | "nucleusdb_container_initialize"
-                | "nucleusdb_container_agent_prompt"
-                | "nucleusdb_container_deinitialize"
-                | "nucleusdb_subsidiary_provision"
+            "nucleusdb_subsidiary_provision"
                 | "nucleusdb_subsidiary_initialize"
                 | "nucleusdb_subsidiary_send_task"
                 | "nucleusdb_subsidiary_get_result"
                 | "nucleusdb_subsidiary_deinitialize"
                 | "nucleusdb_subsidiary_destroy"
                 | "nucleusdb_subsidiary_list"
-        )
+        );
+    always_local || shared_orchestrator_local
 }
 
 fn local_mcp_success(
@@ -5498,7 +5507,8 @@ async fn invoke_dashboard_local_mcp_tool(
 ) -> Result<crate::dashboard::mcp_bridge::McpInvokeResult, String> {
     use crate::mcp::tools::{
         ContainerAgentPromptRequest, ContainerDeinitializeRequest, ContainerInitializeRequest,
-        ContainerLockStatusRequest, SubsidiaryDeinitializeRequest, SubsidiaryDestroyRequest,
+        ContainerLockStatusRequest, MeshCallRequest, MeshExchangeEnvelopeRequest, MeshGrantRequest,
+        MeshPingRequest, SubsidiaryDeinitializeRequest, SubsidiaryDestroyRequest,
         SubsidiaryGetResultRequest, SubsidiaryInitializeRequest, SubsidiaryListRequest,
         SubsidiaryProvisionRequest, SubsidiarySendTaskRequest,
     };
@@ -5526,6 +5536,62 @@ async fn invoke_dashboard_local_mcp_tool(
             let req: ContainerLockStatusRequest =
                 serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
             match service.container_lock_status(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "mesh_peers" => match service.mesh_peers().await {
+            Ok(McpJson(payload)) => local_mcp_success(
+                tool,
+                serde_json::to_value(payload)
+                    .map_err(|e| format!("serialize local MCP result: {e}"))?,
+            ),
+            Err(error) => local_mcp_error(tool, error.to_string()),
+        },
+        "mesh_ping" => {
+            let req: MeshPingRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.mesh_ping(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "mesh_call" => {
+            let req: MeshCallRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.mesh_call(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "mesh_exchange_envelope" => {
+            let req: MeshExchangeEnvelopeRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.mesh_exchange_envelope(Parameters(req)).await {
+                Ok(McpJson(payload)) => local_mcp_success(
+                    tool,
+                    serde_json::to_value(payload)
+                        .map_err(|e| format!("serialize local MCP result: {e}"))?,
+                ),
+                Err(error) => local_mcp_error(tool, error.to_string()),
+            }
+        }
+        "mesh_grant" => {
+            let req: MeshGrantRequest =
+                serde_json::from_value(params).map_err(|e| format!("decode {tool} params: {e}"))?;
+            match service.mesh_grant(Parameters(req)).await {
                 Ok(McpJson(payload)) => local_mcp_success(
                     tool,
                     serde_json::to_value(payload)
@@ -9715,6 +9781,14 @@ mod tests {
         assert!(!should_invoke_dashboard_local_mcp_tool(
             &proxy_state,
             "nucleusdb_subsidiary_provision"
+        ));
+        assert!(should_invoke_dashboard_local_mcp_tool(
+            &proxy_state,
+            "mesh_call"
+        ));
+        assert!(should_invoke_dashboard_local_mcp_tool(
+            &proxy_state,
+            "nucleusdb_container_list"
         ));
 
         drop(_secret_guard);

@@ -1,6 +1,7 @@
 pub mod agent_hookup;
 pub mod agent_lock;
 pub mod builder;
+pub mod coordination;
 pub mod launcher;
 pub mod mesh;
 pub mod mesh_init;
@@ -16,6 +17,7 @@ pub use agent_lock::{
     ReusePolicy, StateTransition,
 };
 pub use builder::{build_container_image, BuildConfig};
+pub use coordination::{mesh_auth_token, DEFAULT_MESH_REGISTRY_VOLUME};
 pub use launcher::{
     container_logs, container_status, destroy_container, launch_container, stop_container, Channel,
     MeshConfig, MonitorConfig, RunConfig, SessionInfo,

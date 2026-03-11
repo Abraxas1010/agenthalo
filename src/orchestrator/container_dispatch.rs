@@ -2,6 +2,7 @@ use crate::container::agent_lock::ReusePolicy;
 use crate::container::launcher::{destroy_container, launch_container, MeshConfig, RunConfig};
 use crate::container::mesh::{call_remote_tool, mesh_registry_path, PeerRegistry};
 use crate::container::AgentResponse;
+use crate::container::{mesh_auth_token, DEFAULT_MESH_REGISTRY_VOLUME};
 use crate::orchestrator::dispatch::ContainerHookupRequest;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -11,17 +12,6 @@ use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::Mutex;
 use std::time::Duration;
-
-fn mesh_auth_token() -> Option<String> {
-    std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            std::env::var("AGENTHALO_MCP_SECRET")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-        })
-}
 
 #[derive(Debug, Clone)]
 pub struct ContainerProvisionSpec {
@@ -121,7 +111,7 @@ impl Default for MeshContainerDispatch {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/tmp/nucleusdb-mesh")),
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_MESH_REGISTRY_VOLUME)),
             default_mcp_port: std::env::var("AGENTHALO_CONTAINER_MCP_PORT")
                 .ok()
                 .and_then(|v| v.parse::<u16>().ok())

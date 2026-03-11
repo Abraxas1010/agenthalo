@@ -1,3 +1,7 @@
+use crate::container::coordination::{
+    mesh_auth_token, prepare_bind_mount_dir, prepare_named_volume, registry_volume_is_named,
+    DEFAULT_MESH_REGISTRY_VOLUME,
+};
 use crate::container::mesh;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -43,7 +47,8 @@ pub struct MeshConfig {
     pub enabled: bool,
     /// MCP port to expose on the mesh network.
     pub mcp_port: u16,
-    /// Path to shared peer registry volume on host.
+    /// Shared peer registry mount source. Absolute paths are bind mounts;
+    /// relative names are treated as Docker-managed named volumes.
     pub registry_volume: PathBuf,
     /// Agent DID URI (populated at launch from genesis seed).
     pub agent_did: Option<String>,
@@ -53,8 +58,15 @@ impl Default for MeshConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            mcp_port: mesh::DEFAULT_MCP_PORT,
-            registry_volume: PathBuf::from("/tmp/nucleusdb-mesh"),
+            mcp_port: std::env::var("AGENTHALO_CONTAINER_MCP_PORT")
+                .ok()
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(mesh::DEFAULT_MCP_PORT),
+            registry_volume: std::env::var("AGENTHALO_CONTAINER_REGISTRY_VOLUME")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_MESH_REGISTRY_VOLUME)),
             agent_did: None,
         }
     }
@@ -148,14 +160,7 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
         if !env_contains(&env_vars, "AGENTHALO_MCP_HOST") {
             env_vars.push(("AGENTHALO_MCP_HOST".to_string(), "0.0.0.0".to_string()));
         }
-        let shared_secret = std::env::var("NUCLEUSDB_MESH_AUTH_TOKEN")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .or_else(|| {
-                std::env::var("AGENTHALO_MCP_SECRET")
-                    .ok()
-                    .filter(|v| !v.trim().is_empty())
-            });
+        let shared_secret = mesh_auth_token();
         if let Some(secret) = shared_secret {
             if !env_contains(&env_vars, "AGENTHALO_MCP_SECRET") {
                 env_vars.push(("AGENTHALO_MCP_SECRET".to_string(), secret.clone()));
@@ -190,19 +195,14 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
                 cmd.arg("-e").arg(format!("NUCLEUSDB_MESH_DID={did}"));
             }
 
-            std::fs::create_dir_all(&mesh_cfg.registry_volume).map_err(|e| {
-                format!(
-                    "create mesh registry dir {}: {e}",
-                    mesh_cfg.registry_volume.display()
-                )
-            })?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
+            if registry_volume_is_named(&mesh_cfg.registry_volume) {
+                prepare_named_volume(
                     &mesh_cfg.registry_volume,
-                    std::fs::Permissions::from_mode(0o777),
-                );
+                    &cfg.image,
+                    "mesh registry volume",
+                )?;
+            } else {
+                prepare_bind_mount_dir(&mesh_cfg.registry_volume, "mesh registry dir")?;
             }
             cmd.arg("-v")
                 .arg(format!("{}:/data/mesh", mesh_cfg.registry_volume.display()));

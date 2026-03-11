@@ -3,6 +3,7 @@ set -euo pipefail
 
 IMAGE_TAG="${IMAGE_TAG:-agenthalo:phase7}"
 NETWORK_NAME="${NETWORK_NAME:-agenthalo-phase7-$$}"
+MESH_VOLUME_NAME="${MESH_VOLUME_NAME:-${NETWORK_NAME}-mesh}"
 OPERATOR_NAME="${OPERATOR_NAME:-agenthalo-phase7-operator}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-43100}"
 MODEL_ID="${MODEL_ID:-sshleifer/tiny-gpt2}"
@@ -11,7 +12,7 @@ BUILD_IMAGE="${BUILD_IMAGE:-1}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 OPERATOR_DATA="$(mktemp -d "${TMPDIR:-/tmp}/agenthalo-phase7-operator.XXXXXX")"
-chmod 0777 "${OPERATOR_DATA}"
+chmod 1777 "${OPERATOR_DATA}"
 OPERATOR_AGENT_ID=""
 SUBSIDIARY_SESSION_ID=""
 
@@ -27,6 +28,7 @@ cleanup() {
   fi
   docker rm -f "${OPERATOR_NAME}" >/dev/null 2>&1 || true
   docker network rm "${NETWORK_NAME}" >/dev/null 2>&1 || true
+  docker volume rm -f "${MESH_VOLUME_NAME}" >/dev/null 2>&1 || true
   if [[ -d "${OPERATOR_DATA}" ]]; then
     docker run --rm -u 0:0 -v "${OPERATOR_DATA}:/data" --entrypoint sh "${IMAGE_TAG}" \
       -lc 'chmod -R a+rwx /data >/dev/null 2>&1 || true' >/dev/null 2>&1 || true
@@ -44,32 +46,12 @@ require_cmd() {
 
 require_cmd docker
 require_cmd curl
-require_cmd python3
+require_cmd jq
 
 json_get() {
   local json="$1"
   local path="$2"
-  JSON_INPUT="$json" python3 - "$path" <<'PY'
-import json
-import os
-import sys
-
-path = sys.argv[1].split(".")
-value = json.loads(os.environ["JSON_INPUT"])
-for part in path:
-    if part == "":
-        continue
-    if isinstance(value, list):
-        value = value[int(part)]
-    else:
-        value = value[part]
-if isinstance(value, (dict, list)):
-    print(json.dumps(value))
-elif value is None:
-    print("null")
-else:
-    print(value)
-PY
+  printf '%s' "$json" | jq -r ".${path}"
 }
 
 request_json() {
@@ -121,17 +103,9 @@ wait_for_container_session() {
   while (( SECONDS < deadline )); do
     local payload
     payload="$(request_json GET /containers "" 200)"
-    if python3 - "$session_id" <<'PY' <<<"$payload"
-import json
-import sys
-
-session_id = sys.argv[1]
-data = json.load(sys.stdin)
-for item in data.get("sessions", []):
-    if item.get("session_id") == session_id and item.get("lock_state") is not None:
-        sys.exit(0)
-sys.exit(1)
-PY
+    if printf '%s' "$payload" | jq -e --arg session_id "$session_id" '
+      any(.sessions[]?; .session_id == $session_id and .lock_state != null)
+    ' >/dev/null
     then
       return 0
     fi
@@ -153,6 +127,9 @@ if [[ "$BUILD_IMAGE" == "1" ]]; then
 fi
 
 docker network create "${NETWORK_NAME}" >/dev/null
+docker volume create "${MESH_VOLUME_NAME}" >/dev/null
+docker run --rm --entrypoint sh -u 0:0 -v "${MESH_VOLUME_NAME}:/data/mesh" "${IMAGE_TAG}" \
+  -lc 'mkdir -p /data/mesh && chmod 1777 /data/mesh' >/dev/null
 
 DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
 
@@ -167,9 +144,11 @@ docker run -d \
   --security-opt no-new-privileges:true \
   --group-add "${DOCKER_GID}" \
   -v "${OPERATOR_DATA}:/data" \
+  -v "${MESH_VOLUME_NAME}:/data/mesh" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e AGENTHALO_REQUIRE_DASHBOARD_AUTH=0 \
   -e AGENTHALO_CONTAINER_IMAGE="${IMAGE_TAG}" \
+  -e AGENTHALO_CONTAINER_REGISTRY_VOLUME="${MESH_VOLUME_NAME}" \
   -e NYM_FAIL_OPEN=true \
   -e NYM_MAX_PROVIDER_ATTEMPTS=0 \
   -p "127.0.0.1:${DASHBOARD_PORT}:3100" \
@@ -218,10 +197,7 @@ task_id="$(json_get "$sub_task" result.structured_content.task_id)"
 
 sub_result="$(mcp_invoke "nucleusdb_subsidiary_get_result" "$(printf '{"operator_agent_id":"%s","task_id":"%s"}' "${operator_agent_id}" "${task_id}")")"
 [[ "$(json_get "$sub_result" result.structured_content.status)" == "complete" ]]
-python3 - <<'PY' "$(json_get "$sub_result" result.structured_content.result)"
-import sys
-assert "subsidiary-ok" in sys.argv[1], sys.argv[1]
-PY
+printf '%s' "$(json_get "$sub_result" result.structured_content.result)" | grep -q "subsidiary-ok"
 
 sub_deinit="$(mcp_invoke "nucleusdb_subsidiary_deinitialize" "$(printf '{"operator_agent_id":"%s","session_id":"%s"}' "${operator_agent_id}" "${sub_session_id}")")"
 [[ "$(json_get "$sub_deinit" result.structured_content.state)" == "empty" ]]
