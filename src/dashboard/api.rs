@@ -12,6 +12,7 @@
 use super::DashboardState;
 use crate::cli::default_witness_cfg;
 use crate::cockpit::deploy::{self, LaunchRequest};
+use crate::container::{current_container_id, ContainerAgentLock};
 use crate::halo::addons;
 use crate::halo::agent_auth;
 use crate::halo::agentpmt;
@@ -80,6 +81,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
     Router::new()
         // Status
         .route("/status", get(api_status))
+        .route("/container/lock-status", get(api_container_lock_status))
         // Crypto lock/session
         .route("/crypto/status", get(api_crypto_status))
         .route("/crypto/create-password", post(api_crypto_create_password))
@@ -2045,6 +2047,17 @@ async fn api_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
         },
         "pq_wallet": has_wallet(),
         "governors": governor_summary_json(&state),
+    })))
+}
+
+async fn api_container_lock_status(_: AxumState<DashboardState>) -> ApiResult {
+    let container_id = current_container_id();
+    let lock = ContainerAgentLock::load_or_create(&container_id).map_err(internal_err)?;
+    Ok(Json(json!({
+        "container_id": lock.container_id,
+        "state": lock.state_label(),
+        "reuse_policy": lock.reuse_policy,
+        "lock": lock,
     })))
 }
 

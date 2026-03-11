@@ -367,6 +367,24 @@ async fn api_alias_and_summary_routes_return_json() {
 }
 
 #[tokio::test]
+async fn api_container_lock_status_reports_current_container() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
+    let _container_guard = EnvVarGuard::set("NUCLEUSDB_MESH_AGENT_ID", Some("dashboard-container"));
+    let (state, db_path) = test_state("api_container_lock_status");
+
+    let (status, val) = api_get(state, "/container/lock-status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["container_id"], "dashboard-container");
+    assert_eq!(val["state"], "empty");
+    assert_eq!(val["lock"]["container_id"], "dashboard-container");
+    assert_eq!(val["lock"]["state"]["state"], "empty");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn api_metrics_diversity_returns_score_and_distribution() {
     let (state, db_path) = test_state("api_metrics_diversity");
     seed_tool_session(&db_path, "sess-metric-div");

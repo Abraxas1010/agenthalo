@@ -5,6 +5,7 @@ use crate::container::launcher::{
     launch_container, list_sessions as list_container_sessions,
     stop_container as launcher_stop_container, MeshConfig, RunConfig,
 };
+use crate::container::{current_container_id, ContainerAgentLock};
 use crate::halo::admission::{evaluate_launch_admission, AdmissionMode};
 use crate::halo::governor_registry::{
     build_default_registry, install_global_registry, GovernorRegistry,
@@ -1035,6 +1036,17 @@ pub struct ContainerStatusResponse {
     pub session_id: String,
     pub status: String,
     pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct ContainerLockStatusRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerLockStatusResponse {
+    pub container_id: String,
+    pub state: String,
+    pub reuse_policy: String,
+    pub lock: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -3020,6 +3032,27 @@ impl NucleusDbMcpService {
             session_id: req.session_id,
             status,
             running,
+        }))
+    }
+
+    #[tool(
+        name = "nucleusdb_container_lock_status",
+        description = "Return the current container agent lock state for this runtime. Useful before container initialize/deinitialize flows."
+    )]
+    pub async fn container_lock_status(
+        &self,
+        _: Parameters<ContainerLockStatusRequest>,
+    ) -> Result<Json<ContainerLockStatusResponse>, McpError> {
+        let container_id = current_container_id();
+        let lock = ContainerAgentLock::load_or_create(&container_id)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(Json(ContainerLockStatusResponse {
+            container_id: lock.container_id.clone(),
+            state: lock.state_label().to_string(),
+            reuse_policy: format!("{:?}", lock.reuse_policy).to_ascii_lowercase(),
+            lock: serde_json::to_value(lock).map_err(|e| {
+                McpError::internal_error(format!("serialize container lock: {e}"), None)
+            })?,
         }))
     }
 
@@ -5399,6 +5432,28 @@ mod tests {
         assert_eq!(mesh.enabled, Some(true));
         assert_eq!(mesh.mcp_port, Some(8420));
         assert_eq!(mesh.registry_volume.as_deref(), Some("/tmp/nucleusdb-mesh"));
+    }
+
+    #[tokio::test]
+    async fn container_lock_status_tool_reports_current_container() {
+        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarRestore::set("AGENTHALO_HOME", home.path().to_str().expect("utf8 home"));
+        let _container = EnvVarRestore::set("NUCLEUSDB_MESH_AGENT_ID", "mcp-container");
+        let db_path = temp_db_path("container_lock_status");
+        let service = NucleusDbMcpService::new(&db_path).expect("service");
+
+        let Json(resp) = service
+            .container_lock_status(Parameters(ContainerLockStatusRequest::default()))
+            .await
+            .expect("container lock status");
+        assert_eq!(resp.container_id, "mcp-container");
+        assert_eq!(resp.state, "empty");
+        assert_eq!(resp.reuse_policy, "reusable");
+        assert_eq!(resp.lock["container_id"], "mcp-container");
+        assert_eq!(resp.lock["state"]["state"], "empty");
+
+        cleanup_db_files(&db_path);
     }
 
     #[tokio::test]

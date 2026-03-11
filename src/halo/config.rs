@@ -16,6 +16,10 @@ pub fn db_path() -> PathBuf {
     halo_dir().join("traces.ndb")
 }
 
+pub fn agent_lock_path() -> PathBuf {
+    halo_dir().join("container_agent_lock.json")
+}
+
 pub fn local_models_config_path() -> PathBuf {
     halo_dir().join("local_models.json")
 }

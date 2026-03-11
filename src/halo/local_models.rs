@@ -1385,7 +1385,7 @@ fn which_path(command: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn detect_gpu() -> Option<GpuInfo> {
+pub(crate) fn detect_gpu() -> Option<GpuInfo> {
     let output = Command::new("nvidia-smi")
         .args([
             "--query-gpu=name,memory.total",
