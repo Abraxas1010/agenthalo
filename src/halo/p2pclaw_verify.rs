@@ -42,24 +42,58 @@ const MAX_CONTRADICTION_RATIO: f64 = 0.5;
 
 /// Keywords that indicate positive claims.
 const POSITIVE_KW: &[&str] = &[
-    "prove", "proves", "proved", "demonstrate", "demonstrates",
-    "show", "shows", "shown", "confirm", "confirms", "establish",
-    "establishes", "validate", "validates", "reveal", "reveals",
+    "prove",
+    "proves",
+    "proved",
+    "demonstrate",
+    "demonstrates",
+    "show",
+    "shows",
+    "shown",
+    "confirm",
+    "confirms",
+    "establish",
+    "establishes",
+    "validate",
+    "validates",
+    "reveal",
+    "reveals",
 ];
 
 /// Keywords that indicate negative/contradictory claims.
 const NEGATIVE_KW: &[&str] = &[
-    "disprove", "disproves", "contradict", "contradicts",
-    "refute", "refutes", "invalidate", "invalidates",
-    "falsify", "falsifies",
+    "disprove",
+    "disproves",
+    "contradict",
+    "contradicts",
+    "refute",
+    "refutes",
+    "invalidate",
+    "invalidates",
+    "falsify",
+    "falsifies",
 ];
 
 /// Section headings that indicate well-structured papers.
 const STRUCTURE_HEADINGS: &[&str] = &[
-    "abstract", "introduction", "background", "methodology", "method",
-    "methods", "results", "discussion", "conclusion", "references",
-    "related work", "experimental", "experiments", "evaluation",
-    "proof", "theorem", "lemma", "definition",
+    "abstract",
+    "introduction",
+    "background",
+    "methodology",
+    "method",
+    "methods",
+    "results",
+    "discussion",
+    "conclusion",
+    "references",
+    "related work",
+    "experimental",
+    "experiments",
+    "evaluation",
+    "proof",
+    "theorem",
+    "lemma",
+    "definition",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,6 +147,10 @@ pub struct ExternalTierResult {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExternalVerifyResult {
     pub paper_sha256: String,
+    #[serde(default)]
+    pub generated_at: Option<String>,
+    #[serde(default)]
+    pub schema_version: Option<String>,
     pub structural: ExternalTierResult,
     pub semantic: ExternalTierResult,
     pub formal: ExternalTierResult,
@@ -238,10 +276,7 @@ pub fn verify_paper(req: &VerificationRequest) -> VerificationResult {
     // ── Completeness: do claims have textual support? ───────────────────
     let mut supported_claims = 0u32;
     for claim in &claims {
-        let claim_terms: Vec<&str> = claim
-            .split_whitespace()
-            .filter(|w| w.len() > 4)
-            .collect();
+        let claim_terms: Vec<&str> = claim.split_whitespace().filter(|w| w.len() > 4).collect();
         if claim_terms.is_empty() {
             continue;
         }
@@ -498,44 +533,74 @@ fn wait_for_child(
     child: &mut std::process::Child,
     timeout_secs: u64,
 ) -> Result<std::process::Output, String> {
+    let stdout_reader = spawn_pipe_reader(child.stdout.take(), "stdout");
+    let stderr_reader = spawn_pipe_reader(child.stderr.take(), "stderr");
     let started = std::time::Instant::now();
     let timeout = Duration::from_secs(timeout_secs.max(1));
-    loop {
-        if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "external verifier timed out after {} seconds",
-                timeout.as_secs()
-            ));
-        }
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => return collect_child_output(child),
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
-            Err(e) => return Err(format!("poll external verifier: {e}")),
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = join_pipe_reader(stdout_reader, "stdout");
+                    let _ = join_pipe_reader(stderr_reader, "stderr");
+                    return Err(format!(
+                        "external verifier timed out after {} seconds",
+                        timeout.as_secs()
+                    ));
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe_reader(stdout_reader, "stdout");
+                let _ = join_pipe_reader(stderr_reader, "stderr");
+                return Err(format!("poll external verifier: {e}"));
+            }
         }
-    }
-}
-
-fn collect_child_output(child: &mut std::process::Child) -> Result<std::process::Output, String> {
-    let status = child
-        .wait()
-        .map_err(|e| format!("wait for external verifier: {e}"))?;
-    let mut stdout = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_end(&mut stdout)
-            .map_err(|e| format!("read external verifier stdout: {e}"))?;
-    }
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_end(&mut stderr)
-            .map_err(|e| format!("read external verifier stderr: {e}"))?;
-    }
+    };
+    let stdout = join_pipe_reader(stdout_reader, "stdout")?;
+    let stderr = join_pipe_reader(stderr_reader, "stderr")?;
     Ok(std::process::Output {
         status,
         stdout,
         stderr,
     })
+}
+
+fn spawn_pipe_reader<T>(
+    pipe: Option<T>,
+    stream_name: &'static str,
+) -> Option<std::thread::JoinHandle<Result<Vec<u8>, String>>>
+where
+    T: Read + Send + 'static,
+{
+    pipe.map(|mut pipe| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            pipe.read_to_end(&mut buf)
+                .map_err(|e| format!("read external verifier {stream_name}: {e}"))?;
+            Ok(buf)
+        })
+    })
+}
+
+fn join_pipe_reader(
+    reader: Option<std::thread::JoinHandle<Result<Vec<u8>, String>>>,
+    stream_name: &'static str,
+) -> Result<Vec<u8>, String> {
+    match reader {
+        Some(handle) => match handle.join() {
+            Ok(result) => result,
+            Err(_) => Err(format!(
+                "external verifier {stream_name} reader thread panicked"
+            )),
+        },
+        None => Ok(Vec::new()),
+    }
 }
 
 fn infer_heyting_root(script_path: &Path) -> Option<PathBuf> {
@@ -581,11 +646,24 @@ fn infer_grid_root(script_path: &Path) -> Option<PathBuf> {
 /// Extract implicit claims from paper content.
 fn extract_claims(content: &str) -> Vec<String> {
     let claim_markers = [
-        "we prove", "we show", "we demonstrate", "this paper",
-        "our results", "we establish", "the theorem", "we verify",
-        "it follows", "therefore", "we conclude", "the proof",
-        "we propose", "our approach", "we introduce", "this work",
-        "our contribution", "we present",
+        "we prove",
+        "we show",
+        "we demonstrate",
+        "this paper",
+        "our results",
+        "we establish",
+        "the theorem",
+        "we verify",
+        "it follows",
+        "therefore",
+        "we conclude",
+        "the proof",
+        "we propose",
+        "our approach",
+        "we introduce",
+        "this work",
+        "our contribution",
+        "we present",
     ];
 
     content
@@ -616,7 +694,14 @@ fn find_lean_blocks(content: &str) -> Vec<&str> {
     }
 
     // Also detect inline Lean keywords outside code blocks
-    let lean_keywords = ["theorem ", "lemma ", "def ", "structure ", "instance ", "import Mathlib"];
+    let lean_keywords = [
+        "theorem ",
+        "lemma ",
+        "def ",
+        "structure ",
+        "instance ",
+        "import Mathlib",
+    ];
     if blocks.is_empty() {
         for kw in lean_keywords {
             if content.contains(kw) {
@@ -644,7 +729,10 @@ mod tests {
         };
         let result = verify_paper(&req);
         assert!(!result.verified);
-        assert!(result.violations.iter().any(|v| v.violation_type == "INSUFFICIENT_LENGTH"));
+        assert!(result
+            .violations
+            .iter()
+            .any(|v| v.violation_type == "INSUFFICIENT_LENGTH"));
     }
 
     #[test]
@@ -691,7 +779,10 @@ mod tests {
             agent_id: None,
         };
         let result = verify_paper(&req);
-        assert!(result.violations.iter().any(|v| v.violation_type == "INTERNAL_CONTRADICTION"));
+        assert!(result
+            .violations
+            .iter()
+            .any(|v| v.violation_type == "INTERNAL_CONTRADICTION"));
     }
 
     #[test]
@@ -741,10 +832,16 @@ mod tests {
 import json
 print(json.dumps({
   "paper_sha256": "abc",
+  "generated_at": "2026-03-12T00:00:00Z",
+  "schema_version": "living-agent-verify-v1",
   "structural": {"score": 0.9, "passed": True, "details": {"word_count": 200}},
   "semantic": {"score": 0.8, "passed": True, "details": {"top_grid_match": "HeytingLean.Mock"}},
   "formal": {"score": 1.0, "passed": True, "details": {"checked": 2}},
-  "composite": {"score": 0.8, "passed": True, "details": {}},
+  "composite": {
+    "score": 0.8,
+    "passed": True,
+    "details": {"governing_tier": "semantic", "generated_at": "2026-03-12T00:00:00Z"}
+  },
   "report_path": "/tmp/mock-report.json"
 }))"#,
         )
@@ -768,6 +865,51 @@ print(json.dumps({
             merged.external_report_path.as_deref(),
             Some("/tmp/mock-report.json")
         );
+        let _ = fs::remove_file(&script);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_external_verify_drains_large_stderr_output() {
+        let dir = std::env::temp_dir().join(format!(
+            "agenthalo_verify_large_stderr_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("create mock dir");
+        let script = dir.join("living_agent_verify.py");
+        fs::write(
+            &script,
+            r#"#!/usr/bin/env python3
+import json
+import sys
+sys.stderr.write("E" * 131072)
+print(json.dumps({
+  "paper_sha256": "abc",
+  "generated_at": "2026-03-12T00:00:00Z",
+  "schema_version": "living-agent-verify-v1",
+  "structural": {"score": 0.9, "passed": True, "details": {"word_count": 200}},
+  "semantic": {"score": 0.8, "passed": True, "details": {"top_grid_match": "HeytingLean.Mock"}},
+  "formal": {"score": 1.0, "passed": True, "details": {"checked": 1}},
+  "composite": {"score": 0.8, "passed": True, "details": {"governing_tier": "semantic"}}
+}))"#,
+        )
+        .expect("write mock script");
+        let req = VerificationRequest {
+            title: "Mock".into(),
+            content: "mock content".into(),
+            claims: vec![],
+            agent_id: None,
+        };
+        let external = external_verify(&script, "python3", &req, 5).expect("external verify");
+        assert_eq!(
+            external.schema_version.as_deref(),
+            Some("living-agent-verify-v1")
+        );
+        assert_eq!(external.formal.details["checked"], 1);
         let _ = fs::remove_file(&script);
         let _ = fs::remove_dir_all(&dir);
     }

@@ -234,10 +234,16 @@ fn write_mock_verify_script(dir: &Path) -> PathBuf {
 import json
 print(json.dumps({
   "paper_sha256": "mock-sha",
+  "generated_at": "2026-03-12T00:00:00Z",
+  "schema_version": "living-agent-verify-v1",
   "structural": {"score": 0.95, "passed": True, "details": {"word_count": 300}},
   "semantic": {"score": 0.75, "passed": True, "details": {"top_grid_match": "HeytingLean.Mock"}},
   "formal": {"score": 1.0, "passed": True, "details": {"checked": 2, "successes": 2}},
-  "composite": {"score": 0.75, "passed": True, "details": {}},
+  "composite": {
+    "score": 0.75,
+    "passed": True,
+    "details": {"governing_tier": "semantic", "generated_at": "2026-03-12T00:00:00Z"}
+  },
   "report_path": "/tmp/mock-report.json"
 }))"#,
     )
@@ -738,6 +744,10 @@ fn bridge_publish_verified_paper_uses_full_verifier_and_publishes_content() {
     assert_eq!(result.verification.verification_level, "full");
     assert_eq!(result.verification.semantic_score, Some(0.75));
     assert_eq!(result.verification.formal_passed, Some(true));
+    assert_eq!(
+        result.verification.external_report_path.as_deref(),
+        Some("/tmp/mock-report.json")
+    );
     assert_eq!(
         result
             .publish_result

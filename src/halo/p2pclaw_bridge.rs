@@ -1386,13 +1386,13 @@ mod tests {
             event_id: Some("evt-1".to_string()),
             kind: Some("published".to_string()),
             timestamp: Some(150),
-            payload: None,
+            extra: std::collections::BTreeMap::new(),
         }];
         let newer = vec![HiveEvent {
             event_id: Some("evt-2".to_string()),
             kind: Some("published".to_string()),
             timestamp: Some(250),
-            payload: None,
+            extra: std::collections::BTreeMap::new(),
         }];
         assert_eq!(merge_last_event_since(Some(200), &older), Some(200));
         assert_eq!(merge_last_event_since(Some(200), &newer), Some(250));
