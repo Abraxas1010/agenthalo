@@ -284,6 +284,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/models/rm", post(api_models_rm))
         .route("/models/serve", post(api_models_serve))
         .route("/models/stop", post(api_models_stop))
+        .route("/models/choose-local", post(api_models_choose_local))
         .route(
             "/models/login/huggingface",
             post(api_models_login_huggingface),
@@ -5377,7 +5378,8 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             .filter(|v| !v.trim().is_empty())
             .is_some()
         || local_model_status.ollama.healthy
-        || local_model_status.vllm.healthy;
+        || local_model_status.vllm.healthy
+        || local_model_status.config.local_models_chosen;
     let setup_complete = identity_ok && wallet_complete && llm_ok;
 
     Ok(Json(json!({
@@ -6874,6 +6876,17 @@ async fn api_models_stop(
             .map_err(|e| internal_err(format!("local model stop task join: {e}")))?
             .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     Ok(Json(json!(result)))
+}
+
+async fn api_models_choose_local(
+    AxumState(state): AxumState<DashboardState>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    tokio::task::spawn_blocking(crate::halo::local_models::mark_local_models_chosen)
+        .await
+        .map_err(|e| internal_err(format!("choose local task join: {e}")))?
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({ "ok": true, "local_models_chosen": true })))
 }
 
 async fn api_models_login_huggingface(

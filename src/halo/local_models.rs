@@ -124,6 +124,8 @@ pub struct LocalModelsConfig {
     pub installed_hints: Vec<InstalledModelHint>,
     #[serde(default)]
     pub local_compute_cost_per_1k_tokens_usd: f64,
+    #[serde(default)]
+    pub local_models_chosen: bool,
 }
 
 impl Default for LocalModelsConfig {
@@ -137,6 +139,7 @@ impl Default for LocalModelsConfig {
             managed: Vec::new(),
             installed_hints: Vec::new(),
             local_compute_cost_per_1k_tokens_usd: 0.0,
+            local_models_chosen: false,
         }
     }
 }
@@ -315,6 +318,12 @@ pub fn load_or_default() -> LocalModelsConfig {
         Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
         Err(_) => LocalModelsConfig::default(),
     }
+}
+
+pub fn mark_local_models_chosen() -> Result<(), String> {
+    let mut cfg = load_or_default();
+    cfg.local_models_chosen = true;
+    save_config(&cfg)
 }
 
 pub fn save_config(cfg: &LocalModelsConfig) -> Result<(), String> {
