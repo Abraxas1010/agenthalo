@@ -122,16 +122,16 @@ const NETWORKS = [
     name: 'Nym Mixnet Mesh',
     icon: '&#128274;',
     description: 'Privacy-preserving agent communication',
-    configurable: false,
-    comingSoon: true,
+    configurable: true,
+    comingSoon: false,
   },
   {
     id: 'didcomm-federation',
     name: 'DIDComm Federation',
     icon: '&#127760;',
     description: 'Cross-organization agent identity mesh',
-    configurable: false,
-    comingSoon: true,
+    configurable: true,
+    comingSoon: false,
   },
 ];
 let _networkingSelected = 'p2pclaw';
@@ -181,6 +181,10 @@ async function renderNetworkingPage() {
 
   let p2status = null;
   let p2error = '';
+  let nymStatus = null;
+  let nymError = '';
+  let didcommStatus = null;
+  let didcommError = '';
   try {
     p2status = await api('/p2pclaw/status');
   } catch (err) {
@@ -192,6 +196,12 @@ async function renderNetworkingPage() {
     bridgePayload = await api('/p2pclaw/bridge/status?include_mcp_tools=true');
   } catch (err) {
     bridgeError = String(err && err.message || err || '');
+  }
+  if (_networkingSelected === 'nym-mesh') {
+    try { nymStatus = await api('/nym/status'); } catch (err) { nymError = String(err && err.message || err || ''); }
+  }
+  if (_networkingSelected === 'didcomm-federation') {
+    try { didcommStatus = await api('/didcomm/status'); } catch (err) { didcommError = String(err && err.message || err || ''); }
   }
   const p2cfg = (p2status && p2status.config) || {
     endpoint_url: 'https://p2pclaw.com',
@@ -222,90 +232,159 @@ async function renderNetworkingPage() {
     </button>`;
   }).join('');
 
-  const detailsHtml = _networkingSelected !== 'p2pclaw'
-    ? '<div class="card"><div class="card-label">Coming Soon</div><div class="card-sub">This network integration is reserved for a future release.</div></div>'
-    : `
-      <div class="networking-detail-grid">
-        <section class="card networking-config-card">
-          <div class="card-label">P2PCLAW Configuration</div>
-          <div class="card-sub">Enable integration and configure endpoint + agent identity.</div>
-          <div class="network-form-row network-toggle-row">
-            <label class="network-toggle-label">Enable P2PCLAW</label>
-            <label class="switch">
-              <input type="checkbox" id="p2pclaw-enabled-toggle" ${p2enabled ? 'checked' : ''}>
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="network-form-row">
-            <label for="p2-endpoint-url">Endpoint URL</label>
-            <input class="input" id="p2-endpoint-url" value="${esc(p2cfg.endpoint_url || 'https://p2pclaw.com')}" placeholder="https://p2pclaw.com">
-          </div>
-          <div class="network-form-row">
-            <label for="p2-agent-name">Agent Name</label>
-            <input class="input" id="p2-agent-name" value="${esc(p2cfg.agent_name || 'AgentHALO')}" placeholder="AgentHALO">
-          </div>
-          <div class="network-form-row">
-            <label for="p2-agent-id">Agent ID</label>
-            <input class="input" id="p2-agent-id" value="${esc(p2cfg.agent_id || 'agenthalo')}" placeholder="agenthalo-alice">
-          </div>
-          <div class="network-form-row">
-            <label for="p2-auth-secret">Auth Secret (optional)</label>
-            <input class="input" id="p2-auth-secret" type="password" placeholder="Shared HMAC secret">
-          </div>
-          <div class="network-form-row">
-            <label>Tier</label>
-            <div class="network-tier-row">
-              <label><input type="radio" name="p2-tier" value="tier1" ${(p2cfg.tier || 'tier1') === 'tier1' ? 'checked' : ''}> Tier 1 (Free)</label>
-              <label><input type="radio" name="p2-tier" value="tier2" ${(p2cfg.tier || 'tier1') === 'tier2' ? 'checked' : ''}> Tier 2 (Prepaid)</label>
-            </div>
-          </div>
-          <div class="network-form-actions">
-            <button class="btn" id="p2-test-btn">Test Connection</button>
-            <button class="btn btn-primary" id="p2-save-btn">Save</button>
-          </div>
-          <div id="p2-config-msg" class="networking-msg">${p2error ? esc(p2error) : ''}</div>
-        </section>
-        <section class="card networking-status-card">
-          <div class="card-label">Hive Status</div>
-          <div class="card-sub">Real-time metrics from /api/p2pclaw/status</div>
-          <div class="network-stat-grid">
-            <div class="network-stat"><span>Active Agents</span><strong id="p2-stat-agents">${Number(swarm.agents || 0)}</strong></div>
-            <div class="network-stat"><span>Papers</span><strong id="p2-stat-papers">${Number(swarm.papers || 0)}</strong></div>
-            <div class="network-stat"><span>Mempool</span><strong id="p2-stat-mempool">${Number(swarm.mempool || 0)}</strong></div>
-            <div class="network-stat"><span>Last Event</span><strong id="p2-stat-last">${esc(String(swarm.last_event_ts || '-'))}</strong></div>
-          </div>
-          <div class="network-form-actions" style="margin-top:10px">
-            <button class="btn btn-sm" id="p2-briefing-btn">Load Briefing</button>
-          </div>
-          <pre id="p2-briefing" class="network-briefing">No briefing loaded.</pre>
-        </section>
-        <section class="card networking-bridge-card">
-          <div class="card-label">Bridge Worker</div>
-          <div class="card-sub">Persistent bridge state, compute split, and detected capabilities.</div>
-          <div class="network-stat-grid">
-            <div class="network-stat"><span>Configured</span><strong>${bridge.configured ? 'Yes' : 'No'}</strong></div>
-            <div class="network-stat"><span>Enabled</span><strong>${bridge.enabled ? 'Yes' : 'No'}</strong></div>
-            <div class="network-stat"><span>Last Poll</span><strong>${esc(String(bridgeState.last_success_at || bridgeState.last_run_at || '-'))}</strong></div>
-            <div class="network-stat"><span>Next Poll</span><strong>${esc(String(bridgeState.next_poll_not_before || '-'))}</strong></div>
-            <div class="network-stat"><span>Compute Split</span><strong>${typeof bridge.compute_split_ratio === 'number' ? `${(bridge.compute_split_ratio * 100).toFixed(1)}% hive` : '-'}</strong></div>
-            <div class="network-stat"><span>Nash</span><strong>${bridge.nash_compliant ? 'Compliant' : 'Not yet'}</strong></div>
-            <div class="network-stat"><span>Polls</span><strong>${Number(bridgeState.polls_total || 0)}</strong></div>
-            <div class="network-stat"><span>Failures</span><strong>${Number(bridgeState.consecutive_failures || 0)}</strong></div>
-          </div>
-          <div class="network-form-row">
-            <label>Capabilities</label>
-            <div class="network-cap-list">${bridgeCaps.length ? bridgeCaps.map((cap) => `<span class="network-cap-pill">${esc(String(cap))}</span>`).join('') : '<span class="muted">No capabilities reported.</span>'}</div>
-          </div>
-          <div class="network-form-row">
-            <label>Bridge Config Path</label>
-            <div class="network-inline-note">${esc(String(bridge.config_path || '~/.agenthalo/p2pclaw_bridge.json'))}</div>
-          </div>
-          <div class="network-form-row">
-            <label>Last Error</label>
-            <div class="network-inline-note">${esc(String(bridgeState.last_error || bridgeError || 'None'))}</div>
-          </div>
-        </section>
-      </div>`;
+  let detailsHtml = '';
+  if (_networkingSelected === 'nym-mesh') {
+    const ns = nymStatus || {};
+    const nymHealthy = !!ns.healthy;
+    const nymMode = ns.mode || 'disabled';
+    const proxy = ns.socks5_proxy || 'None detected';
+    const failClosed = ns.fail_closed !== false;
+    const nativeConn = !!ns.native_connected;
+    const nativeAddr = ns.native_address || '-';
+    const inbound = !!ns.inbound_registered;
+    const cover = !!ns.cover_traffic_active;
+    const healthDot = nymHealthy
+      ? '<span style="color:var(--green)">&#9679;</span> Healthy'
+      : '<span style="color:var(--red)">&#9679;</span> No transport';
+    detailsHtml = '<div class="networking-detail-grid">'
+      + '<section class="card networking-config-card">'
+      + '<div class="card-label">Nym Mixnet Status</div>'
+      + '<div class="card-sub">Privacy-preserving transport layer for external traffic.</div>'
+      + '<div class="network-stat-grid">'
+      + '<div class="network-stat"><span>Health</span><strong>' + healthDot + '</strong></div>'
+      + '<div class="network-stat"><span>Mode</span><strong>' + esc(String(nymMode)) + '</strong></div>'
+      + '<div class="network-stat"><span>SOCKS5 Proxy</span><strong>' + esc(String(proxy)) + '</strong></div>'
+      + '<div class="network-stat"><span>Fail-Closed</span><strong>' + (failClosed ? 'Yes (secure)' : 'No (fail-open)') + '</strong></div>'
+      + '</div>'
+      + '</section>'
+      + '<section class="card networking-status-card">'
+      + '<div class="card-label">Native Mixnet (nym-sdk)</div>'
+      + '<div class="card-sub">Direct mixnet integration via the Nym SDK client.</div>'
+      + '<div class="network-stat-grid">'
+      + '<div class="network-stat"><span>Connected</span><strong>' + (nativeConn ? '<span style="color:var(--green)">Yes</span>' : 'No') + '</strong></div>'
+      + '<div class="network-stat"><span>Address</span><strong style="font-size:11px;word-break:break-all">' + esc(String(nativeAddr)) + '</strong></div>'
+      + '<div class="network-stat"><span>Inbound Registered</span><strong>' + (inbound ? 'Yes' : 'No') + '</strong></div>'
+      + '<div class="network-stat"><span>Cover Traffic</span><strong>' + (cover ? '<span style="color:var(--green)">Active</span>' : 'Inactive') + '</strong></div>'
+      + '</div>'
+      + '</section>'
+      + '<section class="card networking-bridge-card">'
+      + '<div class="card-label">Configuration</div>'
+      + '<div class="card-sub">Environment variables control Nym transport behavior.</div>'
+      + '<div class="network-form-row"><label>SOCKS5_PROXY</label><div class="network-inline-note">Set to override auto-detection (e.g. 127.0.0.1:1080)</div></div>'
+      + '<div class="network-form-row"><label>NYM_FAIL_OPEN</label><div class="network-inline-note">Set to "true" to allow direct fallback when no proxy is available</div></div>'
+      + '<div class="network-form-row"><label>NYM_NATIVE_ENABLED</label><div class="network-inline-note">Set to "true" to enable native nym-sdk transport</div></div>'
+      + '<div class="network-form-row"><label>NYM_COVER_TRAFFIC_SECS</label><div class="network-inline-note">Interval in seconds for cover traffic (0 = disabled)</div></div>'
+      + '<div class="network-form-actions"><button class="btn" id="nym-refresh-btn">Refresh Status</button></div>'
+      + '<div id="nym-msg" class="networking-msg">' + (nymError ? esc(nymError) : (ns.note ? esc(String(ns.note)) : '')) + '</div>'
+      + '</section>'
+      + '</div>';
+  } else if (_networkingSelected === 'didcomm-federation') {
+    const dc = didcommStatus || {};
+    const identOk = !!dc.identity_configured;
+    const transportOk = !!dc.transport_available;
+    const transportMode = dc.transport_mode || 'disabled';
+    const failClosed = dc.fail_closed !== false;
+    const enc = dc.encryption || {};
+    const msgTypes = Array.isArray(dc.supported_message_types) ? dc.supported_message_types : [];
+    const meshTypes = Array.isArray(dc.mesh_message_types) ? dc.mesh_message_types : [];
+    const identDot = identOk
+      ? '<span style="color:var(--green)">&#9679;</span> Configured'
+      : '<span style="color:var(--amber)">&#9679;</span> Not configured';
+    const transportDot = transportOk
+      ? '<span style="color:var(--green)">&#9679;</span> Available'
+      : '<span style="color:var(--amber)">&#9679;</span> No transport';
+    detailsHtml = '<div class="networking-detail-grid">'
+      + '<section class="card networking-config-card">'
+      + '<div class="card-label">DIDComm Federation Status</div>'
+      + '<div class="card-sub">Hybrid post-quantum encrypted messaging between agents.</div>'
+      + '<div class="network-stat-grid">'
+      + '<div class="network-stat"><span>DID Identity</span><strong>' + identDot + '</strong></div>'
+      + '<div class="network-stat"><span>Transport</span><strong>' + transportDot + '</strong></div>'
+      + '<div class="network-stat"><span>Transport Mode</span><strong>' + esc(String(transportMode)) + '</strong></div>'
+      + '<div class="network-stat"><span>Fail-Closed</span><strong>' + (failClosed ? 'Yes' : 'No') + '</strong></div>'
+      + '</div>'
+      + '</section>'
+      + '<section class="card networking-status-card">'
+      + '<div class="card-label">Cryptographic Stack</div>'
+      + '<div class="card-sub">Post-quantum hybrid encryption with dual signing.</div>'
+      + '<div class="network-stat-grid">'
+      + '<div class="network-stat"><span>Classical KEM</span><strong style="font-size:11px">' + esc(String(enc.classical || 'X25519 + AES-256-GCM')) + '</strong></div>'
+      + '<div class="network-stat"><span>Post-Quantum KEM</span><strong style="font-size:11px">' + esc(String(enc.post_quantum || 'ML-KEM-768')) + '</strong></div>'
+      + '<div class="network-stat"><span>Signatures</span><strong style="font-size:11px">' + esc(String(enc.signatures || 'Ed25519 + ML-DSA-65')) + '</strong></div>'
+      + '</div>'
+      + '</section>'
+      + '<section class="card networking-bridge-card">'
+      + '<div class="card-label">Message Types</div>'
+      + '<div class="card-sub">Supported DIDComm v2 and mesh communication protocols.</div>'
+      + '<div class="network-form-row"><label>DIDComm v2</label>'
+      + '<div class="network-cap-list">' + (msgTypes.length ? msgTypes.map(function(t) { return '<span class="network-cap-pill">' + esc(String(t)) + '</span>'; }).join('') : '<span class="muted">No types reported.</span>') + '</div></div>'
+      + '<div class="network-form-row"><label>Mesh Protocol</label>'
+      + '<div class="network-cap-list">' + (meshTypes.length ? meshTypes.map(function(t) { return '<span class="network-cap-pill">' + esc(String(t)) + '</span>'; }).join('') : '<span class="muted">No types reported.</span>') + '</div></div>'
+      + '<div class="network-form-actions"><button class="btn" id="didcomm-refresh-btn">Refresh Status</button></div>'
+      + '<div id="didcomm-msg" class="networking-msg">' + (didcommError ? esc(didcommError) : '') + '</div>'
+      + '</section>'
+      + '</div>';
+  } else {
+    detailsHtml = '<div class="networking-detail-grid">'
+      + '<section class="card networking-config-card">'
+      + '<div class="card-label">P2PCLAW Configuration</div>'
+      + '<div class="card-sub">Enable integration and configure endpoint + agent identity.</div>'
+      + '<div class="network-form-row network-toggle-row">'
+      + '<label class="network-toggle-label">Enable P2PCLAW</label>'
+      + '<label class="switch">'
+      + '<input type="checkbox" id="p2pclaw-enabled-toggle" ' + (p2enabled ? 'checked' : '') + '>'
+      + '<span class="slider"></span>'
+      + '</label></div>'
+      + '<div class="network-form-row"><label for="p2-endpoint-url">Endpoint URL</label>'
+      + '<input class="input" id="p2-endpoint-url" value="' + esc(p2cfg.endpoint_url || 'https://p2pclaw.com') + '" placeholder="https://p2pclaw.com"></div>'
+      + '<div class="network-form-row"><label for="p2-agent-name">Agent Name</label>'
+      + '<input class="input" id="p2-agent-name" value="' + esc(p2cfg.agent_name || 'AgentHALO') + '" placeholder="AgentHALO"></div>'
+      + '<div class="network-form-row"><label for="p2-agent-id">Agent ID</label>'
+      + '<input class="input" id="p2-agent-id" value="' + esc(p2cfg.agent_id || 'agenthalo') + '" placeholder="agenthalo-alice"></div>'
+      + '<div class="network-form-row"><label for="p2-auth-secret">Auth Secret (optional)</label>'
+      + '<input class="input" id="p2-auth-secret" type="password" placeholder="Shared HMAC secret"></div>'
+      + '<div class="network-form-row"><label>Tier</label><div class="network-tier-row">'
+      + '<label><input type="radio" name="p2-tier" value="tier1" ' + ((p2cfg.tier || 'tier1') === 'tier1' ? 'checked' : '') + '> Tier 1 (Free)</label>'
+      + '<label><input type="radio" name="p2-tier" value="tier2" ' + ((p2cfg.tier || 'tier1') === 'tier2' ? 'checked' : '') + '> Tier 2 (Prepaid)</label>'
+      + '</div></div>'
+      + '<div class="network-form-actions">'
+      + '<button class="btn" id="p2-test-btn">Test Connection</button>'
+      + '<button class="btn btn-primary" id="p2-save-btn">Save</button></div>'
+      + '<div id="p2-config-msg" class="networking-msg">' + (p2error ? esc(p2error) : '') + '</div>'
+      + '</section>'
+      + '<section class="card networking-status-card">'
+      + '<div class="card-label">Hive Status</div>'
+      + '<div class="card-sub">Real-time metrics from /api/p2pclaw/status</div>'
+      + '<div class="network-stat-grid">'
+      + '<div class="network-stat"><span>Active Agents</span><strong id="p2-stat-agents">' + Number(swarm.agents || 0) + '</strong></div>'
+      + '<div class="network-stat"><span>Papers</span><strong id="p2-stat-papers">' + Number(swarm.papers || 0) + '</strong></div>'
+      + '<div class="network-stat"><span>Mempool</span><strong id="p2-stat-mempool">' + Number(swarm.mempool || 0) + '</strong></div>'
+      + '<div class="network-stat"><span>Last Event</span><strong id="p2-stat-last">' + esc(String(swarm.last_event_ts || '-')) + '</strong></div>'
+      + '</div>'
+      + '<div class="network-form-actions" style="margin-top:10px"><button class="btn btn-sm" id="p2-briefing-btn">Load Briefing</button></div>'
+      + '<pre id="p2-briefing" class="network-briefing">No briefing loaded.</pre>'
+      + '</section>'
+      + '<section class="card networking-bridge-card">'
+      + '<div class="card-label">Bridge Worker</div>'
+      + '<div class="card-sub">Persistent bridge state, compute split, and detected capabilities.</div>'
+      + '<div class="network-stat-grid">'
+      + '<div class="network-stat"><span>Configured</span><strong>' + (bridge.configured ? 'Yes' : 'No') + '</strong></div>'
+      + '<div class="network-stat"><span>Enabled</span><strong>' + (bridge.enabled ? 'Yes' : 'No') + '</strong></div>'
+      + '<div class="network-stat"><span>Last Poll</span><strong>' + esc(String(bridgeState.last_success_at || bridgeState.last_run_at || '-')) + '</strong></div>'
+      + '<div class="network-stat"><span>Next Poll</span><strong>' + esc(String(bridgeState.next_poll_not_before || '-')) + '</strong></div>'
+      + '<div class="network-stat"><span>Compute Split</span><strong>' + (typeof bridge.compute_split_ratio === 'number' ? (bridge.compute_split_ratio * 100).toFixed(1) + '% hive' : '-') + '</strong></div>'
+      + '<div class="network-stat"><span>Nash</span><strong>' + (bridge.nash_compliant ? 'Compliant' : 'Not yet') + '</strong></div>'
+      + '<div class="network-stat"><span>Polls</span><strong>' + Number(bridgeState.polls_total || 0) + '</strong></div>'
+      + '<div class="network-stat"><span>Failures</span><strong>' + Number(bridgeState.consecutive_failures || 0) + '</strong></div>'
+      + '</div>'
+      + '<div class="network-form-row"><label>Capabilities</label>'
+      + '<div class="network-cap-list">' + (bridgeCaps.length ? bridgeCaps.map(function(cap) { return '<span class="network-cap-pill">' + esc(String(cap)) + '</span>'; }).join('') : '<span class="muted">No capabilities reported.</span>') + '</div></div>'
+      + '<div class="network-form-row"><label>Bridge Config Path</label>'
+      + '<div class="network-inline-note">' + esc(String(bridge.config_path || '~/.agenthalo/p2pclaw_bridge.json')) + '</div></div>'
+      + '<div class="network-form-row"><label>Last Error</label>'
+      + '<div class="network-inline-note">' + esc(String(bridgeState.last_error || bridgeError || 'None')) + '</div></div>'
+      + '</section></div>';
+  }
 
   content.innerHTML = `
     <h1>Networking Integrations</h1>
@@ -322,6 +401,18 @@ async function renderNetworkingPage() {
       renderNetworkingPage();
     });
   });
+
+  // Nym refresh handler
+  const nymRefreshBtn = $('#nym-refresh-btn');
+  if (nymRefreshBtn) {
+    nymRefreshBtn.addEventListener('click', () => renderNetworkingPage());
+  }
+  // DIDComm refresh handler
+  const didcommRefreshBtn = $('#didcomm-refresh-btn');
+  if (didcommRefreshBtn) {
+    didcommRefreshBtn.addEventListener('click', () => renderNetworkingPage());
+  }
+
   if (_networkingSelected !== 'p2pclaw') return;
 
   const msgEl = $('#p2-config-msg');

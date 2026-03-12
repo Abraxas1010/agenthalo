@@ -30,6 +30,7 @@ use crate::halo::encrypted_file;
 use crate::halo::http_client;
 use crate::halo::metrics::diversity::{build_snapshot, extract_tool_counts};
 use crate::halo::onchain::load_onchain_config_or_default;
+use crate::halo::nym;
 use crate::halo::p2pclaw;
 use crate::halo::p2pclaw_bridge;
 use crate::halo::p2pclaw_verify;
@@ -108,6 +109,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/costs/by-model", get(api_costs_by_model))
         .route("/costs/paid", get(api_costs_paid))
         .route("/networking/available", get(api_networking_available))
+        .route("/nym/status", get(api_nym_status))
+        .route("/didcomm/status", get(api_didcomm_status))
         .route("/metrics/diversity", get(api_metrics_diversity))
         .route("/metrics/trace-topology", get(api_metrics_trace_topology))
         .route("/orchestrator/agents", get(api_orch_agents))
@@ -4349,6 +4352,14 @@ fn p2pclaw_load_config_for_api() -> Result<p2pclaw::P2PClawConfig, (StatusCode, 
 
 async fn api_networking_available(AxumState(_state): AxumState<DashboardState>) -> ApiResult {
     let addons_cfg = addons::load_or_default();
+    let nym_status = nym::status();
+    let nym_healthy = nym_status.healthy;
+    let identity = crate::halo::identity::load();
+    let has_did = identity
+        .network
+        .as_ref()
+        .map(crate::halo::identity::network_is_configured)
+        .unwrap_or(false);
     Ok(Json(json!({
         "networks": [
             {
@@ -4362,19 +4373,69 @@ async fn api_networking_available(AxumState(_state): AxumState<DashboardState>) 
             {
                 "id": "nym-mesh",
                 "name": "Nym Mixnet Mesh",
-                "description": "Privacy-preserving agent communication",
-                "enabled": false,
-                "configurable": false,
-                "coming_soon": true
+                "description": "Privacy-preserving agent communication via SOCKS5 or native nym-sdk transport",
+                "enabled": nym_healthy,
+                "configurable": true,
+                "coming_soon": false
             },
             {
                 "id": "didcomm-federation",
                 "name": "DIDComm Federation",
-                "description": "Cross-organization agent identity mesh",
-                "enabled": false,
-                "configurable": false,
-                "coming_soon": true
+                "description": "Hybrid post-quantum encrypted agent messaging (X25519 + ML-KEM-768)",
+                "enabled": has_did,
+                "configurable": true,
+                "coming_soon": false
             }
+        ]
+    })))
+}
+
+async fn api_nym_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let status = nym::status();
+    Ok(Json(json!({
+        "mode": status.mode,
+        "socks5_proxy": status.socks5_proxy,
+        "healthy": status.healthy,
+        "fail_closed": status.fail_closed,
+        "native_enabled": status.native_enabled,
+        "native_connected": status.native_connected,
+        "native_address": status.native_address,
+        "inbound_registered": status.inbound_registered,
+        "cover_traffic_active": status.cover_traffic_active,
+        "note": status.note
+    })))
+}
+
+async fn api_didcomm_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let identity = crate::halo::identity::load();
+    let has_did = identity
+        .network
+        .as_ref()
+        .map(crate::halo::identity::network_is_configured)
+        .unwrap_or(false);
+    let nym_status = nym::status();
+    Ok(Json(json!({
+        "identity_configured": has_did,
+        "transport_available": nym_status.healthy,
+        "transport_mode": nym_status.mode,
+        "fail_closed": nym_status.fail_closed,
+        "supported_message_types": [
+            "ping", "ack", "error",
+            "agent-card-request", "agent-card-response",
+            "task-send", "task-status", "task-artifact", "task-cancel",
+            "credential-offer", "credential-request", "credential-issue"
+        ],
+        "encryption": {
+            "classical": "X25519 ECDH-ES + AES-256-GCM",
+            "post_quantum": "ML-KEM-768 hybrid KEM",
+            "signatures": "Ed25519 + ML-DSA-65 dual signing"
+        },
+        "mesh_message_types": [
+            "mcp_tool_call", "mcp_tool_response",
+            "envelope_exchange", "capability_grant", "capability_accept",
+            "peer_announce", "heartbeat"
         ]
     })))
 }
