@@ -2,7 +2,7 @@ FROM rust:1.88-slim-trixie AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev g++ && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY . .
-RUN cargo build --release --bin agenthalo --bin nucleusdb --bin nucleusdb-server --bin nucleusdb-mcp --bin nucleusdb-discord
+RUN cargo build --release --bin agenthalo --bin agenthalo-mcp-server --bin nucleusdb --bin nucleusdb-server --bin nucleusdb-mcp --bin nucleusdb-discord
 
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini curl jq python3 python3-pip docker-cli && rm -rf /var/lib/apt/lists/*
@@ -14,6 +14,7 @@ COPY --from=builder /build/target/release/nucleusdb /usr/local/bin/
 COPY --from=builder /build/target/release/nucleusdb-server /usr/local/bin/
 COPY --from=builder /build/target/release/nucleusdb-mcp /usr/local/bin/
 COPY --from=builder /build/target/release/nucleusdb-discord /usr/local/bin/
+COPY --from=builder /build/target/release/agenthalo-mcp-server /usr/local/bin/
 COPY --from=builder /build/dashboard /dashboard
 COPY scripts/nucleusdb-entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh && mkdir -p /data && chown -R 10001:10001 /data /dashboard
