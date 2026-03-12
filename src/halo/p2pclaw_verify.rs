@@ -23,7 +23,13 @@
 //!    Lean/mathematical code blocks in the paper.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Minimum word count for a paper to be considered substantive.
 const MIN_WORD_COUNT: usize = 100;
@@ -80,8 +86,39 @@ pub struct VerificationResult {
     pub violations: Vec<Violation>,
     pub lean_blocks_found: usize,
     pub lean_blocks_checked: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_passed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formal_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formal_passed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composite_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_report_path: Option<String>,
     pub elapsed_ms: u64,
     pub engine: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExternalTierResult {
+    pub score: f64,
+    pub passed: bool,
+    #[serde(default)]
+    pub details: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExternalVerifyResult {
+    pub paper_sha256: String,
+    pub structural: ExternalTierResult,
+    pub semantic: ExternalTierResult,
+    pub formal: ExternalTierResult,
+    pub composite: ExternalTierResult,
+    #[serde(default)]
+    pub report_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -279,9 +316,266 @@ pub fn verify_paper(req: &VerificationRequest) -> VerificationResult {
         violations,
         lean_blocks_found,
         lean_blocks_checked,
+        semantic_score: None,
+        semantic_passed: None,
+        formal_score: None,
+        formal_passed: None,
+        composite_score: None,
+        external_report_path: None,
         elapsed_ms,
         engine: "agenthalo-p2pclaw-verify-v1.0".into(),
     }
+}
+
+pub fn verify_paper_full(
+    req: &VerificationRequest,
+    script_path: Option<&Path>,
+    python: &str,
+    timeout_secs: u64,
+) -> VerificationResult {
+    let mut structural = verify_paper(req);
+    let Some(script_path) = script_path else {
+        return structural;
+    };
+    match external_verify(script_path, python, req, timeout_secs) {
+        Ok(external) => merge_external_verification(structural, external),
+        Err(err) => {
+            structural.violations.push(Violation {
+                violation_type: "EXTERNAL_VERIFY_UNAVAILABLE".to_string(),
+                detail: err,
+                severity: "LOW".to_string(),
+            });
+            structural
+        }
+    }
+}
+
+pub fn external_verify(
+    script_path: &Path,
+    python: &str,
+    req: &VerificationRequest,
+    timeout_secs: u64,
+) -> Result<ExternalVerifyResult, String> {
+    if !script_path.exists() {
+        return Err(format!(
+            "external verifier script not found: {}",
+            script_path.display()
+        ));
+    }
+    let temp_path = write_temp_paper(req)?;
+    let mut command = Command::new(python);
+    command
+        .arg(script_path)
+        .arg("--paper-file")
+        .arg(&temp_path)
+        .arg("--write-report")
+        .arg("--json")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(root) = infer_heyting_root(script_path) {
+        command.env("HEYTING_ROOT", root);
+    }
+    if let Some(root) = infer_living_agent_root(script_path) {
+        command.arg("--living-agent-root").arg(&root);
+        command.env("LIVING_AGENT_ROOT", root);
+    }
+    if let Some(archive_dir) = infer_archive_dir(script_path) {
+        command.arg("--archive-dir").arg(&archive_dir);
+        command.env("HEYTING_ARTIFACT_DIR", archive_dir);
+    }
+    if let Some(grid_root) = infer_grid_root(script_path) {
+        command.arg("--grid-root").arg(&grid_root);
+        command.env("HEYTING_GRID_ROOT", grid_root);
+    }
+
+    let mut child = command.spawn().map_err(|e| {
+        format!(
+            "failed to spawn external verifier `{}` with {}: {e}",
+            script_path.display(),
+            python
+        )
+    })?;
+    let output = wait_for_child(&mut child, timeout_secs)?;
+    let _ = std::fs::remove_file(&temp_path);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Err(format!(
+            "external verifier failed with status {}: {}{}",
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "terminated by signal".to_string()),
+            if stderr.is_empty() { "" } else { &stderr },
+            if stdout.is_empty() {
+                String::new()
+            } else {
+                format!(" | stdout: {stdout}")
+            }
+        ));
+    }
+    serde_json::from_slice::<ExternalVerifyResult>(&output.stdout).map_err(|e| {
+        format!(
+            "external verifier returned invalid JSON: {e}; stdout={}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })
+}
+
+fn merge_external_verification(
+    mut structural: VerificationResult,
+    external: ExternalVerifyResult,
+) -> VerificationResult {
+    structural.verified = structural.verified && external.composite.passed;
+    structural.verification_level = "full".to_string();
+    structural.structural_score = structural.structural_score.max(external.structural.score);
+    structural.semantic_score = Some(external.semantic.score);
+    structural.semantic_passed = Some(external.semantic.passed);
+    structural.formal_score = Some(external.formal.score);
+    structural.formal_passed = Some(external.formal.passed);
+    structural.composite_score = Some(external.composite.score);
+    structural.external_report_path = external.report_path.clone();
+    structural.lean_blocks_checked = structural
+        .lean_blocks_checked
+        .max(external_checked_count(&external.formal));
+    structural.lean_blocks_found = structural
+        .lean_blocks_found
+        .max(external_checked_count(&external.formal));
+    if !external.composite.passed {
+        structural.violations.push(Violation {
+            violation_type: "EXTERNAL_VERIFICATION_FAILED".to_string(),
+            detail: format!(
+                "semantic_passed={} formal_passed={} composite_score={:.4}",
+                external.semantic.passed, external.formal.passed, external.composite.score
+            ),
+            severity: "MEDIUM".to_string(),
+        });
+    }
+    structural.engine = "agenthalo-p2pclaw-verify-v1.1".to_string();
+    structural
+}
+
+fn external_checked_count(tier: &ExternalTierResult) -> usize {
+    tier.details
+        .get("checked")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize
+}
+
+fn write_temp_paper(req: &VerificationRequest) -> Result<PathBuf, String> {
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "agenthalo_p2pclaw_verify_{}_{}_{}.md",
+        std::process::id(),
+        now_nanos,
+        sanitize_filename_fragment(&req.title)
+    ));
+    std::fs::write(&path, &req.content)
+        .map_err(|e| format!("write temporary verifier input {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+fn sanitize_filename_fragment(input: &str) -> String {
+    let mut out = String::new();
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if (ch.is_ascii_whitespace() || ch == '-' || ch == '_') && !out.ends_with('_') {
+            out.push('_');
+        }
+        if out.len() >= 32 {
+            break;
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+fn wait_for_child(
+    child: &mut std::process::Child,
+    timeout_secs: u64,
+) -> Result<std::process::Output, String> {
+    let started = std::time::Instant::now();
+    let timeout = Duration::from_secs(timeout_secs.max(1));
+    loop {
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "external verifier timed out after {} seconds",
+                timeout.as_secs()
+            ));
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => return collect_child_output(child),
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(format!("poll external verifier: {e}")),
+        }
+    }
+}
+
+fn collect_child_output(child: &mut std::process::Child) -> Result<std::process::Output, String> {
+    let status = child
+        .wait()
+        .map_err(|e| format!("wait for external verifier: {e}"))?;
+    let mut stdout = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_end(&mut stdout)
+            .map_err(|e| format!("read external verifier stdout: {e}"))?;
+    }
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_end(&mut stderr)
+            .map_err(|e| format!("read external verifier stderr: {e}"))?;
+    }
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn infer_heyting_root(script_path: &Path) -> Option<PathBuf> {
+    if let Ok(root) = std::env::var("HEYTING_ROOT") {
+        return Some(PathBuf::from(root));
+    }
+    let parent = script_path.parent()?;
+    if parent.file_name().and_then(|s| s.to_str()) == Some("scripts") {
+        return parent.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+fn infer_living_agent_root(script_path: &Path) -> Option<PathBuf> {
+    if let Ok(root) = std::env::var("LIVING_AGENT_ROOT") {
+        return Some(PathBuf::from(root));
+    }
+    let parent = script_path.parent()?;
+    if parent.file_name().and_then(|s| s.to_str()) == Some("heyting_bridge") {
+        return parent.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+fn infer_archive_dir(script_path: &Path) -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("HEYTING_ARTIFACT_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    infer_living_agent_root(script_path)
+        .map(|root| root.join("heyting_artifacts"))
+        .or_else(|| {
+            infer_heyting_root(script_path).map(|root| root.join("artifacts").join("living_agent"))
+        })
+}
+
+fn infer_grid_root(script_path: &Path) -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("HEYTING_GRID_ROOT") {
+        return Some(PathBuf::from(dir));
+    }
+    infer_archive_dir(script_path).map(|dir| dir.join("verified_grid"))
 }
 
 /// Extract implicit claims from paper content.
@@ -338,6 +632,7 @@ fn find_lean_blocks(content: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_verify_minimal_paper() {
@@ -410,5 +705,70 @@ mod tests {
         let r1 = verify_paper(&req);
         let r2 = verify_paper(&req);
         assert_eq!(r1.proof_hash, r2.proof_hash);
+    }
+
+    #[test]
+    fn test_verify_paper_full_falls_back_when_script_missing() {
+        let req = VerificationRequest {
+            title: "Fallback".into(),
+            content: format!("# Abstract\nWe show X. {}", "word ".repeat(120)),
+            claims: vec![],
+            agent_id: None,
+        };
+        let result = verify_paper_full(&req, Some(Path::new("/missing/verifier.py")), "python3", 5);
+        assert_eq!(result.verification_level, "structural");
+        assert!(result
+            .violations
+            .iter()
+            .any(|v| v.violation_type == "EXTERNAL_VERIFY_UNAVAILABLE"));
+    }
+
+    #[test]
+    fn test_external_verify_with_mock_script() {
+        let dir = std::env::temp_dir().join(format!(
+            "agenthalo_verify_mock_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("create mock dir");
+        let script = dir.join("living_agent_verify.py");
+        fs::write(
+            &script,
+            r#"#!/usr/bin/env python3
+import json
+print(json.dumps({
+  "paper_sha256": "abc",
+  "structural": {"score": 0.9, "passed": True, "details": {"word_count": 200}},
+  "semantic": {"score": 0.8, "passed": True, "details": {"top_grid_match": "HeytingLean.Mock"}},
+  "formal": {"score": 1.0, "passed": True, "details": {"checked": 2}},
+  "composite": {"score": 0.8, "passed": True, "details": {}},
+  "report_path": "/tmp/mock-report.json"
+}))"#,
+        )
+        .expect("write mock script");
+        let req = VerificationRequest {
+            title: "Mock".into(),
+            content: "mock content".into(),
+            claims: vec![],
+            agent_id: None,
+        };
+        let external = external_verify(&script, "python3", &req, 5).expect("external verify");
+        assert!(external.semantic.passed);
+        assert_eq!(external.formal.details["checked"], 2);
+
+        let merged = verify_paper_full(&req, Some(&script), "python3", 5);
+        assert_eq!(merged.verification_level, "full");
+        assert_eq!(merged.semantic_score, Some(0.8));
+        assert_eq!(merged.formal_passed, Some(true));
+        assert_eq!(merged.lean_blocks_checked, 2);
+        assert_eq!(
+            merged.external_report_path.as_deref(),
+            Some("/tmp/mock-report.json")
+        );
+        let _ = fs::remove_file(&script);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -2128,12 +2128,25 @@ fn p2pclaw_tool_defs_for_listing() -> Vec<Value> {
         }),
         json!({
             "name": "p2pclaw_verify_paper",
-            "description": "Run local structural verification on a P2PCLAW paper draft before publishing.",
+            "description": "Run local or configured full verification on a P2PCLAW paper draft before publishing.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string"},
                     "content": {"type": "string"}
+                },
+                "required": ["title", "content"]
+            }
+        }),
+        json!({
+            "name": "p2pclaw_bridge_publish_paper",
+            "description": "Verify and optionally publish a paper through the AgentHALO P2PCLAW bridge.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                    "dry_run": {"type": "boolean", "default": true}
                 },
                 "required": ["title", "content"]
             }
@@ -2274,6 +2287,7 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "p2pclaw_create_investigation" => tool_p2pclaw_create_investigation(arguments),
         "p2pclaw_search_wheel" => tool_p2pclaw_search_wheel(arguments),
         "p2pclaw_verify_paper" => tool_p2pclaw_verify_paper(arguments),
+        "p2pclaw_bridge_publish_paper" => tool_p2pclaw_bridge_publish_paper(arguments),
         "p2pclaw_bridge_status" => tool_p2pclaw_bridge_status(arguments),
         "p2pclaw_bridge_run_once" => tool_p2pclaw_bridge_run_once(arguments),
         "p2pclaw_configure" => tool_p2pclaw_configure(arguments),
@@ -6354,6 +6368,7 @@ fn tool_p2pclaw_search_wheel(arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_p2pclaw_verify_paper(arguments: Value) -> Result<Value, String> {
+    let bridge_cfg = p2pclaw_bridge::load_config()?;
     let title = arguments
         .get("title")
         .and_then(|v| v.as_str())
@@ -6366,17 +6381,56 @@ fn tool_p2pclaw_verify_paper(arguments: Value) -> Result<Value, String> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| "content is required".to_string())?;
-    let verification = nucleusdb::halo::p2pclaw_verify::verify_paper(
+    let verification = nucleusdb::halo::p2pclaw_verify::verify_paper_full(
         &nucleusdb::halo::p2pclaw_verify::VerificationRequest {
             title: title.to_string(),
             content: content.to_string(),
             claims: vec![],
             agent_id: None,
         },
+        bridge_cfg.heyting_verify_script.as_deref(),
+        bridge_cfg
+            .heyting_verify_python
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("python3"),
+        bridge_cfg.heyting_verify_timeout_secs.unwrap_or(120),
     );
     Ok(json!({
         "status": "ok",
         "verification": verification
+    }))
+}
+
+fn tool_p2pclaw_bridge_publish_paper(arguments: Value) -> Result<Value, String> {
+    p2pclaw_require_enabled()?;
+    let cfg = p2pclaw_load_config()?;
+    let title = arguments
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "title is required".to_string())?;
+    let content = arguments
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "content is required".to_string())?;
+    let result = p2pclaw_bridge::publish_verified_paper(
+        &cfg,
+        p2pclaw_bridge::BridgePaperPublishOptions {
+            title: title.to_string(),
+            content: content.to_string(),
+            dry_run: arguments
+                .get("dry_run")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+        },
+    )?;
+    Ok(json!({
+        "status": "ok",
+        "result": result
     }))
 }
 

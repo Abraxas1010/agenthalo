@@ -226,6 +226,25 @@ impl Drop for MockP2PClawServer {
     }
 }
 
+fn write_mock_verify_script(dir: &Path) -> PathBuf {
+    let path = dir.join("living_agent_verify.py");
+    std::fs::write(
+        &path,
+        r#"#!/usr/bin/env python3
+import json
+print(json.dumps({
+  "paper_sha256": "mock-sha",
+  "structural": {"score": 0.95, "passed": True, "details": {"word_count": 300}},
+  "semantic": {"score": 0.75, "passed": True, "details": {"top_grid_match": "HeytingLean.Mock"}},
+  "formal": {"score": 1.0, "passed": True, "details": {"checked": 2, "successes": 2}},
+  "composite": {"score": 0.75, "passed": True, "details": {}},
+  "report_path": "/tmp/mock-report.json"
+}))"#,
+    )
+    .expect("write mock verifier");
+    path
+}
+
 #[test]
 fn config_roundtrip_without_secret_field() {
     let _guard = lock_env();
@@ -442,6 +461,9 @@ fn bridge_config_roundtrip_and_status_surface_loaded_values() {
         heartbeat_interval_secs: 11,
         event_limit: 7,
         preview_items: 2,
+        heyting_verify_script: None,
+        heyting_verify_python: None,
+        heyting_verify_timeout_secs: Some(120),
     };
     p2pclaw_bridge::save_config(&cfg).expect("save bridge config");
     let loaded = p2pclaw_bridge::load_config().expect("load bridge config");
@@ -669,5 +691,62 @@ fn bridge_event_dedup_and_unbounded_loop_respects_shutdown() {
     let saved = p2pclaw_bridge::load_state().expect("load deduped state");
     assert_eq!(saved.events_seen_total, 1);
 
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn bridge_publish_verified_paper_uses_full_verifier_and_publishes_content() {
+    let _guard = lock_env();
+    let home = temp_home("bridge_publish_verified_paper");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.to_str().expect("utf8 home")));
+
+    let server = MockP2PClawServer::spawn();
+    let verifier = write_mock_verify_script(&home);
+    let bridge_cfg = p2pclaw_bridge::BridgeConfig {
+        heyting_verify_script: Some(verifier.clone()),
+        ..Default::default()
+    };
+    p2pclaw_bridge::save_config(&bridge_cfg).expect("save bridge config");
+
+    let cfg = p2pclaw::P2PClawConfig {
+        endpoint_url: server.base_url.clone(),
+        agent_id: "agenthalo-mock".to_string(),
+        agent_name: "Mock".to_string(),
+        auth_configured: false,
+        tier: "tier1".to_string(),
+        last_connected_at: 0,
+    };
+
+    let content = format!(
+        "# Abstract\nWe prove the bridge can publish verified content. {}\n\n# Methodology\nThe bridge forwards a real paper body into AgentHALO verification and then to P2PCLAW publication. {}\n\n# Results\nThe verified publication returns a paper id and stores full verification metadata. {}",
+        "word ".repeat(80),
+        "word ".repeat(80),
+        "word ".repeat(80),
+    );
+    let result = p2pclaw_bridge::publish_verified_paper(
+        &cfg,
+        p2pclaw_bridge::BridgePaperPublishOptions {
+            title: "Verified publication".to_string(),
+            content,
+            dry_run: false,
+        },
+    )
+    .expect("publish verified paper");
+
+    assert_eq!(result.verification.verification_level, "full");
+    assert_eq!(result.verification.semantic_score, Some(0.75));
+    assert_eq!(result.verification.formal_passed, Some(true));
+    assert_eq!(
+        result
+            .publish_result
+            .as_ref()
+            .and_then(|value| value.paper_id.as_deref()),
+        Some("published-1")
+    );
+    assert_eq!(result.state_after.publications_total, 1);
+
+    let _ = std::fs::remove_file(verifier);
     let _ = std::fs::remove_dir_all(&home);
 }

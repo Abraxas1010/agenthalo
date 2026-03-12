@@ -29,6 +29,9 @@ pub struct BridgeConfig {
     pub heartbeat_interval_secs: u64,
     pub event_limit: u64,
     pub preview_items: usize,
+    pub heyting_verify_script: Option<PathBuf>,
+    pub heyting_verify_python: Option<String>,
+    pub heyting_verify_timeout_secs: Option<u64>,
 }
 
 impl Default for BridgeConfig {
@@ -39,6 +42,9 @@ impl Default for BridgeConfig {
             heartbeat_interval_secs: 60,
             event_limit: 50,
             preview_items: 5,
+            heyting_verify_script: None,
+            heyting_verify_python: None,
+            heyting_verify_timeout_secs: Some(120),
         }
     }
 }
@@ -224,6 +230,23 @@ pub struct BridgeStatus {
     pub mcp_error: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BridgePaperPublishOptions {
+    pub title: String,
+    pub content: String,
+    pub dry_run: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BridgePaperPublishResult {
+    pub title: String,
+    pub dry_run: bool,
+    pub verification: p2pclaw_verify::VerificationResult,
+    pub publish_result: Option<p2pclaw::PaperResult>,
+    pub state_before: BridgePersistentState,
+    pub state_after: BridgePersistentState,
+}
+
 struct StateLock {
     #[allow(dead_code)]
     file: File,
@@ -294,6 +317,11 @@ fn validate_bridge_config(cfg: &BridgeConfig) -> Result<(), String> {
     if cfg.preview_items == 0 {
         return Err("bridge preview_items must be > 0".to_string());
     }
+    if let Some(timeout_secs) = cfg.heyting_verify_timeout_secs {
+        if timeout_secs == 0 {
+            return Err("bridge heyting_verify_timeout_secs must be > 0".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -363,6 +391,120 @@ pub fn status(
         mcp_sidecar_available,
         mcp_tools,
         mcp_error,
+    })
+}
+
+fn verify_script_path(cfg: &BridgeConfig) -> Option<&std::path::Path> {
+    cfg.heyting_verify_script.as_deref()
+}
+
+fn verify_python(cfg: &BridgeConfig) -> &str {
+    cfg.heyting_verify_python
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("python3")
+}
+
+fn verify_timeout_secs(cfg: &BridgeConfig) -> u64 {
+    cfg.heyting_verify_timeout_secs.unwrap_or(120)
+}
+
+pub fn publish_verified_paper(
+    cfg: &P2PClawConfig,
+    options: BridgePaperPublishOptions,
+) -> Result<BridgePaperPublishResult, String> {
+    let bridge_cfg = load_config()?;
+    let now = now_unix_secs();
+    let mut locked = LockedBridgeState::load()?;
+    let state_before = locked.state.clone();
+    let paper_sha256 = sha256_hex(options.content.as_bytes());
+    let verification = p2pclaw_verify::verify_paper_full(
+        &p2pclaw_verify::VerificationRequest {
+            title: options.title.clone(),
+            content: options.content.clone(),
+            claims: vec![],
+            agent_id: Some(cfg.agent_id.clone()),
+        },
+        verify_script_path(&bridge_cfg),
+        verify_python(&bridge_cfg),
+        verify_timeout_secs(&bridge_cfg),
+    );
+
+    let mut state_after = state_before.clone();
+    state_after.version = STATE_VERSION;
+    state_after.last_run_at = Some(now);
+    state_after.local_compute_cycles = state_after.local_compute_cycles.saturating_add(1);
+    state_after.last_briefing_sha256 = Some(paper_sha256.clone());
+
+    if !verification.verified {
+        state_after.consecutive_failures = 0;
+        state_after.last_error = Some("verification rejected publication request".to_string());
+        locked.state = state_after.clone();
+        locked.persist()?;
+        return Ok(BridgePaperPublishResult {
+            title: options.title,
+            dry_run: options.dry_run,
+            verification,
+            publish_result: None,
+            state_before,
+            state_after,
+        });
+    }
+
+    let publish_result = if options.dry_run {
+        None
+    } else {
+        match p2pclaw::publish_paper(cfg, &options.title, &options.content) {
+            Ok(result) => {
+                state_after.publications_total += 1;
+                state_after.hive_compute_cycles += 1;
+                state_after.last_publication_paper_id = result
+                    .paper_id
+                    .clone()
+                    .or_else(|| Some(paper_sha256.clone()));
+                state_after.last_published_briefing_sha256 = Some(paper_sha256.clone());
+                let _ = trace_bridge_operation(
+                    "p2pclaw_publish_verified_paper",
+                    state_after.last_publication_paper_id.clone(),
+                    true,
+                    None,
+                );
+                Some(result)
+            }
+            Err(err) => {
+                let _ = trace_bridge_operation(
+                    "p2pclaw_publish_verified_paper",
+                    Some(paper_sha256.clone()),
+                    false,
+                    Some(err.clone()),
+                );
+                state_after.consecutive_failures += 1;
+                state_after.last_error = Some(err.clone());
+                state_after.current_backoff_secs =
+                    failure_backoff_secs(state_after.current_backoff_secs, &bridge_cfg);
+                state_after.next_poll_not_before = Some(now + state_after.current_backoff_secs);
+                locked.state = state_after;
+                locked.persist()?;
+                return Err(err);
+            }
+        }
+    };
+
+    state_after.last_success_at = Some(now);
+    state_after.consecutive_failures = 0;
+    state_after.last_error = None;
+    state_after.current_backoff_secs =
+        next_backoff_secs(state_after.current_backoff_secs, &bridge_cfg, true);
+    state_after.next_poll_not_before = Some(now + state_after.current_backoff_secs);
+    locked.state = state_after.clone();
+    locked.persist()?;
+    Ok(BridgePaperPublishResult {
+        title: options.title,
+        dry_run: options.dry_run,
+        verification,
+        publish_result,
+        state_before,
+        state_after,
     })
 }
 
@@ -453,13 +595,16 @@ pub fn run_once(cfg: &P2PClawConfig, options: BridgeRunOptions) -> Result<Bridge
         &unique_events,
     );
     let verification = if options.publish_summary {
-        Some(p2pclaw_verify::verify_paper(
+        Some(p2pclaw_verify::verify_paper_full(
             &p2pclaw_verify::VerificationRequest {
                 title: verification_title.clone(),
                 content: verification_content.clone(),
                 claims: vec![],
                 agent_id: Some(cfg.agent_id.clone()),
             },
+            verify_script_path(&bridge_cfg),
+            verify_python(&bridge_cfg),
+            verify_timeout_secs(&bridge_cfg),
         ))
     } else {
         None

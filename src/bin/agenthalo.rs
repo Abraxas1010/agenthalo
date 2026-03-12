@@ -1715,8 +1715,38 @@ fn cmd_p2pclaw(args: &[String]) -> Result<(), String> {
                 "result": result,
             }))
         }
+        "verify-paper" => {
+            let cfg = load_required_p2pclaw_config()?;
+            let title = flag_value(args, "--title")
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| {
+                    "usage: agenthalo p2pclaw verify-paper --title <text> [--content <text>|--content-file <path>]".to_string()
+                })?;
+            let content = read_flag_or_file(args, "--content", "--content-file")?;
+            let bridge_cfg = p2pclaw_bridge::load_config()?;
+            let verification = nucleusdb::halo::p2pclaw_verify::verify_paper_full(
+                &nucleusdb::halo::p2pclaw_verify::VerificationRequest {
+                    title: title.to_string(),
+                    content,
+                    claims: vec![],
+                    agent_id: Some(cfg.agent_id.clone()),
+                },
+                bridge_cfg.heyting_verify_script.as_deref(),
+                bridge_cfg
+                    .heyting_verify_python
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("python3"),
+                bridge_cfg.heyting_verify_timeout_secs.unwrap_or(120),
+            );
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "verification": verification,
+            }))
+        }
         "bridge" => cmd_p2pclaw_bridge(&args[1..]),
-        _ => Err("usage: agenthalo p2pclaw [configure|status|rank|briefing|agent-briefing|papers|mempool|investigations|create-investigation|bridge] ...".to_string()),
+        _ => Err("usage: agenthalo p2pclaw [configure|status|rank|briefing|agent-briefing|papers|mempool|investigations|create-investigation|verify-paper|bridge] ...".to_string()),
     }
 }
 
@@ -1749,6 +1779,19 @@ fn cmd_p2pclaw_bridge(args: &[String]) -> Result<(), String> {
                 cfg.preview_items = value
                     .parse::<usize>()
                     .map_err(|e| format!("invalid --preview-items: {e}"))?;
+            }
+            if let Some(value) = flag_value(args, "--heyting-verify-script") {
+                cfg.heyting_verify_script = Some(value.into());
+            }
+            if let Some(value) = flag_value(args, "--heyting-verify-python") {
+                cfg.heyting_verify_python = Some(value.to_string());
+            }
+            if let Some(value) = flag_value(args, "--heyting-verify-timeout-secs") {
+                cfg.heyting_verify_timeout_secs = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|e| format!("invalid --heyting-verify-timeout-secs: {e}"))?,
+                );
             }
             p2pclaw_bridge::save_config(&cfg)?;
             print_pretty_json(&serde_json::json!({
@@ -1831,8 +1874,30 @@ fn cmd_p2pclaw_bridge(args: &[String]) -> Result<(), String> {
                 "loop": report,
             }))
         }
+        "publish-paper" => {
+            let cfg = load_required_p2pclaw_config()?;
+            let title = flag_value(args, "--title")
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| {
+                    "usage: agenthalo p2pclaw bridge publish-paper --title <text> [--content <text>|--content-file <path>] [--live]".to_string()
+                })?;
+            let content = read_flag_or_file(args, "--content", "--content-file")?;
+            let result = p2pclaw_bridge::publish_verified_paper(
+                &cfg,
+                p2pclaw_bridge::BridgePaperPublishOptions {
+                    title: title.to_string(),
+                    content,
+                    dry_run: !has_flag(args, "--live"),
+                },
+            )?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "result": result,
+            }))
+        }
         _ => Err(
-            "usage: agenthalo p2pclaw bridge [configure|status|run-once|run-loop] ...".to_string(),
+            "usage: agenthalo p2pclaw bridge [configure|status|run-once|run-loop|publish-paper] ...".to_string(),
         ),
     }
 }
@@ -5950,6 +6015,17 @@ fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 
 fn has_flag(args: &[String], flag: &str) -> bool {
     args.iter().any(|arg| arg == flag)
+}
+
+fn read_flag_or_file(args: &[String], value_flag: &str, file_flag: &str) -> Result<String, String> {
+    if let Some(value) = flag_value(args, value_flag) {
+        return Ok(value.to_string());
+    }
+    if let Some(path) = flag_value(args, file_flag) {
+        return std::fs::read_to_string(path)
+            .map_err(|e| format!("read {} {}: {e}", file_flag, path));
+    }
+    Err(format!("pass {} <text> or {} <path>", value_flag, file_flag))
 }
 
 fn print_pretty_json(value: &serde_json::Value) -> Result<(), String> {

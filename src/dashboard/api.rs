@@ -5154,12 +5154,22 @@ async fn api_p2pclaw_verify(
             "title and content are required",
         ));
     }
-    let verification = p2pclaw_verify::verify_paper(&p2pclaw_verify::VerificationRequest {
+    let bridge_cfg = p2pclaw_bridge::load_config()
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    let verification = p2pclaw_verify::verify_paper_full(&p2pclaw_verify::VerificationRequest {
         title: title.to_string(),
         content: content.to_string(),
         claims: vec![],
         agent_id: None,
-    });
+    },
+    bridge_cfg.heyting_verify_script.as_deref(),
+    bridge_cfg
+        .heyting_verify_python
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("python3"),
+    bridge_cfg.heyting_verify_timeout_secs.unwrap_or(120),
+    );
     let verification_json = serde_json::json!({
         "verified": verification.verified,
         "valid": verification.verified,
@@ -5174,6 +5184,12 @@ async fn api_p2pclaw_verify(
         "violations": verification.violations,
         "lean_blocks_found": verification.lean_blocks_found,
         "lean_blocks_checked": verification.lean_blocks_checked,
+        "semantic_score": verification.semantic_score,
+        "semantic_passed": verification.semantic_passed,
+        "formal_score": verification.formal_score,
+        "formal_passed": verification.formal_passed,
+        "composite_score": verification.composite_score,
+        "external_report_path": verification.external_report_path,
         "elapsed_ms": verification.elapsed_ms,
         "engine": verification.engine,
     });
