@@ -94,6 +94,8 @@ dirs = "6"
 webbrowser = "1"
 ureq = { version = "3", features = ["json", "socks-proxy"] }
 url = "2"
+fs2 = "0.4"
+libc = "0.2"
 deunicode = "1"
 rust-embed = "8"
 mime_guess = "2"
@@ -142,7 +144,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
-libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

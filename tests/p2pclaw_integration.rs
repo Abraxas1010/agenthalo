@@ -528,7 +528,7 @@ fn bridge_run_once_polls_and_persists_state() {
     assert_eq!(report.events_seen, 1);
     assert_eq!(
         report.briefing_chars,
-        "# Briefing\nLive bridge snapshot.".len()
+        "# Briefing\nLive bridge snapshot.".chars().count()
     );
     assert!(report.state_after.next_poll_not_before.is_some());
 
@@ -591,6 +591,10 @@ fn bridge_publish_dedup_and_utf8_briefing_are_safe() {
         },
     )
     .expect("first publish");
+    assert_eq!(
+        first.briefing_chars,
+        "# Briefing\nSnowman: ☃ and rocket: 🚀".chars().count()
+    );
     assert!(first
         .actions
         .iter()

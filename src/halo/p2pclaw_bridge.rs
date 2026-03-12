@@ -4,6 +4,7 @@ use crate::halo::p2pclaw::{self, HiveEvent, Investigation, P2PClawConfig, Paper}
 use crate::halo::p2pclaw_mcp::P2PClawMcpManager;
 use crate::halo::p2pclaw_verify;
 use crate::halo::trace::{now_unix_secs, record_paid_operation_for_halo};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cmp;
@@ -238,18 +239,8 @@ impl StateLock {
             .write(true)
             .open(&path)
             .map_err(|e| format!("open bridge lock {}: {e}", path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-            if rc != 0 {
-                return Err(format!(
-                    "lock bridge state {}: {}",
-                    path.display(),
-                    std::io::Error::last_os_error()
-                ));
-            }
-        }
+        file.lock_exclusive()
+            .map_err(|e| format!("lock bridge state {}: {e}", path.display()))?;
         Ok(Self { file })
     }
 }
@@ -379,14 +370,11 @@ pub fn run_once(cfg: &P2PClawConfig, options: BridgeRunOptions) -> Result<Bridge
     let bridge_cfg = load_config()?;
     let now = now_unix_secs();
     let state_before = load_state()?;
+    let last_event_since = state_before.last_event_since;
     let briefing = p2pclaw::get_briefing(cfg);
     let investigations = p2pclaw::list_investigations(cfg);
     let mempool = p2pclaw::list_mempool(cfg);
-    let events = p2pclaw::poll_events(
-        cfg,
-        state_before.last_event_since,
-        Some(bridge_cfg.event_limit),
-    );
+    let events = p2pclaw::poll_events(cfg, last_event_since, Some(bridge_cfg.event_limit));
 
     let briefing = match briefing {
         Ok(value) => value,
@@ -447,9 +435,7 @@ pub fn run_once(cfg: &P2PClawConfig, options: BridgeRunOptions) -> Result<Bridge
     state_after.investigations_seen_total += investigations.len() as u64;
     state_after.mempool_seen_total += mempool.len() as u64;
     state_after.events_seen_total += unique_events.len() as u64;
-    if let Some(max_ts) = events.iter().filter_map(|e| e.timestamp).max() {
-        state_after.last_event_since = Some(max_ts);
-    }
+    state_after.last_event_since = merge_last_event_since(state_after.last_event_since, &events);
     extend_recent_event_keys(&mut state_after.recent_event_keys, &unique_events);
 
     let verification_title = format!(
@@ -1050,7 +1036,7 @@ fn truncate(input: &str, max_len: usize) -> String {
         .char_indices()
         .take_while(|(idx, _)| *idx < max_len)
         .last()
-        .map(|(idx, _)| idx)
+        .map(|(idx, ch)| idx + ch.len_utf8())
         .unwrap_or(0);
     if boundary == 0 {
         "...".to_string()
@@ -1133,16 +1119,38 @@ fn extend_recent_event_keys(target: &mut Vec<String>, events: &[HiveEvent]) {
     *target = queue.into_iter().collect();
 }
 
+fn merge_last_event_since(current: Option<u64>, events: &[HiveEvent]) -> Option<u64> {
+    let polled_max = events.iter().filter_map(|event| event.timestamp).max();
+    match (current, polled_max) {
+        (Some(existing), Some(polled)) => Some(existing.max(polled)),
+        (Some(existing), None) => Some(existing),
+        (None, Some(polled)) => Some(polled),
+        (None, None) => None,
+    }
+}
+
 fn escape_markdown_inline(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out = String::with_capacity(normalized.len());
+    let mut last_was_space = false;
+    for ch in normalized.chars() {
         match ch {
+            '\n' => {
+                if !last_was_space {
+                    out.push(' ');
+                    last_was_space = true;
+                }
+            }
             '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '(' | ')' | '#' | '+' | '-' | '!'
             | '>' | '|' => {
                 out.push('\\');
                 out.push(ch);
+                last_was_space = false;
             }
-            _ => out.push(ch),
+            _ => {
+                out.push(ch);
+                last_was_space = ch.is_whitespace();
+            }
         }
     }
     out
@@ -1206,4 +1214,43 @@ fn sleep_with_shutdown(duration: Duration, shutdown: Arc<AtomicBool>) {
 
 fn sha256_hex(input: &[u8]) -> String {
     hex::encode(Sha256::digest(input))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{escape_markdown_inline, merge_last_event_since, truncate, HiveEvent};
+
+    #[test]
+    fn truncate_preserves_full_utf8_characters_at_boundary() {
+        assert_eq!(truncate("aéb", 3), "aé...");
+        assert_eq!(truncate("☃abc", 3), "☃...");
+    }
+
+    #[test]
+    fn escape_markdown_inline_normalizes_newlines() {
+        assert_eq!(
+            escape_markdown_inline("alpha\nbeta[gamma]"),
+            "alpha beta\\[gamma\\]"
+        );
+        assert_eq!(escape_markdown_inline("alpha\r\nbeta"), "alpha beta");
+    }
+
+    #[test]
+    fn merge_last_event_since_never_moves_backwards() {
+        let older = vec![HiveEvent {
+            event_id: Some("evt-1".to_string()),
+            kind: Some("published".to_string()),
+            timestamp: Some(150),
+            payload: None,
+        }];
+        let newer = vec![HiveEvent {
+            event_id: Some("evt-2".to_string()),
+            kind: Some("published".to_string()),
+            timestamp: Some(250),
+            payload: None,
+        }];
+        assert_eq!(merge_last_event_since(Some(200), &older), Some(200));
+        assert_eq!(merge_last_event_since(Some(200), &newer), Some(250));
+        assert_eq!(merge_last_event_since(None, &newer), Some(250));
+    }
 }
