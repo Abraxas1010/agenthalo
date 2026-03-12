@@ -2492,6 +2492,48 @@ async function renderSetup() {
   const identityConfigured = !!(identityCfg.device_configured && identityCfg.network_configured);
   const hideSafetyUI = identityCfg.anonymous_mode || identityConfigured;
 
+  // Pre-compute LLM step done-state HTML (cannot use IIFE inside template literals)
+  const _step2DoneHtml = (() => {
+    if (!step2Done) return '';
+    const lmChosen = cfg && cfg.local_models && cfg.local_models.config && cfg.local_models.config.local_models_chosen;
+    const lm = cfg && cfg.local_models || {};
+    const ollamaUp = lm.ollama && lm.ollama.healthy;
+    const vllmUp = lm.vllm && lm.vllm.healthy;
+    const anyBackendUp = ollamaUp || vllmUp;
+    const servedModels = [
+      ...(ollamaUp && lm.ollama.served_models || []),
+      ...(vllmUp && lm.vllm.served_models || []),
+    ];
+    if (lmChosen) {
+      const statusLine = anyBackendUp
+        ? '<span style="color:var(--green)">&#9679;</span> Connected &mdash; '
+          + (servedModels.length
+            ? esc(servedModels.slice(0,3).join(', ')) + (servedModels.length > 3 ? ' (+' + (servedModels.length - 3) + ')' : '')
+            : (ollamaUp ? 'Ollama' : 'vLLM') + ' ready')
+        : '<span style="color:var(--amber)">&#9679;</span> No backend running &mdash; start a model from the Models tab';
+      return '<div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">'
+        + '<div style="font-size:28px">&#128421;</div>'
+        + '<div>'
+        + '<div style="font-size:14px;font-weight:600">Local Models</div>'
+        + '<div style="font-size:12px;color:var(--text-dim)">' + statusLine + '</div>'
+        + '</div></div>'
+        + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+        + '<a href="#/models" class="btn btn-sm btn-primary" style="border-radius:6px">Open Models Tab</a>'
+        + '<button class="btn btn-sm setup-disconnect-local-models-btn" style="border-color:var(--red);color:var(--red);border-radius:6px">Disconnect</button>'
+        + '</div>';
+    }
+    const orLabel = orStatus.tested ? 'OpenRouter <strong>verified</strong>' : 'OpenRouter connected';
+    return '<div class="setup-success-banner"><span class="success-icon">&#10003;</span><span>'
+      + orLabel + ' &mdash; LLM inference ready</span></div>'
+      + '<div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+      + (orStatus.configured
+        ? '<button class="btn btn-sm setup-provider-config-btn" data-provider="openrouter" style="border-radius:6px">Change Key</button>'
+          + '<button class="btn btn-sm setup-provider-test-btn" data-provider="openrouter" style="border-radius:6px">Re-test</button>'
+          + '<button class="btn btn-sm setup-provider-disconnect-btn" data-provider="openrouter" style="border-color:var(--red);color:var(--red);border-radius:6px">Disconnect</button>'
+        : '')
+      + '</div>';
+  })();
+
   content.innerHTML = `
   <div class="setup-page-wrap">
 
@@ -3004,51 +3046,7 @@ async function renderSetup() {
         </div>
       </div>
 
-      ${step2Done ? (() => {
-        const lmChosen = cfg && cfg.local_models && cfg.local_models.config && cfg.local_models.config.local_models_chosen;
-        const lm = cfg && cfg.local_models || {};
-        const ollamaUp = lm.ollama && lm.ollama.healthy;
-        const vllmUp = lm.vllm && lm.vllm.healthy;
-        const anyBackendUp = ollamaUp || vllmUp;
-        const servedModels = [
-          ...(ollamaUp && lm.ollama.served_models || []),
-          ...(vllmUp && lm.vllm.served_models || []),
-        ];
-        if (lmChosen) {
-          return `
-          <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">
-            <div style="font-size:28px">&#128421;</div>
-            <div>
-              <div style="font-size:14px;font-weight:600">Local Models</div>
-              <div style="font-size:12px;color:var(--text-dim)">
-                ${anyBackendUp
-                  ? `<span style="color:var(--green)">&#9679;</span> Connected &mdash; ${servedModels.length ? esc(servedModels.slice(0,3).join(', ')) + (servedModels.length > 3 ? ' (+' + (servedModels.length - 3) + ')' : '') : (ollamaUp ? 'Ollama' : 'vLLM') + ' ready'}`
-                  : '<span style="color:var(--amber)">&#9679;</span> No backend running &mdash; start a model from the Models tab'}
-              </div>
-            </div>
-          </div>
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <a href="#/models" class="btn btn-sm btn-primary" style="border-radius:6px">Open Models Tab</a>
-            <button class="btn btn-sm setup-disconnect-local-models-btn" style="border-color:var(--red);color:var(--red);border-radius:6px">Disconnect</button>
-          </div>`;
-        }
-        return `
-        <div class="setup-success-banner">
-          <span class="success-icon">&#10003;</span>
-          <span>
-            ${orStatus.tested ? 'OpenRouter <strong>verified</strong>' : 'OpenRouter connected'}
-            &mdash; LLM inference ready
-          </span>
-        </div>
-        <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          ${orStatus.configured ? `
-            <button class="btn btn-sm setup-provider-config-btn" data-provider="openrouter" style="border-radius:6px">Change Key</button>
-            <button class="btn btn-sm setup-provider-test-btn" data-provider="openrouter" style="border-radius:6px">Re-test</button>
-            <button class="btn btn-sm setup-provider-disconnect-btn" data-provider="openrouter" style="border-color:var(--red);color:var(--red);border-radius:6px">Disconnect</button>
-          ` : ''}
-        </div>`;
-      })()
-      ` : `
+      ${step2Done ? _step2DoneHtml : `
         <!-- Choice: two options -->
         <div class="setup-llm-choice-grid">
 
