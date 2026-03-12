@@ -71,6 +71,7 @@ import NucleusDB.Sheaf.CoherenceUniqueness
 import NucleusDB.Sheaf.MaterializationFunctor
 import NucleusDB.Sheaf.TraceTopology
 import NucleusDB.TrustLayer.AttestationCircuit
+import NucleusDB.TrustLayer.DispersionBridge
 import NucleusDB.TrustLayer.CompositeCab.Circuit
 import NucleusDB.TrustLayer.CompositeCab.GlobalCab
 import NucleusDB.TrustLayer.CompositeCab.GluingCondition
