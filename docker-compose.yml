@@ -53,6 +53,9 @@ services:
     volumes:
       - nucleusdb-data:/data
     restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 512m
+    cpus: 0.25
     depends_on:
       - nucleusdb
 

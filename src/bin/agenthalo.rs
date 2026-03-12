@@ -1723,6 +1723,40 @@ fn cmd_p2pclaw(args: &[String]) -> Result<(), String> {
 fn cmd_p2pclaw_bridge(args: &[String]) -> Result<(), String> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
     match sub {
+        "configure" => {
+            let mut cfg = p2pclaw_bridge::load_config()?;
+            if let Some(value) = flag_value(args, "--min-poll-secs") {
+                cfg.min_poll_interval_secs = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --min-poll-secs: {e}"))?;
+            }
+            if let Some(value) = flag_value(args, "--max-poll-secs") {
+                cfg.max_poll_interval_secs = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --max-poll-secs: {e}"))?;
+            }
+            if let Some(value) = flag_value(args, "--heartbeat-secs") {
+                cfg.heartbeat_interval_secs = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --heartbeat-secs: {e}"))?;
+            }
+            if let Some(value) = flag_value(args, "--event-limit") {
+                cfg.event_limit = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --event-limit: {e}"))?;
+            }
+            if let Some(value) = flag_value(args, "--preview-items") {
+                cfg.preview_items = value
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid --preview-items: {e}"))?;
+            }
+            p2pclaw_bridge::save_config(&cfg)?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "bridge_config_path": p2pclaw_bridge::config_path(),
+                "bridge_config": cfg,
+            }))
+        }
         "status" => {
             let cfg = p2pclaw::load_config().ok();
             let status =
@@ -1740,6 +1774,7 @@ fn cmd_p2pclaw_bridge(args: &[String]) -> Result<(), String> {
                     dry_run: !has_flag(args, "--live"),
                     include_mcp_tools: has_flag(args, "--include-mcp-tools"),
                     publish_summary: has_flag(args, "--publish-summary"),
+                    force_repeat_actions: has_flag(args, "--force-repeat-actions"),
                     validate_paper_id: flag_value(args, "--validate-paper-id").map(str::to_string),
                     validate_approve: !has_flag(args, "--reject"),
                     validate_occam_score: flag_value(args, "--occam-score")
@@ -1772,6 +1807,7 @@ fn cmd_p2pclaw_bridge(args: &[String]) -> Result<(), String> {
                         dry_run: !has_flag(args, "--live"),
                         include_mcp_tools: has_flag(args, "--include-mcp-tools"),
                         publish_summary: has_flag(args, "--publish-summary"),
+                        force_repeat_actions: has_flag(args, "--force-repeat-actions"),
                         validate_paper_id: flag_value(args, "--validate-paper-id")
                             .map(str::to_string),
                         validate_approve: !has_flag(args, "--reject"),
@@ -1795,7 +1831,9 @@ fn cmd_p2pclaw_bridge(args: &[String]) -> Result<(), String> {
                 "loop": report,
             }))
         }
-        _ => Err("usage: agenthalo p2pclaw bridge [status|run-once|run-loop] ...".to_string()),
+        _ => Err(
+            "usage: agenthalo p2pclaw bridge [configure|status|run-once|run-loop] ...".to_string(),
+        ),
     }
 }
 

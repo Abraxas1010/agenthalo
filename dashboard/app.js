@@ -186,6 +186,13 @@ async function renderNetworkingPage() {
   } catch (err) {
     p2error = String(err && err.message || err || '');
   }
+  let bridgePayload = null;
+  let bridgeError = '';
+  try {
+    bridgePayload = await api('/p2pclaw/bridge/status?include_mcp_tools=true');
+  } catch (err) {
+    bridgeError = String(err && err.message || err || '');
+  }
   const p2cfg = (p2status && p2status.config) || {
     endpoint_url: 'https://p2pclaw.com',
     agent_id: 'agenthalo',
@@ -194,6 +201,9 @@ async function renderNetworkingPage() {
   };
   const p2enabled = !!(cards.find((n) => n.id === 'p2pclaw') || {}).enabled;
   const swarm = (p2status && p2status.swarm) || {};
+  const bridge = (bridgePayload && bridgePayload.bridge) || {};
+  const bridgeState = bridge.state || {};
+  const bridgeCaps = Array.isArray(bridge.capabilities) ? bridge.capabilities : [];
 
   const cardsHtml = cards.map((n) => {
     const selected = _networkingSelected === n.id;
@@ -268,6 +278,32 @@ async function renderNetworkingPage() {
             <button class="btn btn-sm" id="p2-briefing-btn">Load Briefing</button>
           </div>
           <pre id="p2-briefing" class="network-briefing">No briefing loaded.</pre>
+        </section>
+        <section class="card networking-bridge-card">
+          <div class="card-label">Bridge Worker</div>
+          <div class="card-sub">Persistent bridge state, compute split, and detected capabilities.</div>
+          <div class="network-stat-grid">
+            <div class="network-stat"><span>Configured</span><strong>${bridge.configured ? 'Yes' : 'No'}</strong></div>
+            <div class="network-stat"><span>Enabled</span><strong>${bridge.enabled ? 'Yes' : 'No'}</strong></div>
+            <div class="network-stat"><span>Last Poll</span><strong>${esc(String(bridgeState.last_success_at || bridgeState.last_run_at || '-'))}</strong></div>
+            <div class="network-stat"><span>Next Poll</span><strong>${esc(String(bridgeState.next_poll_not_before || '-'))}</strong></div>
+            <div class="network-stat"><span>Compute Split</span><strong>${typeof bridge.compute_split_ratio === 'number' ? `${(bridge.compute_split_ratio * 100).toFixed(1)}% hive` : '-'}</strong></div>
+            <div class="network-stat"><span>Nash</span><strong>${bridge.nash_compliant ? 'Compliant' : 'Not yet'}</strong></div>
+            <div class="network-stat"><span>Polls</span><strong>${Number(bridgeState.polls_total || 0)}</strong></div>
+            <div class="network-stat"><span>Failures</span><strong>${Number(bridgeState.consecutive_failures || 0)}</strong></div>
+          </div>
+          <div class="network-form-row">
+            <label>Capabilities</label>
+            <div class="network-cap-list">${bridgeCaps.length ? bridgeCaps.map((cap) => `<span class="network-cap-pill">${esc(String(cap))}</span>`).join('') : '<span class="muted">No capabilities reported.</span>'}</div>
+          </div>
+          <div class="network-form-row">
+            <label>Bridge Config Path</label>
+            <div class="network-inline-note">${esc(String(bridge.config_path || '~/.agenthalo/p2pclaw_bridge.json'))}</div>
+          </div>
+          <div class="network-form-row">
+            <label>Last Error</label>
+            <div class="network-inline-note">${esc(String(bridgeState.last_error || bridgeError || 'None'))}</div>
+          </div>
         </section>
       </div>`;
 

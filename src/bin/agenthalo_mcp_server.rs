@@ -2157,6 +2157,7 @@ fn p2pclaw_tool_defs_for_listing() -> Vec<Value> {
                     "dry_run": {"type": "boolean", "default": true},
                     "include_mcp_tools": {"type": "boolean", "default": false},
                     "publish_summary": {"type": "boolean", "default": false},
+                    "force_repeat_actions": {"type": "boolean", "default": false},
                     "validate_paper_id": {"type": "string"},
                     "validate_approve": {"type": "boolean", "default": true},
                     "occam_score": {"type": "number"},
@@ -6410,6 +6411,10 @@ fn tool_p2pclaw_bridge_run_once(arguments: Value) -> Result<Value, String> {
                 .unwrap_or(false),
             publish_summary: arguments
                 .get("publish_summary")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            force_repeat_actions: arguments
+                .get("force_repeat_actions")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
             validate_paper_id: arguments

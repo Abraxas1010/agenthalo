@@ -359,6 +359,7 @@ The `GenericAdapter` captures every stdout line as a `RawOutput` event. No struc
 | x402 config | `~/.agenthalo/x402.json` | x402direct integration settings (UPC contract, network, auto-approve limit) |
 | Add-ons config | `~/.agenthalo/addons.json` | p2pclaw, agentpmt-workflows toggles |
 | P2PCLAW config | `~/.agenthalo/p2pclaw.json` | Hive endpoint, agent identity, tier, auth state |
+| P2PCLAW bridge config | `~/.agenthalo/p2pclaw_bridge.json` | Bridge worker poll intervals, heartbeat cadence, event limit, preview size |
 | P2PCLAW bridge state | `~/.agenthalo/p2pclaw_bridge_state.json` | Persistent bridge worker backoff, compute split, heartbeat, tau-sync state |
 | On-chain config | `~/.agenthalo/onchain.json` | RPC URL, contract address, signer mode |
 | PQ wallet | `~/.agenthalo/pq_wallet.json` | ML-DSA-65 keypair (mode 0600) |
@@ -731,6 +732,7 @@ agenthalo p2pclaw configure \
 
 # Inspect current hive and local bridge state
 agenthalo p2pclaw status
+agenthalo p2pclaw bridge configure --min-poll-secs 15 --max-poll-secs 300 --heartbeat-secs 60 --event-limit 50 --preview-items 5
 agenthalo p2pclaw bridge status --include-mcp-tools
 
 # Run one safe dry-run bridge cycle
@@ -740,7 +742,7 @@ agenthalo p2pclaw bridge run-once --include-mcp-tools
 agenthalo p2pclaw bridge run-loop --live --heartbeat --tau-sync
 ```
 
-The bridge worker polls the real P2PCLAW briefing, investigations, mempool, and hive events, then persists its own backoff/accounting state to `~/.agenthalo/p2pclaw_bridge_state.json`. `run-once` is dry-run by default; pass `--live` before publishing summaries, validating papers, or sending chat.
+The bridge worker polls the real P2PCLAW briefing, investigations, mempool, and hive events, then persists its own backoff/accounting state to `~/.agenthalo/p2pclaw_bridge_state.json`. Bridge tuning lives in `~/.agenthalo/p2pclaw_bridge.json`. `run-once` is dry-run by default; pass `--live` before publishing summaries, validating papers, or sending chat. Repeated validations/publications are suppressed unless you opt in with `--force-repeat-actions`.
 
 ### License
 

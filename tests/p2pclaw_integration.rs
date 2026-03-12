@@ -111,21 +111,41 @@ impl MockP2PClawServer {
                             .unwrap_or_default()
                             .to_string();
                         let (content_type, payload) = match (method, path) {
+                            ("GET", "/utf8/briefing") | ("GET", "/dupe/briefing") => (
+                                "text/markdown",
+                                "# Briefing\nSnowman: \u{2603} and rocket: \u{1F680}".to_string(),
+                            ),
                             ("GET", "/briefing") => (
                                 "text/markdown",
                                 "# Briefing\nLive bridge snapshot.".to_string(),
                             ),
-                            ("GET", "/investigations") => (
+                            ("GET", "/dupe/hive-events") => (
+                                "application/json",
+                                json!({"events":[
+                                    {"id":"evt-1","kind":"published","timestamp":1234},
+                                    {"id":"evt-1","kind":"published","timestamp":1234}
+                                ]})
+                                .to_string(),
+                            ),
+                            ("GET", "/utf8/investigations")
+                            | ("GET", "/dupe/investigations")
+                            | ("GET", "/investigations") => (
                                 "application/json",
                                 json!({"investigations":[{"id":"inv-1","title":"Bridge audit"}]})
                                     .to_string(),
                             ),
-                            ("GET", "/mempool") => (
+                            ("GET", "/error429/mempool") => (
+                                "application/json",
+                                json!({"error":"rate limited"}).to_string(),
+                            ),
+                            ("GET", "/utf8/mempool")
+                            | ("GET", "/dupe/mempool")
+                            | ("GET", "/mempool") => (
                                 "application/json",
                                 json!({"papers":[{"paperId":"paper-1","title":"Mempool draft"}]})
                                     .to_string(),
                             ),
-                            ("GET", "/hive-events") => (
+                            ("GET", "/utf8/hive-events") | ("GET", "/hive-events") => (
                                 "application/json",
                                 json!({"events":[{"kind":"published","timestamp":1234}]})
                                     .to_string(),
@@ -161,9 +181,15 @@ impl MockP2PClawServer {
                                 "application/json",
                                 json!({"status":"ok","delivered":true}).to_string(),
                             ),
+                            ("POST", "/utf8/publish-paper") | ("POST", "/publish-paper") => (
+                                "application/json",
+                                json!({"status":"ok","paperId":"published-1"}).to_string(),
+                            ),
                             _ => ("application/json", json!({"error":"not found"}).to_string()),
                         };
-                        let status_line = if payload.contains("\"error\":\"not found\"") {
+                        let status_line = if path == "/error429/mempool" {
+                            "HTTP/1.1 429 Too Many Requests"
+                        } else if payload.contains("\"error\":\"not found\"") {
                             "HTTP/1.1 404 Not Found"
                         } else {
                             "HTTP/1.1 200 OK"
@@ -403,6 +429,34 @@ fn bridge_state_roundtrip_and_status_report_accounting() {
 }
 
 #[test]
+fn bridge_config_roundtrip_and_status_surface_loaded_values() {
+    let _guard = lock_env();
+    let home = temp_home("bridge_config");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.to_str().expect("utf8 home")));
+
+    let cfg = p2pclaw_bridge::BridgeConfig {
+        min_poll_interval_secs: 3,
+        max_poll_interval_secs: 9,
+        heartbeat_interval_secs: 11,
+        event_limit: 7,
+        preview_items: 2,
+    };
+    p2pclaw_bridge::save_config(&cfg).expect("save bridge config");
+    let loaded = p2pclaw_bridge::load_config().expect("load bridge config");
+    assert_eq!(loaded.min_poll_interval_secs, 3);
+    assert_eq!(loaded.max_poll_interval_secs, 9);
+    assert_eq!(loaded.preview_items, 2);
+
+    let status = p2pclaw_bridge::status(None, false).expect("bridge status");
+    assert_eq!(status.bridge_config.event_limit, 7);
+    assert!(status.config_path.ends_with("p2pclaw_bridge.json"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
 fn client_bridge_endpoints_parse_rank_briefing_and_investigation_create() {
     let _guard = lock_env();
     let server = MockP2PClawServer::spawn();
@@ -430,6 +484,23 @@ fn client_bridge_endpoints_parse_rank_briefing_and_investigation_create() {
 
     let tau = p2pclaw::report_tau_tick(&cfg, 9).expect("tau tick");
     assert_eq!(tau["accepted"], true);
+}
+
+#[test]
+fn client_rejects_non_success_http_status_even_with_json_body() {
+    let _guard = lock_env();
+    let server = MockP2PClawServer::spawn();
+    let cfg = p2pclaw::P2PClawConfig {
+        endpoint_url: format!("{}/error429", server.base_url),
+        agent_id: "agenthalo-mock".to_string(),
+        agent_name: "Mock".to_string(),
+        auth_configured: false,
+        tier: "tier1".to_string(),
+        last_connected_at: 0,
+    };
+
+    let err = p2pclaw::list_mempool(&cfg).expect_err("429 must not parse as success");
+    assert!(err.contains("HTTP 429"), "unexpected error: {err}");
 }
 
 #[test]
@@ -466,7 +537,8 @@ fn bridge_run_once_polls_and_persists_state() {
     assert_eq!(saved.investigations_seen_total, 1);
     assert_eq!(saved.mempool_seen_total, 1);
     assert_eq!(saved.events_seen_total, 1);
-    assert_eq!(saved.hive_compute_cycles, 3);
+    assert_eq!(saved.hive_compute_cycles, 0);
+    assert_eq!(saved.local_compute_cycles, 4);
 
     let loop_report = p2pclaw_bridge::run_loop(
         &cfg,
@@ -488,6 +560,110 @@ fn bridge_run_once_polls_and_persists_state() {
     assert_eq!(post_loop.tau_reports_total, 2);
     assert!(post_loop.last_heartbeat_at.is_some());
     assert!(post_loop.last_tau_sync_at.is_some());
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn bridge_publish_dedup_and_utf8_briefing_are_safe() {
+    let _guard = lock_env();
+    let home = temp_home("bridge_publish_dedup");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.to_str().expect("utf8 home")));
+
+    let server = MockP2PClawServer::spawn();
+    let cfg = p2pclaw::P2PClawConfig {
+        endpoint_url: format!("{}/utf8", server.base_url),
+        agent_id: "agenthalo-mock".to_string(),
+        agent_name: "Mock".to_string(),
+        auth_configured: false,
+        tier: "tier1".to_string(),
+        last_connected_at: 0,
+    };
+
+    let first = p2pclaw_bridge::run_once(
+        &cfg,
+        p2pclaw_bridge::BridgeRunOptions {
+            dry_run: false,
+            publish_summary: true,
+            ..Default::default()
+        },
+    )
+    .expect("first publish");
+    assert!(first
+        .actions
+        .iter()
+        .any(|a| a.kind == "publish_summary" && !a.dry_run));
+
+    let second = p2pclaw_bridge::run_once(
+        &cfg,
+        p2pclaw_bridge::BridgeRunOptions {
+            dry_run: false,
+            publish_summary: true,
+            ..Default::default()
+        },
+    )
+    .expect("second publish");
+    assert!(second
+        .actions
+        .iter()
+        .any(|a| a.kind == "skip_publish_summary"));
+
+    let saved = p2pclaw_bridge::load_state().expect("load state after publish dedup");
+    assert_eq!(saved.publications_total, 1);
+    assert_eq!(
+        saved.last_publication_paper_id.as_deref(),
+        Some("published-1")
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn bridge_event_dedup_and_unbounded_loop_respects_shutdown() {
+    let _guard = lock_env();
+    let home = temp_home("bridge_event_dedup");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.to_str().expect("utf8 home")));
+
+    let server = MockP2PClawServer::spawn();
+    let cfg = p2pclaw::P2PClawConfig {
+        endpoint_url: format!("{}/dupe", server.base_url),
+        agent_id: "agenthalo-mock".to_string(),
+        agent_name: "Mock".to_string(),
+        auth_configured: false,
+        tier: "tier1".to_string(),
+        last_connected_at: 0,
+    };
+
+    let once = p2pclaw_bridge::run_once(&cfg, p2pclaw_bridge::BridgeRunOptions::default())
+        .expect("run once with duplicate events");
+    assert_eq!(once.events_seen, 1);
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_flag = shutdown.clone();
+    thread::spawn(move || {
+        thread::sleep(std::time::Duration::from_millis(80));
+        shutdown_flag.store(true, Ordering::Relaxed);
+    });
+    let loop_report = p2pclaw_bridge::run_loop_with_shutdown(
+        &cfg,
+        p2pclaw_bridge::BridgeLoopOptions {
+            respect_backoff: false,
+            ..Default::default()
+        },
+        shutdown,
+    )
+    .expect("run loop with shutdown");
+    assert!(
+        loop_report.iterations > 1,
+        "loop must keep running without an iteration cap"
+    );
+
+    let saved = p2pclaw_bridge::load_state().expect("load deduped state");
+    assert_eq!(saved.events_seen_total, 1);
 
     let _ = std::fs::remove_dir_all(&home);
 }

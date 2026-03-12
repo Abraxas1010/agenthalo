@@ -5073,6 +5073,29 @@ input:focus, select:focus, textarea:focus {
   gap: 8px;
 }
 
+.network-cap-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.network-cap-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(53, 255, 62, 0.22);
+  background: rgba(7, 20, 7, 0.72);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.network-inline-note {
+  font-size: 12px;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+
 .networking-msg {
   margin-top: 9px;
   min-height: 16px;

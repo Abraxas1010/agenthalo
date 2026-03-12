@@ -14,6 +14,8 @@ use zeroize::Zeroize;
 type HmacSha256 = Hmac<Sha256>;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_RESPONSE_BODY_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_ERROR_BODY_BYTES: u64 = 16 * 1024;
 pub const P2PCLAW_VAULT_KEY: &str = "p2pclaw_auth";
 pub const P2PCLAW_VAULT_ENV: &str = "P2PCLAW_AUTH_SECRET";
 
@@ -142,6 +144,8 @@ pub struct ValidationResult {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct HiveEvent {
+    #[serde(default, alias = "eventId", alias = "id")]
+    pub event_id: Option<String>,
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
@@ -499,10 +503,17 @@ fn request_get_json(
     for (name, value) in headers {
         req = req.header(&name, &value);
     }
-    let resp = req
-        .call()
-        .map_err(|e| format!("P2PCLAW GET {url} failed: {e}"))?;
-    resp.into_body()
+    let mut resp = match req.call() {
+        Ok(resp) => resp,
+        Err(ureq::Error::StatusCode(code)) => {
+            return Err(format!("P2PCLAW GET {url} returned HTTP {code}"));
+        }
+        Err(e) => return Err(format!("P2PCLAW GET {url} failed: {e}")),
+    };
+    ensure_success_response(&mut resp, "GET", &url)?;
+    resp.body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE_BODY_BYTES)
         .read_json()
         .map_err(|e| format!("parse P2PCLAW response {url}: {e}"))
 }
@@ -522,10 +533,17 @@ fn request_get_text(
     if let Some(value) = accept {
         req = req.header("Accept", value);
     }
-    let resp = req
-        .call()
-        .map_err(|e| format!("P2PCLAW GET {url} failed: {e}"))?;
-    resp.into_body()
+    let mut resp = match req.call() {
+        Ok(resp) => resp,
+        Err(ureq::Error::StatusCode(code)) => {
+            return Err(format!("P2PCLAW GET {url} returned HTTP {code}"));
+        }
+        Err(e) => return Err(format!("P2PCLAW GET {url} failed: {e}")),
+    };
+    ensure_success_response(&mut resp, "GET", &url)?;
+    resp.body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE_BODY_BYTES)
         .read_to_string()
         .map_err(|e| format!("read P2PCLAW text response {url}: {e}"))
 }
@@ -539,10 +557,17 @@ fn request_post_json(cfg: &P2PClawConfig, path: &str, payload: &Value) -> Result
     for (name, value) in headers {
         req = req.header(&name, &value);
     }
-    let resp = req
-        .send(body)
-        .map_err(|e| format!("P2PCLAW POST {url} failed: {e}"))?;
-    resp.into_body()
+    let mut resp = match req.send(body) {
+        Ok(resp) => resp,
+        Err(ureq::Error::StatusCode(code)) => {
+            return Err(format!("P2PCLAW POST {url} returned HTTP {code}"));
+        }
+        Err(e) => return Err(format!("P2PCLAW POST {url} failed: {e}")),
+    };
+    ensure_success_response(&mut resp, "POST", &url)?;
+    resp.body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE_BODY_BYTES)
         .read_json()
         .map_err(|e| format!("parse P2PCLAW response {url}: {e}"))
 }
@@ -578,6 +603,28 @@ fn build_url(cfg: &P2PClawConfig, path: &str, query: &[(&str, String)]) -> Resul
         }
     }
     Ok(url.to_string())
+}
+
+fn ensure_success_response(
+    resp: &mut ureq::http::Response<ureq::Body>,
+    method: &str,
+    url: &str,
+) -> Result<(), String> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = resp
+        .body_mut()
+        .with_config()
+        .limit(MAX_ERROR_BODY_BYTES)
+        .read_to_string()
+        .unwrap_or_else(|_| "<unreadable error body>".to_string());
+    Err(format!(
+        "P2PCLAW {method} {url} returned HTTP {}: {}",
+        status.as_u16(),
+        body.trim()
+    ))
 }
 
 fn build_auth_headers(cfg: &P2PClawConfig, body: &str) -> Result<Vec<(String, String)>, String> {
