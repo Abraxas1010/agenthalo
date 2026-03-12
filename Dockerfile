@@ -2,13 +2,14 @@ FROM rust:1.88-slim-trixie AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev g++ && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY . .
-RUN cargo build --release --bin nucleusdb --bin nucleusdb-server --bin nucleusdb-mcp --bin nucleusdb-discord
+RUN cargo build --release --bin agenthalo --bin nucleusdb --bin nucleusdb-server --bin nucleusdb-mcp --bin nucleusdb-discord
 
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini curl jq python3 python3-pip docker-cli && rm -rf /var/lib/apt/lists/*
 RUN command -v docker >/dev/null
 RUN pip3 install --break-system-packages "huggingface_hub[cli]"
 RUN groupadd --gid 10001 nucleusdb && useradd --uid 10001 --gid 10001 --home-dir /data --create-home --shell /usr/sbin/nologin nucleusdb
+COPY --from=builder /build/target/release/agenthalo /usr/local/bin/
 COPY --from=builder /build/target/release/nucleusdb /usr/local/bin/
 COPY --from=builder /build/target/release/nucleusdb-server /usr/local/bin/
 COPY --from=builder /build/target/release/nucleusdb-mcp /usr/local/bin/

@@ -4,7 +4,9 @@
 services:
   nucleusdb:
     build: .
-    env_file: deploy/discord.env
+    env_file:
+      - path: deploy/discord.env
+        required: false
     environment:
       NUCLEUSDB_HOME: /data
       AGENTHALO_HOME: /data
@@ -32,6 +34,27 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+  p2pclaw-bridge:
+    build: .
+    command:
+      - agenthalo
+      - p2pclaw
+      - bridge
+      - run-loop
+      - --live
+      - --heartbeat
+      - --tau-sync
+    env_file:
+      - path: deploy/discord.env
+        required: false
+    environment:
+      NUCLEUSDB_HOME: /data
+      AGENTHALO_HOME: /data
+    volumes:
+      - nucleusdb-data:/data
+    restart: unless-stopped
+    depends_on:
+      - nucleusdb
 
 volumes:
   nucleusdb-data:

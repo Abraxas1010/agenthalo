@@ -1,11 +1,16 @@
 use nucleusdb::halo::config;
 use nucleusdb::halo::p2pclaw;
+use nucleusdb::halo::p2pclaw_bridge;
 use nucleusdb::halo::trace::now_unix_secs;
 use nucleusdb::halo::vault::Vault;
-use serde_json::json;
+use serde_json::{json, Value};
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -69,6 +74,130 @@ fn write_wallet_json(path: &Path, key_id: &str, seed_hex: &str) {
         let _ = std::fs::create_dir_all(parent);
     }
     std::fs::write(path, serde_json::to_vec_pretty(&wallet).unwrap()).unwrap();
+}
+
+struct MockP2PClawServer {
+    base_url: String,
+    shutdown: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl MockP2PClawServer {
+    fn spawn() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock p2pclaw");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_flag = shutdown.clone();
+        let handle = thread::spawn(move || {
+            while !shutdown_flag.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buffer = [0u8; 8192];
+                        let bytes = stream.read(&mut buffer).unwrap_or(0);
+                        if bytes == 0 {
+                            continue;
+                        }
+                        let request = String::from_utf8_lossy(&buffer[..bytes]);
+                        let mut lines = request.lines();
+                        let request_line = lines.next().unwrap_or_default();
+                        let mut parts = request_line.split_whitespace();
+                        let method = parts.next().unwrap_or_default();
+                        let target = parts.next().unwrap_or("/");
+                        let path = target.split('?').next().unwrap_or(target);
+                        let body = request
+                            .split("\r\n\r\n")
+                            .nth(1)
+                            .unwrap_or_default()
+                            .to_string();
+                        let (content_type, payload) = match (method, path) {
+                            ("GET", "/briefing") => (
+                                "text/markdown",
+                                "# Briefing\nLive bridge snapshot.".to_string(),
+                            ),
+                            ("GET", "/investigations") => (
+                                "application/json",
+                                json!({"investigations":[{"id":"inv-1","title":"Bridge audit"}]})
+                                    .to_string(),
+                            ),
+                            ("GET", "/mempool") => (
+                                "application/json",
+                                json!({"papers":[{"paperId":"paper-1","title":"Mempool draft"}]})
+                                    .to_string(),
+                            ),
+                            ("GET", "/hive-events") => (
+                                "application/json",
+                                json!({"events":[{"kind":"published","timestamp":1234}]})
+                                    .to_string(),
+                            ),
+                            ("GET", "/agent-rank") => (
+                                "application/json",
+                                json!({"agent":"agenthalo-mock","rank":"tier1","contributions":7})
+                                    .to_string(),
+                            ),
+                            ("GET", "/agent-briefing") => (
+                                "application/json",
+                                json!({"agent_id":"agenthalo-mock","summary":"Focused research queue"})
+                                    .to_string(),
+                            ),
+                            ("POST", "/investigations") => {
+                                let payload: Value =
+                                    serde_json::from_str(&body).unwrap_or_else(|_| json!({}));
+                                (
+                                    "application/json",
+                                    json!({
+                                        "id": "created-1",
+                                        "title": payload.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                                        "status": "queued"
+                                    })
+                                    .to_string(),
+                                )
+                            }
+                            ("POST", "/tau/tick") => (
+                                "application/json",
+                                json!({"status":"ok","accepted":true}).to_string(),
+                            ),
+                            ("POST", "/chat") => (
+                                "application/json",
+                                json!({"status":"ok","delivered":true}).to_string(),
+                            ),
+                            _ => ("application/json", json!({"error":"not found"}).to_string()),
+                        };
+                        let status_line = if payload.contains("\"error\":\"not found\"") {
+                            "HTTP/1.1 404 Not Found"
+                        } else {
+                            "HTTP/1.1 200 OK"
+                        };
+                        let response = format!(
+                            "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            payload.len(),
+                            payload
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Self {
+            base_url,
+            shutdown,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for MockP2PClawServer {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        let _ = std::net::TcpStream::connect(self.base_url.trim_start_matches("http://"));
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 #[test]
@@ -243,6 +372,122 @@ fn config_file_permissions_are_owner_only() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o600);
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn bridge_state_roundtrip_and_status_report_accounting() {
+    let _guard = lock_env();
+    let home = temp_home("bridge_state");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.to_str().expect("utf8 home")));
+
+    let mut state = p2pclaw_bridge::BridgePersistentState::default();
+    state.hive_compute_cycles = 6;
+    state.local_compute_cycles = 4;
+    state.polls_total = 3;
+    p2pclaw_bridge::save_state(&state).expect("save bridge state");
+    let loaded = p2pclaw_bridge::load_state().expect("load bridge state");
+    assert_eq!(loaded.hive_compute_cycles, 6);
+    assert_eq!(loaded.local_compute_cycles, 4);
+
+    let status = p2pclaw_bridge::status(None, false).expect("bridge status");
+    assert!(!status.configured);
+    assert_eq!(status.compute_split_ratio, 0.6);
+    assert!(status.nash_compliant);
+    assert!(status.capabilities.iter().any(|cap| cap == "briefing"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn client_bridge_endpoints_parse_rank_briefing_and_investigation_create() {
+    let _guard = lock_env();
+    let server = MockP2PClawServer::spawn();
+    let cfg = p2pclaw::P2PClawConfig {
+        endpoint_url: server.base_url.clone(),
+        agent_id: "agenthalo-mock".to_string(),
+        agent_name: "Mock".to_string(),
+        auth_configured: false,
+        tier: "tier1".to_string(),
+        last_connected_at: 0,
+    };
+
+    let rank = p2pclaw::get_agent_rank(&cfg, None).expect("agent rank");
+    assert_eq!(rank.rank.as_deref(), Some("tier1"));
+    assert_eq!(rank.contributions, Some(7));
+
+    let briefing = p2pclaw::get_agent_briefing(&cfg, None).expect("agent briefing");
+    assert_eq!(briefing["summary"], "Focused research queue");
+
+    let investigation =
+        p2pclaw::create_investigation(&cfg, "Bridge task", "Check structured bridge path")
+            .expect("create investigation");
+    assert_eq!(investigation.id.as_deref(), Some("created-1"));
+    assert_eq!(investigation.status.as_deref(), Some("queued"));
+
+    let tau = p2pclaw::report_tau_tick(&cfg, 9).expect("tau tick");
+    assert_eq!(tau["accepted"], true);
+}
+
+#[test]
+fn bridge_run_once_polls_and_persists_state() {
+    let _guard = lock_env();
+    let home = temp_home("bridge_run_once");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.to_str().expect("utf8 home")));
+
+    let server = MockP2PClawServer::spawn();
+    let cfg = p2pclaw::P2PClawConfig {
+        endpoint_url: server.base_url.clone(),
+        agent_id: "agenthalo-mock".to_string(),
+        agent_name: "Mock".to_string(),
+        auth_configured: false,
+        tier: "tier1".to_string(),
+        last_connected_at: 0,
+    };
+
+    let report = p2pclaw_bridge::run_once(&cfg, p2pclaw_bridge::BridgeRunOptions::default())
+        .expect("run once");
+    assert_eq!(report.investigations_seen, 1);
+    assert_eq!(report.mempool_seen, 1);
+    assert_eq!(report.events_seen, 1);
+    assert_eq!(
+        report.briefing_chars,
+        "# Briefing\nLive bridge snapshot.".len()
+    );
+    assert!(report.state_after.next_poll_not_before.is_some());
+
+    let saved = p2pclaw_bridge::load_state().expect("load state after run");
+    assert_eq!(saved.polls_total, 1);
+    assert_eq!(saved.investigations_seen_total, 1);
+    assert_eq!(saved.mempool_seen_total, 1);
+    assert_eq!(saved.events_seen_total, 1);
+    assert_eq!(saved.hive_compute_cycles, 3);
+
+    let loop_report = p2pclaw_bridge::run_loop(
+        &cfg,
+        p2pclaw_bridge::BridgeLoopOptions {
+            max_iterations: Some(2),
+            respect_backoff: false,
+            heartbeat: true,
+            report_tau_sync: true,
+            ..Default::default()
+        },
+    )
+    .expect("run loop");
+    assert_eq!(loop_report.iterations, 2);
+    assert_eq!(loop_report.reports.len(), 2);
+    assert_eq!(loop_report.total_sleep_secs, 0);
+
+    let post_loop = p2pclaw_bridge::load_state().expect("load state after loop");
+    assert_eq!(post_loop.polls_total, 3);
+    assert_eq!(post_loop.tau_reports_total, 2);
+    assert!(post_loop.last_heartbeat_at.is_some());
+    assert!(post_loop.last_tau_sync_at.is_some());
 
     let _ = std::fs::remove_dir_all(&home);
 }

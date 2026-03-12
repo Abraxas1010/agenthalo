@@ -25,6 +25,8 @@ use nucleusdb::halo::onchain::{
     deploy_trust_verifier, load_onchain_config_or_default, onchain_config_path, post_attestation,
     query_attestation, save_onchain_config, signer_mode_label, warn_if_simulation_mode, SignerMode,
 };
+use nucleusdb::halo::p2pclaw;
+use nucleusdb::halo::p2pclaw_bridge;
 use nucleusdb::halo::pq::{has_wallet, keygen_pq, sign_pq_payload, wallet_key_identity};
 use nucleusdb::halo::privacy_controller;
 use nucleusdb::halo::runner::AgentRunner;
@@ -80,6 +82,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "sync" => cmd_sync(&args[2..]),
         "onchain" => cmd_onchain(&args[2..]),
         "protocol" => cmd_protocol(&args[2..]),
+        "p2pclaw" => cmd_p2pclaw(&args[2..]),
         "addon" => cmd_addon(&args[2..]),
         "license" => cmd_license(&args[2..]),
         "vault" => cmd_vault(&args[2..]),
@@ -1585,6 +1588,224 @@ fn cmd_protocol(args: &[String]) -> Result<(), String> {
         "pq-bridge-transfer" => cmd_protocol_bridge_transfer(&args[1..]),
         _ => Err("usage: agenthalo protocol [privacy-pool-create|privacy-pool-withdraw|pq-bridge-transfer] ...".to_string()),
     }
+}
+
+fn cmd_p2pclaw(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "configure" => {
+            let mut cfg = p2pclaw::load_or_default();
+            if let Some(endpoint_url) = flag_value(args, "--endpoint") {
+                cfg.endpoint_url = endpoint_url.to_string();
+            }
+            if let Some(agent_id) = flag_value(args, "--agent-id") {
+                if agent_id.trim().is_empty() {
+                    return Err("--agent-id must not be empty".to_string());
+                }
+                cfg.agent_id = agent_id.to_string();
+            }
+            if let Some(agent_name) = flag_value(args, "--agent-name") {
+                if agent_name.trim().is_empty() {
+                    return Err("--agent-name must not be empty".to_string());
+                }
+                cfg.agent_name = agent_name.to_string();
+            }
+            if let Some(tier) = flag_value(args, "--tier") {
+                let tier = tier.to_ascii_lowercase();
+                if !matches!(tier.as_str(), "tier1" | "tier2") {
+                    return Err("tier must be one of: tier1, tier2".to_string());
+                }
+                cfg.tier = tier;
+            }
+            let configured =
+                p2pclaw::configure(&mut cfg, flag_value(args, "--auth-secret").map(str::to_string))?;
+            if has_flag(args, "--enable-addon") {
+                addons::set_enabled("p2pclaw", true)?;
+            }
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "auth_in_vault": configured.auth_in_vault,
+                "auth_configured": configured.auth_configured,
+                "enabled": addons::is_enabled("p2pclaw").unwrap_or(false),
+                "config": cfg,
+            }))
+        }
+        "status" => {
+            let mut cfg = load_required_p2pclaw_config()?;
+            let swarm = p2pclaw::ping(&cfg)?;
+            cfg.last_connected_at = now_unix_secs();
+            let _ = p2pclaw::save_config(&cfg);
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "config": cfg,
+                "swarm": swarm,
+            }))
+        }
+        "rank" => {
+            let cfg = load_required_p2pclaw_config()?;
+            let rank = p2pclaw::get_agent_rank(&cfg, flag_value(args, "--agent"))?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "rank": rank,
+            }))
+        }
+        "briefing" => {
+            let cfg = load_required_p2pclaw_config()?;
+            println!("{}", p2pclaw::get_briefing(&cfg)?);
+            Ok(())
+        }
+        "agent-briefing" => {
+            let cfg = load_required_p2pclaw_config()?;
+            let briefing =
+                p2pclaw::get_agent_briefing(&cfg, flag_value(args, "--agent-id"))?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "briefing": briefing,
+            }))
+        }
+        "papers" => {
+            let cfg = load_required_p2pclaw_config()?;
+            let limit = flag_value(args, "--limit")
+                .map(|v| v.parse::<u64>().map_err(|e| format!("invalid --limit: {e}")))
+                .transpose()?;
+            let papers = p2pclaw::list_papers(&cfg, limit)?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "count": papers.len(),
+                "papers": papers,
+            }))
+        }
+        "mempool" => {
+            let cfg = load_required_p2pclaw_config()?;
+            let papers = p2pclaw::list_mempool(&cfg)?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "count": papers.len(),
+                "papers": papers,
+            }))
+        }
+        "investigations" => {
+            let cfg = load_required_p2pclaw_config()?;
+            let investigations = p2pclaw::list_investigations(&cfg)?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "count": investigations.len(),
+                "investigations": investigations,
+            }))
+        }
+        "create-investigation" => {
+            let cfg = load_required_p2pclaw_config()?;
+            let title = flag_value(args, "--title")
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| {
+                    "usage: agenthalo p2pclaw create-investigation --title <text> --description <text>"
+                        .to_string()
+                })?;
+            let description = flag_value(args, "--description")
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| {
+                    "usage: agenthalo p2pclaw create-investigation --title <text> --description <text>"
+                        .to_string()
+                })?;
+            let result = p2pclaw::create_investigation(&cfg, title, description)?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "result": result,
+            }))
+        }
+        "bridge" => cmd_p2pclaw_bridge(&args[1..]),
+        _ => Err("usage: agenthalo p2pclaw [configure|status|rank|briefing|agent-briefing|papers|mempool|investigations|create-investigation|bridge] ...".to_string()),
+    }
+}
+
+fn cmd_p2pclaw_bridge(args: &[String]) -> Result<(), String> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
+    match sub {
+        "status" => {
+            let cfg = p2pclaw::load_config().ok();
+            let status =
+                p2pclaw_bridge::status(cfg.as_ref(), has_flag(args, "--include-mcp-tools"))?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "bridge": status,
+            }))
+        }
+        "run-once" => {
+            let cfg = load_required_p2pclaw_config()?;
+            let report = p2pclaw_bridge::run_once(
+                &cfg,
+                p2pclaw_bridge::BridgeRunOptions {
+                    dry_run: !has_flag(args, "--live"),
+                    include_mcp_tools: has_flag(args, "--include-mcp-tools"),
+                    publish_summary: has_flag(args, "--publish-summary"),
+                    validate_paper_id: flag_value(args, "--validate-paper-id").map(str::to_string),
+                    validate_approve: !has_flag(args, "--reject"),
+                    validate_occam_score: flag_value(args, "--occam-score")
+                        .map(|v| {
+                            v.parse::<f64>()
+                                .map_err(|e| format!("invalid --occam-score: {e}"))
+                        })
+                        .transpose()?,
+                    chat_message: flag_value(args, "--chat-message").map(str::to_string),
+                    chat_channel: flag_value(args, "--chat-channel").map(str::to_string),
+                },
+            )?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "report": report,
+            }))
+        }
+        "run-loop" => {
+            let cfg = load_required_p2pclaw_config()?;
+            let max_iterations = flag_value(args, "--iterations")
+                .map(|v| {
+                    v.parse::<u64>()
+                        .map_err(|e| format!("invalid --iterations: {e}"))
+                })
+                .transpose()?;
+            let report = p2pclaw_bridge::run_loop(
+                &cfg,
+                p2pclaw_bridge::BridgeLoopOptions {
+                    run: p2pclaw_bridge::BridgeRunOptions {
+                        dry_run: !has_flag(args, "--live"),
+                        include_mcp_tools: has_flag(args, "--include-mcp-tools"),
+                        publish_summary: has_flag(args, "--publish-summary"),
+                        validate_paper_id: flag_value(args, "--validate-paper-id")
+                            .map(str::to_string),
+                        validate_approve: !has_flag(args, "--reject"),
+                        validate_occam_score: flag_value(args, "--occam-score")
+                            .map(|v| {
+                                v.parse::<f64>()
+                                    .map_err(|e| format!("invalid --occam-score: {e}"))
+                            })
+                            .transpose()?,
+                        chat_message: flag_value(args, "--chat-message").map(str::to_string),
+                        chat_channel: flag_value(args, "--chat-channel").map(str::to_string),
+                    },
+                    max_iterations,
+                    respect_backoff: !has_flag(args, "--no-backoff"),
+                    heartbeat: has_flag(args, "--heartbeat"),
+                    report_tau_sync: has_flag(args, "--tau-sync"),
+                },
+            )?;
+            print_pretty_json(&serde_json::json!({
+                "status": "ok",
+                "loop": report,
+            }))
+        }
+        _ => Err("usage: agenthalo p2pclaw bridge [status|run-once|run-loop] ...".to_string()),
+    }
+}
+
+fn load_required_p2pclaw_config() -> Result<p2pclaw::P2PClawConfig, String> {
+    if !addons::is_enabled("p2pclaw")? {
+        return Err("p2pclaw add-on is required. Run: agenthalo addon enable p2pclaw".to_string());
+    }
+    p2pclaw::load_config().map_err(|e| {
+        format!("P2PCLAW is not configured. Run `agenthalo p2pclaw configure ...`: {e}")
+    })
 }
 
 fn cmd_protocol_privacy_pool_create(args: &[String]) -> Result<(), String> {
@@ -5682,6 +5903,25 @@ fn truncate(value: &str, max_chars: usize) -> String {
     }
 }
 
+fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|arg| arg == flag)
+        .and_then(|idx| args.get(idx + 1))
+        .map(|s| s.as_str())
+}
+
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|arg| arg == flag)
+}
+
+fn print_pretty_json(value: &serde_json::Value) -> Result<(), String> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).map_err(|e| format!("serialize JSON output: {e}"))?
+    );
+    Ok(())
+}
+
 fn infer_model(args: &[String]) -> Option<String> {
     let mut i = 0;
     while i + 1 < args.len() {
@@ -5716,7 +5956,7 @@ fn read_line_trimmed() -> Result<String, String> {
 
 fn print_usage() {
     println!(
-        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install|wire-mcp|gateway-status]\n                             Agent CLI management and OpenClaw MCP wiring\n  models [status|list|search|pull|serve|stop|rm|login]\n                             Local Ollama/vLLM model discovery, download, and serving\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nControl:\n  governor status [INSTANCE] [--json]\n                             Show live AETHER governor state from the dashboard control plane\n  governor reset [INSTANCE|all] [--json]\n                             Soft-reset runtime/storage governors back to from-rest\n  governor watch [INSTANCE] [--interval SECS] [--json]\n                             Poll governor status for manager loops\n  governor validate --alpha A --beta B --dt DT --eps-min LO --eps-max HI --target T\n                             Validate the AETHER gain condition and formal regime\n  deploy preflight --agent ID [--admission-mode warn|block|force] [--json]\n                             Check CLI readiness, Betti topology drift, and AETHER admission\n  deploy launch --agent ID --mode terminal|cockpit|gui|gui+terminal [--container]\n                [--working-dir DIR] [--admission-mode warn|block|force] [--json]\n                             Launch a cockpit-managed agent session with admission control\n  deploy status <session-id> [--json]\n                             Show current status for a cockpit-managed deploy session\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
+        "agenthalo 0.3.0 — Tamper-proof observability for AI agents\n\nGetting started:\n  setup                      Interactive first-run wizard (dashboard, CLI, or MCP)\n  dashboard [--port N] [--no-open]\n                             Launch web dashboard at http://localhost:3100\n  doctor                     Run diagnostic check on all subsystems\n  harness [detect|install|wire-mcp|gateway-status]\n                             Agent CLI management and OpenClaw MCP wiring\n  models [status|list|search|pull|serve|stop|rm|login]\n                             Local Ollama/vLLM model discovery, download, and serving\n\nAgent recording:\n  run [--agent-name NAME] [--model MODEL] <agent> [args...]\n                             Run agent with recording (model auto-detected from stream)\n  wrap <agent>|--all         Add shell aliases for transparent wrapping\n  unwrap <agent>|--all       Remove shell aliases\n\nAuthentication:\n  login [github|google|api]  Authenticate via OAuth or API key\n  config set-key <key>       Save API key\n  config set-agentpmt-key <key>\n                             Save AgentPMT bearer token\n\nObservability:\n  status [--json]            Show recording status, session count, and total cost\n  traces [session-id] [--json]\n                             List sessions or show session detail\n  costs [--month] [--paid] [--json]\n                             Show model costs or operation usage\n  export <session-id> [--out <path>]\n                             Export full session as standalone JSON\n\nAttestation & trust:\n  attest [--session ID] [--anonymous] [--onchain]\n                             Build attestation (Merkle default, Groth16+onchain when --onchain)\n  audit <contract.sol> [--size small|medium|large]\n                             Run Solidity static audit\n  keygen --pq [--force]      Generate/rotate ML-DSA wallet\n  sign --pq (--message TEXT | --file PATH)\n                             Create detached ML-DSA signature\n  trust [query|score] [--session ID]\n                             Query trust score\n\nVault, identity, wallet:\n  crypto ...                 Password lock lifecycle via dashboard API bridge\n  agents ...                 Authorize/list/revoke ML-KEM agent credentials\n  agentaddress ...           Generate/manage AgentAddress identities\n  wallet ...                 Manage WDK wallet lifecycle and transfers via API bridge\n  genesis ...                Manage Genesis ceremony (harvest is local by default; --via-dashboard optional)\n  nym status                 Show detected Nym/SOCKS5 transport status\n  privacy classify <url>     Show privacy routing decision for a URL\n  comms [status|bootstrap|run]\n                             Show/start sovereign comms stack (Nym + P2P + DIDComm)\n  mesh [status|ping|call|grant]\n                             Container mesh network operations\n  access ...                 Capability-token grants and ACP-style policy checks\n  proof-gate ...             Lean theorem-certificate gate status/verify/submit\n  p2pclaw ...                P2PCLAW hive config, status, investigations, and bridge worker control\n  zk ...                     ZK credential proofs and zkVM receipt operations\n  vault list                 Show all provider slots and their status\n  vault set <provider> [key] Store an API key (reads stdin if key omitted)\n  vault delete <provider>    Remove a stored key\n  vault test <provider>      Show masked key info\n  identity status [--json]   Show profile, identity config, and social ledger status\n  identity profile ...       Get/set profile name/avatar metadata\n  identity device ...        Scan/save device fingerprint preferences\n  identity network ...       Probe/save network identity sharing configuration\n  identity pod-share ...     Build POD share payloads from identity namespace\n  identity social ...        Connect/revoke/status for social OAuth providers\n  identity anonymous ...     Set/show anonymous mode and device/network clearing behavior\n  identity super-secure ...  Set or view passkey/security-key/TOTP flags\n\nPayments:\n  x402 [status|enable|disable|config|check|pay|balance]\n                             x402direct stablecoin payment integration\n\nControl:\n  governor status [INSTANCE] [--json]\n                             Show live AETHER governor state from the dashboard control plane\n  governor reset [INSTANCE|all] [--json]\n                             Soft-reset runtime/storage governors back to from-rest\n  governor watch [INSTANCE] [--interval SECS] [--json]\n                             Poll governor status for manager loops\n  governor validate --alpha A --beta B --dt DT --eps-min LO --eps-max HI --target T\n                             Validate the AETHER gain condition and formal regime\n  deploy preflight --agent ID [--admission-mode warn|block|force] [--json]\n                             Check CLI readiness, Betti topology drift, and AETHER admission\n  deploy launch --agent ID --mode terminal|cockpit|gui|gui+terminal [--container]\n                [--working-dir DIR] [--admission-mode warn|block|force] [--json]\n                             Launch a cockpit-managed agent session with admission control\n  deploy status <session-id> [--json]\n                             Show current status for a cockpit-managed deploy session\n\nGovernance & protocol:\n  vote --proposal ID --choice yes|no|abstain [--reason TEXT]\n  sync [--target cloudflare|local]\n  onchain [config|deploy|verify|status] ...\n  protocol privacy-pool-create | privacy-pool-withdraw | pq-bridge-transfer\n  p2pclaw bridge run-loop [--live] [--iterations N] [--heartbeat] [--tau-sync]\n                             Run the local bridge worker against the configured hive\n\nConfiguration:\n  config show                Show effective config\n  config tool-proxy [enable|disable|status|refresh|endpoint <url>|clear-endpoint]\n  addon [list|enable|disable] [name]\n  license [status|verify <certificate.json>]\n\n  version                    Print version\n  help                       Show this help\n\nEnvironment:\n  AGENTHALO_HOME\n  AGENTHALO_DB_PATH\n  AGENTHALO_API_KEY\n  AGENTHALO_DASHBOARD_API_BASE (default: http://127.0.0.1:3100/api)\n  AGENTHALO_ALLOW_GENERIC=1   Enable paid-tier custom agent wrapping\n  AGENTHALO_NO_TELEMETRY=1    (default behavior: zero telemetry)\n  AGENTHALO_ONCHAIN_SIMULATION=1    Disable real RPC posting and return deterministic simulated tx hashes\n  SOCKS5_PROXY=127.0.0.1:1080 Route external traffic through Nym/Tor SOCKS5\n  NYM_FAIL_OPEN=1             Allow direct external egress fallback if SOCKS5 is unavailable
   NYM_FAIL_CLOSED=0           Legacy equivalent of NYM_FAIL_OPEN=1"
     );
 }

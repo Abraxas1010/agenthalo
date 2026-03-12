@@ -156,6 +156,10 @@ pub fn p2pclaw_config_path() -> PathBuf {
     halo_dir().join("p2pclaw.json")
 }
 
+pub fn p2pclaw_bridge_state_path() -> PathBuf {
+    halo_dir().join("p2pclaw_bridge_state.json")
+}
+
 pub fn proof_certificates_dir() -> PathBuf {
     halo_dir().join("proof_certificates")
 }

@@ -163,6 +163,32 @@ pub struct Investigation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct AgentRank {
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub rank: Option<String>,
+    #[serde(default)]
+    pub contributions: Option<u64>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct InvestigationCreateResult {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct WheelResult {
     #[serde(rename = "isDuplicate", default)]
     pub is_duplicate: bool,
@@ -342,6 +368,23 @@ pub fn list_mempool(cfg: &P2PClawConfig) -> Result<Vec<Paper>, String> {
     parse_list_from_value(raw, &["papers", "mempool"])
 }
 
+pub fn get_agent_rank(cfg: &P2PClawConfig, agent_id: Option<&str>) -> Result<AgentRank, String> {
+    let agent = agent_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(cfg.agent_id.as_str());
+    let raw = request_get_json(cfg, "/agent-rank", &[("agent", agent.to_string())])?;
+    serde_json::from_value(raw).map_err(|e| format!("parse agent-rank response: {e}"))
+}
+
+pub fn get_agent_briefing(cfg: &P2PClawConfig, agent_id: Option<&str>) -> Result<Value, String> {
+    let agent = agent_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(cfg.agent_id.as_str());
+    request_get_json(cfg, "/agent-briefing", &[("agent_id", agent.to_string())])
+}
+
 pub fn publish_paper(
     cfg: &P2PClawConfig,
     title: &str,
@@ -395,15 +438,30 @@ pub fn send_chat(cfg: &P2PClawConfig, message: &str, channel: Option<&str>) -> R
     let payload = json!({
         "message": message,
         "sender": cfg.agent_name,
+        "agentId": cfg.agent_id,
         "channel": channel.unwrap_or("research"),
     });
-    let _ = request_post_json(cfg, "/hive-chat", &payload)?;
+    let _ = request_post_json_fallback(cfg, &["/chat", "/hive-chat"], &payload)?;
     Ok(())
 }
 
 pub fn list_investigations(cfg: &P2PClawConfig) -> Result<Vec<Investigation>, String> {
     let raw = request_get_json(cfg, "/investigations", &[])?;
     parse_list_from_value(raw, &["investigations"])
+}
+
+pub fn create_investigation(
+    cfg: &P2PClawConfig,
+    title: &str,
+    description: &str,
+) -> Result<InvestigationCreateResult, String> {
+    let payload = json!({
+        "title": title,
+        "description": description,
+        "ownerId": cfg.agent_id,
+    });
+    let raw = request_post_json(cfg, "/investigations", &payload)?;
+    serde_json::from_value(raw).map_err(|e| format!("parse create investigation response: {e}"))
 }
 
 pub fn search_wheel(cfg: &P2PClawConfig, query: &str) -> Result<WheelResult, String> {
@@ -420,6 +478,14 @@ pub fn search_wheel(cfg: &P2PClawConfig, query: &str) -> Result<WheelResult, Str
 
 pub fn get_briefing(cfg: &P2PClawConfig) -> Result<String, String> {
     request_get_text(cfg, "/briefing", &[], Some("text/markdown"))
+}
+
+pub fn report_tau_tick(cfg: &P2PClawConfig, compute_cycles: u64) -> Result<Value, String> {
+    let payload = json!({
+        "agent_id": cfg.agent_id,
+        "compute_cycles": compute_cycles,
+    });
+    request_post_json_fallback(cfg, &["/tau/tick", "/tau-sync/tick"], &payload)
 }
 
 fn request_get_json(
@@ -479,6 +545,24 @@ fn request_post_json(cfg: &P2PClawConfig, path: &str, payload: &Value) -> Result
     resp.into_body()
         .read_json()
         .map_err(|e| format!("parse P2PCLAW response {url}: {e}"))
+}
+
+fn request_post_json_fallback(
+    cfg: &P2PClawConfig,
+    paths: &[&str],
+    payload: &Value,
+) -> Result<Value, String> {
+    let mut errors = Vec::new();
+    for path in paths {
+        match request_post_json(cfg, path, payload) {
+            Ok(value) => return Ok(value),
+            Err(err) => errors.push(format!("{path}: {err}")),
+        }
+    }
+    Err(format!(
+        "P2PCLAW POST failed for all candidate paths: {}",
+        errors.join(" | ")
+    ))
 }
 
 fn build_url(cfg: &P2PClawConfig, path: &str, query: &[(&str, String)]) -> Result<String, String> {

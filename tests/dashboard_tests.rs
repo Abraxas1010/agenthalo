@@ -7,6 +7,7 @@ use nucleusdb::dashboard::{build_state, DashboardState};
 use nucleusdb::halo::agentpmt;
 use nucleusdb::halo::auth::{save_credentials, Credentials};
 use nucleusdb::halo::config;
+use nucleusdb::halo::p2pclaw_bridge;
 use nucleusdb::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
 use nucleusdb::halo::trace::{
     list_sessions as list_trace_sessions, now_unix_secs, session_events, TraceWriter,
@@ -3510,6 +3511,37 @@ async fn api_p2pclaw_briefing_requires_authentication() {
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(&creds_path);
+}
+
+#[tokio::test]
+async fn api_p2pclaw_bridge_status_returns_persisted_state_without_network() {
+    let _guard = lock_env();
+    let home = std::env::temp_dir().join(format!(
+        "dashboard_p2pclaw_bridge_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create temp home");
+    let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.to_str().expect("utf8 home")));
+
+    let mut bridge_state = p2pclaw_bridge::BridgePersistentState::default();
+    bridge_state.polls_total = 9;
+    bridge_state.hive_compute_cycles = 7;
+    bridge_state.local_compute_cycles = 3;
+    p2pclaw_bridge::save_state(&bridge_state).expect("save bridge state");
+
+    let (state, db_path) = test_state("api_p2pclaw_bridge_status");
+    let (status, body) = api_get(state, "/p2pclaw/bridge/status").await;
+    assert_eq!(status, StatusCode::OK, "bridge status failed: {body}");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["bridge"]["state"]["polls_total"], 9);
+    assert_eq!(body["bridge"]["compute_split_ratio"], 0.7);
+    assert_eq!(body["bridge"]["nash_compliant"], true);
+    assert_eq!(body["bridge"]["configured"], false);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[tokio::test]

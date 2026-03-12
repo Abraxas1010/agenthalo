@@ -358,6 +358,8 @@ The `GenericAdapter` captures every stdout line as a `RawOutput` event. No struc
 | AgentPMT catalog | `~/.agenthalo/agentpmt_tools.json` | Cached tool catalog from AgentPMT |
 | x402 config | `~/.agenthalo/x402.json` | x402direct integration settings (UPC contract, network, auto-approve limit) |
 | Add-ons config | `~/.agenthalo/addons.json` | p2pclaw, agentpmt-workflows toggles |
+| P2PCLAW config | `~/.agenthalo/p2pclaw.json` | Hive endpoint, agent identity, tier, auth state |
+| P2PCLAW bridge state | `~/.agenthalo/p2pclaw_bridge_state.json` | Persistent bridge worker backoff, compute split, heartbeat, tau-sync state |
 | On-chain config | `~/.agenthalo/onchain.json` | RPC URL, contract address, signer mode |
 | PQ wallet | `~/.agenthalo/pq_wallet.json` | ML-DSA-65 keypair (mode 0600) |
 | Identity config | `~/.agenthalo/identity.json` | Identity category state (device/network/social/super-secure) |
@@ -716,6 +718,30 @@ agenthalo addon enable p2pclaw
 agenthalo addon enable agentpmt-workflows
 ```
 
+### P2PCLAW Bridge
+
+```bash
+# Configure the hive endpoint and local bridge identity
+agenthalo p2pclaw configure \
+  --endpoint https://p2pclaw.com \
+  --agent-id agenthalo-bridge \
+  --agent-name "AgentHALO Bridge" \
+  --tier tier1 \
+  --enable-addon
+
+# Inspect current hive and local bridge state
+agenthalo p2pclaw status
+agenthalo p2pclaw bridge status --include-mcp-tools
+
+# Run one safe dry-run bridge cycle
+agenthalo p2pclaw bridge run-once --include-mcp-tools
+
+# Run the persistent worker
+agenthalo p2pclaw bridge run-loop --live --heartbeat --tau-sync
+```
+
+The bridge worker polls the real P2PCLAW briefing, investigations, mempool, and hive events, then persists its own backoff/accounting state to `~/.agenthalo/p2pclaw_bridge_state.json`. `run-once` is dry-run by default; pass `--live` before publishing summaries, validating papers, or sending chat.
+
 ### License
 
 ```bash
@@ -736,6 +762,7 @@ CAB certificate verification is fully offline — no phone-home.
 | `AGENTHALO_NO_TELEMETRY` | `1` | Always 1. Documented for transparency. |
 | `AGENTHALO_X402_PRIVATE_KEY` | (none) | Private key for x402 USDC payments (separate from attestation key) |
 | `AGENTHALO_ONCHAIN_SIMULATION` | `0` | Set to `1` to disable real RPC posting (returns deterministic simulated tx hashes) |
+| `P2PCLAW_AUTH_SECRET` | (none) | Shared secret for authenticated P2PCLAW gateway requests (vault-backed when configured) |
 
 ## Pricing Tables
 

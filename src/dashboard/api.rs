@@ -31,6 +31,7 @@ use crate::halo::http_client;
 use crate::halo::metrics::diversity::{build_snapshot, extract_tool_counts};
 use crate::halo::onchain::load_onchain_config_or_default;
 use crate::halo::p2pclaw;
+use crate::halo::p2pclaw_bridge;
 use crate::halo::p2pclaw_verify;
 use crate::halo::pq::has_wallet;
 use crate::halo::schema::{
@@ -121,7 +122,9 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/addons", get(api_addons_get).post(api_addons_post))
         .route("/p2pclaw/configure", post(api_p2pclaw_configure))
         .route("/p2pclaw/status", get(api_p2pclaw_status))
+        .route("/p2pclaw/rank", get(api_p2pclaw_rank))
         .route("/p2pclaw/briefing", get(api_p2pclaw_briefing))
+        .route("/p2pclaw/agent-briefing", get(api_p2pclaw_agent_briefing))
         .route("/p2pclaw/papers", get(api_p2pclaw_papers))
         .route("/p2pclaw/mempool", get(api_p2pclaw_mempool))
         .route("/p2pclaw/papers/publish", post(api_p2pclaw_publish))
@@ -130,7 +133,15 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/p2pclaw/events", get(api_p2pclaw_events))
         .route("/p2pclaw/chat", post(api_p2pclaw_chat))
         .route("/p2pclaw/wheel", get(api_p2pclaw_wheel))
-        .route("/p2pclaw/investigations", get(api_p2pclaw_investigations))
+        .route(
+            "/p2pclaw/investigations",
+            get(api_p2pclaw_investigations).post(api_p2pclaw_create_investigation),
+        )
+        .route("/p2pclaw/bridge/status", get(api_p2pclaw_bridge_status))
+        .route(
+            "/p2pclaw/bridge/run-once",
+            post(api_p2pclaw_bridge_run_once),
+        )
         .route("/mcp/tools", get(api_mcp_tools))
         .route("/mcp/tools/{name}", get(api_mcp_tool_detail))
         .route("/mcp/invoke", post(api_mcp_invoke))
@@ -421,6 +432,16 @@ struct P2PClawListQuery {
     since: Option<u64>,
 }
 
+#[derive(Deserialize, Default)]
+struct P2PClawRankQuery {
+    agent: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct P2PClawAgentBriefingQuery {
+    agent_id: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct P2PClawPublishRequest {
     title: String,
@@ -450,6 +471,29 @@ struct P2PClawWheelQuery {
 struct P2PClawVerifyRequest {
     title: String,
     content: String,
+}
+
+#[derive(Deserialize)]
+struct P2PClawCreateInvestigationRequest {
+    title: String,
+    description: String,
+}
+
+#[derive(Deserialize, Default)]
+struct P2PClawBridgeStatusQuery {
+    include_mcp_tools: Option<bool>,
+}
+
+#[derive(Deserialize, Default)]
+struct P2PClawBridgeRunRequest {
+    dry_run: Option<bool>,
+    include_mcp_tools: Option<bool>,
+    publish_summary: Option<bool>,
+    validate_paper_id: Option<String>,
+    validate_approve: Option<bool>,
+    occam_score: Option<f64>,
+    chat_message: Option<String>,
+    chat_channel: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -4929,6 +4973,20 @@ async fn api_p2pclaw_status(AxumState(state): AxumState<DashboardState>) -> ApiR
     })))
 }
 
+async fn api_p2pclaw_rank(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<P2PClawRankQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let rank = p2pclaw::get_agent_rank(&cfg, query.agent.as_deref())
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "rank": rank
+    })))
+}
+
 async fn api_p2pclaw_briefing(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     require_sensitive_access(&state)?;
     let cfg = p2pclaw_load_config_for_api()?;
@@ -4936,6 +4994,20 @@ async fn api_p2pclaw_briefing(AxumState(state): AxumState<DashboardState>) -> Ap
     Ok(Json(json!({
         "ok": true,
         "briefing_markdown": briefing
+    })))
+}
+
+async fn api_p2pclaw_agent_briefing(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<P2PClawAgentBriefingQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let briefing = p2pclaw::get_agent_briefing(&cfg, query.agent_id.as_deref())
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "briefing": briefing
     })))
 }
 
@@ -5116,6 +5188,68 @@ async fn api_p2pclaw_investigations(AxumState(state): AxumState<DashboardState>)
         "ok": true,
         "count": investigations.len(),
         "investigations": investigations
+    })))
+}
+
+async fn api_p2pclaw_create_investigation(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawCreateInvestigationRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let title = req.title.trim();
+    let description = req.description.trim();
+    if title.is_empty() || description.is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "title and description are required",
+        ));
+    }
+    let result = p2pclaw::create_investigation(&cfg, title, description)
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "result": result
+    })))
+}
+
+async fn api_p2pclaw_bridge_status(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<P2PClawBridgeStatusQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw::load_config().ok();
+    let status = p2pclaw_bridge::status(cfg.as_ref(), query.include_mcp_tools.unwrap_or(false))
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "bridge": status
+    })))
+}
+
+async fn api_p2pclaw_bridge_run_once(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<P2PClawBridgeRunRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = p2pclaw_load_config_for_api()?;
+    let report = p2pclaw_bridge::run_once(
+        &cfg,
+        p2pclaw_bridge::BridgeRunOptions {
+            dry_run: req.dry_run.unwrap_or(true),
+            include_mcp_tools: req.include_mcp_tools.unwrap_or(false),
+            publish_summary: req.publish_summary.unwrap_or(false),
+            validate_paper_id: req.validate_paper_id,
+            validate_approve: req.validate_approve.unwrap_or(true),
+            validate_occam_score: req.occam_score,
+            chat_message: req.chat_message,
+            chat_channel: req.chat_channel,
+        },
+    )
+    .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "report": report
     })))
 }
 
