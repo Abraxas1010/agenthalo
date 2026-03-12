@@ -285,6 +285,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/models/serve", post(api_models_serve))
         .route("/models/stop", post(api_models_stop))
         .route("/models/choose-local", post(api_models_choose_local))
+        .route("/models/unchoose-local", post(api_models_unchoose_local))
         .route(
             "/models/login/huggingface",
             post(api_models_login_huggingface),
@@ -6887,6 +6888,21 @@ async fn api_models_choose_local(
         .map_err(|e| internal_err(format!("choose local task join: {e}")))?
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
     Ok(Json(json!({ "ok": true, "local_models_chosen": true })))
+}
+
+async fn api_models_unchoose_local(
+    AxumState(state): AxumState<DashboardState>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    tokio::task::spawn_blocking(|| {
+        let mut cfg = crate::halo::local_models::load_or_default();
+        cfg.local_models_chosen = false;
+        crate::halo::local_models::save_config(&cfg)
+    })
+    .await
+    .map_err(|e| internal_err(format!("unchoose local task join: {e}")))?
+    .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({ "ok": true, "local_models_chosen": false })))
 }
 
 async fn api_models_login_huggingface(
