@@ -6,40 +6,38 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 
-# When running inside AgentHALO, __file__ is nucleusdb/python/living_agent/living_agent_common.py
-# so parents[2] is the nucleusdb repo root.  When running from Heyting, parents[1] is heyting root.
+# Bundled scripts live at <root>/python/living_agent/living_agent_common.py in
+# both the source checkout and the packaged AgentHALO layout.
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_NUCLEUSDB_ROOT_CANDIDATE = _SCRIPT_DIR.parents[1]  # nucleusdb/
-_HEYTING_ROOT_CANDIDATE = _SCRIPT_DIR.parents[0]     # python/living_agent/ → python/
+_ROOT_CANDIDATE = _SCRIPT_DIR.parents[1]
 
-# Detect which repo we're in based on Cargo.toml presence
-_IS_AGENTHALO = (_NUCLEUSDB_ROOT_CANDIDATE / "Cargo.toml").exists()
-
-if _IS_AGENTHALO:
-    AGENTHALO_ROOT = _NUCLEUSDB_ROOT_CANDIDATE
-    REPO_ROOT = Path(os.environ.get("HEYTING_ROOT", str(AGENTHALO_ROOT))).resolve()
-else:
-    AGENTHALO_ROOT = None
-    REPO_ROOT = Path(os.environ.get("HEYTING_ROOT", str(_SCRIPT_DIR.parent))).resolve()
+AGENTHALO_ROOT = Path(
+    os.environ.get("AGENTHALO_ROOT", str(_ROOT_CANDIDATE))
+).resolve()
+REPO_ROOT = Path(os.environ.get("HEYTING_ROOT", str(AGENTHALO_ROOT))).resolve()
 
 DEFAULT_LIVING_AGENT_ROOT = Path(os.environ.get("LIVING_AGENT_ROOT", "/tmp/the-living-agent"))
+DEFAULT_AGENTHALO_HOME = Path(
+    os.environ.get(
+        "AGENTHALO_HOME",
+        os.environ.get("NUCLEUSDB_HOME", str(Path.home() / ".agenthalo")),
+    )
+).resolve()
 DEFAULT_NUCLEUSDB_ROOT = Path(os.environ.get(
     "NUCLEUSDB_ROOT",
-    str(AGENTHALO_ROOT) if AGENTHALO_ROOT else "/home/abraxas/Work/nucleusdb",
+    str(AGENTHALO_ROOT) if AGENTHALO_ROOT.exists() else "/home/abraxas/Work/nucleusdb",
 ))
 
-# Artifact root: prefer env var, then Living Agent local copy, then Heyting artifacts
-_default_artifact = str(
-    DEFAULT_LIVING_AGENT_ROOT / "heyting_artifacts"
-    if (DEFAULT_LIVING_AGENT_ROOT / "heyting_artifacts").is_dir()
-    else REPO_ROOT / "artifacts" / "living_agent"
-)
+_BUNDLED_ARTIFACT_ROOT = AGENTHALO_ROOT / "artifacts" / "living_agent"
+_LEGACY_ARTIFACT_ROOT = DEFAULT_LIVING_AGENT_ROOT / "heyting_artifacts"
+_default_artifact = str(DEFAULT_AGENTHALO_HOME / "living_agent_artifacts")
 DEFAULT_ARTIFACT_ROOT = Path(
     os.environ.get("HEYTING_ARTIFACT_DIR", _default_artifact)
 ).resolve()
@@ -47,6 +45,38 @@ DEFAULT_GRID_ROOT = Path(
     os.environ.get("HEYTING_GRID_ROOT", str(DEFAULT_ARTIFACT_ROOT / "verified_grid"))
 ).resolve()
 TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
+
+
+def bundled_artifact_root() -> Path | None:
+    for candidate in (_BUNDLED_ARTIFACT_ROOT, REPO_ROOT / "artifacts" / "living_agent"):
+        if candidate.is_dir():
+            return candidate
+    return _LEGACY_ARTIFACT_ROOT if _LEGACY_ARTIFACT_ROOT.is_dir() else None
+
+
+def ensure_seed_artifacts(artifact_root: Path | None = None) -> Path:
+    target = (artifact_root or DEFAULT_ARTIFACT_ROOT).resolve()
+    seed = bundled_artifact_root()
+    target.mkdir(parents=True, exist_ok=True)
+    if not seed or seed.resolve() == target:
+        return target
+    copy_targets = [
+        "paper_embeddings.json",
+        "paper_embeddings.npz",
+        "sns_model_info.json",
+        "verified_grid",
+    ]
+    for rel in copy_targets:
+        src = seed / rel
+        dst = target / rel
+        if not src.exists():
+            continue
+        if src.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            if not dst.exists():
+                shutil.copy2(src, dst)
+    return target
 
 
 def read_text(path: Path) -> str:

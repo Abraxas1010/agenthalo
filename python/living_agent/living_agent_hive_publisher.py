@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,25 +70,52 @@ def publish_via_agenthalo(
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as tmp:
         tmp.write(paper_text)
         temp_path = Path(tmp.name)
-    cmd = [
-        "cargo",
-        "run",
-        "--manifest-path",
-        str(nucleusdb_root / "Cargo.toml"),
-        "--bin",
-        "agenthalo",
-        "--",
-        "p2pclaw",
-        "bridge",
-        "publish-paper",
-        "--title",
-        title,
-        "--content-file",
-        str(temp_path),
-    ]
+    agenthalo_bin = os.environ.get("AGENTHALO_BIN") or shutil.which("agenthalo")
+    if agenthalo_bin:
+        cmd = [
+            agenthalo_bin,
+            "p2pclaw",
+            "bridge",
+            "publish-paper",
+            "--title",
+            title,
+            "--content-file",
+            str(temp_path),
+        ]
+        cwd = None
+    elif shutil.which("cargo") and (nucleusdb_root / "Cargo.toml").exists():
+        cmd = [
+            "cargo",
+            "run",
+            "--manifest-path",
+            str(nucleusdb_root / "Cargo.toml"),
+            "--bin",
+            "agenthalo",
+            "--",
+            "p2pclaw",
+            "bridge",
+            "publish-paper",
+            "--title",
+            title,
+            "--content-file",
+            str(temp_path),
+        ]
+        cwd = nucleusdb_root
+    else:
+        temp_path.unlink(missing_ok=True)
+        return {
+            "status": "pending_publication",
+            "surface": "agenthalo-cli:p2pclaw-bridge-publish-paper",
+            "mode": agenthalo_mode,
+            "bridge_response": None,
+            "publish_command": [],
+            "publish_returncode": 127,
+            "publish_stdout": "",
+            "publish_stderr": "agenthalo executable not found and cargo source checkout unavailable",
+        }
     if not dry_run:
         cmd.append("--live")
-    proc = run(cmd, cwd=nucleusdb_root, check=False)
+    proc = run(cmd, cwd=cwd, check=False)
     temp_path.unlink(missing_ok=True)
     parsed = None
     if proc.stdout.strip():

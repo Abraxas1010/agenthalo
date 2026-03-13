@@ -1,0 +1,383 @@
+[
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_110.md",
+    "sha256": "e1d7561a9a59490dea45bdd572e28d726829a2b1a078bb5b7e439c190e313ed6",
+    "word_count": 308
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_111.md",
+    "sha256": "2dc6d42eacb702dacd532f8dddb982c1b9896bac3b5d9636f9eeb243d6b1dc4a",
+    "word_count": 64
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_150.md",
+    "sha256": "db39d9efff2b0ecf6d41c18ac8c5e816d0895a16ae3f4d7ff450161f38a25b5f",
+    "word_count": 51
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_180.md",
+    "sha256": "423d9b2630af3425069d074fd996a6e3ad240ccf67da1ed14b90d9c07e9df98e",
+    "word_count": 50
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_191.md",
+    "sha256": "272a9964576db0ea0d20dfc5968283eb6b900e2c641c6ec91e46ab80033d7c9a",
+    "word_count": 59
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_21.md",
+    "sha256": "92df934e01b1b0f43d2d5073e92dd3a7d4f85438efdaaeaddb7abe3e02e3c0b6",
+    "word_count": 60
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_215.md",
+    "sha256": "4d644c0be8124ff5360088062635071037947b451bbef07dea689904c1e8ae4d",
+    "word_count": 64
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_246.md",
+    "sha256": "160433a6b2598649a15a7f578267f486bc2fb39692c673503749ef4849b767ed",
+    "word_count": 78
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_251.md",
+    "sha256": "fa77784dbd836f1c2d1b18278eecdc0c5aa9c2e8a974643263ad0ec60f8cd0d3",
+    "word_count": 139
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_255.md",
+    "sha256": "4eda31185b4c55fa64712171ba09605cf250025172a6650518b5f71d04063737",
+    "word_count": 105
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_264.md",
+    "sha256": "f18a2e0ebc8dc5e0dd364d827a1907f9ad0568962a368ecb9f27e7a719e55e94",
+    "word_count": 68
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_274.md",
+    "sha256": "5f74d3b5eec748e73b532a0c8e1b979a42e16dedd0ebcaba3f3982c07809b651",
+    "word_count": 69
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_294.md",
+    "sha256": "f55d78dafca48b916c26183db13842f537e0855813357a076e4e67e7bef195f7",
+    "word_count": 54
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_297.md",
+    "sha256": "8e471f3367f5b48efcccce4c1182d70bbe91bca8fca6c94228b383ebb4a102db",
+    "word_count": 91
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_298.md",
+    "sha256": "3d37484b323679a0978941a7f9cf02ad0d13d8cc8f2657d830a36a1cd5263f87",
+    "word_count": 58
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_311.md",
+    "sha256": "4f7c990abd6e0003a278540b830aaac3fe5b7465e5c0004f2c80f91bde2d7ba9",
+    "word_count": 66
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_315.md",
+    "sha256": "55ddbe85d33749fcc00906b3e8ad30eb67a18b22647a8bcae30cb020231ef03d",
+    "word_count": 51
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_319.md",
+    "sha256": "f56e5c49f7f502bf69f9c1f483c294c4304d60246896bbae88dbf24b36d411b3",
+    "word_count": 59
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_32.md",
+    "sha256": "65e2c8abc69647a6d23ebb7f1b90832b38592313504e08eafc114d53038b0d47",
+    "word_count": 52
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_342.md",
+    "sha256": "5893b08f4f6b6987c2a06439bd1ea851cb66c76c34ef7e90450df8aff636d5e5",
+    "word_count": 94
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_348.md",
+    "sha256": "d1a432395e436b60af7be0e39c06fff37a5836d25a0960fd88b7f02015ae6311",
+    "word_count": 252
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_350.md",
+    "sha256": "f28777bdc7534d5802920b0617235b69a2ac07e0b52e554d54079c3649a4f76a",
+    "word_count": 105
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_372.md",
+    "sha256": "3a275627af069aaebfa1e8e9528ef77c3d6e854ba08b56207e03f924f348d37b",
+    "word_count": 96
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_379.md",
+    "sha256": "acb122e5ca5a0bd2f304455840fe5b50a7e1b6a23fa6fdfbf9f42b9de7bdad84",
+    "word_count": 198
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_38.md",
+    "sha256": "12e619663a6c7326be8a0893e4da537638efa5a852eab1026a312a9a9fc855f2",
+    "word_count": 91
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_399.md",
+    "sha256": "3391a5762771295b996ad024c8db267d97f3b6f61b7610471de48b2fe43579c4",
+    "word_count": 90
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_407.md",
+    "sha256": "f4328ec8549db9049b278c40a005d328b6552132439f6f07657f7bd56e22b4e6",
+    "word_count": 56
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_413.md",
+    "sha256": "459c596e9bdf27bd16fd0bac161b7444602a047623ad0a959285d603b7d86aa1",
+    "word_count": 59
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_435.md",
+    "sha256": "710228af88d61c5ccc99a1515fedd383d44563b13688da85037765f746328162",
+    "word_count": 50
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_441.md",
+    "sha256": "f40e30143689f9ccf1d2f1ec77440566a70eefd1a57c40b370fc4a7d439c197d",
+    "word_count": 101
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_449.md",
+    "sha256": "bef86fe3de631824bc1b79e34e048bcb880e2e926e883fb9e5a29d0d799d908f",
+    "word_count": 77
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_454.md",
+    "sha256": "411f2deecd71cb222e374be239bcc33d6993d8cd10ba0cc85411929c18992fd0",
+    "word_count": 103
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_472.md",
+    "sha256": "111e9acabbcfe3720237dbc317a3b44ec6976c367a02ffa4fe42913511ec2c6b",
+    "word_count": 119
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_473.md",
+    "sha256": "3185ed48b40726c17114647ff8dfb2dd033b66bb74d81e87db7e1cced79a8dd5",
+    "word_count": 63
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_482.md",
+    "sha256": "eb46e12dd0850aed5a6714ba709fd244a13e1efef2c9d486a1d5e0efaeb0e02e",
+    "word_count": 62
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_487.md",
+    "sha256": "973b3fc8f8b59a0dc4b42b7b03789ec462afe99e1e55188693fd454062672b9e",
+    "word_count": 61
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_489.md",
+    "sha256": "fa23a29d825dac1e6949da2981e14b201f2b911551f2e09445922465f87baf29",
+    "word_count": 84
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_491.md",
+    "sha256": "089c2eaa37d54ae2a2329c3b2cee98959d0940f56ab7fdd6f0b33253df0d04b7",
+    "word_count": 112
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_531.md",
+    "sha256": "1d95376deef4247d0d04e48a0ed1824cd06d67a56fdd56294616bcdbccd44dec",
+    "word_count": 278
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_534.md",
+    "sha256": "d1eb8fb4a2301710d4bc8f137c68771cb7b2aa2575d8dc7a6c32caf5abb10407",
+    "word_count": 56
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_545.md",
+    "sha256": "e025982a00d25c8035c0a6d746401663181b9263a70280b9f823ddc4f319412e",
+    "word_count": 113
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_548.md",
+    "sha256": "12e76a655183c6478eb555db5e1a44ab3b605f282de44c1170127e9cb7059981",
+    "word_count": 164
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_556.md",
+    "sha256": "cbf01059df7f5c35e000ef9a46026b8783aab1a7161f26711dfef643c5e7c365",
+    "word_count": 70
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_571.md",
+    "sha256": "4590aed4dad7bf719da626ecd72a7579119925ace596a0c902a75ed542ac1642",
+    "word_count": 108
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_587.md",
+    "sha256": "54eb0fa25cacdec1d60a36e0e14463968ab699d84ab6539a1b13398b88daa09a",
+    "word_count": 58
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_598.md",
+    "sha256": "fe72b1adba701ccfea043a8b6adcaf560404b8fb8b4abb84640784db8438a70b",
+    "word_count": 97
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_615.md",
+    "sha256": "660bc39d618e8b31905096f0cebd7a11f2759e2812fba49d1d5208e940bff22d",
+    "word_count": 67
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_623.md",
+    "sha256": "5330423322e41949a656ed824f5742f1bd8880866059182e79a3a6c552980a18",
+    "word_count": 97
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_667.md",
+    "sha256": "6657d6ed2996df8804138333c8a8bf06bb0328da0d4b85f6e8a87b74f0e60fdb",
+    "word_count": 228
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_678.md",
+    "sha256": "f2a2bc17a54b9f02636296d4d4eda394efce60b854a49f193f3c28439743a8ff",
+    "word_count": 74
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_709.md",
+    "sha256": "d16609d9b30668e39888dfc42ddce2115cb7de6bdffbc5d41bf0722fd0a0565d",
+    "word_count": 53
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_73.md",
+    "sha256": "62e10a9c5e9df1f5ec8a484cd7f9386ac00b29d9246f3284ae69c98b5018f63e",
+    "word_count": 54
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_734.md",
+    "sha256": "41c8cef7b53320d1cc8a2b0e53ae4de2ec5d0e419ca3ad49fb08e7de331c002e",
+    "word_count": 82
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_749.md",
+    "sha256": "4f771a65f3479dc1a1078b58f11499e580dac5ca663caa38c780a210ba77a321",
+    "word_count": 65
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_777.md",
+    "sha256": "c6800edb049051aa1e8e6c3009a4e4a703102492db48c0496dc18401bc6a4d81",
+    "word_count": 180
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_784.md",
+    "sha256": "a8e2b348be24c8a68ec07f725ff7a0c9b21b1b7e1c20f79f272e61bd87183294",
+    "word_count": 66
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_795.md",
+    "sha256": "8a812c34c504ae37fb50d20b250aeba7cdc46a15958c459a9c38c0fa4876e22a",
+    "word_count": 52
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_797.md",
+    "sha256": "65abc09066d21a3d06eeea8c3fe9432caed847fb2252c7a4a30179d00e9c08a8",
+    "word_count": 69
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_800.md",
+    "sha256": "2359d22608fdd132a0d27c996ccd378c00a6d4bfdcc1c3b40396f86b17939323",
+    "word_count": 51
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_821.md",
+    "sha256": "a787b2800d93a589291032c0c8b082981bc9e4bf5e66dd607bfd86949f1df178",
+    "word_count": 244
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_835.md",
+    "sha256": "79b49df0f155b8b84996d51550f7efc4375776b12b362b4c2c13319474319f2f",
+    "word_count": 81
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_860.md",
+    "sha256": "ab487e379880f541d90950aeab3255ea7285a07d068b4214729363538187443c",
+    "word_count": 66
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_866.md",
+    "sha256": "3cb5cf1270a500c39853c693a9cf1baa29e26015ce0d55d221dae1a752a087d5",
+    "word_count": 272
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_87.md",
+    "sha256": "e9b05aebb2168ef5266b6004e1b2484a5894492d6684a679cf182040137aa806",
+    "word_count": 79
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_90.md",
+    "sha256": "2f420ca6c7a4b806d71cb494ac080ca96d321ecc6f5c8bc5e22ddbb05865d6e2",
+    "word_count": 103
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_918.md",
+    "sha256": "bd83249db0edc89f40e4a453446ebd1cbb97160db40df4595e2577a4339b2768",
+    "word_count": 59
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_920.md",
+    "sha256": "920b9602650fef35926f08e6d4f2f51624e87cfd5c6bd085a0158c36310f8c75",
+    "word_count": 202
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_928.md",
+    "sha256": "910d0bbb9925a7258ea8fe59bfd0f63e408e3acabb4dbc488e6a63d724382358",
+    "word_count": 92
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_937.md",
+    "sha256": "cf082c400b5099dd74ad666c587070c454524150e75486f006e337b513de5a60",
+    "word_count": 265
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_939.md",
+    "sha256": "fd5bc899fd95d40495ae9453bcf35380a9d4ff38a92c1a999b40766a5515bd3a",
+    "word_count": 157
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_942.md",
+    "sha256": "cdbddd82a53929d139f8271cc7d4a18aca4e94e88f1bf0d32d5e9cf9c979401d",
+    "word_count": 294
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_943.md",
+    "sha256": "74c32b7039af77fb5b0bbdf3bd36c60e7e51a9e937617de30225fe2f3bd32eaf",
+    "word_count": 60
+  },
+  {
+    "path": "/tmp/the-living-agent/memories/semantic/paper_952.md",
+    "sha256": "60b145e698ac31b970f636cccd40f93a62b519b7089aa79264f6377bde720f05",
+    "word_count": 140
+  },
+  {
+    "sha256": "9f763be8bb771bad01b58ecd775c3770281b3078b5921120c889cfd9c15db30d",
+    "word_count": 160,
+    "token_count": 155,
+    "preview": "# Primary Algebra and Knowledge Routing ## Abstract This paper demonstrates that a verified knowledge grid can ground an autonomous research loop in real formal",
+    "paper_file": "/tmp/the-living-agent/memories/semantic/paper_2.md",
+    "paper_sha256": "cac28eb1c06600cce30d831d3e1f2bf81c3018aa0787e1843282757fadaab45f"
+  },
+  {
+    "sha256": "ebdadb42589117d8ad71fa79897ecb9273bb66eda2c05625c7d34a210ce40369",
+    "word_count": 224,
+    "token_count": 234,
+    "preview": "# Verified Bridge\\n\\n## Abstract\\nWe prove the bridge can publish reviewed content. word word word word word word word word word word word word word word word w",
+    "paper_file": "/tmp/the-living-agent/memories/semantic/paper_9991.md",
+    "paper_sha256": "ebdadb42589117d8ad71fa79897ecb9273bb66eda2c05625c7d34a210ce40369"
+  }
+]

@@ -17,6 +17,7 @@ from living_agent_common import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_GRID_ROOT,
     REPO_ROOT,
+    ensure_seed_artifacts,
     ensure_module_runtime,
     normalize_whitespace,
     read_text,
@@ -128,14 +129,18 @@ def typecheck_block(root: Path, block: str) -> subprocess.CompletedProcess[str]:
         temp_path.unlink(missing_ok=True)
 
 
-def structural_result(text: str, living_agent_root: Path) -> TierResult:
+def structural_result(text: str, living_agent_root: Path, grid_root: Path | None = None) -> TierResult:
     word_count = len(text.split())
     sections = SECTION_RE.findall(text)
     claim_sentences = extract_claim_sentences(text)
     refs = CELL_RE.findall(text)
     valid_refs = 0
     for ref in refs:
-        if (living_agent_root / "knowledge" / "grid" / ref).exists():
+        candidate_paths = [living_agent_root / "knowledge" / "grid" / ref]
+        if grid_root is not None:
+            candidate_paths.append(grid_root / "grid" / ref)
+            candidate_paths.append(grid_root / ref)
+        if any(path.exists() for path in candidate_paths):
             valid_refs += 1
     score = 0.0
     score += 0.25 if word_count >= 120 else min(0.25, word_count / 480.0)
@@ -189,6 +194,20 @@ def semantic_result(
     grid_root: Path,
     encoder: Encoder,
 ) -> TierResult:
+    archive_dir = ensure_seed_artifacts(archive_dir)
+    grid_root = grid_root.resolve()
+    grid_index_path = grid_root / "verified_grid_index.json"
+    if not grid_index_path.exists():
+        return TierResult(
+            score=0.0,
+            passed=False,
+            details={
+                "missing_grid": str(grid_index_path),
+                "coverage": 0.0,
+                "anchor_overlap": 0.0,
+                "top_grid_match": None,
+            },
+        )
     novelty_payload = score_text(
         text,
         archive_dir=archive_dir,
@@ -197,6 +216,19 @@ def semantic_result(
         exclude_sha256=sha256_text(normalize_whitespace(text)),
     )
     cells = load_grid_cells(grid_root)
+    if not cells:
+        return TierResult(
+            score=0.0,
+            passed=False,
+            details={
+                "empty_grid": str(grid_index_path),
+                "coverage": 0.0,
+                "anchor_overlap": 0.0,
+                "top_grid_match": None,
+                "novelty": novelty_payload["sns"],
+                "max_similarity": novelty_payload["max_similarity"],
+            },
+        )
     paper_tokens = set(tokenize(text))
     paper_embedding = encoder.encode([normalize_whitespace(text)])[0]
     cell_texts = [
@@ -282,7 +314,8 @@ def verify_paper(
     living_agent_root: Path,
     encoder: Encoder,
 ) -> dict:
-    structural = structural_result(text, living_agent_root)
+    archive_dir = ensure_seed_artifacts(archive_dir)
+    structural = structural_result(text, living_agent_root, grid_root)
     semantic = semantic_result(text, archive_dir=archive_dir, grid_root=grid_root, encoder=encoder)
     formal = formal_result(text)
     passed = structural.passed and semantic.passed and formal.passed
@@ -319,7 +352,7 @@ def verify_paper(
 
 
 def write_report_payload(archive_dir: Path, payload: dict) -> Path:
-    report_dir = archive_dir / "verification_reports"
+    report_dir = ensure_seed_artifacts(archive_dir) / "verification_reports"
     report_path = report_dir / f"{payload['paper_sha256']}.json"
     write_json(report_path, payload)
     return report_path
@@ -349,7 +382,7 @@ def main() -> int:
     grid_root = Path(args.grid_root)
     living_agent_root = Path(args.living_agent_root)
     if args.tier == "structural":
-        payload = asdict(structural_result(text, living_agent_root))
+        payload = asdict(structural_result(text, living_agent_root, Path(args.grid_root)))
     elif args.tier == "semantic":
         encoder = Encoder(args.model)
         payload = asdict(semantic_result(text, archive_dir=archive_dir, grid_root=grid_root, encoder=encoder))

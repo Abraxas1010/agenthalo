@@ -398,12 +398,26 @@ pub fn status(
 ///
 /// Resolution order:
 /// 1. Explicit `heyting_verify_script` in bridge config
-/// 2. Bundled `python/living_agent/living_agent_verify.py` relative to executable
-/// 3. `$HEYTING_ROOT/scripts/living_agent_verify.py`
+/// 2. `AGENTHALO_VERIFY_SCRIPT` environment override
+/// 3. `AGENTHALO_LIVING_AGENT_DIR/living_agent_verify.py`
+/// 4. Bundled `python/living_agent/living_agent_verify.py` relative to executable
+/// 5. `$HEYTING_ROOT/scripts/living_agent_verify.py`
 pub fn discover_verify_script(cfg: &BridgeConfig) -> Option<std::path::PathBuf> {
     // Explicit config takes priority
     if let Some(ref path) = cfg.heyting_verify_script {
         return Some(path.clone());
+    }
+    if let Ok(path) = std::env::var("AGENTHALO_VERIFY_SCRIPT") {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    if let Ok(dir) = std::env::var("AGENTHALO_LIVING_AGENT_DIR") {
+        let candidate = PathBuf::from(dir).join("living_agent_verify.py");
+        if candidate.exists() {
+            return Some(candidate);
+        }
     }
     // Auto-discover bundled script relative to the executable
     if let Ok(exe) = std::env::current_exe() {
@@ -411,15 +425,28 @@ pub fn discover_verify_script(cfg: &BridgeConfig) -> Option<std::path::PathBuf> 
             // Development: executable is in target/debug or target/release,
             // scripts are at repo_root/python/living_agent/
             for ancestor in exe_dir.ancestors().take(5) {
-                let candidate = ancestor
-                    .join("python")
-                    .join("living_agent")
-                    .join("living_agent_verify.py");
-                if candidate.exists() {
-                    return Some(candidate);
+                for candidate in [
+                    ancestor
+                        .join("python")
+                        .join("living_agent")
+                        .join("living_agent_verify.py"),
+                    ancestor
+                        .join("share")
+                        .join("agenthalo")
+                        .join("python")
+                        .join("living_agent")
+                        .join("living_agent_verify.py"),
+                ] {
+                    if candidate.exists() {
+                        return Some(candidate);
+                    }
                 }
             }
         }
+    }
+    let bundled = PathBuf::from("/opt/agenthalo/python/living_agent/living_agent_verify.py");
+    if bundled.exists() {
+        return Some(bundled);
     }
     // Fallback: check HEYTING_ROOT/scripts/
     if let Ok(root) = std::env::var("HEYTING_ROOT") {

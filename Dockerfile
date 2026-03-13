@@ -17,11 +17,16 @@ COPY --from=builder /build/target/release/nucleusdb-discord /usr/local/bin/
 COPY --from=builder /build/target/release/agenthalo-mcp-server /usr/local/bin/
 COPY --from=builder /build/dashboard /dashboard
 COPY python/living_agent /opt/agenthalo/python/living_agent
+COPY artifacts/living_agent /opt/agenthalo/artifacts/living_agent
 COPY scripts/nucleusdb-entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh && mkdir -p /data && chown -R 10001:10001 /data /dashboard
 USER 10001:10001
 VOLUME ["/data"]
 ENV PYTHONPATH=/opt/agenthalo/python/living_agent
+ENV AGENTHALO_ROOT=/opt/agenthalo
+ENV AGENTHALO_VERIFY_SCRIPT=/opt/agenthalo/python/living_agent/living_agent_verify.py
+ENV HEYTING_ARTIFACT_DIR=/data/living_agent_artifacts
+ENV HEYTING_GRID_ROOT=/data/living_agent_artifacts/verified_grid
 ENV AGENTHALO_HOME=/data
 ENV NUCLEUSDB_HOME=/data
 ENV NUCLEUSDB_DISCORD_DB_PATH=/data/discord_records.ndb

@@ -12,6 +12,7 @@ import numpy as np
 from living_agent_common import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_LIVING_AGENT_ROOT,
+    ensure_seed_artifacts,
     ensure_module_runtime,
     normalize_whitespace,
     python_runtime,
@@ -160,6 +161,7 @@ def score_text(
 ) -> dict:
     cleaned = prepare_text(text)
     cleaned_sha = sha256_text(cleaned)
+    archive_dir = ensure_seed_artifacts(archive_dir)
     ensure_archive_compatibility(archive_dir, encoder)
     archive = load_archive(archive_dir, embedding_dim=encoder_embedding_dim(encoder))
     embedding = encoder.encode([cleaned])[0]

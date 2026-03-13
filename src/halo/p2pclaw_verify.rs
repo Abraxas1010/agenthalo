@@ -625,14 +625,39 @@ fn infer_living_agent_root(script_path: &Path) -> Option<PathBuf> {
     None
 }
 
+fn infer_bundle_root(script_path: &Path) -> Option<PathBuf> {
+    let parent = script_path.parent()?;
+    if parent.file_name().and_then(|s| s.to_str()) != Some("living_agent") {
+        return None;
+    }
+    let python_dir = parent.parent()?;
+    if python_dir.file_name().and_then(|s| s.to_str()) != Some("python") {
+        return None;
+    }
+    python_dir.parent().map(Path::to_path_buf)
+}
+
 fn infer_archive_dir(script_path: &Path) -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("HEYTING_ARTIFACT_DIR") {
         return Some(PathBuf::from(dir));
+    }
+    if let Ok(home) = std::env::var("AGENTHALO_HOME").or_else(|_| std::env::var("NUCLEUSDB_HOME")) {
+        return Some(PathBuf::from(home).join("living_agent_artifacts"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(
+            PathBuf::from(home)
+                .join(".agenthalo")
+                .join("living_agent_artifacts"),
+        );
     }
     infer_living_agent_root(script_path)
         .map(|root| root.join("heyting_artifacts"))
         .or_else(|| {
             infer_heyting_root(script_path).map(|root| root.join("artifacts").join("living_agent"))
+        })
+        .or_else(|| {
+            infer_bundle_root(script_path).map(|root| root.join("artifacts").join("living_agent"))
         })
 }
 

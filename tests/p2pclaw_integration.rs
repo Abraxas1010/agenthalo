@@ -760,3 +760,26 @@ fn bridge_publish_verified_paper_uses_full_verifier_and_publishes_content() {
     let _ = std::fs::remove_file(verifier);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn discover_verify_script_honors_agenthalo_verify_script_env() {
+    let _guard = lock_env();
+    let temp = std::env::temp_dir().join(format!(
+        "agenthalo_verify_env_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    std::fs::create_dir_all(&temp).expect("create env verify dir");
+    let script = temp.join("living_agent_verify.py");
+    std::fs::write(&script, "#!/usr/bin/env python3\nprint('ok')\n").expect("write script");
+    let _env = EnvVarGuard::set(
+        "AGENTHALO_VERIFY_SCRIPT",
+        Some(script.to_str().expect("utf8 script")),
+    );
+    let discovered =
+        p2pclaw_bridge::discover_verify_script(&p2pclaw_bridge::BridgeConfig::default())
+            .expect("discover env script");
+    assert_eq!(discovered, script);
+    let _ = std::fs::remove_file(&script);
+    let _ = std::fs::remove_dir_all(&temp);
+}

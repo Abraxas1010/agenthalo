@@ -1716,7 +1716,6 @@ fn cmd_p2pclaw(args: &[String]) -> Result<(), String> {
             }))
         }
         "verify-paper" => {
-            let cfg = load_required_p2pclaw_config()?;
             let title = flag_value(args, "--title")
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
@@ -1724,6 +1723,7 @@ fn cmd_p2pclaw(args: &[String]) -> Result<(), String> {
                     "usage: agenthalo p2pclaw verify-paper --title <text> [--content <text>|--content-file <path>]".to_string()
                 })?;
             let content = read_flag_or_file(args, "--content", "--content-file")?;
+            let agent_id = load_optional_p2pclaw_config().map(|cfg| cfg.agent_id);
             let bridge_cfg = p2pclaw_bridge::load_config()?;
             let script_path = p2pclaw_bridge::discover_verify_script(&bridge_cfg);
             let verification = nucleusdb::halo::p2pclaw_verify::verify_paper_full(
@@ -1731,7 +1731,7 @@ fn cmd_p2pclaw(args: &[String]) -> Result<(), String> {
                     title: title.to_string(),
                     content,
                     claims: vec![],
-                    agent_id: Some(cfg.agent_id.clone()),
+                    agent_id,
                 },
                 script_path.as_deref(),
                 bridge_cfg
@@ -1910,6 +1910,13 @@ fn load_required_p2pclaw_config() -> Result<p2pclaw::P2PClawConfig, String> {
     p2pclaw::load_config().map_err(|e| {
         format!("P2PCLAW is not configured. Run `agenthalo p2pclaw configure ...`: {e}")
     })
+}
+
+fn load_optional_p2pclaw_config() -> Option<p2pclaw::P2PClawConfig> {
+    if !addons::is_enabled("p2pclaw").ok()? {
+        return None;
+    }
+    p2pclaw::load_config().ok()
 }
 
 fn cmd_protocol_privacy_pool_create(args: &[String]) -> Result<(), String> {
@@ -6026,7 +6033,10 @@ fn read_flag_or_file(args: &[String], value_flag: &str, file_flag: &str) -> Resu
         return std::fs::read_to_string(path)
             .map_err(|e| format!("read {} {}: {e}", file_flag, path));
     }
-    Err(format!("pass {} <text> or {} <path>", value_flag, file_flag))
+    Err(format!(
+        "pass {} <text> or {} <path>",
+        value_flag, file_flag
+    ))
 }
 
 fn print_pretty_json(value: &serde_json::Value) -> Result<(), String> {

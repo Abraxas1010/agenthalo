@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from subprocess import CompletedProcess
 
 import living_agent_hive_publisher as publisher
 
@@ -17,6 +18,32 @@ GOOD_REPORT = {
 
 
 class TestLivingAgentHivePublisher(unittest.TestCase):
+    def test_publish_via_agenthalo_prefers_binary_over_cargo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(
+                publisher.shutil, "which", side_effect=lambda name: "/usr/local/bin/agenthalo" if name == "agenthalo" else None
+            ), patch.object(
+                publisher,
+                "run",
+                return_value=CompletedProcess(
+                    ["/usr/local/bin/agenthalo"],
+                    0,
+                    stdout=json.dumps({"result": {"publish_result": {"status": "published"}}}),
+                    stderr="",
+                ),
+            ) as run_mock:
+                result = publisher.publish_via_agenthalo(
+                    nucleusdb_root=root,
+                    title="Binary path",
+                    paper_text="# Title\n\nbody",
+                    dry_run=False,
+                    agenthalo_mode="cli",
+                )
+        self.assertEqual(result["status"], "published")
+        invoked = run_mock.call_args.kwargs
+        self.assertIsNone(invoked["cwd"])
+
     def test_dedup_blocks_pending_and_published_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "hive_publication_log.jsonl"
