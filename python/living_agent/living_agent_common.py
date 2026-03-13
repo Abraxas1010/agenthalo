@@ -45,6 +45,7 @@ DEFAULT_GRID_ROOT = Path(
     os.environ.get("HEYTING_GRID_ROOT", str(DEFAULT_ARTIFACT_ROOT / "verified_grid"))
 ).resolve()
 TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
+_SEEDED_TARGETS: set[str] = set()
 
 
 def bundled_artifact_root() -> Path | None:
@@ -56,9 +57,13 @@ def bundled_artifact_root() -> Path | None:
 
 def ensure_seed_artifacts(artifact_root: Path | None = None) -> Path:
     target = (artifact_root or DEFAULT_ARTIFACT_ROOT).resolve()
+    target_key = str(target)
+    if target_key in _SEEDED_TARGETS:
+        return target
     seed = bundled_artifact_root()
     target.mkdir(parents=True, exist_ok=True)
     if not seed or seed.resolve() == target:
+        _SEEDED_TARGETS.add(target_key)
         return target
     copy_targets = [
         "paper_embeddings.json",
@@ -72,10 +77,12 @@ def ensure_seed_artifacts(artifact_root: Path | None = None) -> Path:
         if not src.exists():
             continue
         if src.is_dir():
-            shutil.copytree(src, dst, dirs_exist_ok=True)
+            if not dst.is_dir():
+                shutil.copytree(src, dst)
         else:
             if not dst.exists():
                 shutil.copy2(src, dst)
+    _SEEDED_TARGETS.add(target_key)
     return target
 
 
