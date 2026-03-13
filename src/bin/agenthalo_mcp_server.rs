@@ -6381,6 +6381,7 @@ fn tool_p2pclaw_verify_paper(arguments: Value) -> Result<Value, String> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| "content is required".to_string())?;
+    let script_path = nucleusdb::halo::p2pclaw_bridge::discover_verify_script(&bridge_cfg);
     let verification = nucleusdb::halo::p2pclaw_verify::verify_paper_full(
         &nucleusdb::halo::p2pclaw_verify::VerificationRequest {
             title: title.to_string(),
@@ -6388,7 +6389,7 @@ fn tool_p2pclaw_verify_paper(arguments: Value) -> Result<Value, String> {
             claims: vec![],
             agent_id: None,
         },
-        bridge_cfg.heyting_verify_script.as_deref(),
+        script_path.as_deref(),
         bridge_cfg
             .heyting_verify_python
             .as_deref()

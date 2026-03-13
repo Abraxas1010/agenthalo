@@ -394,8 +394,43 @@ pub fn status(
     })
 }
 
-fn verify_script_path(cfg: &BridgeConfig) -> Option<&std::path::Path> {
-    cfg.heyting_verify_script.as_deref()
+/// Discover the external Python verifier script.
+///
+/// Resolution order:
+/// 1. Explicit `heyting_verify_script` in bridge config
+/// 2. Bundled `python/living_agent/living_agent_verify.py` relative to executable
+/// 3. `$HEYTING_ROOT/scripts/living_agent_verify.py`
+pub fn discover_verify_script(cfg: &BridgeConfig) -> Option<std::path::PathBuf> {
+    // Explicit config takes priority
+    if let Some(ref path) = cfg.heyting_verify_script {
+        return Some(path.clone());
+    }
+    // Auto-discover bundled script relative to the executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            // Development: executable is in target/debug or target/release,
+            // scripts are at repo_root/python/living_agent/
+            for ancestor in exe_dir.ancestors().take(5) {
+                let candidate = ancestor
+                    .join("python")
+                    .join("living_agent")
+                    .join("living_agent_verify.py");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    // Fallback: check HEYTING_ROOT/scripts/
+    if let Ok(root) = std::env::var("HEYTING_ROOT") {
+        let candidate = std::path::PathBuf::from(root)
+            .join("scripts")
+            .join("living_agent_verify.py");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn verify_python(cfg: &BridgeConfig) -> &str {
@@ -418,6 +453,7 @@ pub fn publish_verified_paper(
     let mut locked = LockedBridgeState::load()?;
     let state_before = locked.state.clone();
     let paper_sha256 = sha256_hex(options.content.as_bytes());
+    let script_path = discover_verify_script(&bridge_cfg);
     let verification = p2pclaw_verify::verify_paper_full(
         &p2pclaw_verify::VerificationRequest {
             title: options.title.clone(),
@@ -425,7 +461,7 @@ pub fn publish_verified_paper(
             claims: vec![],
             agent_id: Some(cfg.agent_id.clone()),
         },
-        verify_script_path(&bridge_cfg),
+        script_path.as_deref(),
         verify_python(&bridge_cfg),
         verify_timeout_secs(&bridge_cfg),
     );
@@ -594,6 +630,7 @@ pub fn run_once(cfg: &P2PClawConfig, options: BridgeRunOptions) -> Result<Bridge
         &mempool,
         &unique_events,
     );
+    let run_once_script_path = discover_verify_script(&bridge_cfg);
     let verification = if options.publish_summary {
         Some(p2pclaw_verify::verify_paper_full(
             &p2pclaw_verify::VerificationRequest {
@@ -602,7 +639,7 @@ pub fn run_once(cfg: &P2PClawConfig, options: BridgeRunOptions) -> Result<Bridge
                 claims: vec![],
                 agent_id: Some(cfg.agent_id.clone()),
             },
-            verify_script_path(&bridge_cfg),
+            run_once_script_path.as_deref(),
             verify_python(&bridge_cfg),
             verify_timeout_secs(&bridge_cfg),
         ))

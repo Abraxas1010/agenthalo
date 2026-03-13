@@ -1725,6 +1725,7 @@ fn cmd_p2pclaw(args: &[String]) -> Result<(), String> {
                 })?;
             let content = read_flag_or_file(args, "--content", "--content-file")?;
             let bridge_cfg = p2pclaw_bridge::load_config()?;
+            let script_path = p2pclaw_bridge::discover_verify_script(&bridge_cfg);
             let verification = nucleusdb::halo::p2pclaw_verify::verify_paper_full(
                 &nucleusdb::halo::p2pclaw_verify::VerificationRequest {
                     title: title.to_string(),
@@ -1732,7 +1733,7 @@ fn cmd_p2pclaw(args: &[String]) -> Result<(), String> {
                     claims: vec![],
                     agent_id: Some(cfg.agent_id.clone()),
                 },
-                bridge_cfg.heyting_verify_script.as_deref(),
+                script_path.as_deref(),
                 bridge_cfg
                     .heyting_verify_python
                     .as_deref()

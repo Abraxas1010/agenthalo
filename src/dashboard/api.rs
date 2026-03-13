@@ -5156,13 +5156,14 @@ async fn api_p2pclaw_verify(
     }
     let bridge_cfg = p2pclaw_bridge::load_config()
         .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    let script_path = p2pclaw_bridge::discover_verify_script(&bridge_cfg);
     let verification = p2pclaw_verify::verify_paper_full(&p2pclaw_verify::VerificationRequest {
         title: title.to_string(),
         content: content.to_string(),
         claims: vec![],
         agent_id: None,
     },
-    bridge_cfg.heyting_verify_script.as_deref(),
+    script_path.as_deref(),
     bridge_cfg
         .heyting_verify_python
         .as_deref()
