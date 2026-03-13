@@ -184,14 +184,19 @@
         agent_id: String(fd.get('agent_id') || ''),
         task: String(fd.get('task') || ''),
         timeout_secs: Number(fd.get('timeout_secs') || 300),
+        delay_secs: Number(fd.get('delay_secs') || 0),
         wait: !!fd.get('wait'),
       };
       const msg = state.container.querySelector('#orch-msg');
       try {
-        const out = await apiPost('/orchestrator/task', payload);
+        const route = payload.delay_secs > 0 ? '/orchestrator/schedule' : '/orchestrator/task';
+        if (payload.delay_secs <= 0) delete payload.delay_secs;
+        const out = await apiPost(route, payload);
         state.selectedTask = out && out.task && out.task.task_id ? out.task.task_id : '';
         if (msg) {
-          msg.textContent = 'Task submitted: ' + (state.selectedTask || 'ok');
+          msg.textContent = route === '/orchestrator/schedule'
+            ? 'Task scheduled: ' + (state.selectedTask || 'ok')
+            : 'Task submitted: ' + (state.selectedTask || 'ok');
           msg.classList.remove('err');
         }
         await refresh();
@@ -259,7 +264,6 @@
                 <option value="codex">codex</option>
                 <option value="claude">claude</option>
                 <option value="gemini">gemini</option>
-                <option value="openclaw">openclaw</option>
                 <option value="shell">shell</option>
               </select>
             </label>
@@ -277,6 +281,7 @@
             <label>Agent ID <input id="orch-task-agent-id" class="input" name="agent_id" placeholder="orch-..."></label>
             <label>Task <textarea class="input" name="task" rows="5" placeholder="Review src/main.rs"></textarea></label>
             <label>Timeout (s) <input class="input" name="timeout_secs" type="number" min="1" value="300"></label>
+            <label>Delay (s) <input class="input" name="delay_secs" type="number" min="0" value="0"></label>
             <label><input name="wait" type="checkbox" checked> Wait for completion</label>
             <button class="btn btn-primary" type="submit">Run Task</button>
           </form>

@@ -1914,7 +1914,7 @@ fn orchestrator_tool_defs_for_listing() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "agent": {"type":"string", "description":"claude | codex | gemini | openclaw | shell"},
+                    "agent": {"type":"string", "description":"claude | codex | gemini | shell"},
                     "agent_name": {"type":"string"},
                     "working_dir": {"type":"string"},
                     "env": {"type":"object"},

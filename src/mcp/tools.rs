@@ -300,7 +300,7 @@ pub struct UncertaintyTranslateResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OrchestratorLaunchRequest {
-    /// Agent kind: claude | codex | gemini | openclaw | shell
+    /// Agent kind: claude | codex | gemini | shell
     pub agent: String,
     /// Human-friendly label for this launched instance.
     pub agent_name: String,
@@ -350,6 +350,14 @@ pub struct OrchestratorSendTaskRequest {
     pub format: Option<String>,
     pub timeout_secs: Option<u64>,
     pub wait: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrchestratorScheduleTaskRequest {
+    pub agent_id: String,
+    pub task: String,
+    pub timeout_secs: Option<u64>,
+    pub delay_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -550,7 +558,7 @@ pub struct MeshGrantResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CliDetectRequest {
-    /// Agent CLI to detect: "claude", "codex", "gemini", or "openclaw".
+    /// Agent CLI to detect: "claude", "codex", or "gemini".
     pub agent: String,
 }
 
@@ -563,7 +571,7 @@ pub struct CliDetectResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CliInstallRequest {
-    /// Agent CLI to install: "claude", "codex", "gemini", or "openclaw".
+    /// Agent CLI to install: "claude", "codex", or "gemini".
     pub agent: String,
 }
 
@@ -574,22 +582,6 @@ pub struct CliInstallResponse {
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct OpenClawGatewayStatusResponse {
-    pub installed: bool,
-    pub gateway_running: bool,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct OpenClawWireMcpResponse {
-    pub success: bool,
-    pub config_path: String,
-    pub tools_wired: Vec<String>,
-    pub nucleusdb_mcp_path: Option<String>,
-    pub agenthalo_mcp_path: Option<String>,
 }
 
 // ── End CLI agent types ─────────────────────────────────────────────
@@ -5584,6 +5576,56 @@ impl NucleusDbMcpService {
     }
 
     #[tool(
+        name = "orchestrator_schedule_task",
+        description = "Schedule a delayed task for a launched orchestrator agent. Example: {\"agent_id\":\"orch-...\",\"task\":\"Rotate keys\",\"delay_secs\":300}"
+    )]
+    pub async fn orchestrator_schedule_task(
+        &self,
+        Parameters(req): Parameters<OrchestratorScheduleTaskRequest>,
+    ) -> Result<Json<OrchestratorTaskResponse>, McpError> {
+        if req.task.trim().is_empty() {
+            return Err(McpError::invalid_params("task must be non-empty", None));
+        }
+        if req.delay_secs == 0 {
+            return Err(McpError::invalid_params("delay_secs must be > 0", None));
+        }
+        if orchestrator_proxy_enabled() {
+            let proxied = call_orchestrator_proxy_tool(
+                "orchestrator_schedule_task",
+                serde_json::to_value(&req).map_err(|e| {
+                    McpError::internal_error(
+                        format!("serialize orchestrator schedule_task proxy payload: {e}"),
+                        None,
+                    )
+                })?,
+            )
+            .await?;
+            let parsed: OrchestratorTaskResponse =
+                serde_json::from_value(proxied).map_err(|e| {
+                    McpError::internal_error(
+                        format!("decode orchestrator schedule_task proxy response: {e}"),
+                        None,
+                    )
+                })?;
+            return Ok(Json(parsed));
+        }
+        let orchestrator = { self.state.lock().await.orchestrator.clone() };
+        let task = orchestrator
+            .schedule_task(
+                OrchSendTaskRequest {
+                    agent_id: req.agent_id.clone(),
+                    task: req.task,
+                    timeout_secs: req.timeout_secs,
+                    wait: false,
+                },
+                req.delay_secs,
+            )
+            .await
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(Json(task_to_response(task)))
+    }
+
+    #[tool(
         name = "orchestrator_get_result",
         description = "Get task status/result by task_id. Optionally wait for completion. Example: {\"task_id\":\"task-...\",\"wait\":true,\"timeout_secs\":60}"
     )]
@@ -5867,7 +5909,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "cli_detect",
-        description = "Detect whether an agent CLI is installed on this host. Supports claude, codex, gemini, openclaw. Example: {\"agent\":\"claude\"}"
+        description = "Detect whether an agent CLI is installed on this host. Supports claude, codex, gemini. Example: {\"agent\":\"claude\"}"
     )]
     pub async fn cli_detect(
         &self,
@@ -5901,7 +5943,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "cli_install",
-        description = "Install an agent CLI via npm. Supports claude (@anthropic-ai/claude-code), codex (@openai/codex), gemini (@google/gemini-cli), openclaw (openclaw@latest). Example: {\"agent\":\"openclaw\"}"
+        description = "Install an agent CLI via npm. Supports claude (@anthropic-ai/claude-code), codex (@openai/codex), gemini (@google/gemini-cli). Example: {\"agent\":\"claude\"}"
     )]
     pub async fn cli_install(
         &self,
@@ -5930,125 +5972,6 @@ impl NucleusDbMcpService {
             stderr: String::from_utf8_lossy(&result.stderr).to_string(),
         }))
     }
-
-    #[tool(
-        name = "openclaw_gateway_status",
-        description = "Check whether the OpenClaw CLI is installed and whether its gateway daemon is running. No parameters required."
-    )]
-    pub async fn openclaw_gateway_status(
-        &self,
-    ) -> Result<Json<OpenClawGatewayStatusResponse>, McpError> {
-        let (installed, running, detail) = tokio::task::spawn_blocking(|| {
-            let which = Command::new("which")
-                .arg("openclaw")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            if !which {
-                return (false, false, "openclaw CLI not found on PATH".to_string());
-            }
-            let status = Command::new("openclaw")
-                .args(["gateway", "status"])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output();
-            match status {
-                Ok(o) => {
-                    let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                    let detail = if !stdout.is_empty() { stdout } else { stderr };
-                    (true, o.status.success(), detail)
-                }
-                Err(e) => (true, false, format!("failed to run status check: {e}")),
-            }
-        })
-        .await
-        .unwrap_or((false, false, "task join failed".to_string()));
-        Ok(Json(OpenClawGatewayStatusResponse {
-            installed,
-            gateway_running: running,
-            detail,
-        }))
-    }
-
-    #[tool(
-        name = "openclaw_wire_mcp",
-        description = "Wire NucleusDB and HALO MCP servers into OpenClaw's configuration (~/.openclaw/openclaw.json). After wiring, any OpenClaw agent session can call all 37+ NucleusDB tools via stdio transport. No parameters required."
-    )]
-    pub async fn openclaw_wire_mcp(&self) -> Result<Json<OpenClawWireMcpResponse>, McpError> {
-        let result = tokio::task::spawn_blocking(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-            let config_path = std::path::Path::new(&home)
-                .join(".openclaw")
-                .join("openclaw.json");
-
-            let mut config: serde_json::Value = if config_path.exists() {
-                let contents = std::fs::read_to_string(&config_path)
-                    .map_err(|e| format!("read {}: {e}", config_path.display()))?;
-                serde_json::from_str(&contents)
-                    .map_err(|e| format!("parse {}: {e}", config_path.display()))?
-            } else {
-                if let Some(parent) = config_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-                }
-                serde_json::json!({})
-            };
-
-            let ndb_path = resolve_binary_path("nucleusdb-mcp");
-            let halo_path = resolve_binary_path("agenthalo-mcp-server");
-
-            let ndb_entry = serde_json::json!({
-                "command": ndb_path.as_deref().unwrap_or("nucleusdb-mcp"),
-                "args": []
-            });
-            let halo_entry = serde_json::json!({
-                "command": halo_path.as_deref().unwrap_or("agenthalo-mcp-server"),
-                "args": []
-            });
-
-            let agents = config
-                .as_object_mut()
-                .ok_or("config root is not an object")?
-                .entry("agents")
-                .or_insert_with(|| serde_json::json!({}));
-            let defaults = agents
-                .as_object_mut()
-                .ok_or("agents is not an object")?
-                .entry("defaults")
-                .or_insert_with(|| serde_json::json!({}));
-            let mcp_servers = defaults
-                .as_object_mut()
-                .ok_or("defaults is not an object")?
-                .entry("mcpServers")
-                .or_insert_with(|| serde_json::json!({}));
-            let servers_map = mcp_servers
-                .as_object_mut()
-                .ok_or("mcpServers is not an object")?;
-
-            servers_map.insert("nucleusdb".to_string(), ndb_entry);
-            servers_map.insert("agenthalo".to_string(), halo_entry);
-
-            let serialized =
-                serde_json::to_string_pretty(&config).map_err(|e| format!("serialize: {e}"))?;
-            let tmp = config_path.with_extension("json.tmp");
-            std::fs::write(&tmp, &serialized)
-                .map_err(|e| format!("write {}: {e}", tmp.display()))?;
-            std::fs::rename(&tmp, &config_path).map_err(|e| format!("rename: {e}"))?;
-
-            Ok::<_, String>(OpenClawWireMcpResponse {
-                success: true,
-                config_path: config_path.display().to_string(),
-                tools_wired: vec!["nucleusdb".to_string(), "agenthalo".to_string()],
-                nucleusdb_mcp_path: ndb_path,
-                agenthalo_mcp_path: halo_path,
-            })
-        })
-        .await
-        .map_err(|e| McpError::internal_error(format!("join: {e}"), None))?
-        .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(Json(result))
-    }
 }
 
 /// CLI detect command for each supported agent.
@@ -6057,7 +5980,6 @@ fn cli_detect_command(agent: &str) -> Option<&'static str> {
         "claude" => Some("claude"),
         "codex" => Some("codex"),
         "gemini" => Some("gemini"),
-        "openclaw" => Some("openclaw"),
         _ => None,
     }
 }
@@ -6105,21 +6027,8 @@ fn cli_npm_package(agent: &str) -> Option<&'static str> {
         "claude" => Some("@anthropic-ai/claude-code"),
         "codex" => Some("@openai/codex"),
         "gemini" => Some("@google/gemini-cli"),
-        "openclaw" => Some("openclaw@latest"),
         _ => None,
     }
-}
-
-/// Resolve a binary name to its absolute path via `which`.
-fn resolve_binary_path(name: &str) -> Option<String> {
-    Command::new("which")
-        .arg(name)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]

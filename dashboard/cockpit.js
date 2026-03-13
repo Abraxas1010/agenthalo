@@ -758,7 +758,6 @@
         { id: 'claude', label: 'Claude' },
         { id: 'codex', label: 'Codex' },
         { id: 'gemini', label: 'Gemini' },
-        { id: 'openclaw', label: 'OpenClaw' },
         { id: 'shell', label: 'Shell' },
         { id: 'metrics', label: 'Metrics Panel' },
         { id: 'log', label: 'Log Stream' },
@@ -819,7 +818,6 @@
         claude: { command: 'claude', args: ['--output-format', 'stream-json', '--verbose'], agentType: 'claude' },
         codex: { command: 'codex', args: ['--json'], agentType: 'codex' },
         gemini: { command: 'gemini', args: ['--output-format', 'stream-json'], agentType: 'gemini' },
-        openclaw: { command: 'openclaw', args: [], agentType: 'openclaw' },
       };
       const cfg = map[agent] || map.shell;
       await this.createSession(cfg.command, cfg.args, cfg.agentType);

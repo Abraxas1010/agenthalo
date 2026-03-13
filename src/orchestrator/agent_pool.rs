@@ -272,11 +272,6 @@ impl AgentPool {
                 args.push("--prompt".to_string());
                 args.push(prompt.to_string());
             }
-            // OpenClaw uses --message flag (per `openclaw agent --message`)
-            "openclaw" => {
-                args.push("--message".to_string());
-                args.push(prompt.to_string());
-            }
             // Unknown kinds: positional arg as safest default
             _ => args.push(prompt.to_string()),
         }
@@ -360,7 +355,7 @@ impl AgentPool {
 pub(crate) fn normalize_agent_kind(raw: &str) -> Result<String, String> {
     let kind = raw.trim().to_ascii_lowercase();
     match kind.as_str() {
-        "claude" | "codex" | "gemini" | "openclaw" | "shell" => Ok(kind),
+        "claude" | "codex" | "gemini" | "shell" => Ok(kind),
         _ => Err(format!("unsupported agent kind '{raw}'")),
     }
 }
@@ -391,11 +386,6 @@ fn command_for_kind(kind: &str) -> (String, Vec<String>, Vec<String>) {
             vec!["CODEX_CLI".to_string()],
         ),
         "gemini" => ("gemini".to_string(), vec!["--yolo".to_string()], Vec::new()),
-        "openclaw" => (
-            "openclaw".to_string(),
-            vec!["run".to_string(), "--non-interactive".to_string()],
-            Vec::new(),
-        ),
         _ => (
             "sh".to_string(),
             vec!["-c".to_string()],

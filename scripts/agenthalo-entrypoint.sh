@@ -300,7 +300,7 @@ CLI_LOG="${LOG_DIR}/cli_install.log"
   export no_proxy="*"
   export NPM_CONFIG_PREFIX=/data/npm-global
   mkdir -p /data/npm-global
-  for pkg in "@anthropic-ai/claude-code" "@openai/codex" "@google/gemini-cli" "openclaw@latest"; do
+  for pkg in "@anthropic-ai/claude-code" "@openai/codex" "@google/gemini-cli"; do
     if ! command -v "$(basename "${pkg%%@*}" | tr -d '@')" >/dev/null 2>&1; then
       log "Installing CLI: ${pkg} ..."
       if npm install -g "${pkg}" >>"${CLI_LOG}" 2>&1; then

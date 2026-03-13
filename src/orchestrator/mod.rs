@@ -9,9 +9,11 @@ pub mod trace_bridge;
 
 pub use dispatch::{ContainerHookupRequest, DispatchMode};
 
+use crate::cli::default_witness_cfg;
 use crate::cockpit::pty_manager::PtyManager;
 use crate::container::agent_lock::ReusePolicy;
 use crate::halo::vault::Vault;
+use crate::memory::MemoryStore;
 use crate::orchestrator::agent_pool::{
     normalize_capabilities, validate_capabilities, AgentPool, ContainerBudget, LaunchSpec,
     ManagedAgent,
@@ -22,6 +24,7 @@ use crate::orchestrator::container_dispatch::{
 };
 use crate::orchestrator::task::{Task, TaskStatus, TaskUsage};
 use crate::orchestrator::task_graph::{PipeTransform, TaskEdge, TaskGraph};
+use crate::persistence::{default_wal_path, persist_snapshot_and_sync_wal};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -115,6 +118,8 @@ pub struct Orchestrator {
 struct OrchestratorInner {
     pool: AgentPool,
     container_dispatch: Arc<dyn ContainerDispatch>,
+    memory_store: MemoryStore,
+    recent_memory: tokio::sync::Mutex<BTreeMap<String, Vec<String>>>,
     container_agents: tokio::sync::Mutex<BTreeMap<String, ManagedAgent>>,
     container_sessions: tokio::sync::Mutex<BTreeMap<String, ContainerAgentSession>>,
     tasks: tokio::sync::Mutex<BTreeMap<String, Task>>,
@@ -139,8 +144,13 @@ struct ContainerAgentSession {
 }
 
 const MAX_TASK_TIMEOUT_SECS: u64 = 3600;
+const MAX_SCHEDULE_DELAY_SECS: u64 = 7 * 24 * 3600;
 const TASK_RETENTION_SECS: u64 = 86_400;
 const MAX_TASKS_RETAINED: usize = 2_000;
+const MEMORY_RECALL_LIMIT: usize = 3;
+const MEMORY_RECALL_DISTANCE_MAX: f64 = 0.45;
+const MEMORY_RECALL_TEXT_LIMIT: usize = 240;
+const MEMORY_META_SUFFIX: &str = ":meta";
 
 impl Orchestrator {
     pub fn new(
@@ -182,6 +192,8 @@ impl Orchestrator {
             inner: Arc::new(OrchestratorInner {
                 pool: AgentPool::with_budget(pty_manager, vault, budget),
                 container_dispatch,
+                memory_store: MemoryStore::default(),
+                recent_memory: tokio::sync::Mutex::new(BTreeMap::new()),
                 container_agents: tokio::sync::Mutex::new(BTreeMap::new()),
                 container_sessions: tokio::sync::Mutex::new(BTreeMap::new()),
                 tasks: tokio::sync::Mutex::new(BTreeMap::new()),
@@ -256,6 +268,36 @@ impl Orchestrator {
             }
             Ok(task)
         }
+    }
+
+    pub async fn schedule_task(
+        &self,
+        req: SendTaskRequest,
+        delay_secs: u64,
+    ) -> Result<Task, String> {
+        let prompt = req.task.trim().to_string();
+        if prompt.is_empty() {
+            return Err("task must be non-empty".to_string());
+        }
+        if parse_remote_agent_ref(&req.agent_id).is_some() {
+            return Err("scheduled remote peer tasks are not supported".to_string());
+        }
+        let delay_secs = delay_secs.clamp(1, MAX_SCHEDULE_DELAY_SECS);
+        let task = self
+            .create_scheduled_task(req.agent_id.clone(), prompt)
+            .await;
+        let task_id = task.task_id.clone();
+        let this = self.clone();
+        let run_task_id = task_id.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+            let _ = this.run_task(run_task_id, req.timeout_secs).await;
+        });
+        {
+            let mut bg = self.inner.background_runs.lock().await;
+            bg.insert(task_id.clone(), handle);
+        }
+        Ok(task)
     }
 
     async fn send_remote_peer_task(
@@ -344,11 +386,191 @@ impl Orchestrator {
         task
     }
 
+    async fn create_scheduled_task(&self, agent_id: String, prompt: String) -> Task {
+        let task_id = format!(
+            "task-{}-{}",
+            crate::pod::now_unix(),
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        );
+        let task = Task::new(task_id.clone(), agent_id, prompt);
+        let mut tasks = self.inner.tasks.lock().await;
+        tasks.insert(task_id, task.clone());
+        drop(tasks);
+        let mut graph = self.inner.graph.lock().await;
+        graph.upsert_node(&task.task_id, &task.agent_id, task.status.clone());
+        task
+    }
+
+    async fn mark_task_running_if_needed(&self, task: &Task) {
+        if task.status == TaskStatus::Running {
+            return;
+        }
+        let mut updated = task.clone();
+        updated.mark_running();
+        {
+            let mut tasks = self.inner.tasks.lock().await;
+            tasks.insert(updated.task_id.clone(), updated.clone());
+        }
+        let mut graph = self.inner.graph.lock().await;
+        graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
+    }
+
+    async fn effective_prompt_for_task(&self, task: &Task) -> String {
+        if !self.agent_supports_context_prompting(&task.agent_id).await {
+            return task.prompt.clone();
+        }
+        match self
+            .recall_agent_context(&task.agent_id, &task.prompt)
+            .await
+        {
+            Ok(Some(context)) => format!(
+                "Relevant prior context for this agent:\n{}\n\nCurrent task:\n{}",
+                context, task.prompt
+            ),
+            _ => task.prompt.clone(),
+        }
+    }
+
+    async fn agent_supports_context_prompting(&self, agent_id: &str) -> bool {
+        if let Some(agent) = self
+            .inner
+            .container_agents
+            .lock()
+            .await
+            .get(agent_id)
+            .cloned()
+        {
+            return agent.agent_type != "shell";
+        }
+        self.inner
+            .pool
+            .list()
+            .await
+            .into_iter()
+            .find(|agent| agent.agent_id == agent_id)
+            .map(|agent| agent.agent_type != "shell")
+            .unwrap_or(false)
+    }
+
+    async fn recall_agent_context(
+        &self,
+        agent_id: &str,
+        prompt: &str,
+    ) -> Result<Option<String>, String> {
+        if let Some(context) = self.recall_recent_agent_context(agent_id, prompt).await {
+            return Ok(Some(context));
+        }
+        let db_path = self.inner.trace_db_path.clone();
+        if !db_path.exists() {
+            return Ok(None);
+        }
+        let memory_store = self.inner.memory_store.clone();
+        let agent_id = agent_id.to_string();
+        let prompt = prompt.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut db = load_or_create_orchestrator_db(&db_path)?;
+            let source = orchestrator_memory_source(&agent_id);
+            let recalls = memory_store.recall(&mut db, &prompt, MEMORY_RECALL_LIMIT * 2)?;
+            let mut relevant = recalls
+                .into_iter()
+                .filter(|record| record.source.as_deref() == Some(source.as_str()))
+                .filter(|record| record.distance <= MEMORY_RECALL_DISTANCE_MAX)
+                .take(MEMORY_RECALL_LIMIT)
+                .map(|record| truncate_memory_text(&record.text, MEMORY_RECALL_TEXT_LIMIT))
+                .collect::<Vec<_>>();
+            if relevant.is_empty() {
+                relevant = lexical_memory_fallback(&db, &source, &prompt);
+            }
+            if relevant.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(
+                    relevant
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, text)| format!("{}. {}", idx + 1, text))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ))
+            }
+        })
+        .await
+        .map_err(|e| format!("memory recall task join failed: {e}"))?
+    }
+
+    async fn recall_recent_agent_context(&self, agent_id: &str, prompt: &str) -> Option<String> {
+        let tokens = prompt_tokens(prompt);
+        if tokens.is_empty() {
+            return None;
+        }
+        let memories = self.inner.recent_memory.lock().await;
+        let relevant = memories
+            .get(agent_id)?
+            .iter()
+            .rev()
+            .filter(|entry| {
+                let normalized = entry.to_ascii_lowercase();
+                tokens.iter().any(|token| normalized.contains(token))
+            })
+            .take(MEMORY_RECALL_LIMIT)
+            .map(|entry| truncate_memory_text(entry, MEMORY_RECALL_TEXT_LIMIT))
+            .collect::<Vec<_>>();
+        if relevant.is_empty() {
+            None
+        } else {
+            Some(
+                relevant
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, text)| format!("{}. {}", idx + 1, text))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        }
+    }
+
+    async fn persist_memory_turn(
+        &self,
+        agent_id: &str,
+        task_id: &str,
+        role: &str,
+        text: &str,
+    ) -> Result<(), String> {
+        let body = text.trim();
+        if body.is_empty() {
+            return Ok(());
+        }
+        let db_path = self.inner.trace_db_path.clone();
+        let memory_store = self.inner.memory_store.clone();
+        let source = orchestrator_memory_source(agent_id);
+        let payload =
+            format!("agent_id: {agent_id}\ntask_id: {task_id}\nrole: {role}\ncontent:\n{body}");
+        {
+            let mut recent = self.inner.recent_memory.lock().await;
+            let entries = recent.entry(agent_id.to_string()).or_default();
+            entries.push(payload.clone());
+            if entries.len() > 24 {
+                let excess = entries.len() - 24;
+                entries.drain(0..excess);
+            }
+        }
+        tokio::task::spawn_blocking(move || {
+            let mut db = load_or_create_orchestrator_db(&db_path)?;
+            memory_store
+                .store_memory(&mut db, &payload, Some(&source))
+                .map_err(|e| format!("store orchestrator memory: {e}"))?;
+            persist_orchestrator_db(&db_path, &db)
+        })
+        .await
+        .map_err(|e| format!("memory persist task join failed: {e}"))?
+    }
+
     async fn run_task(&self, task_id: String, timeout_override: Option<u64>) -> Result<(), String> {
         let task = self
             .get_task(&task_id)
             .await
             .ok_or_else(|| format!("unknown task {task_id}"))?;
+        self.mark_task_running_if_needed(&task).await;
         if self.is_container_agent(&task.agent_id).await {
             let result = self
                 .run_container_task(task_id.clone(), task, timeout_override)
@@ -357,13 +579,17 @@ impl Orchestrator {
             self.prune_tasks().await;
             return result;
         }
+        let effective_prompt = self.effective_prompt_for_task(&task).await;
+        let _ = self
+            .persist_memory_turn(&task.agent_id, &task.task_id, "user", &task.prompt)
+            .await;
         let execution = self
             .inner
             .pool
             .start_task(
                 &task.agent_id,
                 &task.task_id,
-                &task.prompt,
+                &effective_prompt,
                 timeout_override.map(|t| t.clamp(1, MAX_TASK_TIMEOUT_SECS)),
             )
             .await?;
@@ -378,7 +604,7 @@ impl Orchestrator {
             &execution.agent_type,
             &self.inner.trace_db_path,
             &trace_session_id,
-            &task.prompt,
+            &effective_prompt,
             execution.trace_enabled,
             execution.timeout_secs,
         )
@@ -415,6 +641,19 @@ impl Orchestrator {
                     let mut graph = self.inner.graph.lock().await;
                     graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
                 }
+                let memory_text = updated
+                    .answer
+                    .clone()
+                    .or_else(|| updated.result.clone())
+                    .unwrap_or_default();
+                let _ = self
+                    .persist_memory_turn(
+                        &updated.agent_id,
+                        &updated.task_id,
+                        "assistant",
+                        &memory_text,
+                    )
+                    .await;
                 let _ = self.inner.pool.destroy_pty_session(&execution.session_id);
                 self.inner
                     .pool
@@ -451,6 +690,9 @@ impl Orchestrator {
                     let mut graph = self.inner.graph.lock().await;
                     graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
                 }
+                let _ = self
+                    .persist_memory_turn(&updated.agent_id, &updated.task_id, "system", &err)
+                    .await;
                 let _ = self.inner.pool.destroy_pty_session(&execution.session_id);
                 self.inner
                     .pool
@@ -662,13 +904,17 @@ impl Orchestrator {
             };
             timeout_secs
         };
+        let effective_prompt = self.effective_prompt_for_task(&task).await;
+        let _ = self
+            .persist_memory_turn(&task.agent_id, &task.task_id, "user", &task.prompt)
+            .await;
         let outcome = tokio::time::timeout(
             Duration::from_secs(timeout_secs),
             self.inner
                 .container_dispatch
                 .send_prompt(ContainerPromptSpec {
                     peer_agent_id: session.peer_agent_id.clone(),
-                    prompt: task.prompt.clone(),
+                    prompt: effective_prompt,
                 }),
         )
         .await;
@@ -694,6 +940,14 @@ impl Orchestrator {
                     let mut graph = self.inner.graph.lock().await;
                     graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
                 }
+                let _ = self
+                    .persist_memory_turn(
+                        &updated.agent_id,
+                        &updated.task_id,
+                        "assistant",
+                        &response.content,
+                    )
+                    .await;
                 {
                     let mut agents = self.inner.container_agents.lock().await;
                     if let Some(agent) = agents.get_mut(&task.agent_id) {
@@ -729,6 +983,9 @@ impl Orchestrator {
                     let mut graph = self.inner.graph.lock().await;
                     graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
                 }
+                let _ = self
+                    .persist_memory_turn(&updated.agent_id, &updated.task_id, "system", &err)
+                    .await;
                 {
                     let mut agents = self.inner.container_agents.lock().await;
                     if let Some(agent) = agents.get_mut(&updated.agent_id) {
@@ -749,6 +1006,9 @@ impl Orchestrator {
                     let mut graph = self.inner.graph.lock().await;
                     graph.upsert_node(&updated.task_id, &updated.agent_id, updated.status.clone());
                 }
+                let _ = self
+                    .persist_memory_turn(&updated.agent_id, &updated.task_id, "system", &err)
+                    .await;
                 {
                     let mut agents = self.inner.container_agents.lock().await;
                     if let Some(agent) = agents.get_mut(&updated.agent_id) {
@@ -1122,6 +1382,99 @@ fn parse_remote_agent_ref(agent_id: &str) -> Option<(String, String)> {
     ))
 }
 
+fn orchestrator_memory_source(agent_id: &str) -> String {
+    format!("orchestrator:agent:{agent_id}")
+}
+
+fn truncate_memory_text(text: &str, limit: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= limit {
+        return trimmed.to_string();
+    }
+    let shortened = trimmed.chars().take(limit).collect::<String>();
+    format!("{shortened}...")
+}
+
+fn load_or_create_orchestrator_db(
+    db_path: &std::path::Path,
+) -> Result<crate::protocol::NucleusDb, String> {
+    if !db_path.exists() {
+        return Ok(crate::protocol::NucleusDb::new(
+            crate::state::State::new(vec![]),
+            crate::VcBackend::BinaryMerkle,
+            default_witness_cfg(),
+        ));
+    }
+    crate::protocol::NucleusDb::load_persistent(db_path, default_witness_cfg())
+        .map_err(|e| format!("load NucleusDB {}: {e:?}", db_path.display()))
+}
+
+fn persist_orchestrator_db(
+    db_path: &std::path::Path,
+    db: &crate::protocol::NucleusDb,
+) -> Result<(), String> {
+    let wal_path = default_wal_path(db_path);
+    persist_snapshot_and_sync_wal(db_path, &wal_path, db)
+        .map_err(|e| format!("persist NucleusDB {}: {e:?}", db_path.display()))
+}
+
+fn lexical_memory_fallback(
+    db: &crate::protocol::NucleusDb,
+    source: &str,
+    prompt: &str,
+) -> Vec<String> {
+    let tokens = prompt_tokens(prompt);
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+    let mut matches = Vec::new();
+    for (key, _) in db.keymap.all_keys() {
+        if !key.starts_with(crate::memory::MEMORY_KEY_PREFIX)
+            || key.ends_with(MEMORY_META_SUFFIX)
+            || key.ends_with(":vec")
+        {
+            continue;
+        }
+        let Some(crate::typed_value::TypedValue::Text(text)) = db.get_typed(key) else {
+            continue;
+        };
+        let meta_key = format!("{key}{MEMORY_META_SUFFIX}");
+        let record_source = db.get_typed(&meta_key).and_then(|value| match value {
+            crate::typed_value::TypedValue::Json(meta) => meta
+                .get("source")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string),
+            _ => None,
+        });
+        if record_source.as_deref() != Some(source) {
+            continue;
+        }
+        let normalized = text.to_ascii_lowercase();
+        if !tokens.iter().any(|token| normalized.contains(token)) {
+            continue;
+        }
+        matches.push(truncate_memory_text(&text, MEMORY_RECALL_TEXT_LIMIT));
+        if matches.len() >= MEMORY_RECALL_LIMIT {
+            break;
+        }
+    }
+    matches
+}
+
+fn prompt_tokens(prompt: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for token in prompt
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| token.len() >= 6)
+    {
+        if !out.contains(&token) {
+            out.push(token);
+        }
+    }
+    out
+}
+
 fn load_local_identity_for_a2a() -> Result<crate::halo::did::DIDIdentity, String> {
     let seed_hex = std::env::var("NUCLEUSDB_AGENT_PRIVATE_KEY").map_err(|_| {
         "NUCLEUSDB_AGENT_PRIVATE_KEY is required for remote A2A delegation".to_string()
@@ -1186,7 +1539,7 @@ mod tests {
 
     fn test_orchestrator() -> Orchestrator {
         let pty = Arc::new(PtyManager::new(8));
-        Orchestrator::new(pty, None, PathBuf::from("/tmp/orch_trace_test.ndb"))
+        Orchestrator::new(pty, None, temp_db_path("orch_trace_test"))
     }
 
     fn test_container_orchestrator() -> Orchestrator {
@@ -1194,7 +1547,7 @@ mod tests {
         Orchestrator::with_budget_and_container_dispatch(
             pty,
             None,
-            PathBuf::from("/tmp/orch_container_trace_test.ndb"),
+            temp_db_path("orch_container_trace_test"),
             ContainerBudget::default(),
             Arc::new(InMemoryContainerDispatch::default()),
         )
@@ -1275,10 +1628,19 @@ mod tests {
         Orchestrator::with_budget_and_container_dispatch(
             pty,
             None,
-            PathBuf::from("/tmp/orch_container_timeout_test.ndb"),
+            temp_db_path("orch_container_timeout_test"),
             ContainerBudget::default(),
             Arc::new(SlowContainerDispatch),
         )
+    }
+
+    fn temp_db_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{}_{}_{}.ndb",
+            tag,
+            crate::pod::now_unix(),
+            uuid::Uuid::new_v4().simple()
+        ))
     }
 
     #[tokio::test]
@@ -1603,6 +1965,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn schedule_task_runs_after_delay() {
+        let orchestrator = test_orchestrator();
+        let agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "scheduled-shell".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: None,
+                container_hookup: None,
+            })
+            .await
+            .expect("launch");
+        let scheduled = orchestrator
+            .schedule_task(
+                SendTaskRequest {
+                    agent_id: agent.agent_id,
+                    task: "printf 'scheduled-ok'".to_string(),
+                    timeout_secs: Some(30),
+                    wait: false,
+                },
+                1,
+            )
+            .await
+            .expect("schedule");
+        assert!(matches!(scheduled.status, TaskStatus::Pending));
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        let finished = orchestrator
+            .get_task(&scheduled.task_id)
+            .await
+            .expect("scheduled task");
+        assert!(matches!(finished.status, TaskStatus::Complete));
+        assert!(finished
+            .result
+            .as_deref()
+            .unwrap_or_default()
+            .contains("scheduled-ok"));
+    }
+
+    #[tokio::test]
     async fn background_handle_is_cleaned_up_after_fast_task() {
         let orchestrator = test_orchestrator();
         let agent = orchestrator
@@ -1647,6 +2053,57 @@ mod tests {
             .await
             .expect("task exists");
         assert!(matches!(task.status, TaskStatus::Complete));
+    }
+
+    #[tokio::test]
+    async fn container_tasks_recall_prior_context_for_non_shell_agents() {
+        let orchestrator = test_container_orchestrator();
+        let agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "memory-api".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: false,
+                capabilities: vec!["memory_read".to_string(), "memory_write".to_string()],
+                dispatch_mode: Some(DispatchMode::Container),
+                container_hookup: Some(ContainerHookupRequest::Api {
+                    provider: "openrouter".to_string(),
+                    model: "openrouter/test-model".to_string(),
+                    api_key_source: "test-key".to_string(),
+                    base_url_override: None,
+                }),
+            })
+            .await
+            .expect("launch container api");
+        let seed = orchestrator
+            .send_task(SendTaskRequest {
+                agent_id: agent.agent_id.clone(),
+                task: "remember project token basaltcodename42".to_string(),
+                timeout_secs: Some(30),
+                wait: true,
+            })
+            .await
+            .expect("seed memory");
+        assert!(matches!(seed.status, TaskStatus::Complete));
+
+        let followup = orchestrator
+            .send_task(SendTaskRequest {
+                agent_id: agent.agent_id,
+                task: "what do we know about basaltcodename42?".to_string(),
+                timeout_secs: Some(30),
+                wait: true,
+            })
+            .await
+            .expect("followup task");
+        let result = followup.result.unwrap_or_default();
+        assert!(
+            result.contains("Relevant prior context for this agent"),
+            "expected recalled context in prompt, got {result}"
+        );
+        assert!(result.contains("basaltcodename42"));
     }
 
     #[test]

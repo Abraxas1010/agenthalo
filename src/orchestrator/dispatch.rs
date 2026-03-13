@@ -51,9 +51,7 @@ impl ContainerHookupRequest {
     pub fn infer_cli(agent: &str, model: Option<String>) -> Result<Self, String> {
         let cli_name = agent.trim().to_ascii_lowercase();
         match cli_name.as_str() {
-            "shell" | "claude" | "codex" | "gemini" | "openclaw" => {
-                Ok(Self::Cli { cli_name, model })
-            }
+            "shell" | "claude" | "codex" | "gemini" => Ok(Self::Cli { cli_name, model }),
             _ => Err(format!(
                 "container dispatch requires an explicit container_hookup for agent kind `{agent}`"
             )),
