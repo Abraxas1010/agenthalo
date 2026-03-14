@@ -2633,7 +2633,7 @@ async function renderSetup() {
   const identityConfigured = !!(identityCfg.device_configured && identityCfg.network_configured);
   const willAutoApply = !identityCfg.anonymous_mode && !identityConfigured
     && !tierCfg.configured && initialSecurityTier === 'max-safe';
-  const hideSafetyUI = identityCfg.anonymous_mode || identityConfigured || willAutoApply;
+  const hideSafetyUI = identityCfg.anonymous_mode || identityConfigured || tierCfg.configured || willAutoApply;
 
   // Pre-compute LLM step done-state HTML (cannot use IIFE inside template literals)
   const _step2DoneHtml = (() => {

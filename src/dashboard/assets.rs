@@ -26,7 +26,15 @@ fn serve_embedded(path: &str) -> Option<Response> {
     Some(
         (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, mime)],
+            [
+                (header::CONTENT_TYPE, mime),
+                (
+                    header::CACHE_CONTROL,
+                    "no-store, no-cache, must-revalidate, max-age=0".to_string(),
+                ),
+                (header::PRAGMA, "no-cache".to_string()),
+                (header::EXPIRES, "0".to_string()),
+            ],
             file.data.to_vec(),
         )
             .into_response(),
