@@ -501,11 +501,21 @@
       hostEl.querySelectorAll('[data-layout]').forEach((btn) => {
         btn.addEventListener('click', () => this.setLayout(btn.dataset.layout));
       });
-      hostEl.querySelector('#cockpit-new').addEventListener('click', (ev) => this.toggleNewDropdown(ev.currentTarget));
+      hostEl.querySelector('#cockpit-new').addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.toggleNewDropdown(ev.currentTarget);
+      });
       hostEl.querySelector('#cockpit-mesh-toggle')?.addEventListener('click', () => {
         this.setMeshCollapsed(!this.meshCollapsed);
       });
-      document.addEventListener('click', () => this.hideDropdown());
+      document.addEventListener('click', (ev) => {
+        if (!this.newDropdown) return;
+        const target = ev.target;
+        const anchor = hostEl.querySelector('#cockpit-new');
+        if (this.newDropdown.contains(target) || anchor?.contains(target)) return;
+        this.hideDropdown();
+      });
     }
 
     setMeshCollapsed(collapsed) {
@@ -810,28 +820,36 @@
         return;
       }
       const items = [
-        { id: 'claude', label: 'Claude', icon: '⚡', needsPreflight: true },
-        { id: 'codex', label: 'Codex', icon: '⌁', needsPreflight: true },
-        { id: 'gemini', label: 'Gemini', icon: '◇', needsPreflight: true },
-        { id: 'shell', label: 'Shell', icon: '▣', needsPreflight: false },
-        { id: 'admin', label: 'Admin Panel', icon: '⚙', needsPreflight: false },
-        { id: 'containers', label: 'Containers', icon: '⬒', needsPreflight: false },
-        { id: 'workflow', label: 'Workflow Builder', icon: '🔀', needsPreflight: false },
-        { id: 'channel', label: 'Agent Channel', icon: '⬡', needsPreflight: false },
-        { id: 'metrics', label: 'Metrics Panel', icon: '📊', needsPreflight: false },
-        { id: 'log', label: 'Log Stream', icon: '📜', needsPreflight: false },
-        { id: 'custom', label: 'Custom', icon: '⚙', needsPreflight: false },
+        { id: 'claude', label: 'Claude CLI', detail: 'Anthropic terminal agent', icon: '⚡', needsPreflight: true },
+        { id: 'codex', label: 'Codex CLI', detail: 'OpenAI terminal agent', icon: '⌁', needsPreflight: true },
+        { id: 'gemini', label: 'Gemini CLI', detail: 'Google terminal agent', icon: '◇', needsPreflight: true },
+        { id: 'shell', label: 'Shell', detail: 'Raw bash session', icon: '▣', needsPreflight: false },
+        { id: 'admin', label: 'Admin Panel', detail: 'Operational controls', icon: '⚙', needsPreflight: false },
+        { id: 'containers', label: 'Containers', detail: 'Live container state', icon: '⬒', needsPreflight: false },
+        { id: 'workflow', label: 'Workflow Builder', detail: 'Task graph orchestration', icon: '🔀', needsPreflight: false },
+        { id: 'channel', label: 'Agent Channel', detail: 'Inter-agent message surface', icon: '⬡', needsPreflight: false },
+        { id: 'metrics', label: 'Metrics Panel', detail: 'Session telemetry', icon: '📊', needsPreflight: false },
+        { id: 'log', label: 'Log Stream', detail: 'Live event feed', icon: '📜', needsPreflight: false },
+        { id: 'custom', label: 'Custom', detail: 'Run your own PTY command', icon: '⚙', needsPreflight: false },
       ];
       const menu = document.createElement('div');
       menu.className = 'cockpit-new-dropdown';
       menu.innerHTML = items.map((it) => `
         <div class="dropdown-item" data-agent="${it.id}">
           <span class="dropdown-icon">${it.icon || ''}</span>
-          <span class="dropdown-label">${escapeHtml(it.label)}</span>
+          <span class="dropdown-copy">
+            <span class="dropdown-label">${escapeHtml(it.label)}</span>
+            <span class="dropdown-detail">${escapeHtml(it.detail || '')}</span>
+          </span>
           ${it.needsPreflight ? `<span class="dropdown-status loading" data-status-for="${it.id}">…</span>` : ''}
         </div>
-      `).join('');
+      `).join('') + `
+        <div class="dropdown-footnote">
+          OpenRouter is configured for API-backed workflows, not as a cockpit PTY lane.
+        </div>
+      `;
       menu.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
         const item = ev.target.closest('[data-agent]');
         if (!item) return;
         try {
@@ -1121,7 +1139,30 @@
       if (entryCount === 0) {
         const hint = document.createElement('div');
         hint.className = 'cockpit-empty-hint';
-        hint.innerHTML = 'No active sessions. Use <b>+ New</b> to launch one.';
+        hint.innerHTML = `
+          <div class="empty-hint-title">No active sessions.</div>
+          <div class="empty-hint-subtitle">Choose the execution lane you want: Claude, Codex, Gemini, or a raw shell. Use <b>+ New</b> for panels like Containers, Workflow, Metrics, and Admin.</div>
+          <div class="empty-hint-actions">
+            <button type="button" class="btn btn-sm btn-primary" data-launch-agent="claude">Start Claude</button>
+            <button type="button" class="btn btn-sm" data-launch-agent="codex">Start Codex</button>
+            <button type="button" class="btn btn-sm" data-launch-agent="gemini">Start Gemini</button>
+            <button type="button" class="btn btn-sm" data-launch-agent="shell">Start Shell</button>
+          </div>
+          <div class="empty-hint-note">OpenRouter currently powers API-backed features and workflow panels, not an interactive PTY session.</div>
+        `;
+        hint.querySelectorAll('[data-launch-agent]').forEach((btn) => {
+          btn.addEventListener('click', async (ev) => {
+            ev.preventDefault();
+            const agent = btn.dataset.launchAgent;
+            try {
+              await this.createFromPreset(agent);
+            } catch (e) {
+              if (!(typeof window.trySetupRedirect === 'function' && window.trySetupRedirect(e, agent, 'cockpit'))) {
+                alert(`Launch failed: ${e.message || e}`);
+              }
+            }
+          });
+        });
         this.gridEl.appendChild(hint);
       }
     }
