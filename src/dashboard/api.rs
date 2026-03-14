@@ -60,8 +60,6 @@ use crate::state::State;
 use crate::verifier::gate as proof_gate;
 use crate::witness::WitnessSignatureAlgorithm;
 use crate::VcBackend;
-use crate::orchestrator::container_dispatch::ContainerDispatch;
-
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State as AxumState};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
@@ -289,7 +287,10 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/containers", get(api_containers_list))
         .route("/containers/provision", post(api_containers_provision))
         .route("/containers/initialize", post(api_containers_initialize))
-        .route("/containers/deinitialize", post(api_containers_deinitialize))
+        .route(
+            "/containers/deinitialize",
+            post(api_containers_deinitialize),
+        )
         .route("/containers/{id}", delete(api_containers_destroy))
         .route("/containers/{id}/logs", get(api_containers_logs))
         .route("/models/status", get(api_models_status))
@@ -2294,7 +2295,8 @@ async fn api_containers_list(AxumState(state): AxumState<DashboardState>) -> Api
             Some(peer) => fetch_container_lock_status_view(peer).await,
             None => (None, None),
         };
-        let identity = container_identity_payload(&session.session_id, &registry, &session.agent_id);
+        let identity =
+            container_identity_payload(&session.session_id, &registry, &session.agent_id);
         views.push(json!({
             "session_id": session.session_id,
             "container_id": session.container_id,
@@ -2339,7 +2341,7 @@ async fn api_containers_provision(
             &format!("AETHER admission policy blocked container provision: {reason}"),
         ));
     }
-    let dispatch = crate::orchestrator::container_dispatch::MeshContainerDispatch::default();
+    let dispatch = state.container_dispatch.clone();
     let defaults = dispatch.provision_defaults();
     let peer_agent_id = req
         .agent_id
@@ -2355,19 +2357,20 @@ async fn api_containers_provision(
             )
         });
     let provisioned = dispatch
-        .provision(crate::orchestrator::container_dispatch::ContainerProvisionSpec {
-            image: req.image.unwrap_or(defaults.image),
-            peer_agent_id,
-            mcp_port: defaults.mcp_port,
-            registry_volume: defaults.registry_volume,
-            env: std::collections::BTreeMap::new(),
-        })
+        .provision(
+            crate::orchestrator::container_dispatch::ContainerProvisionSpec {
+                image: req.image.unwrap_or(defaults.image),
+                peer_agent_id,
+                mcp_port: defaults.mcp_port,
+                registry_volume: defaults.registry_volume,
+                env: std::collections::BTreeMap::new(),
+            },
+        )
         .await
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let identity = crate::orchestrator::container_dispatch::load_identity_record(
-        &provisioned.session_id,
-    )
-    .map_err(internal_err)?;
+    let identity =
+        crate::orchestrator::container_dispatch::load_identity_record(&provisioned.session_id)
+            .map_err(internal_err)?;
     Ok(Json(json!({
         "session_id": provisioned.session_id,
         "container_id": provisioned.container_id,
@@ -2387,13 +2390,15 @@ async fn api_containers_initialize(
     require_sensitive_access(&state)?;
     let session = crate::container::launcher::load_session(&req.session_id)
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let dispatch = crate::orchestrator::container_dispatch::MeshContainerDispatch::default();
+    let dispatch = state.container_dispatch.clone();
     let initialized = dispatch
-        .initialize(crate::orchestrator::container_dispatch::ContainerInitializeSpec {
-            peer_agent_id: session.agent_id,
-            reuse_policy: req.reuse_policy.unwrap_or(ReusePolicy::Reusable),
-            hookup: req.hookup,
-        })
+        .initialize(
+            crate::orchestrator::container_dispatch::ContainerInitializeSpec {
+                peer_agent_id: session.agent_id,
+                reuse_policy: req.reuse_policy.unwrap_or(ReusePolicy::Reusable),
+                hookup: req.hookup,
+            },
+        )
         .await
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     Ok(Json(json!({
@@ -2413,11 +2418,13 @@ async fn api_containers_deinitialize(
     require_sensitive_access(&state)?;
     let session = crate::container::launcher::load_session(&req.session_id)
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let dispatch = crate::orchestrator::container_dispatch::MeshContainerDispatch::default();
+    let dispatch = state.container_dispatch.clone();
     let deinitialized = dispatch
-        .deinitialize(crate::orchestrator::container_dispatch::ContainerDeinitializeSpec {
-            peer_agent_id: session.agent_id,
-        })
+        .deinitialize(
+            crate::orchestrator::container_dispatch::ContainerDeinitializeSpec {
+                peer_agent_id: session.agent_id,
+            },
+        )
         .await
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     Ok(Json(json!({
@@ -2434,7 +2441,7 @@ async fn api_containers_destroy(
     Path(id): Path<String>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let dispatch = crate::orchestrator::container_dispatch::MeshContainerDispatch::default();
+    let dispatch = state.container_dispatch.clone();
     dispatch
         .destroy(&id)
         .await
@@ -4835,51 +4842,51 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
     let agents = orchestrator.list_agents().await;
     let mut payload_agents = Vec::with_capacity(agents.len());
     for a in agents {
-            let container_meta = orchestrator.container_agent_metadata(&a.agent_id).await;
-            let container_session_id = container_meta.as_ref().map(|meta| meta.0.clone());
-            let container_id = container_meta.as_ref().map(|meta| meta.1.clone());
-            let lock_state = container_meta.as_ref().map(|meta| meta.2.clone());
-            let did_uri = container_session_id
-                .as_deref()
-                .and_then(|session_id| {
-                    crate::orchestrator::container_dispatch::load_identity_record(session_id)
-                        .ok()
-                        .flatten()
-                        .and_then(|identity| {
-                            identity
-                                .get("did_uri")
-                                .and_then(|value| value.as_str())
-                                .map(str::to_string)
-                        })
-                })
-                .or_else(|| {
-                    registry
-                        .find(&a.agent_id)
-                        .and_then(|peer| peer.did_uri.clone())
-                });
-            let base_trust = base_agent_trust(&a.agent_type);
-            let trust = trust_model.nucleus(base_trust);
-            payload_agents.push(json!({
-                "agent_id": a.agent_id,
-                "agent_name": a.agent_name,
-                "agent_type": a.agent_type,
-                "status": match a.status {
-                    crate::orchestrator::agent_pool::AgentStatus::Idle => "idle",
-                    crate::orchestrator::agent_pool::AgentStatus::Busy { .. } => "busy",
-                    crate::orchestrator::agent_pool::AgentStatus::Stopped { .. } => "stopped",
-                },
-                "tasks_completed": a.tasks_completed,
-                "total_cost_usd": a.total_cost_usd,
-                "capabilities": a.capabilities,
-                "launched_at": a.launched_at,
-                "epistemic_trust": trust,
-                "trust_fixed_point": trust_model.is_fixed_point(base_trust),
-                "trust_floor": trust_model.floor(),
-                "container_session_id": container_session_id,
-                "container_id": container_id,
-                "lock_state": lock_state,
-                "did_uri": did_uri,
-            }));
+        let container_meta = orchestrator.container_agent_metadata(&a.agent_id).await;
+        let container_session_id = container_meta.as_ref().map(|meta| meta.0.clone());
+        let container_id = container_meta.as_ref().map(|meta| meta.1.clone());
+        let lock_state = container_meta.as_ref().map(|meta| meta.2.clone());
+        let did_uri = container_session_id
+            .as_deref()
+            .and_then(|session_id| {
+                crate::orchestrator::container_dispatch::load_identity_record(session_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|identity| {
+                        identity
+                            .get("did_uri")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string)
+                    })
+            })
+            .or_else(|| {
+                registry
+                    .find(&a.agent_id)
+                    .and_then(|peer| peer.did_uri.clone())
+            });
+        let base_trust = base_agent_trust(&a.agent_type);
+        let trust = trust_model.nucleus(base_trust);
+        payload_agents.push(json!({
+            "agent_id": a.agent_id,
+            "agent_name": a.agent_name,
+            "agent_type": a.agent_type,
+            "status": match a.status {
+                crate::orchestrator::agent_pool::AgentStatus::Idle => "idle",
+                crate::orchestrator::agent_pool::AgentStatus::Busy { .. } => "busy",
+                crate::orchestrator::agent_pool::AgentStatus::Stopped { .. } => "stopped",
+            },
+            "tasks_completed": a.tasks_completed,
+            "total_cost_usd": a.total_cost_usd,
+            "capabilities": a.capabilities,
+            "launched_at": a.launched_at,
+            "epistemic_trust": trust,
+            "trust_fixed_point": trust_model.is_fixed_point(base_trust),
+            "trust_floor": trust_model.floor(),
+            "container_session_id": container_session_id,
+            "container_id": container_id,
+            "lock_state": lock_state,
+            "did_uri": did_uri,
+        }));
     }
     Ok(Json(json!({
         "agents": payload_agents,
@@ -9793,6 +9800,72 @@ mod tests {
             .await
             .expect_err("status should require auth");
         assert_eq!(status_err.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn container_endpoints_require_sensitive_access() {
+        let _env_lock = dashboard_auth_env_lock().lock().expect("env lock");
+        let _auth_guard = DashboardAuthRequirementGuard::enforced();
+        let (state, _dir) = unauthenticated_dashboard_state();
+
+        let list_err = api_containers_list(AxumState(state.clone()))
+            .await
+            .expect_err("list should require auth");
+        assert_eq!(list_err.0, StatusCode::UNAUTHORIZED);
+
+        let provision_err = api_containers_provision(
+            AxumState(state.clone()),
+            Json(ContainersProvisionRequest {
+                image: None,
+                agent_id: None,
+                admission_mode: None,
+            }),
+        )
+        .await
+        .expect_err("provision should require auth");
+        assert_eq!(provision_err.0, StatusCode::UNAUTHORIZED);
+
+        let initialize_err = api_containers_initialize(
+            AxumState(state.clone()),
+            Json(ContainersInitializeRequest {
+                session_id: "sess-test".to_string(),
+                reuse_policy: None,
+                hookup: crate::orchestrator::dispatch::ContainerHookupRequest::Cli {
+                    cli_name: "shell".to_string(),
+                    model: None,
+                },
+            }),
+        )
+        .await
+        .expect_err("initialize should require auth");
+        assert_eq!(initialize_err.0, StatusCode::UNAUTHORIZED);
+
+        let deinitialize_err = api_containers_deinitialize(
+            AxumState(state.clone()),
+            Json(ContainersDeinitializeRequest {
+                session_id: "sess-test".to_string(),
+            }),
+        )
+        .await
+        .expect_err("deinitialize should require auth");
+        assert_eq!(deinitialize_err.0, StatusCode::UNAUTHORIZED);
+
+        let destroy_err =
+            api_containers_destroy(AxumState(state.clone()), Path("sess-test".to_string()))
+                .await
+                .expect_err("destroy should require auth");
+        assert_eq!(destroy_err.0, StatusCode::UNAUTHORIZED);
+
+        let logs_err = api_containers_logs(
+            AxumState(state),
+            Path("sess-test".to_string()),
+            Query(ContainerLogsQuery {
+                follow: Some(false),
+            }),
+        )
+        .await
+        .expect_err("logs should require auth");
+        assert_eq!(logs_err.0, StatusCode::UNAUTHORIZED);
     }
 
     #[test]

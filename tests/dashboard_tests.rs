@@ -14,6 +14,7 @@ use nucleusdb::halo::trace::{
 };
 use nucleusdb::halo::vault::Vault;
 use nucleusdb::memory::MemoryStore;
+use nucleusdb::orchestrator::container_dispatch::InMemoryContainerDispatch;
 use nucleusdb::persistence::{default_wal_path, persist_snapshot_and_sync_wal};
 use nucleusdb::protocol::{NucleusDb, VcBackend};
 use nucleusdb::state::State;
@@ -68,6 +69,14 @@ fn test_state_unauth(tag: &str) -> (DashboardState, PathBuf, PathBuf) {
     let _ = std::fs::remove_file(&creds);
     let state = build_state(db_path.clone(), creds.clone());
     (state, db_path, creds)
+}
+
+fn test_state_with_container_dispatch(
+    tag: &str,
+    dispatch: Arc<dyn nucleusdb::orchestrator::container_dispatch::ContainerDispatch>,
+) -> (DashboardState, PathBuf) {
+    let (state, db_path) = test_state(tag);
+    (state.with_container_dispatch(dispatch), db_path)
 }
 
 fn seed_session(db_path: &std::path::Path, session_id: &str) {
@@ -267,7 +276,9 @@ print(json.dumps({
     .expect("write mock verifier");
     #[cfg(unix)]
     {
-        let mut perms = std::fs::metadata(&path).expect("verifier metadata").permissions();
+        let mut perms = std::fs::metadata(&path)
+            .expect("verifier metadata")
+            .permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).expect("chmod verifier");
     }
@@ -373,6 +384,161 @@ async fn api_container_lock_status_reports_current_container() {
     assert_eq!(val["state"], "empty");
     assert_eq!(val["lock"]["container_id"], "dashboard-container");
     assert_eq!(val["lock"]["state"]["state"], "empty");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_containers_list_returns_empty_sessions_array() {
+    let _guard = lock_env();
+    let run_root = tempfile::tempdir().expect("tempdir");
+    let _tmp_guard = EnvVarGuard::set("TMPDIR", Some(run_root.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state_with_container_dispatch(
+        "api_containers_list_empty",
+        Arc::new(InMemoryContainerDispatch::default()),
+    );
+
+    let (status, val) = api_get(state, "/containers").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["count"], 0);
+    assert_eq!(val["sessions"], json!([]));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_containers_provision_returns_session_id_and_did_uri() {
+    let _guard = lock_env();
+    let run_root = tempfile::tempdir().expect("tempdir");
+    let _tmp_guard = EnvVarGuard::set("TMPDIR", Some(run_root.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state_with_container_dispatch(
+        "api_containers_provision",
+        Arc::new(InMemoryContainerDispatch::default()),
+    );
+
+    let (status, val) = api_post(
+        state.clone(),
+        "/containers/provision",
+        json!({
+            "agent_id": "container-audit",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected provision response: {val}"
+    );
+    assert!(val["session_id"].as_str().is_some());
+    assert_eq!(val["agent_id"], "container-audit");
+    assert_eq!(val["did_uri"], "did:key:z6MkInMemory");
+    assert_eq!(val["identity"]["did_uri"], "did:key:z6MkInMemory");
+
+    let (list_status, list_val) = api_get(state, "/containers").await;
+    assert_eq!(list_status, StatusCode::OK);
+    assert_eq!(list_val["count"], 1);
+    assert_eq!(
+        list_val["sessions"][0]["identity"]["did_uri"],
+        "did:key:z6MkInMemory"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_containers_initialize_and_deinitialize_roundtrip() {
+    let _guard = lock_env();
+    let run_root = tempfile::tempdir().expect("tempdir");
+    let _tmp_guard = EnvVarGuard::set("TMPDIR", Some(run_root.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state_with_container_dispatch(
+        "api_containers_init_deinit",
+        Arc::new(InMemoryContainerDispatch::default()),
+    );
+
+    let (_, provisioned) = api_post(
+        state.clone(),
+        "/containers/provision",
+        json!({ "agent_id": "container-init" }),
+    )
+    .await;
+    let session_id = provisioned["session_id"].as_str().expect("session id");
+
+    let (init_status, init_val) = api_post(
+        state.clone(),
+        "/containers/initialize",
+        json!({
+            "session_id": session_id,
+            "reuse_policy": "single_use",
+            "hookup": {
+                "kind": "cli",
+                "cli_name": "shell",
+                "model": null
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        init_status,
+        StatusCode::OK,
+        "unexpected initialize response: {init_val}"
+    );
+    assert_eq!(init_val["session_id"], session_id);
+    assert_eq!(init_val["state"], "locked");
+    assert_eq!(init_val["reuse_policy"], "single_use");
+
+    let (deinit_status, deinit_val) = api_post(
+        state,
+        "/containers/deinitialize",
+        json!({ "session_id": session_id }),
+    )
+    .await;
+    assert_eq!(
+        deinit_status,
+        StatusCode::OK,
+        "unexpected deinitialize response: {deinit_val}"
+    );
+    assert_eq!(deinit_val["session_id"], session_id);
+    assert_eq!(deinit_val["state"], "empty");
+    assert_eq!(deinit_val["reuse_policy"], "single_use");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_containers_destroy_removes_session() {
+    let _guard = lock_env();
+    let run_root = tempfile::tempdir().expect("tempdir");
+    let _tmp_guard = EnvVarGuard::set("TMPDIR", Some(run_root.path().to_str().expect("utf8")));
+    let (state, db_path) = test_state_with_container_dispatch(
+        "api_containers_destroy",
+        Arc::new(InMemoryContainerDispatch::default()),
+    );
+
+    let (_, provisioned) = api_post(
+        state.clone(),
+        "/containers/provision",
+        json!({ "agent_id": "container-destroy" }),
+    )
+    .await;
+    let session_id = provisioned["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+
+    let (destroy_status, destroy_val) =
+        api_delete(state.clone(), &format!("/containers/{session_id}")).await;
+    assert_eq!(
+        destroy_status,
+        StatusCode::OK,
+        "unexpected destroy response: {destroy_val}"
+    );
+    assert_eq!(destroy_val["session_id"], session_id);
+    assert_eq!(destroy_val["destroyed"], true);
+
+    let (list_status, list_val) = api_get(state, "/containers").await;
+    assert_eq!(list_status, StatusCode::OK);
+    assert_eq!(list_val["count"], 0);
+    assert_eq!(list_val["sessions"], json!([]));
 
     let _ = std::fs::remove_file(&db_path);
 }

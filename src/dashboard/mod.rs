@@ -53,6 +53,8 @@ pub struct DashboardState {
     pub memory_db_cache: Arc<StdMutex<MemoryDbCache>>,
     /// Local fallback orchestrator when MCP-proxy mode is disabled.
     pub orchestrator: Option<Arc<crate::orchestrator::Orchestrator>>,
+    /// Container backend used by cockpit container endpoints.
+    pub container_dispatch: Arc<dyn crate::orchestrator::container_dispatch::ContainerDispatch>,
     /// Shared AETHER governor registry across proxy/comms/compute/pty lanes.
     pub governor_registry: Arc<crate::halo::governor_registry::GovernorRegistry>,
     /// Live proxy admission/runtime telemetry wrapper.
@@ -191,8 +193,21 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         memory_store: Arc::new(crate::memory::MemoryStore::default()),
         memory_db_cache: Arc::new(StdMutex::new(MemoryDbCache::default())),
         orchestrator,
+        container_dispatch: Arc::new(
+            crate::orchestrator::container_dispatch::MeshContainerDispatch::default(),
+        ),
         governor_registry,
         proxy_governor,
+    }
+}
+
+impl DashboardState {
+    pub fn with_container_dispatch(
+        mut self,
+        container_dispatch: Arc<dyn crate::orchestrator::container_dispatch::ContainerDispatch>,
+    ) -> Self {
+        self.container_dispatch = container_dispatch;
+        self
     }
 }
 
