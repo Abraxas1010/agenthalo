@@ -5,6 +5,9 @@ wdk-sidecar/node_modules/
 .env
 .env.*
 .agenthalo/
-artifacts/
+artifacts/*
+!artifacts/.gitkeep
+!artifacts/living_agent/
+!artifacts/living_agent/**
 WIP/
 Docs/
