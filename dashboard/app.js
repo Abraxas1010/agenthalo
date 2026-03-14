@@ -795,6 +795,7 @@ function renderCryptoOverlay(status) {
           createBtn.disabled = true;
           await apiPost('/crypto/create-password', { password, confirm });
           _cryptoStatus = null;
+          window._setupCryptoPromptDone = true; // password just created — skip re-lock guard
           const ok = await ensureCryptoUnlocked(true);
           if (ok) { route(); }
         } catch (e) {
