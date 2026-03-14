@@ -91,12 +91,55 @@ function renderMcpToolsPageRoute() {
   }
 }
 
+async function renderAgentPmt() {
+  const content = $('#content');
+  let cfg = null;
+  try {
+    cfg = await api('/config');
+  } catch (_e) {}
+  const walletStatus = (cfg && cfg.wallet_status) || {};
+  const agentpmtConnected = !!walletStatus.agentpmt_connected;
+
+  content.innerHTML = `
+    <div style="display:flex;flex-direction:column;height:100%;padding:0">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border);flex-shrink:0">
+        <div style="display:flex;align-items:center;gap:12px">
+          <img src="img/agentpmt-192.png" alt="AgentPMT" style="height:32px;width:32px;border-radius:6px" onerror="this.style.display='none'">
+          <div>
+            <div style="font-size:18px;font-weight:700">AgentPMT Dashboard</div>
+            <div style="font-size:12px;color:var(--text-dim)">Manage your agents, tools, wallets, and budget</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          ${agentpmtConnected
+            ? '<span style="color:var(--green);font-size:13px">&#10003; Connected</span>'
+            : '<span style="color:var(--text-dim);font-size:13px">Not connected</span>'}
+          <a class="btn btn-sm" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" style="font-size:12px">
+            Open in New Tab &#8599;
+          </a>
+        </div>
+      </div>
+      <div style="flex:1;min-height:0">
+        <iframe
+          src="https://www.agentpmt.com/embed/dashboard?theme=dark"
+          title="AgentPMT Dashboard"
+          style="width:100%;height:100%;border:none;display:block"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+          allow="storage-access"
+          loading="lazy"
+        ></iframe>
+      </div>
+    </div>
+  `;
+}
+
 // -- Routing ------------------------------------------------------------------
 const pages = { overview: renderOverviewHub, sessions: renderSessions,
   config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
   identification: renderIdentificationPage, communication: renderCommunicationPage, 'nucleusdb-docs': renderNucleusDBDocsPage,
   networking: renderNetworkingPage,
-  trust: renderTrust, nucleusdb: renderNucleusDB, cockpit: renderCockpit, 'mcp-tools': renderMcpToolsPageRoute };
+  trust: renderTrust, nucleusdb: renderNucleusDB, cockpit: renderCockpit, 'mcp-tools': renderMcpToolsPageRoute,
+  agentpmt: renderAgentPmt };
 
 const REMOVED_PAGE_REDIRECTS = {
   dashboard: 'overview',
@@ -1047,7 +1090,7 @@ function updateNavLockState() {
   if (!_setupState) return;
   const complete = _setupState.complete;
   const justUnlocked = _lastSetupComplete === false && complete === true;
-  const NAV_EXEMPT = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs'];
+  const NAV_EXEMPT = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs', 'agentpmt'];
   $$('.nav-link').forEach(a => {
     const page = a.dataset.page;
     if (page === 'setup') {
@@ -1055,7 +1098,7 @@ function updateNavLockState() {
       a.classList.toggle('setup-incomplete', !complete);
       a.classList.remove('nav-unlocked');
     } else if (NAV_EXEMPT.includes(page)) {
-      // Documentation pages are always accessible
+      // Documentation/setup-adjacent pages are always accessible
       a.classList.remove('nav-locked');
       a.classList.remove('setup-incomplete');
     } else {
@@ -1166,8 +1209,8 @@ async function route() {
   if (overlay) overlay.style.display = 'none';
 
   // Fetch setup state and gate navigation.
-  // Documentation/overview pages are always accessible — setup gate only blocks operational pages.
-  const SETUP_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs'];
+  // Documentation/setup-adjacent pages are always accessible — setup gate only blocks operational pages.
+  const SETUP_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs', 'agentpmt'];
   const ss = await fetchSetupState();
   if (!ss.complete && !SETUP_EXEMPT_PAGES.includes(page)) {
     location.hash = '#/setup';
@@ -2512,7 +2555,6 @@ async function renderSetup() {
   const localIdentityDone = !!isAuthenticated || !!hasWallet;
   const allDone = ss.complete || (identityDone && walletComplete && step2Done);
 
-  const pmtAuth = cfg && cfg.agentpmt && cfg.agentpmt.auth_configured;
   const pmtToolCount = (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) || 0;
   const agentpmtConnected = !!walletStatus.agentpmt_connected;
   const agentaddressConnected = !!walletStatus.agentaddress_connected;
@@ -2625,8 +2667,9 @@ async function renderSetup() {
       <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Quick Start</div>
       <ol class="setup-steps-friendly" style="margin:0">
         <li><span class="step-circle">1</span><span>Set your agents identity &amp; safety level</span></li>
-        <li><span class="step-circle">2</span><span>Setup your agents wallet</span></li>
+        <li><span class="step-circle">2</span><span>Detect your agent CLIs</span></li>
         <li><span class="step-circle">3</span><span>Connect your agent to an LLM</span></li>
+        <li><span class="step-circle">4</span><span>Set up your AgentPMT wallet</span></li>
       </ol>
     </div>
 
@@ -2921,145 +2964,6 @@ async function renderSetup() {
       ` : ''}
     </div>
 
-    <!-- SECTION 2: Wallet -->
-    <div class="setup-card-v2 ${c1c}" id="setup-wallet">
-      <div class="card-header">
-        ${agentpmtConnected
-          ? '<img class="card-icon-logo" src="img/agentpmt-192.png" alt="AgentPMT" title="AgentPMT" onerror="this.outerHTML=\'<div class=\\\'card-icon\\\'>&#9883;</div>\'">'
-          : '<div class="card-icon">&#9883;</div>'}
-        <div>
-          <div class="card-title">
-            Your Wallet
-            ${step1Done
-              ? (agentpmtConnected
-                ? '<span class="setup-inline-status status-done">&#10003; AgentPMT Connected</span>'
-                : (agentaddressConnected
-                  ? '<span class="setup-inline-status status-done">&#10003; Agent Wallet Connected</span>'
-                  : '<span class="setup-inline-status status-done">&#10003; Connected</span>'))
-              : '<span class="setup-inline-status status-missing">&#10007; Not Connected</span>'}
-          </div>
-          <div class="card-desc">${walletCardDesc}</div>
-          <div class="setup-wallet-summary">
-            <span class="setup-wallet-chip ${hasAnyWallet ? 'ok' : 'bad'}">
-              ${hasAnyWallet ? '&#10003;' : '&#10007;'} Wallet Presence
-            </span>
-            <span class="setup-wallet-chip ${agentpmtConnected ? 'ok' : 'bad'}">
-              ${agentpmtConnected ? '&#10003;' : '&#10007;'} AgentPMT
-            </span>
-            <span class="setup-wallet-chip ${agentaddressConnected ? 'ok' : 'bad'}">
-              ${agentaddressConnected ? '&#10003;' : '&#10007;'} Agent Wallet
-            </span>
-          </div>
-        </div>
-      </div>
-
-      ${step1Done ? `
-        <!-- Connected state -->
-        <div class="setup-success-banner">
-          <span class="success-icon">&#10003;</span>
-          <span>
-            ${walletPath === 'agentpmt'
-              ? `AgentPMT connected${pmtToolCount > 0 ? ' &mdash; <strong>' + pmtToolCount + ' tools</strong> ready to use' : ''}`
-              : `Agent wallet connected${agentaddressAddress ? ` &mdash; <code>${esc(agentaddressAddress)}</code>` : ''}`}
-          </span>
-        </div>
-        ${walletPath === 'agentpmt' ? `
-          <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button class="btn btn-sm" id="setup-disconnect-agentpmt" style="border-color:var(--red);color:var(--red)">
-              Disconnect My Account
-            </button>
-            <span style="font-size:11px;color:var(--text-dim)">Removes your token and disables the tool proxy</span>
-          </div>
-        ` : ''}
-      ` : `
-        <!-- Not connected — three paths -->
-
-        <!-- Path A: Sign up or sign in at AgentPMT -->
-        <div class="setup-recommended">
-          <div class="setup-recommended-label">Recommended</div>
-          <p style="font-size:14px;color:var(--text-muted);line-height:1.6;margin-bottom:16px">
-            AgentPMT is your gateway to 100+ third-party tools, budget controls, and workflow automation.
-            Create a free account (or sign in), then grab your Bearer Token.
-          </p>
-          <div class="setup-info-box" style="margin-top:0;margin-bottom:12px">
-            <span class="info-icon">&#9432;</span>
-            <span>Dashboard quick-connect uses a Bearer Token. Fully autonomous mode uses wallet signatures + credits (see <a href="https://www.agentpmt.com/autonomous-agents" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Autonomous Agents</a>).</span>
-          </div>
-
-          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
-            <a class="setup-cta-big" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" id="setup-agentpmt-signup">
-              Create Free Account &#8599;
-            </a>
-            <a class="setup-cta-big" href="https://www.agentpmt.com/login" target="_blank" rel="noopener noreferrer" style="background:transparent;border-color:var(--border);color:var(--text-muted)">
-              I Already Have an Account &#8599;
-            </a>
-          </div>
-
-          <!-- Embedded signup iframe (opens when user clicks) -->
-          <div id="setup-agentpmt-iframe-wrap" style="display:none;margin-bottom:18px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-              <span style="font-size:12px;color:var(--text-muted)">AgentPMT &mdash; complete signup, then grab your Bearer Token below</span>
-              <button class="btn btn-sm" id="setup-close-iframe" style="font-size:11px">Close</button>
-            </div>
-            <iframe id="setup-agentpmt-iframe" style="width:100%;height:560px;border:1px solid var(--border);border-radius:8px;background:#fff" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
-          </div>
-
-          <div style="border:1px solid var(--border);border-radius:8px;padding:18px 20px;margin-bottom:16px;background:rgba(255,106,0,0.02)">
-            <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:12px">How to get your Bearer Token:</div>
-            <ol class="setup-steps-friendly" style="margin:0">
-              <li>
-                <span class="step-circle">1</span>
-                <span>Sign in at <a href="https://www.agentpmt.com/login" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">agentpmt.com</a></span>
-              </li>
-              <li>
-                <span class="step-circle">2</span>
-                <span>Click <strong>Dashboard</strong> at the top (defaults to AU Budgets tab)</span>
-              </li>
-              <li>
-                <span class="step-circle">3</span>
-                <span>Click the <strong>Display Bearer Token</strong> button</span>
-              </li>
-              <li>
-                <span class="step-circle">4</span>
-                <span>Copy the token and paste it below</span>
-              </li>
-            </ol>
-          </div>
-
-          <div class="setup-token-area" style="border-top:none;padding-top:0">
-            <label for="setup-agentpmt-token">Your AgentPMT Bearer Token</label>
-            <div class="setup-token-row">
-              <input id="setup-agentpmt-token" type="password" placeholder="Paste your bearer token here..."
-                     autocomplete="off" spellcheck="false">
-              <button class="btn btn-primary" id="setup-save-agentpmt" style="padding:10px 20px;font-size:13px;border-radius:6px">Save &amp; Connect</button>
-              <button class="btn" id="setup-test-agentpmt" style="padding:10px 16px;font-size:13px;border-radius:6px" ${!pmtAuth ? 'disabled' : ''}>
-                Test
-              </button>
-            </div>
-            <div id="setup-agentpmt-status" class="setup-token-status"></div>
-          </div>
-        </div>
-
-        <!-- Path B: Quick connect without signup -->
-        <details class="setup-alt-path" style="margin-top:16px">
-          <summary>Skip signup &mdash; connect without an account</summary>
-          <div class="alt-body">
-            <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
-              Don't want to create an account right now? We can request an API token directly &mdash;
-              no email or signup required. Limited budget; can be upgraded later.
-            </p>
-            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-              <button class="btn btn-primary" id="setup-create-anon-wallet" style="border-radius:6px;padding:10px 20px;font-size:13px">
-                Connect Without Account
-              </button>
-              <span id="setup-anon-wallet-status" style="font-size:12px;color:var(--text-dim)"></span>
-            </div>
-          </div>
-        </details>
-      `}
-
-    </div>
-
     <!-- CLI Agent Setup (above OpenRouter) -->
     <div class="setup-card-v2" id="setup-cli-agents" style="margin-bottom:0;border-bottom:none;border-radius:10px 10px 0 0">
       <div class="card-header">
@@ -3200,7 +3104,71 @@ async function renderSetup() {
       `}
     </div>
 
-    <!-- SECTION 4: Dashboard Unlocked -->
+    <!-- SECTION 4: Wallet -->
+    <div class="setup-card-v2 ${c1c}" id="setup-wallet">
+      <div class="card-header">
+        ${agentpmtConnected
+          ? '<img class="card-icon-logo" src="img/agentpmt-192.png" alt="AgentPMT" title="AgentPMT" onerror="this.outerHTML=\'<div class=\\\'card-icon\\\'>&#9883;</div>\'">'
+          : '<div class="card-icon">&#9883;</div>'}
+        <div>
+          <div class="card-title">
+            Your Wallet
+            ${step1Done
+              ? (agentpmtConnected
+                ? '<span class="setup-inline-status status-done">&#10003; AgentPMT Connected</span>'
+                : (agentaddressConnected
+                  ? '<span class="setup-inline-status status-done">&#10003; Agent Wallet Connected</span>'
+                  : '<span class="setup-inline-status status-done">&#10003; Connected</span>'))
+              : '<span class="setup-inline-status status-missing">&#10007; Not Connected</span>'}
+          </div>
+          <div class="card-desc">${walletCardDesc}</div>
+          <div class="setup-wallet-summary">
+            <span class="setup-wallet-chip ${hasAnyWallet ? 'ok' : 'bad'}">
+              ${hasAnyWallet ? '&#10003;' : '&#10007;'} Wallet Presence
+            </span>
+            <span class="setup-wallet-chip ${agentpmtConnected ? 'ok' : 'bad'}">
+              ${agentpmtConnected ? '&#10003;' : '&#10007;'} AgentPMT
+            </span>
+            <span class="setup-wallet-chip ${agentaddressConnected ? 'ok' : 'bad'}">
+              ${agentaddressConnected ? '&#10003;' : '&#10007;'} Agent Wallet
+            </span>
+          </div>
+        </div>
+      </div>
+
+      ${step1Done ? `
+        <div class="setup-success-banner">
+          <span class="success-icon">&#10003;</span>
+          <span>
+            ${walletPath === 'agentpmt'
+              ? `AgentPMT connected${pmtToolCount > 0 ? ' &mdash; <strong>' + pmtToolCount + ' tools</strong> ready to use' : ''}`
+              : `Agent wallet connected${agentaddressAddress ? ` &mdash; <code>${esc(agentaddressAddress)}</code>` : ''}`}
+          </span>
+        </div>
+        ${walletPath === 'agentpmt' ? `
+          <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-sm" id="setup-disconnect-agentpmt" style="border-color:var(--red);color:var(--red)">
+              Disconnect My Account
+            </button>
+            <span style="font-size:11px;color:var(--text-dim)">Removes your token and disables the tool proxy</span>
+          </div>
+        ` : ''}
+      ` : `
+        <div style="text-align:center;padding:24px 16px">
+          <p style="font-size:15px;color:var(--text-muted);line-height:1.7;margin-bottom:20px;max-width:480px;margin-left:auto;margin-right:auto">
+            Connect to AgentPMT to unlock 100+ third-party tools, budget controls, and workflow automation for your agents.
+          </p>
+          <button class="btn btn-primary" id="setup-agentpmt-setup-now" style="padding:14px 36px;font-size:15px;border-radius:8px;font-weight:700;letter-spacing:0.5px">
+            SET UP NOW
+          </button>
+          <div style="margin-top:14px">
+            <span style="font-size:12px;color:var(--text-dim)">Opens the AgentPMT dashboard where you can create an account and connect</span>
+          </div>
+        </div>
+      `}
+    </div>
+
+    <!-- SECTION 5: Dashboard Unlocked -->
     <div class="setup-card-v2 ${c3c}" id="setup-unlocked">
       <div class="card-header">
         <div class="card-icon">&#127919;</div>
@@ -3501,61 +3469,10 @@ async function renderSetup() {
     }
   })();
 
-  // AgentPMT token save
-  const saveBtn = document.getElementById('setup-save-agentpmt');
-  const testBtn = document.getElementById('setup-test-agentpmt');
-  const tokenInput = document.getElementById('setup-agentpmt-token');
-  const statusEl = document.getElementById('setup-agentpmt-status');
-
-  if (saveBtn && tokenInput) {
-    saveBtn.addEventListener('click', async () => {
-      const token = (tokenInput.value || '').trim();
-      if (!token) {
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Please paste your bearer token first.</span>';
-        return;
-      }
-      saveBtn.disabled = true;
-      saveBtn.textContent = 'Connecting...';
-      try {
-        // Store the token in the vault under the agentpmt provider
-        await apiPost('/vault/keys/agentpmt', { key: token, env_var: 'AGENTPMT_API_KEY' });
-        // Enable the tool proxy
-        await apiPost('/agentpmt/enable', {});
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Token saved. Testing connection...</span>';
-        // Auto-test: refresh catalog
-        try {
-          const refreshResp = await apiPost('/agentpmt/refresh', {});
-          const count = Number(refreshResp.count || 0);
-          if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">&#10003; Connected! ${count} tools available.</span>`;
-        } catch (re) {
-          if (statusEl) statusEl.innerHTML = `<span style="color:var(--yellow)">Token saved but catalog refresh failed: ${esc(String(re.message || re))}</span>`;
-        }
-        // Invalidate setup state cache and re-render
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Save failed: ${esc(String(e.message || e))}</span>`;
-        saveBtn.disabled = false;
-        saveBtn.textContent = 'Save & Connect';
-      }
-    });
-  }
-
-  if (testBtn) {
-    testBtn.addEventListener('click', async () => {
-      testBtn.disabled = true;
-      testBtn.textContent = 'Testing...';
-      try {
-        const resp = await apiPost('/agentpmt/refresh', {});
-        const count = Number(resp.count || 0);
-        if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">&#10003; Connection OK &mdash; ${count} tools loaded.</span>`;
-      } catch (e) {
-        if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Test failed: ${esc(String(e.message || e))}</span>`;
-      }
-      testBtn.disabled = false;
-      testBtn.textContent = 'Test';
+  const setupNowBtn = document.getElementById('setup-agentpmt-setup-now');
+  if (setupNowBtn) {
+    setupNowBtn.addEventListener('click', () => {
+      window.location.hash = '#/agentpmt';
     });
   }
 
@@ -3576,43 +3493,6 @@ async function renderSetup() {
         alert('Disconnect failed: ' + (e.message || e));
         disconnectPmtBtn.disabled = false;
         disconnectPmtBtn.textContent = 'Disconnect My Account';
-      }
-    });
-  }
-
-  // Quick-connect (no signup) handler
-  const anonWalletBtn = document.getElementById('setup-create-anon-wallet');
-  const anonWalletStatus = document.getElementById('setup-anon-wallet-status');
-  if (anonWalletBtn) {
-    anonWalletBtn.addEventListener('click', async () => {
-      anonWalletBtn.disabled = true;
-      anonWalletBtn.textContent = 'Connecting...';
-      if (anonWalletStatus) {
-        anonWalletStatus.innerHTML = '<span style="color:var(--text-dim)">Requesting API token...</span>';
-      }
-      try {
-        const resp = await apiPost('/agentpmt/anonymous-wallet', {});
-        if (resp && resp.token_saved) {
-          if (anonWalletStatus) {
-            anonWalletStatus.innerHTML = '<span style="color:var(--green)">&#10003; Connected!</span>';
-          }
-          window._invalidateSetupState();
-          await fetchSetupState(true);
-          await renderSetup();
-          updateNavLockState();
-        } else {
-          if (anonWalletStatus) {
-            anonWalletStatus.innerHTML = '<span style="color:var(--yellow)">Request succeeded but no token was returned.</span>';
-          }
-          anonWalletBtn.disabled = false;
-          anonWalletBtn.textContent = 'Connect Without Account';
-        }
-      } catch (e) {
-        if (anonWalletStatus) {
-          anonWalletStatus.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
-        }
-        anonWalletBtn.disabled = false;
-        anonWalletBtn.textContent = 'Connect Without Account';
       }
     });
   }
@@ -4448,29 +4328,6 @@ async function renderSetup() {
           networkSaveBtn.textContent = identityCfg.network_configured ? 'Update Network Identity' : 'Save Network Identity';
         }
       }
-    });
-  }
-
-  // Iframe embed logic: try opening AgentPMT in iframe when CTA is clicked
-  const signupBtn = document.getElementById('setup-agentpmt-signup');
-  const iframeWrap = document.getElementById('setup-agentpmt-iframe-wrap');
-  const iframe = document.getElementById('setup-agentpmt-iframe');
-  const closeIframeBtn = document.getElementById('setup-close-iframe');
-  if (signupBtn && iframeWrap && iframe) {
-    signupBtn.addEventListener('click', (e) => {
-      // Try embedding; if it fails the link still opens in new tab (target=_blank)
-      e.preventDefault();
-      iframe.src = 'https://www.agentpmt.com/login';
-      iframeWrap.style.display = 'block';
-      iframeWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      // Also open in new tab as fallback
-      window.open('https://www.agentpmt.com', '_blank', 'noopener,noreferrer');
-    });
-  }
-  if (closeIframeBtn && iframeWrap && iframe) {
-    closeIframeBtn.addEventListener('click', () => {
-      iframeWrap.style.display = 'none';
-      iframe.src = '';
     });
   }
 
