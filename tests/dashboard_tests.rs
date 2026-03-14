@@ -243,6 +243,37 @@ fn write_wallet_json(path: &std::path::Path, key_id: &str, seed_hex: &str) {
     std::fs::write(path, serde_json::to_vec_pretty(&wallet).unwrap()).unwrap();
 }
 
+fn write_mock_verify_script(dir: &std::path::Path) -> PathBuf {
+    let path = dir.join("living_agent_verify.py");
+    std::fs::write(
+        &path,
+        r#"#!/usr/bin/env python3
+import json
+print(json.dumps({
+  "paper_sha256": "mock-sha",
+  "generated_at": "2026-03-13T00:00:00Z",
+  "schema_version": "living-agent-verify-v1",
+  "structural": {"score": 0.95, "passed": True, "details": {"word_count": 300}},
+  "semantic": {"score": 0.75, "passed": True, "details": {"top_grid_match": "HeytingLean.Mock"}},
+  "formal": {"score": 1.0, "passed": True, "details": {"checked": 2, "successes": 2}},
+  "composite": {
+    "score": 0.75,
+    "passed": True,
+    "details": {"governing_tier": "semantic", "generated_at": "2026-03-13T00:00:00Z"}
+  },
+  "report_path": "/tmp/mock-report.json"
+}))"#,
+    )
+    .expect("write mock verifier");
+    #[cfg(unix)]
+    {
+        let mut perms = std::fs::metadata(&path).expect("verifier metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).expect("chmod verifier");
+    }
+    path
+}
+
 fn test_vault(tag: &str) -> (Arc<Vault>, PathBuf, PathBuf) {
     let wallet_path = std::env::temp_dir().join(format!(
         "wallet_{}_{}_{}.json",
@@ -3546,6 +3577,18 @@ async fn api_p2pclaw_bridge_status_returns_persisted_state_without_network() {
 
 #[tokio::test]
 async fn api_p2pclaw_verify_returns_real_verification_payload() {
+    let _guard = lock_env();
+    let verify_dir = std::env::temp_dir().join(format!(
+        "dashboard_verify_mock_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    std::fs::create_dir_all(&verify_dir).expect("create mock verify dir");
+    let verifier = write_mock_verify_script(&verify_dir);
+    let _verify_guard = EnvVarGuard::set(
+        "AGENTHALO_VERIFY_SCRIPT",
+        Some(verifier.to_str().expect("utf8 verifier path")),
+    );
     let (state, db_path) = test_state("api_p2pclaw_verify");
     let (status, body) = api_post(
         state,
@@ -3568,6 +3611,7 @@ async fn api_p2pclaw_verify_returns_real_verification_payload() {
         64
     );
     let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_dir_all(&verify_dir);
 }
 
 #[tokio::test]

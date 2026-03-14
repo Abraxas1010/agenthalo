@@ -10,6 +10,7 @@ use tokenizers::Tokenizer;
 pub const DEFAULT_EMBEDDING_DIMS: usize = 768;
 pub const DEFAULT_MODEL_NAME: &str = "nomic-embed-text-v1.5";
 const HASH_BACKEND_ENV: &str = "NUCLEUSDB_EMBEDDING_BACKEND";
+const LEGACY_HASH_BACKEND_ENV: &str = "AGENTHALO_EMBEDDING_BACKEND";
 const HASH_BACKEND_VALUE: &str = "hash-test";
 
 #[derive(Debug)]
@@ -89,10 +90,10 @@ impl EmbeddingModel {
         if self.hash_backend_override {
             return true;
         }
-        std::env::var(HASH_BACKEND_ENV)
-            .ok()
-            .map(|v| v.trim().eq_ignore_ascii_case(HASH_BACKEND_VALUE))
-            .unwrap_or(false)
+        [HASH_BACKEND_ENV, LEGACY_HASH_BACKEND_ENV]
+            .into_iter()
+            .filter_map(|name| std::env::var(name).ok())
+            .any(|v| v.trim().eq_ignore_ascii_case(HASH_BACKEND_VALUE))
     }
 
     fn runtime(&self) -> Result<&OnnxEmbeddingRuntime, String> {
@@ -273,7 +274,8 @@ impl EmbeddingModel {
         }
 
         // Deterministic fallback for isolated tests that explicitly opt in via
-        // NUCLEUSDB_EMBEDDING_BACKEND=hash-test.
+        // NUCLEUSDB_EMBEDDING_BACKEND=hash-test (or the legacy
+        // AGENTHALO_EMBEDDING_BACKEND alias retained for compatibility).
         // Deterministic local embedding with nomic-style task prefixes.
         let mut vec = vec![0.0_f64; self.dims];
         let normalized = normalize_text(input);

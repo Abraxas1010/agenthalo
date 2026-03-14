@@ -7229,64 +7229,79 @@ mod tests {
         cleanup_db_files(&db_path);
     }
 
-    #[tokio::test]
+    #[test]
     #[allow(clippy::await_holding_lock)]
-    async fn orchestrator_shell_trace_wait_roundtrip_multiple_tasks() {
-        let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let _proxy = EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
-        let db_path = temp_db_path("orchestrator_shell_trace_wait");
-        let service = NucleusDbMcpService::new(&db_path).expect("service");
+    fn orchestrator_shell_trace_wait_roundtrip_multiple_tasks() {
+        let join = std::thread::Builder::new()
+            .name("orchestrator_shell_trace_wait_roundtrip_multiple_tasks".to_string())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("build tokio runtime");
+                rt.block_on(async {
+                    let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+                    let _proxy =
+                        EnvVarRestore::set("NUCLEUSDB_ORCHESTRATOR_PROXY_VIA_AGENTHALO", "0");
+                    let db_path = temp_db_path("orchestrator_shell_trace_wait");
+                    let service = NucleusDbMcpService::new(&db_path).expect("service");
 
-        let Json(launch) = service
-            .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
-                agent: "shell".to_string(),
-                agent_name: "trace-shell".to_string(),
-                working_dir: None,
-                env: BTreeMap::new(),
-                timeout_secs: Some(30),
-                model: None,
-                trace: Some(true),
-                capabilities: vec!["memory_read".to_string()],
-                dispatch_mode: None,
-                container_hookup: None,
-                admission_mode: None,
-            }))
-            .await
-            .expect("launch shell");
-        assert_eq!(launch.status, "idle");
+                    let Json(launch) = service
+                        .orchestrator_launch(Parameters(OrchestratorLaunchRequest {
+                            agent: "shell".to_string(),
+                            agent_name: "trace-shell".to_string(),
+                            working_dir: None,
+                            env: BTreeMap::new(),
+                            timeout_secs: Some(30),
+                            model: None,
+                            trace: Some(true),
+                            capabilities: vec!["memory_read".to_string()],
+                            dispatch_mode: None,
+                            container_hookup: None,
+                            admission_mode: None,
+                        }))
+                        .await
+                        .expect("launch shell");
+                    assert_eq!(launch.status, "idle");
 
-        let tasks = [
-            ("true", ""),
-            ("printf 'trace-shell-ok'", "trace-shell-ok"),
-            ("echo trace-shell-done", "trace-shell-done"),
-        ];
+                    let tasks = [
+                        ("true", ""),
+                        ("printf 'trace-shell-ok'", "trace-shell-ok"),
+                        ("echo trace-shell-done", "trace-shell-done"),
+                    ];
 
-        for (command, expected) in tasks {
-            let Json(task) = service
-                .orchestrator_send_task(Parameters(OrchestratorSendTaskRequest {
-                    agent_id: launch.agent_id.clone(),
-                    task: command.to_string(),
-                    format: None,
-                    timeout_secs: Some(20),
-                    wait: Some(true),
-                }))
-                .await
-                .expect("run traced shell task");
-            assert_eq!(task.status, "complete", "command `{command}`");
-            if !expected.is_empty() {
-                assert!(
-                    task.result
-                        .as_deref()
-                        .unwrap_or_default()
-                        .contains(expected),
-                    "command `{command}` output mismatch"
-                );
-            }
-            assert!(task.trace_session_id.is_some(), "command `{command}`");
-            assert_eq!(task.output, task.result);
-        }
+                    for (command, expected) in tasks {
+                        let Json(task) = service
+                            .orchestrator_send_task(Parameters(OrchestratorSendTaskRequest {
+                                agent_id: launch.agent_id.clone(),
+                                task: command.to_string(),
+                                format: None,
+                                timeout_secs: Some(20),
+                                wait: Some(true),
+                            }))
+                            .await
+                            .expect("run traced shell task");
+                        assert_eq!(task.status, "complete", "command `{command}`");
+                        if !expected.is_empty() {
+                            assert!(
+                                task.result
+                                    .as_deref()
+                                    .unwrap_or_default()
+                                    .contains(expected),
+                                "command `{command}` output mismatch"
+                            );
+                        }
+                        assert!(task.trace_session_id.is_some(), "command `{command}`");
+                        assert_eq!(task.output, task.result);
+                    }
 
-        cleanup_db_files(&db_path);
+                    cleanup_db_files(&db_path);
+                });
+            })
+            .expect("spawn stack-sized test thread");
+        join.join().expect("join stack-sized test thread");
     }
 
     #[tokio::test]

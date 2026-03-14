@@ -470,10 +470,228 @@ body:not(.no-crt) .cockpit-panel-body::before {
 
 .cockpit-new-dropdown .dropdown-item,
 .cockpit-context-menu .dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 12px;
   cursor: pointer;
   font-size: 11px;
   color: var(--text);
+}
+
+.dropdown-label {
+  flex: 1;
+}
+
+.dropdown-status {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dropdown-status.ready {
+  color: var(--green);
+}
+
+.dropdown-status.partial {
+  color: var(--amber);
+}
+
+.dropdown-status.missing,
+.dropdown-status.loading {
+  color: var(--text-dim);
+}
+
+.cockpit-admin,
+.cockpit-workflow,
+.cockpit-channel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  padding: 12px;
+  overflow: auto;
+  color: var(--text);
+  background: #0a0a0a;
+}
+
+.cockpit-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.cockpit-form {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(13, 20, 8, 0.85);
+}
+
+.cockpit-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.cockpit-form textarea.input {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.cockpit-form-inline {
+  grid-template-columns: 1.5fr 1fr auto;
+  align-items: end;
+}
+
+.cockpit-admin-summary {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.table-wrap {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: auto;
+  background: rgba(13, 20, 8, 0.75);
+}
+
+.table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table-wrap th,
+.table-wrap td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-dim);
+  vertical-align: top;
+  text-align: left;
+  font-size: 11px;
+}
+
+.table-wrap th {
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+}
+
+.workflow-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.workflow-toolbar .input {
+  min-width: 140px;
+}
+
+.workflow-canvas {
+  width: 100%;
+  min-height: 260px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(10, 10, 10, 0.95), rgba(13, 20, 8, 0.9));
+}
+
+.cockpit-channel-list {
+  display: grid;
+  gap: 8px;
+}
+
+.cockpit-channel-entry {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(13, 20, 8, 0.8);
+  line-height: 1.35;
+}
+
+.cockpit-panel-error {
+  padding: 12px;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.cockpit-json-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.cockpit-json-card {
+  width: min(860px, 92vw);
+  max-height: min(88vh, 860px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(8, 12, 5, 0.98);
+}
+
+.cockpit-json-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cockpit-json-body {
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  background: #050905;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.badge-ok {
+  color: var(--green);
+  border-color: rgba(0, 255, 65, 0.35);
+}
+
+.badge-info {
+  color: var(--accent);
+  border-color: rgba(255, 184, 48, 0.35);
+}
+
+.badge-warn {
+  color: var(--red);
+  border-color: rgba(255, 48, 48, 0.35);
+}
+
+.badge-muted {
+  color: var(--text-dim);
+}
+
+.muted {
+  color: var(--text-dim);
 }
 
 .cockpit-new-dropdown .dropdown-item:hover,
@@ -525,6 +743,10 @@ body:not(.no-crt) .cockpit-panel-body::before {
 
   .cockpit-panel {
     inset: 4px !important;
+  }
+
+  .cockpit-form-inline {
+    grid-template-columns: 1fr;
   }
 
   .cockpit-panel-header {

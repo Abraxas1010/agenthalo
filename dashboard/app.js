@@ -83,15 +83,6 @@ async function generateCodeChallenge(verifier) {
   return base64urlEncode(hash);
 }
 
-// -- Container & MCP Tools page delegates (must be top-level for hoisting) ----
-function renderContainersPage() {
-  if (typeof window.renderContainers === 'function') {
-    window.renderContainers();
-  } else {
-    content.innerHTML = '<div class="loading">Containers module not loaded.</div>';
-  }
-}
-
 function renderMcpToolsPageRoute() {
   if (typeof window.renderMcpToolsPage === 'function') {
     window.renderMcpToolsPage();
@@ -101,12 +92,20 @@ function renderMcpToolsPageRoute() {
 }
 
 // -- Routing ------------------------------------------------------------------
-const pages = { overview: renderOverviewHub, dashboard: renderOverview, sessions: renderSessions,
-  costs: renderCosts, config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
+const pages = { overview: renderOverviewHub, sessions: renderSessions,
+  config: renderConfig, setup: renderSetup, genesis: renderGenesisPage,
   identification: renderIdentificationPage, communication: renderCommunicationPage, 'nucleusdb-docs': renderNucleusDBDocsPage,
   networking: renderNetworkingPage,
-  trust: renderTrust, nucleusdb: renderNucleusDB, orchestrator: renderOrchestrator, cockpit: renderCockpit, deploy: renderDeploy, models: renderModels,
-  containers: renderContainersPage, 'mcp-tools': renderMcpToolsPageRoute };
+  trust: renderTrust, nucleusdb: renderNucleusDB, cockpit: renderCockpit, 'mcp-tools': renderMcpToolsPageRoute };
+
+const REMOVED_PAGE_REDIRECTS = {
+  dashboard: 'overview',
+  costs: 'overview',
+  models: 'config',
+  deploy: 'cockpit',
+  containers: 'cockpit',
+  orchestrator: 'cockpit',
+};
 
 const NETWORKS = [
   {
@@ -492,8 +491,70 @@ async function renderNetworkingPage() {
   }
 }
 function renderOverviewHub() {
-  if (typeof renderDocsOverview === 'function') renderDocsOverview();
-  else content.innerHTML = '<div class="loading">Overview module not loaded.</div>';
+  if (typeof renderDocsOverview === 'function') {
+    renderDocsOverview();
+    renderOverviewOperationalSummary().catch(() => {});
+  } else {
+    content.innerHTML = '<div class="loading">Overview module not loaded.</div>';
+  }
+}
+
+async function renderOverviewOperationalSummary() {
+  const mount = document.createElement('section');
+  mount.className = 'card';
+  mount.style.marginTop = '16px';
+  mount.innerHTML = '<div class="loading">Loading operational overview...</div>';
+  content.appendChild(mount);
+  try {
+    const [status, sessions, costs] = await Promise.all([
+      api('/status'),
+      api('/sessions?limit=5'),
+      api('/costs?monthly=true'),
+    ]);
+    const recentSessions = (sessions.sessions || []).slice(0, 5);
+    const monthly = Array.isArray(costs.buckets) ? costs.buckets : [];
+    mount.innerHTML = `
+      <div class="section-header">Operational Overview</div>
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-label">Live Sessions</div>
+          <div class="card-value">${Number(status.session_count || 0)}</div>
+          <div class="card-sub">Cockpit, orchestration, and deploy activity</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Total Cost</div>
+          <div class="card-value">${fmtCost(Number(status.total_cost_usd || 0))}</div>
+          <div class="card-sub">${fmtTokens(Number(status.total_tokens || 0))} tokens tracked</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Monthly Cost</div>
+          <div class="card-value">${fmtCost(monthly.reduce((sum, bucket) => sum + Number(bucket.cost_usd || 0), 0))}</div>
+          <div class="card-sub">${monthly.length} bucket${monthly.length === 1 ? '' : 's'} in current window</div>
+        </div>
+      </div>
+      <div class="section-header">Recent Sessions</div>
+      ${recentSessions.length ? `
+        <div class="table-wrap"><table>
+          <thead><tr><th>Session</th><th>Agent</th><th>Model</th><th>Cost</th><th>Status</th></tr></thead>
+          <tbody>
+            ${recentSessions.map(item => {
+              const ss = item.session;
+              const sm = item.summary || {};
+              return `<tr class="clickable" onclick="location.hash='#/sessions/${encodeURIComponent(ss.session_id)}'">
+                <td style="font-size:11px">${esc(truncate(ss.session_id, 24))}</td>
+                <td>${esc(ss.agent)}</td>
+                <td>${esc(truncate(ss.model || 'unknown', 20))}</td>
+                <td>${fmtCost(Number(sm.estimated_cost_usd || 0))}</td>
+                <td>${statusBadge(ss.status)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>
+      ` : '<div class="muted">No sessions recorded yet.</div>'}
+    `;
+  } catch (e) {
+    mount.innerHTML = `<div class="config-desc" style="color:var(--amber)">Operational summary unavailable: ${esc(String(e.message || e))}</div>`;
+  }
 }
 
 // Setup-first gate: cached setup state
@@ -1035,6 +1096,31 @@ window._invalidateSetupState = function() {
   _setupStateFetchedAt = 0;
 };
 
+async function maybeAutoLaunchAfterSetup(setupState) {
+  const ss = setupState || await fetchSetupState();
+  if (!ss || !ss.complete) return false;
+  if (sessionStorage.getItem('setup_autolaunch_done')) return false;
+  const currentPage = (location.hash.replace('#/', '') || 'setup').split('/')[0];
+  if (currentPage !== 'setup') return false;
+  try {
+    const catalog = await api('/deploy/catalog');
+    const agents = Array.isArray(catalog.agents) ? catalog.agents : [];
+    for (const agent of agents) {
+      if (!agent || agent.id === 'shell') continue;
+      const pre = await apiPost('/deploy/preflight', { agent_id: agent.id });
+      if (pre && pre.cli_installed && pre.keys_configured) {
+        sessionStorage.setItem('setup_autolaunch_done', '1');
+        localStorage.setItem('cockpit_autolaunch_agent', agent.id);
+        location.hash = '#/cockpit';
+        return true;
+      }
+    }
+  } catch (_e) {
+    return false;
+  }
+  return false;
+}
+
 async function route() {
   // Clean up particle animation when leaving NucleusDB page
   if (window._destroyHeroParticles) window._destroyHeroParticles();
@@ -1046,6 +1132,10 @@ async function route() {
   const hash = location.hash.replace('#/', '') || 'setup';
   const page = hash.split('/')[0];
   const arg = hash.split('/').slice(1).join('/');
+  if (REMOVED_PAGE_REDIRECTS[page]) {
+    location.hash = `#/${REMOVED_PAGE_REDIRECTS[page]}`;
+    return;
+  }
 
   // Genesis ceremony: always show the visual ceremony if genesis hasn't been done yet.
   // The ceremony handles the harvest POST + staged animation so the user sees
@@ -1064,6 +1154,9 @@ async function route() {
   const ss = await fetchSetupState();
   if (!ss.complete && !SETUP_EXEMPT_PAGES.includes(page)) {
     location.hash = '#/setup';
+    return;
+  }
+  if (await maybeAutoLaunchAfterSetup(ss)) {
     return;
   }
 
@@ -2117,8 +2210,52 @@ async function renderConfig() {
         openVaultModal(providerEntry.provider, providerEntry.env_var || providerDefaultEnv(providerEntry.provider));
       }
     }
+    await injectConfigModelsSection();
   } catch (e) {
     content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function injectConfigModelsSection() {
+  try {
+    const status = await api('/models/status');
+    const mount = document.createElement('div');
+    mount.innerHTML = `
+      <div class="section-header">Local Models</div>
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-label">Backend</div>
+          <div class="card-value" style="font-size:15px">vLLM</div>
+          <div class="card-sub">managed: ${esc(summarizeManagedBackends(status?.config))}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Installed Models</div>
+          <div class="card-value">${summarizeModelCounts(status)}</div>
+          <div class="card-sub">served: ${esc((status?.vllm?.served_models || []).join(', ') || 'none')}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">GPU</div>
+          <div class="card-value" style="font-size:15px">${esc(status?.gpu?.name || 'Not detected')}</div>
+          <div class="card-sub">${status?.huggingface_token_configured ? 'HF token configured' : 'HF token missing'}</div>
+        </div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+        <div class="config-row">
+          <div>
+            <div class="config-label">Model Operations</div>
+            <div class="config-desc">Serve, stop, pull, and remove models directly from Configuration.</div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-sm btn-primary" onclick="modelsServe('vllm')">Serve vLLM</button>
+            <button class="btn btn-sm" onclick="modelsStop('vllm')">Stop</button>
+            <button class="btn btn-sm" onclick="modelsLoginHuggingFace()">Set HF Token</button>
+          </div>
+        </div>
+      </div>
+    `;
+    content.appendChild(mount);
+  } catch (_e) {
+    // Model controls are supplementary inside Configuration.
   }
 }
 
@@ -2300,7 +2437,7 @@ window.modelsLoginHuggingFace = async function modelsLoginHuggingFace() {
   try {
     await apiPost('/models/login/huggingface', { token: String(token).trim() });
     alert('Hugging Face token saved.');
-    await renderModels();
+    await renderConfig();
   } catch (e) {
     alert(`Hugging Face login failed: ${String(e && e.message || e)}`);
   }
@@ -2312,7 +2449,7 @@ window.modelsServe = async function modelsServe(backend) {
     const model = window.prompt('vLLM model to serve (installed HF repo id or path)', '');
     if (model && String(model).trim()) payload.model = String(model).trim();
     await apiPost('/models/serve', payload);
-    await renderModels();
+    await renderConfig();
   } catch (e) {
     alert(`Serve failed: ${String(e && e.message || e)}`);
   }
@@ -2321,7 +2458,7 @@ window.modelsServe = async function modelsServe(backend) {
 window.modelsStop = async function modelsStop(backend) {
   try {
     await apiPost('/models/stop', { backend });
-    await renderModels();
+    await renderConfig();
   } catch (e) {
     alert(`Stop failed: ${String(e && e.message || e)}`);
   }
@@ -2330,7 +2467,7 @@ window.modelsStop = async function modelsStop(backend) {
 window.modelsPull = async function modelsPull(model, source) {
   try {
     await apiPost('/models/pull', { model, source });
-    await renderModels();
+    await renderConfig();
   } catch (e) {
     alert(`Pull failed: ${String(e && e.message || e)}`);
   }
@@ -2340,7 +2477,7 @@ window.modelsRemove = async function modelsRemove(model, source) {
   if (!window.confirm(`Remove local model ${model}?`)) return;
   try {
     await apiPost('/models/rm', { model, source });
-    await renderModels();
+    await renderConfig();
   } catch (e) {
     alert(`Remove failed: ${String(e && e.message || e)}`);
   }
@@ -2609,7 +2746,7 @@ async function renderSetup() {
         + '<div style="font-size:12px;color:var(--text-dim)">' + statusLine + '</div>'
         + '</div></div>'
         + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
-        + '<a href="#/models" class="btn btn-sm btn-primary" style="border-radius:6px">Open Models Tab</a>'
+        + '<a href="#/config" class="btn btn-sm btn-primary" style="border-radius:6px">Open Configuration</a>'
         + '<button class="btn btn-sm setup-disconnect-local-models-btn" style="border-color:var(--red);color:var(--red);border-radius:6px">Disconnect</button>'
         + '</div>';
     }
@@ -3230,7 +3367,7 @@ async function renderSetup() {
         <div class="setup-unlocked-actions">
           <a class="btn btn-primary" href="#/overview" style="border-radius:6px">Explore Overview</a>
           <a class="btn" href="#/cockpit" style="border-radius:6px">Open Cockpit</a>
-          <a class="btn" href="#/deploy" style="border-radius:6px">Deploy Agents</a>
+          <a class="btn" href="#/cockpit" style="border-radius:6px">Open Cockpit</a>
         </div>
       ` : `
         <p style="color:var(--text-dim);font-size:13px;line-height:1.6;margin-top:4px">
@@ -4732,54 +4869,6 @@ function renderCockpit() {
       <div class="card" style="padding:2rem;text-align:center;color:var(--amber);">
         <p style="font-size:1.5rem;">&#9654; Cockpit unavailable</p>
         <p style="margin-top:1rem;color:var(--text-dim);">cockpit.js failed to load.</p>
-      </div>`;
-  }
-}
-
-// =============================================================================
-// PAGE: Orchestrator
-// =============================================================================
-function renderOrchestrator() {
-  content.innerHTML = `
-    <div class="page-header">
-      <h1>Orchestrator</h1>
-      <p class="subtitle">Launch, task, and monitor managed agent sessions</p>
-    </div>
-    <div id="orchestrator-root"></div>
-  `;
-
-  const root = document.getElementById('orchestrator-root');
-  if (window.OrchestratorPage && typeof window.OrchestratorPage.render === 'function') {
-    window.OrchestratorPage.render(root);
-  } else {
-    root.innerHTML = `
-      <div class="card" style="padding:2rem;text-align:center;color:var(--amber);">
-        <p style="font-size:1.5rem;">&#9881; Orchestrator unavailable</p>
-        <p style="margin-top:1rem;color:var(--text-dim);">orchestrator.js failed to load.</p>
-      </div>`;
-  }
-}
-
-// =============================================================================
-// PAGE: Deploy
-// =============================================================================
-function renderDeploy() {
-  content.innerHTML = `
-    <div class="page-header">
-      <h1>Deploy</h1>
-      <p class="subtitle">Launch and manage agents</p>
-    </div>
-    <div id="deploy-root"></div>
-  `;
-
-  const root = document.getElementById('deploy-root');
-  if (window.DeployPage && typeof window.DeployPage.init === 'function') {
-    window.DeployPage.init(root);
-  } else {
-    root.innerHTML = `
-      <div class="card" style="padding:2rem;text-align:center;color:var(--amber);">
-        <p style="font-size:1.5rem;">&#9732; Deploy unavailable</p>
-        <p style="margin-top:1rem;color:var(--text-dim);">deploy.js failed to load.</p>
       </div>`;
   }
 }

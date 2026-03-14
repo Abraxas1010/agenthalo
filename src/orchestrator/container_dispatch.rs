@@ -2,6 +2,7 @@ use crate::container::agent_lock::ReusePolicy;
 use crate::container::launcher::{destroy_container, launch_container, MeshConfig, RunConfig};
 use crate::container::mesh::{call_remote_tool, mesh_registry_path, PeerRegistry};
 use crate::container::AgentResponse;
+use crate::halo::did::{did_document_to_json, DIDIdentity};
 use crate::orchestrator::dispatch::ContainerHookupRequest;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,61 @@ pub struct ProvisionedContainer {
     pub host_sock: String,
     pub started_at_unix: u64,
     pub mesh_port: Option<u16>,
+    pub did_uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProvisionedContainerIdentityRecord {
+    did_uri: String,
+    did_document: serde_json::Value,
+}
+
+fn container_run_dir() -> PathBuf {
+    std::env::temp_dir().join("nucleusdb-container")
+}
+
+fn identity_record_path(session_id: &str) -> PathBuf {
+    container_run_dir().join(format!("{session_id}.identity.json"))
+}
+
+pub fn load_identity_record(session_id: &str) -> Result<Option<serde_json::Value>, String> {
+    let path = identity_record_path(session_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes =
+        std::fs::read(&path).map_err(|e| format!("read identity record {}: {e}", path.display()))?;
+    let record: ProvisionedContainerIdentityRecord = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("parse identity record {}: {e}", path.display()))?;
+    Ok(Some(json!({
+        "did_uri": record.did_uri,
+        "did_document": record.did_document,
+    })))
+}
+
+fn persist_identity_record(
+    session_id: &str,
+    identity: &DIDIdentity,
+) -> Result<serde_json::Value, String> {
+    let dir = container_run_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create container run dir {}: {e}", dir.display()))?;
+    let path = identity_record_path(session_id);
+    let record = ProvisionedContainerIdentityRecord {
+        did_uri: identity.did.clone(),
+        did_document: did_document_to_json(&identity.did_document),
+    };
+    let bytes = serde_json::to_vec_pretty(&record)
+        .map_err(|e| format!("serialize identity record {}: {e}", path.display()))?;
+    std::fs::write(&path, bytes).map_err(|e| format!("write identity record {}: {e}", path.display()))?;
+    Ok(json!({
+        "did_uri": record.did_uri,
+        "did_document": record.did_document,
+    }))
+}
+
+pub fn remove_identity_record(session_id: &str) {
+    let _ = std::fs::remove_file(identity_record_path(session_id));
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +249,8 @@ impl ContainerDispatch for MeshContainerDispatch {
         } else {
             spec.mcp_port
         };
+        let identity = DIDIdentity::generate()?;
+        let did_uri = identity.did.clone();
         let peer_agent_id = spec.peer_agent_id.clone();
         let env_vars = spec.env.into_iter().collect::<Vec<_>>();
         let info = tokio::task::spawn_blocking(move || {
@@ -207,12 +265,13 @@ impl ContainerDispatch for MeshContainerDispatch {
                     enabled: true,
                     mcp_port,
                     registry_volume,
-                    agent_did: None,
+                    agent_did: Some(did_uri.clone()),
                 }),
             })
         })
         .await
         .map_err(|e| format!("container provision join failure: {e}"))??;
+        let identity_json = persist_identity_record(&info.session_id, &identity)?;
         Ok(ProvisionedContainer {
             session_id: info.session_id,
             container_id: info.container_id,
@@ -221,6 +280,10 @@ impl ContainerDispatch for MeshContainerDispatch {
             host_sock: info.host_sock.display().to_string(),
             started_at_unix: info.started_at_unix,
             mesh_port: info.mesh_port,
+            did_uri: identity_json
+                .get("did_uri")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
         })
     }
 
@@ -273,7 +336,9 @@ impl ContainerDispatch for MeshContainerDispatch {
         let owned = session_id.to_string();
         tokio::task::spawn_blocking(move || destroy_container(&owned))
             .await
-            .map_err(|e| format!("container destroy join failure: {e}"))?
+            .map_err(|e| format!("container destroy join failure: {e}"))??;
+        remove_identity_record(session_id);
+        Ok(())
     }
 }
 
@@ -334,6 +399,7 @@ impl ContainerDispatch for InMemoryContainerDispatch {
             host_sock: "/tmp/in-memory.sock".to_string(),
             started_at_unix: crate::pod::now_unix(),
             mesh_port: Some(spec.mcp_port),
+            did_uri: Some("did:key:z6MkInMemory".to_string()),
         })
     }
 

@@ -42,6 +42,15 @@ pub struct DIDIdentity {
     pub mlkem768_decapsulation_key: MlKem768DecapsulationKey,
 }
 
+impl DIDIdentity {
+    pub fn generate() -> Result<Self, String> {
+        let mut seed = [0u8; 64];
+        getrandom::getrandom(&mut seed)
+            .map_err(|e| format!("generate DID seed from OS entropy: {e}"))?;
+        did_from_genesis_seed(&seed)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DIDDocument {
     pub id: String,

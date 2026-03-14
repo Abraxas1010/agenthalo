@@ -13,7 +13,7 @@ use super::mcp_bridge;
 use super::DashboardState;
 use crate::cli::default_witness_cfg;
 use crate::cockpit::deploy::{self, LaunchRequest};
-use crate::container::{current_container_id, ContainerAgentLock};
+use crate::container::{current_container_id, ContainerAgentLock, ReusePolicy};
 use crate::halo::addons;
 use crate::halo::agent_auth;
 use crate::halo::agentpmt;
@@ -60,13 +60,14 @@ use crate::state::State;
 use crate::verifier::gate as proof_gate;
 use crate::witness::WitnessSignatureAlgorithm;
 use crate::VcBackend;
+use crate::orchestrator::container_dispatch::ContainerDispatch;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State as AxumState};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use bip39::{Language, Mnemonic};
 use futures_util::SinkExt;
@@ -285,6 +286,12 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/deploy/preflight", post(api_deploy_preflight))
         .route("/deploy/launch", post(api_deploy_launch))
         .route("/deploy/status/{id}", get(api_deploy_status))
+        .route("/containers", get(api_containers_list))
+        .route("/containers/provision", post(api_containers_provision))
+        .route("/containers/initialize", post(api_containers_initialize))
+        .route("/containers/deinitialize", post(api_containers_deinitialize))
+        .route("/containers/{id}", delete(api_containers_destroy))
+        .route("/containers/{id}/logs", get(api_containers_logs))
         .route("/models/status", get(api_models_status))
         .route("/models/search", get(api_models_search))
         .route("/models/pull", post(api_models_pull))
@@ -649,6 +656,34 @@ pub struct CockpitCreateSessionRequest {
 pub struct CockpitResizeRequest {
     cols: u16,
     rows: u16,
+}
+
+#[derive(Deserialize, Default)]
+pub struct ContainersProvisionRequest {
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    admission_mode: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ContainersInitializeRequest {
+    session_id: String,
+    hookup: crate::orchestrator::ContainerHookupRequest,
+    #[serde(default)]
+    reuse_policy: Option<ReusePolicy>,
+}
+
+#[derive(Deserialize)]
+pub struct ContainersDeinitializeRequest {
+    session_id: String,
+}
+
+#[derive(Deserialize, Default)]
+pub struct ContainerLogsQuery {
+    follow: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -2199,6 +2234,229 @@ async fn api_container_lock_status(_: AxumState<DashboardState>) -> ApiResult {
         "state": lock.state_label(),
         "reuse_policy": lock.reuse_policy,
         "lock": lock,
+    })))
+}
+
+async fn fetch_container_lock_status_view(
+    peer: crate::container::PeerInfo,
+) -> (Option<String>, Option<String>) {
+    let timeout = Duration::from_secs(5);
+    let result = tokio::task::spawn_blocking(move || {
+        crate::container::mesh::call_remote_tool_with_timeout(
+            &peer,
+            "nucleusdb_container_lock_status",
+            json!({}),
+            None,
+            timeout,
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(value)) => (
+            value
+                .get("state")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            value
+                .get("reuse_policy")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        ),
+        _ => (None, None),
+    }
+}
+
+fn container_identity_payload(
+    session_id: &str,
+    registry: &crate::container::PeerRegistry,
+    peer_agent_id: &str,
+) -> Option<Value> {
+    if let Ok(Some(value)) =
+        crate::orchestrator::container_dispatch::load_identity_record(session_id)
+    {
+        return Some(value);
+    }
+    registry
+        .find(peer_agent_id)
+        .and_then(|peer| peer.did_uri.clone())
+        .map(|did_uri| json!({ "did_uri": did_uri }))
+}
+
+async fn api_containers_list(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let sessions = crate::container::launcher::list_sessions().map_err(internal_err)?;
+    let registry = crate::container::PeerRegistry::load(&crate::container::mesh_registry_path())
+        .unwrap_or_default();
+    let mut views = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        let peer = registry.find(&session.agent_id).cloned();
+        let (lock_state, reuse_policy) = match peer {
+            Some(peer) => fetch_container_lock_status_view(peer).await,
+            None => (None, None),
+        };
+        let identity = container_identity_payload(&session.session_id, &registry, &session.agent_id);
+        views.push(json!({
+            "session_id": session.session_id,
+            "container_id": session.container_id,
+            "image": session.image,
+            "agent_id": session.agent_id,
+            "host_sock": session.host_sock.display().to_string(),
+            "started_at_unix": session.started_at_unix,
+            "mesh_port": session.mesh_port,
+            "lock_state": lock_state,
+            "reuse_policy": reuse_policy,
+            "identity": identity,
+        }));
+    }
+    Ok(Json(json!({
+        "count": views.len(),
+        "sessions": views,
+    })))
+}
+
+async fn api_containers_provision(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<ContainersProvisionRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let admission_mode =
+        crate::halo::admission::AdmissionMode::parse(req.admission_mode.as_deref())
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let admission = crate::halo::admission::evaluate_launch_admission(
+        admission_mode,
+        Some(&state.governor_registry),
+        None,
+    );
+    if !admission.allowed {
+        let reason = admission
+            .issues
+            .iter()
+            .map(|issue| issue.message.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("AETHER admission policy blocked container provision: {reason}"),
+        ));
+    }
+    let dispatch = crate::orchestrator::container_dispatch::MeshContainerDispatch::default();
+    let defaults = dispatch.provision_defaults();
+    let peer_agent_id = req
+        .agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "container-{}-{}",
+                crate::pod::now_unix(),
+                &uuid::Uuid::new_v4().simple().to_string()[..8]
+            )
+        });
+    let provisioned = dispatch
+        .provision(crate::orchestrator::container_dispatch::ContainerProvisionSpec {
+            image: req.image.unwrap_or(defaults.image),
+            peer_agent_id,
+            mcp_port: defaults.mcp_port,
+            registry_volume: defaults.registry_volume,
+            env: std::collections::BTreeMap::new(),
+        })
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let identity = crate::orchestrator::container_dispatch::load_identity_record(
+        &provisioned.session_id,
+    )
+    .map_err(internal_err)?;
+    Ok(Json(json!({
+        "session_id": provisioned.session_id,
+        "container_id": provisioned.container_id,
+        "image": provisioned.image,
+        "agent_id": provisioned.peer_agent_id,
+        "mesh_port": provisioned.mesh_port,
+        "did_uri": provisioned.did_uri,
+        "identity": identity,
+        "admission": admission,
+    })))
+}
+
+async fn api_containers_initialize(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<ContainersInitializeRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let session = crate::container::launcher::load_session(&req.session_id)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let dispatch = crate::orchestrator::container_dispatch::MeshContainerDispatch::default();
+    let initialized = dispatch
+        .initialize(crate::orchestrator::container_dispatch::ContainerInitializeSpec {
+            peer_agent_id: session.agent_id,
+            reuse_policy: req.reuse_policy.unwrap_or(ReusePolicy::Reusable),
+            hookup: req.hookup,
+        })
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "session_id": req.session_id,
+        "container_id": initialized.container_id,
+        "state": initialized.state,
+        "agent_id": initialized.agent_id,
+        "trace_session_id": initialized.trace_session_id,
+        "reuse_policy": initialized.reuse_policy,
+    })))
+}
+
+async fn api_containers_deinitialize(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<ContainersDeinitializeRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let session = crate::container::launcher::load_session(&req.session_id)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let dispatch = crate::orchestrator::container_dispatch::MeshContainerDispatch::default();
+    let deinitialized = dispatch
+        .deinitialize(crate::orchestrator::container_dispatch::ContainerDeinitializeSpec {
+            peer_agent_id: session.agent_id,
+        })
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "session_id": req.session_id,
+        "container_id": deinitialized.container_id,
+        "state": deinitialized.state,
+        "trace_session_id": deinitialized.trace_session_id,
+        "reuse_policy": deinitialized.reuse_policy,
+    })))
+}
+
+async fn api_containers_destroy(
+    AxumState(state): AxumState<DashboardState>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let dispatch = crate::orchestrator::container_dispatch::MeshContainerDispatch::default();
+    dispatch
+        .destroy(&id)
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "session_id": id,
+        "destroyed": true,
+    })))
+}
+
+async fn api_containers_logs(
+    AxumState(state): AxumState<DashboardState>,
+    Path(id): Path<String>,
+    Query(query): Query<ContainerLogsQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let logs = crate::container::launcher::container_logs(&id, query.follow.unwrap_or(false))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "session_id": id,
+        "follow": query.follow.unwrap_or(false),
+        "logs": logs,
     })))
 }
 
@@ -4572,12 +4830,36 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
 
     let orchestrator = local_orchestrator(&state)?;
     let trust_model = EpistemicTrust::new(epistemic_trust_floor());
+    let registry = crate::container::PeerRegistry::load(&crate::container::mesh_registry_path())
+        .unwrap_or_default();
     let agents = orchestrator.list_agents().await;
-    Ok(Json(json!({
-        "agents": agents.into_iter().map(|a| {
+    let mut payload_agents = Vec::with_capacity(agents.len());
+    for a in agents {
+            let container_meta = orchestrator.container_agent_metadata(&a.agent_id).await;
+            let container_session_id = container_meta.as_ref().map(|meta| meta.0.clone());
+            let container_id = container_meta.as_ref().map(|meta| meta.1.clone());
+            let lock_state = container_meta.as_ref().map(|meta| meta.2.clone());
+            let did_uri = container_session_id
+                .as_deref()
+                .and_then(|session_id| {
+                    crate::orchestrator::container_dispatch::load_identity_record(session_id)
+                        .ok()
+                        .flatten()
+                        .and_then(|identity| {
+                            identity
+                                .get("did_uri")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string)
+                        })
+                })
+                .or_else(|| {
+                    registry
+                        .find(&a.agent_id)
+                        .and_then(|peer| peer.did_uri.clone())
+                });
             let base_trust = base_agent_trust(&a.agent_type);
             let trust = trust_model.nucleus(base_trust);
-            json!({
+            payload_agents.push(json!({
                 "agent_id": a.agent_id,
                 "agent_name": a.agent_name,
                 "agent_type": a.agent_type,
@@ -4593,8 +4875,14 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
                 "epistemic_trust": trust,
                 "trust_fixed_point": trust_model.is_fixed_point(base_trust),
                 "trust_floor": trust_model.floor(),
-            })
-        }).collect::<Vec<_>>()
+                "container_session_id": container_session_id,
+                "container_id": container_id,
+                "lock_state": lock_state,
+                "did_uri": did_uri,
+            }));
+    }
+    Ok(Json(json!({
+        "agents": payload_agents,
     })))
 }
 
