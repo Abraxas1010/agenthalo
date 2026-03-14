@@ -4,6 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
+use std::sync::{Mutex, OnceLock};
 
 use crate::halo::hash::{self, HashAlgorithm};
 
@@ -333,6 +334,11 @@ fn ledger_path() -> std::path::PathBuf {
     crate::halo::config::identity_social_ledger_path()
 }
 
+fn ledger_append_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 pub fn load_entries() -> Result<Vec<IdentityLedgerEntry>, String> {
     let path = ledger_path();
     if !path.exists() {
@@ -622,6 +628,9 @@ fn append_entry_with_key(
     mut entry: IdentityLedgerEntry,
     sign_scope_key: Option<&[u8; 32]>,
 ) -> Result<IdentityLedgerEntry, String> {
+    let _guard = ledger_append_lock()
+        .lock()
+        .map_err(|_| "identity ledger append lock poisoned".to_string())?;
     crate::halo::config::ensure_halo_dir()?;
     let path = ledger_path();
     let mut entries = load_entries()?;
@@ -1360,6 +1369,32 @@ mod tests {
         let entries = load_entries().expect("load entries");
         assert_eq!(entries.len(), 6);
         verify_chain(&entries).expect("chain should verify");
+    }
+
+    #[test]
+    fn concurrent_safety_tier_appends_preserve_sequence_chain() {
+        use std::sync::{Arc, Barrier};
+
+        let _home = set_tmp_home("concurrent_tier_appends");
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+
+        for idx in 0..8 {
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                append_safety_tier_applied("max-safe", &format!("thread-{idx}"), idx)
+                    .expect("concurrent tier append");
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("append thread join");
+        }
+
+        let entries = load_entries().expect("load entries");
+        assert_eq!(entries.len(), 8);
+        verify_chain(&entries).expect("concurrent append chain should verify");
     }
 
     #[test]
