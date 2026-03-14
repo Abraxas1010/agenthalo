@@ -168,6 +168,21 @@ pub fn p2pclaw_bridge_lock_path() -> PathBuf {
     halo_dir().join("p2pclaw_bridge_state.lock")
 }
 
+pub fn compile_workflow_dir() -> PathBuf {
+    halo_dir().join("compile_workflow")
+}
+
+pub fn lambda_credits_path() -> PathBuf {
+    halo_dir().join("lambda_credits.json")
+}
+
+pub fn heytinglean_cache_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("AGENTHALO_HEYTINGLEAN_CACHE_DIR") {
+        return PathBuf::from(path);
+    }
+    halo_dir().join("heytinglean_cache")
+}
+
 pub fn proof_certificates_dir() -> PathBuf {
     halo_dir().join("proof_certificates")
 }

@@ -1,7 +1,7 @@
 use crate::container::mesh;
+use crate::container::ContainerBackend;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +106,7 @@ fn run_dir() -> PathBuf {
 }
 
 pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
+    let engine = ContainerBackend::detect();
     let session_id = make_session_id();
     let run_dir = run_dir();
     std::fs::create_dir_all(&run_dir)
@@ -117,7 +118,7 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
         let _ = std::fs::remove_file(&host_sock);
     }
 
-    let mut cmd = Command::new("docker");
+    let mut cmd = engine.command();
     cmd.arg("run")
         .arg("-d")
         .arg("--name")
@@ -174,10 +175,11 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
     }
     let out = cmd
         .output()
-        .map_err(|e| format!("failed to run docker: {e}"))?;
+        .map_err(|e| format!("failed to run {}: {e}", engine))?;
     if !out.status.success() {
         return Err(format!(
-            "docker run failed: {}",
+            "{} run failed: {}",
+            engine,
             String::from_utf8_lossy(&out.stderr)
         ));
     }
@@ -204,16 +206,19 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
 }
 
 pub fn container_status(session_id: &str) -> Result<String, String> {
-    let out = Command::new("docker")
+    let engine = ContainerBackend::detect();
+    let out = engine
+        .command()
         .arg("inspect")
         .arg("--format")
         .arg("{{.State.Status}}")
         .arg(session_id)
         .output()
-        .map_err(|e| format!("failed to run docker inspect: {e}"))?;
+        .map_err(|e| format!("failed to run {} inspect: {e}", engine))?;
     if !out.status.success() {
         return Err(format!(
-            "docker inspect failed: {}",
+            "{} inspect failed: {}",
+            engine,
             String::from_utf8_lossy(&out.stderr)
         ));
     }
@@ -221,14 +226,17 @@ pub fn container_status(session_id: &str) -> Result<String, String> {
 }
 
 pub fn stop_container(session_id: &str) -> Result<(), String> {
-    let out = Command::new("docker")
+    let engine = ContainerBackend::detect();
+    let out = engine
+        .command()
         .arg("stop")
         .arg(session_id)
         .output()
-        .map_err(|e| format!("failed to run docker stop: {e}"))?;
+        .map_err(|e| format!("failed to run {} stop: {e}", engine))?;
     if !out.status.success() {
         return Err(format!(
-            "docker stop failed: {}",
+            "{} stop failed: {}",
+            engine,
             String::from_utf8_lossy(&out.stderr)
         ));
     }
@@ -236,17 +244,19 @@ pub fn stop_container(session_id: &str) -> Result<(), String> {
 }
 
 pub fn destroy_container(session_id: &str) -> Result<(), String> {
-    let out = Command::new("docker")
+    let engine = ContainerBackend::detect();
+    let out = engine
+        .command()
         .arg("rm")
         .arg("-f")
         .arg(session_id)
         .output()
-        .map_err(|e| format!("failed to run docker rm -f: {e}"))?;
+        .map_err(|e| format!("failed to run {} rm -f: {e}", engine))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let missing = stderr.contains("No such container") || stderr.contains("No such object");
         if !missing {
-            return Err(format!("docker rm -f failed: {}", stderr));
+            return Err(format!("{} rm -f failed: {}", engine, stderr));
         }
     }
     let meta = run_dir().join(format!("{session_id}.json"));
@@ -255,7 +265,8 @@ pub fn destroy_container(session_id: &str) -> Result<(), String> {
 }
 
 pub fn container_logs(session_id: &str, follow: bool) -> Result<String, String> {
-    let mut cmd = Command::new("docker");
+    let engine = ContainerBackend::detect();
+    let mut cmd = engine.command();
     cmd.arg("logs");
     if follow {
         cmd.arg("-f");
@@ -263,10 +274,11 @@ pub fn container_logs(session_id: &str, follow: bool) -> Result<String, String> 
     cmd.arg(session_id);
     let out = cmd
         .output()
-        .map_err(|e| format!("failed to run docker logs: {e}"))?;
+        .map_err(|e| format!("failed to run {} logs: {e}", engine))?;
     if !out.status.success() {
         return Err(format!(
-            "docker logs failed: {}",
+            "{} logs failed: {}",
+            engine,
             String::from_utf8_lossy(&out.stderr)
         ));
     }

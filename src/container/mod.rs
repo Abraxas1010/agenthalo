@@ -1,5 +1,6 @@
 pub mod agent_hookup;
 pub mod agent_lock;
+pub mod backend;
 pub mod builder;
 pub mod coordination;
 pub mod launcher;
@@ -16,6 +17,7 @@ pub use agent_lock::{
     current_container_id, AgentHookupKind, ContainerAgentLock, ContainerAgentState, DeinitContext,
     ReusePolicy, StateTransition,
 };
+pub use backend::ContainerBackend;
 pub use builder::{build_container_image, BuildConfig};
 pub use launcher::{
     container_logs, container_status, destroy_container, launch_container, stop_container, Channel,

@@ -1,7 +1,7 @@
+use crate::container::ContainerBackend;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 pub const DEFAULT_MESH_REGISTRY_VOLUME: &str = "nucleusdb-mesh";
@@ -41,25 +41,29 @@ pub fn prepare_bind_mount_dir(path: &Path, context: &str) -> Result<(), String> 
 }
 
 pub fn prepare_named_volume(volume: &Path, image: &str, context: &str) -> Result<(), String> {
+    let engine = ContainerBackend::detect();
     let volume_name = volume
         .to_str()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("{context} name is empty"))?;
 
-    let create = Command::new("docker")
+    let create = engine
+        .command()
         .args(["volume", "create", volume_name])
         .output()
-        .map_err(|e| format!("create {context} `{volume_name}`: {e}"))?;
+        .map_err(|e| format!("create {context} `{volume_name}` with {engine}: {e}"))?;
     if !create.status.success() {
         return Err(format!(
-            "create {context} `{volume_name}` failed: {}",
+            "create {context} `{volume_name}` failed with {}: {}",
+            engine,
             String::from_utf8_lossy(&create.stderr)
         ));
     }
 
     let chmod_mode = format!("{SHARED_BIND_DIR_MODE:o}");
-    let prep = Command::new("docker")
+    let prep = engine
+        .command()
         .args([
             "run",
             "--rm",
@@ -74,10 +78,11 @@ pub fn prepare_named_volume(volume: &Path, image: &str, context: &str) -> Result
             &format!("mkdir -p /data/mesh && chmod {chmod_mode} /data/mesh"),
         ])
         .output()
-        .map_err(|e| format!("prepare {context} `{volume_name}`: {e}"))?;
+        .map_err(|e| format!("prepare {context} `{volume_name}` with {engine}: {e}"))?;
     if !prep.status.success() {
         return Err(format!(
-            "prepare {context} `{volume_name}` failed: {}",
+            "prepare {context} `{volume_name}` failed with {}: {}",
+            engine,
             String::from_utf8_lossy(&prep.stderr)
         ));
     }

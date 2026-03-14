@@ -24,6 +24,8 @@ use crate::halo::auth::{
     dashboard_auth_required, is_authenticated, is_dashboard_authenticated, load_credentials,
     save_credentials,
 };
+use crate::halo::compile_dispatch;
+use crate::halo::compile_workflow::{self, CompileResult, CompileStatus, CompileTask};
 use crate::halo::config;
 use crate::halo::crypto_scope::CryptoScope;
 use crate::halo::encrypted_file;
@@ -86,6 +88,10 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         // Status
         .route("/status", get(api_status))
         .route("/container/lock-status", get(api_container_lock_status))
+        .route("/compile/submit", post(api_compile_submit))
+        .route("/compile/poll", get(api_compile_poll))
+        .route("/compile/{id}/result", post(api_compile_result))
+        .route("/compile/{id}/status", get(api_compile_status))
         // Crypto lock/session
         .route("/crypto/status", get(api_crypto_status))
         .route("/crypto/create-password", post(api_crypto_create_password))
@@ -399,6 +405,11 @@ pub struct TraceTopologyQuery {
     window_seconds: Option<u64>,
     max_chain_degree: Option<usize>,
     max_entries: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct CompilePollQuery {
+    worker_did: String,
 }
 
 #[derive(Deserialize)]
@@ -966,6 +977,11 @@ fn api_err(code: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
 
 fn internal_err(msg: String) -> (StatusCode, Json<Value>) {
     api_err(StatusCode::INTERNAL_SERVER_ERROR, &msg)
+}
+
+fn bad_request_err(msg: impl Into<String>) -> (StatusCode, Json<Value>) {
+    let msg = msg.into();
+    api_err(StatusCode::BAD_REQUEST, &msg)
 }
 
 fn orchestrator_mcp_proxy_enabled() -> bool {
@@ -2184,6 +2200,50 @@ async fn api_container_lock_status(_: AxumState<DashboardState>) -> ApiResult {
         "reuse_policy": lock.reuse_policy,
         "lock": lock,
     })))
+}
+
+async fn api_compile_submit(Json(task): Json<CompileTask>) -> ApiResult {
+    let task = compile_workflow::prepare_compile_task(task);
+    let task_id = task.task_id.clone();
+    tokio::spawn(async move {
+        let _ = compile_dispatch::dispatch_compilation(&task).await;
+    });
+    Ok(Json(json!({
+        "task_id": task_id,
+        "status": "submitted",
+    })))
+}
+
+async fn api_compile_poll(Query(query): Query<CompilePollQuery>) -> ApiResult {
+    let tasks = compile_workflow::poll_compile_tasks(&query.worker_did).map_err(bad_request_err)?;
+    Ok(Json(json!({ "tasks": tasks })))
+}
+
+async fn api_compile_result(
+    Path(task_id): Path<String>,
+    Json(result): Json<CompileResult>,
+) -> ApiResult {
+    if result.task_id != task_id {
+        return Err(bad_request_err("task id mismatch"));
+    }
+    compile_workflow::submit_compile_result(&result).map_err(bad_request_err)?;
+    Ok(Json(json!({
+        "task_id": task_id,
+        "status": "recorded",
+    })))
+}
+
+async fn api_compile_status(Path(task_id): Path<String>) -> ApiResult {
+    let value = match compile_workflow::get_compile_status(&task_id).map_err(bad_request_err)? {
+        Some(result) => json!({ "task_id": task_id, "result": result }),
+        None => json!({
+            "task_id": task_id,
+            "result": {
+                "status": CompileStatus::Pending,
+            }
+        }),
+    };
+    Ok(Json(value))
 }
 
 async fn api_governor_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {

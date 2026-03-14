@@ -4,10 +4,10 @@
 //! can reach each other's MCP HTTP endpoints. Peers are discovered via
 //! Docker DNS (container-name:port) and registered in a shared peer list.
 
+use crate::container::ContainerBackend;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::Command;
 
 pub const MESH_NETWORK_NAME: &str = "halo-mesh";
 pub const DEFAULT_MCP_PORT: u16 = 3000;
@@ -43,14 +43,17 @@ pub struct PeerRegistry {
 
 /// Ensure the shared Docker bridge network exists.
 pub fn ensure_mesh_network() -> Result<(), String> {
-    let inspect = Command::new("docker")
+    let engine = ContainerBackend::detect();
+    let inspect = engine
+        .command()
         .args(["network", "inspect", MESH_NETWORK_NAME])
         .output()
-        .map_err(|e| format!("docker network inspect failed: {e}"))?;
+        .map_err(|e| format!("{engine} network inspect failed: {e}"))?;
     if inspect.status.success() {
         return Ok(());
     }
-    let create = Command::new("docker")
+    let create = engine
+        .command()
         .args([
             "network",
             "create",
@@ -61,10 +64,11 @@ pub fn ensure_mesh_network() -> Result<(), String> {
             MESH_NETWORK_NAME,
         ])
         .output()
-        .map_err(|e| format!("docker network create failed: {e}"))?;
+        .map_err(|e| format!("{engine} network create failed: {e}"))?;
     if !create.status.success() {
         return Err(format!(
-            "failed to create mesh network: {}",
+            "failed to create mesh network with {}: {}",
+            engine,
             String::from_utf8_lossy(&create.stderr)
         ));
     }

@@ -1,7 +1,7 @@
 use crate::container::launcher::{Channel, MonitorConfig};
+use crate::container::ContainerBackend;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -57,7 +57,8 @@ pub fn build_container_image(cfg: &BuildConfig) -> Result<PathBuf, String> {
         format!("nucleusdb.channels={}", monitor.channels_csv()),
         format!("nucleusdb.built_at_unix={stamp}"),
     ];
-    let mut cmd = Command::new("docker");
+    let engine = ContainerBackend::detect();
+    let mut cmd = engine.command();
     cmd.arg("build")
         .arg("-t")
         .arg(&cfg.image)
@@ -71,10 +72,11 @@ pub fn build_container_image(cfg: &BuildConfig) -> Result<PathBuf, String> {
     match out {
         Ok(result) if result.status.success() => Ok(cfg.output_dir.clone()),
         Ok(result) => Err(format!(
-            "docker build failed: {}",
+            "{} build failed: {}",
+            engine,
             String::from_utf8_lossy(&result.stderr)
         )),
-        Err(e) => Err(format!("failed to run docker build: {e}")),
+        Err(e) => Err(format!("failed to run {} build: {e}", engine)),
     }
 }
 
