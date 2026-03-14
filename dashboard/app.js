@@ -3425,11 +3425,18 @@ async function renderSetup() {
             _cliAuthTerm.loadAddon(_cliAuthFitAddon);
             _cliAuthTerm.open(termEl);
             try { _cliAuthFitAddon.fit(); } catch (_e) {}
+            try { _cliAuthTerm.focus(); } catch (_e) {}
+            termEl.onmousedown = () => {
+              try { _cliAuthTerm && _cliAuthTerm.focus(); } catch (_e) {}
+            };
             // Connect WebSocket
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = proto + '//' + location.host + '/api/cockpit/sessions/' + resp.session_id + '/ws';
             _cliAuthWs = new WebSocket(wsUrl);
             _cliAuthWs.binaryType = 'arraybuffer';
+            _cliAuthWs.onopen = () => {
+              try { _cliAuthTerm && _cliAuthTerm.focus(); } catch (_e) {}
+            };
             let _cliAuthOpened = false;
             _cliAuthWs.onmessage = (ev) => {
               let text = '';

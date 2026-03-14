@@ -118,13 +118,18 @@
       }
 
       this.term.open(this.body);
-      setTimeout(() => this.fit(), 0);
+      setTimeout(() => {
+        this.fit();
+        this.focusTerminal();
+      }, 0);
 
       this.term.onData((data) => {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           this.ws.send(data);
         }
       });
+
+      this.body.addEventListener('mousedown', () => this.focusTerminal());
 
       this.resizeObs = new ResizeObserver(() => this.fit());
       this.resizeObs.observe(this.body);
@@ -262,7 +267,10 @@
 
       this.ws = new WebSocket(wsFull);
       this.ws.binaryType = 'arraybuffer';
-      this.ws.onopen = () => this.fit();
+      this.ws.onopen = () => {
+        this.fit();
+        this.focusTerminal();
+      };
       this.ws.onmessage = (ev) => {
         if (typeof ev.data === 'string') {
           try {
@@ -297,6 +305,13 @@
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           this.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
         }
+      } catch (_e) {}
+    }
+
+    focusTerminal() {
+      if (!this.term) return;
+      try {
+        this.term.focus();
       } catch (_e) {}
     }
 
@@ -1079,6 +1094,7 @@
         entry.panel.el.classList.toggle('active', id === sessionId);
       });
       this.applyLayout();
+      this.sessions.get(sessionId)?.panel?.focusTerminal?.();
       localStorage.setItem('cockpit_active_tab', sessionId);
     }
 
