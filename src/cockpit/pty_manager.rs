@@ -286,9 +286,8 @@ impl PtyManager {
             .sessions
             .lock()
             .map_err(|e| format!("session map lock poisoned: {e}"))?;
-        let effective_limit = self.effective_limit_from_len(sessions.len());
-        if sessions.len() >= effective_limit {
-            return Err(format!("maximum {effective_limit} sessions reached"));
+        if sessions.len() >= self.max_sessions {
+            return Err(format!("maximum {} sessions reached", self.max_sessions));
         }
 
         let pty_system = native_pty_system();
@@ -424,18 +423,6 @@ impl PtyManager {
         }
     }
 
-    fn effective_limit_from_len(&self, current_len: usize) -> usize {
-        let Some(registry) = &self.governor_registry else {
-            return self.max_sessions;
-        };
-        let _ = registry.observe("gov-compute", current_len as f64);
-        registry
-            .snapshot_one("gov-compute")
-            .ok()
-            .map(|snapshot| snapshot.epsilon.ceil().clamp(1.0, self.max_sessions as f64) as usize)
-            .unwrap_or(self.max_sessions)
-    }
-
     fn observe_runtime(&self, current_len: usize) {
         let Some(registry) = &self.governor_registry else {
             return;
@@ -466,7 +453,6 @@ impl PtyManager {
         let Some(registry) = &self.governor_registry else {
             return;
         };
-        let effective_limit = self.effective_limit_from_len(self.session_count());
         let timeout = registry
             .snapshot_one("gov-pty")
             .ok()
@@ -483,7 +469,7 @@ impl PtyManager {
                         idle > timeout
                             && match status {
                                 SessionStatus::Done { .. } | SessionStatus::Error { .. } => true,
-                                SessionStatus::Active => map.len() >= effective_limit,
+                                SessionStatus::Active => map.len() >= self.max_sessions,
                                 SessionStatus::Starting => false,
                             }
                     })
@@ -565,6 +551,37 @@ mod tests {
         manager
             .destroy_session(&id1)
             .expect("destroy first session");
+    }
+
+    #[test]
+    fn governor_registry_does_not_clamp_nominal_session_limit() {
+        let registry = crate::halo::governor_registry::build_default_registry();
+        let manager = PtyManager::with_governor_registry(3, Some(registry));
+        let id1 = manager
+            .create_session(
+                "/bin/sh",
+                &["-c".to_string(), "sleep 2".to_string()],
+                vec![],
+                None,
+                80,
+                24,
+                Some("shell".to_string()),
+            )
+            .expect("first session");
+        let id2 = manager
+            .create_session(
+                "/bin/sh",
+                &["-c".to_string(), "sleep 2".to_string()],
+                vec![],
+                None,
+                80,
+                24,
+                Some("shell".to_string()),
+            )
+            .expect("second session");
+        assert_eq!(manager.session_count(), 2);
+        manager.destroy_session(&id1).expect("destroy first");
+        manager.destroy_session(&id2).expect("destroy second");
     }
 
     #[test]

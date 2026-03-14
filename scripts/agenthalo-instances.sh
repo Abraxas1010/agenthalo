@@ -7,7 +7,8 @@
 #   ./scripts/agenthalo-instances.sh wipe-all       Destroy ALL instances (requires --confirm)
 #   ./scripts/agenthalo-instances.sh start-discord   Start Discord bridge
 #   ./scripts/agenthalo-instances.sh stop-discord    Stop Discord bridge (data preserved)
-#   ./scripts/agenthalo-instances.sh start-dev       Start dev/testing instance
+#   ./scripts/agenthalo-instances.sh start-dev [--password-mode required|optional|disabled]
+#                                                    Start dev/testing instance
 #   ./scripts/agenthalo-instances.sh stop-dev        Stop dev/testing instance (data preserved)
 set -euo pipefail
 
@@ -18,6 +19,32 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+kill_host_processes() {
+    local patterns=(
+        "agenthalo-mcp-server"
+        "target/debug/agenthalo"
+        "target/release/agenthalo"
+        "/usr/local/bin/agenthalo"
+        "target/debug/nucleusdb"
+        "target/release/nucleusdb"
+        "/usr/local/bin/nucleusdb"
+        "target/debug/nucleusdb-server"
+        "target/release/nucleusdb-server"
+        "/usr/local/bin/nucleusdb-server"
+        "target/debug/nucleusdb-mcp"
+        "target/release/nucleusdb-mcp"
+        "/usr/local/bin/nucleusdb-mcp"
+        "target/debug/nucleusdb-discord"
+        "target/release/nucleusdb-discord"
+        "/usr/local/bin/nucleusdb-discord"
+    )
+
+    local pattern
+    for pattern in "${patterns[@]}"; do
+        pkill -f "$pattern" 2>/dev/null || true
+    done
+}
 
 list_instances() {
     echo "=== AgentHALO Instances ==="
@@ -99,10 +126,7 @@ wipe_dev() {
 
     docker compose -f docker-compose.yml down -v 2>/dev/null || true
 
-    # Kill host agenthalo processes (MCP servers etc)
-    pkill -f "agenthalo-mcp-server" 2>/dev/null || true
-    pkill -f "target/debug/agenthalo" 2>/dev/null || true
-    pkill -f "target/release/agenthalo" 2>/dev/null || true
+    kill_host_processes
 
     # Remove host data
     if [[ -d "$HOME/.agenthalo" ]]; then
@@ -132,7 +156,7 @@ wipe_all() {
     docker compose -f docker-compose.discord.yml down -v 2>/dev/null || true
     docker compose -f docker-compose.yml down -v 2>/dev/null || true
 
-    pkill -f "agenthalo" 2>/dev/null || true
+    kill_host_processes
 
     if [[ -d "$HOME/.agenthalo" ]]; then
         rm -rf "$HOME/.agenthalo"
@@ -165,10 +189,33 @@ stop_discord() {
 }
 
 start_dev() {
+    local password_mode="required"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --password-mode)
+                password_mode="${2:-}"
+                shift 2
+                ;;
+            *)
+                echo -e "${RED}Unknown start-dev option: $1${NC}"
+                echo "Usage: $0 start-dev [--password-mode required|optional|disabled]"
+                exit 1
+                ;;
+        esac
+    done
+    case "$password_mode" in
+        required|optional|disabled) ;;
+        *)
+            echo -e "${RED}Invalid password mode: ${password_mode}${NC}"
+            echo "Expected one of: required, optional, disabled"
+            exit 1
+            ;;
+    esac
     echo "Starting dev/testing instance..."
-    docker compose -f docker-compose.yml up -d --build
+    AGENTHALO_PASSWORD_BOOTSTRAP_MODE="$password_mode" docker compose -f docker-compose.yml up -d --build
     echo ""
     echo -e "${GREEN}Dev instance running as 'agenthalo-dev'${NC}"
+    echo "Password bootstrap mode: ${password_mode}"
     echo "Dashboard: http://localhost:3100"
     echo "API: http://localhost:8088"
     echo "Logs: docker logs -f agenthalo-dev"
@@ -186,7 +233,7 @@ case "${1:-}" in
     wipe-all)      wipe_all "${2:-}" ;;
     start-discord) start_discord ;;
     stop-discord)  stop_discord ;;
-    start-dev)     start_dev ;;
+    start-dev)     shift; start_dev "$@" ;;
     stop-dev)      stop_dev ;;
     *)
         echo "Usage: $0 {list|wipe-dev|wipe-all|start-discord|stop-discord|start-dev|stop-dev}"

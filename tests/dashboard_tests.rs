@@ -3154,6 +3154,37 @@ async fn crypto_unlock_rejects_wrong_password_after_creation() {
 }
 
 #[tokio::test]
+async fn crypto_status_reports_unlocked_when_bootstrap_disabled_and_no_password_exists() {
+    let _guard = lock_env();
+    let halo_home = std::env::temp_dir().join(format!(
+        "dashboard_test_crypto_status_disabled_bootstrap_{}_{}",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    let _ = std::fs::remove_dir_all(&halo_home);
+    std::fs::create_dir_all(&halo_home).expect("create temp halo home");
+    let _home_guard = EnvVarGuard::set(
+        "AGENTHALO_HOME",
+        Some(halo_home.to_str().expect("temp home utf8 path")),
+    );
+    let _bootstrap_guard = EnvVarGuard::set("AGENTHALO_PASSWORD_BOOTSTRAP_MODE", Some("disabled"));
+
+    let (state, db_path) = test_state("crypto_status_disabled_bootstrap");
+    let (status, val) = api_get(state, "/crypto/status").await;
+    assert_eq!(status, StatusCode::OK, "crypto status should succeed: {val}");
+    assert_eq!(val["password_protected"], json!(false));
+    assert_eq!(val["bootstrap_mode"], json!("disabled"));
+    assert_eq!(
+        val["locked"],
+        json!(false),
+        "fresh passwordless instances should not appear locked: {val}"
+    );
+
+    let _ = std::fs::remove_dir_all(&halo_home);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn crypto_change_password_rejects_wrong_current_password() {
     let _guard = lock_env();
     let halo_home = std::env::temp_dir().join(format!(

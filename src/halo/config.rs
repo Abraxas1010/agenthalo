@@ -1,5 +1,31 @@
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasswordBootstrapMode {
+    Required,
+    Optional,
+    Disabled,
+}
+
+impl PasswordBootstrapMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Optional => "optional",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "required" => Some(Self::Required),
+            "optional" => Some(Self::Optional),
+            "disabled" | "off" | "none" | "passwordless" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(unix)]
 fn ensure_dir_mode(path: &Path, mode: u32, err_prefix: &str) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
@@ -231,6 +257,14 @@ pub fn ensure_halo_dir() -> Result<(), String> {
     Ok(())
 }
 
+pub fn password_bootstrap_mode() -> PasswordBootstrapMode {
+    std::env::var("AGENTHALO_PASSWORD_BOOTSTRAP_MODE")
+        .ok()
+        .as_deref()
+        .and_then(PasswordBootstrapMode::parse)
+        .unwrap_or(PasswordBootstrapMode::Required)
+}
+
 pub fn ensure_attestations_dir() -> Result<(), String> {
     std::fs::create_dir_all(attestations_dir()).map_err(|e| format!("create attestations dir: {e}"))
 }
@@ -256,6 +290,34 @@ pub fn ensure_agent_credentials_dir() -> Result<(), String> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn password_bootstrap_mode_defaults_to_required() {
+        unsafe {
+            std::env::remove_var("AGENTHALO_PASSWORD_BOOTSTRAP_MODE");
+        }
+        assert_eq!(password_bootstrap_mode(), PasswordBootstrapMode::Required);
+    }
+
+    #[test]
+    fn password_bootstrap_mode_parses_variants() {
+        unsafe {
+            std::env::set_var("AGENTHALO_PASSWORD_BOOTSTRAP_MODE", "optional");
+        }
+        assert_eq!(password_bootstrap_mode(), PasswordBootstrapMode::Optional);
+        unsafe {
+            std::env::set_var("AGENTHALO_PASSWORD_BOOTSTRAP_MODE", "passwordless");
+        }
+        assert_eq!(password_bootstrap_mode(), PasswordBootstrapMode::Disabled);
+        unsafe {
+            std::env::remove_var("AGENTHALO_PASSWORD_BOOTSTRAP_MODE");
+        }
+    }
 }
 
 pub fn ensure_proof_certificates_dir() -> Result<(), String> {

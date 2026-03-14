@@ -681,6 +681,8 @@ pub struct ContainersProvisionRequest {
     agent_id: Option<String>,
     #[serde(default)]
     admission_mode: Option<String>,
+    #[serde(default)]
+    bootstrap_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2377,7 +2379,27 @@ async fn api_containers_provision(
                 peer_agent_id,
                 mcp_port: defaults.mcp_port,
                 registry_volume: defaults.registry_volume,
-                env: std::collections::BTreeMap::new(),
+                env: {
+                    let mut env = std::collections::BTreeMap::new();
+                    if let Some(mode) = req
+                        .bootstrap_mode
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        let parsed = config::PasswordBootstrapMode::parse(mode).ok_or_else(|| {
+                            api_err(
+                                StatusCode::BAD_REQUEST,
+                                "bootstrap_mode must be one of: required, optional, disabled",
+                            )
+                        })?;
+                        env.insert(
+                            "AGENTHALO_PASSWORD_BOOTSTRAP_MODE".to_string(),
+                            parsed.as_str().to_string(),
+                        );
+                    }
+                    env
+                },
             },
         )
         .await
@@ -2636,9 +2658,10 @@ async fn api_fallback_not_found(uri: axum::http::Uri) -> impl axum::response::In
 
 async fn api_crypto_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let password_protected = encrypted_file::header_exists();
+    let bootstrap_mode = config::password_bootstrap_mode();
     let mut crypto = lock_crypto_state(&state)?;
     crypto.session.reap_expired();
-    let locked = !crypto.session.is_unlocked();
+    let locked = password_protected && !crypto.session.is_unlocked();
     let mut active_scopes = crypto
         .session
         .active_scopes()
@@ -2665,6 +2688,7 @@ async fn api_crypto_status(AxumState(state): AxumState<DashboardState>) -> ApiRe
         "migration_status": migration_status_name(&status),
         "active_scopes": active_scopes,
         "password_protected": password_protected,
+        "bootstrap_mode": bootstrap_mode.as_str(),
         "failed_attempts": crypto.session.failed_attempts(),
         "retry_after_secs": retry_after_secs,
     })))
@@ -10085,6 +10109,7 @@ mod tests {
                 image: None,
                 agent_id: None,
                 admission_mode: None,
+                bootstrap_mode: None,
             }),
         )
         .await

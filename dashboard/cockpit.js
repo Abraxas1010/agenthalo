@@ -42,6 +42,7 @@
       this.identity = null;
       this.attestations = null;
       this.agentType = null;
+      this.terminalInputEl = null;
 
       this.el = document.createElement('div');
       this.el.className = 'cockpit-panel';
@@ -89,9 +90,27 @@
     attachTerminal(sessionId, wsUrl, onStatus) {
       this.sessionId = sessionId;
       this.wsUrl = wsUrl;
+      this.body.innerHTML = `
+        <div class="cockpit-terminal-shell">
+          <div class="cockpit-terminal-host"></div>
+          <form class="cockpit-terminal-composer">
+            <textarea class="input cockpit-terminal-input" rows="2" placeholder="Type input for this session. Enter sends. Shift+Enter inserts a newline."></textarea>
+            <div class="cockpit-terminal-actions">
+              <button type="submit" class="btn btn-sm btn-primary">Send</button>
+              <button type="button" class="btn btn-sm" data-terminal-enter="1">Enter</button>
+              <button type="button" class="btn btn-sm" data-terminal-ctrlc="1">Ctrl-C</button>
+              <button type="button" class="btn btn-sm" data-terminal-focus="1">Focus</button>
+            </div>
+          </form>
+        </div>
+      `;
+      const terminalHost = this.body.querySelector('.cockpit-terminal-host');
+      const composer = this.body.querySelector('.cockpit-terminal-composer');
+      const input = this.body.querySelector('.cockpit-terminal-input');
+      this.terminalInputEl = input;
 
       if (!window.Terminal || !window.FitAddon) {
-        this.body.innerHTML = '<pre style="padding:10px;color:#ff3030">xterm.js not loaded.</pre>';
+        terminalHost.innerHTML = '<pre style="padding:10px;color:#ff3030">xterm.js not loaded.</pre>';
         return;
       }
 
@@ -117,7 +136,7 @@
         }
       }
 
-      this.term.open(this.body);
+      this.term.open(terminalHost);
       setTimeout(() => {
         this.fit();
         this.focusTerminal();
@@ -130,9 +149,32 @@
       });
 
       this.body.addEventListener('mousedown', () => this.focusTerminal());
+      composer?.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        const value = String(input?.value || '');
+        if (!value.trim()) return;
+        this.sendTerminalText(value, true);
+        if (input) input.value = '';
+      });
+      input?.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' && !ev.shiftKey) {
+          ev.preventDefault();
+          composer?.requestSubmit();
+        }
+      });
+      this.body.querySelector('[data-terminal-enter="1"]')?.addEventListener('click', () => {
+        this.sendTerminalText('\n', false);
+      });
+      this.body.querySelector('[data-terminal-ctrlc="1"]')?.addEventListener('click', () => {
+        this.sendTerminalText('\u0003', false);
+      });
+      this.body.querySelector('[data-terminal-focus="1"]')?.addEventListener('click', () => {
+        this.focusTerminal();
+        try { input?.focus(); } catch (_e) {}
+      });
 
       this.resizeObs = new ResizeObserver(() => this.fit());
-      this.resizeObs.observe(this.body);
+      this.resizeObs.observe(terminalHost);
 
       this.connect(onStatus);
     }
@@ -313,6 +355,16 @@
       try {
         this.term.focus();
       } catch (_e) {}
+      try {
+        this.term.textarea?.focus();
+      } catch (_e) {}
+    }
+
+    sendTerminalText(text, ensureNewline) {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+      const payload = ensureNewline && !text.endsWith('\n') ? `${text}\n` : text;
+      this.ws.send(payload);
+      return true;
     }
 
     reconnect() {
@@ -819,33 +871,48 @@
         this.hideDropdown();
         return;
       }
-      const items = [
-        { id: 'claude', label: 'Claude CLI', detail: 'Anthropic terminal agent', icon: '⚡', needsPreflight: true },
-        { id: 'codex', label: 'Codex CLI', detail: 'OpenAI terminal agent', icon: '⌁', needsPreflight: true },
-        { id: 'gemini', label: 'Gemini CLI', detail: 'Google terminal agent', icon: '◇', needsPreflight: true },
-        { id: 'shell', label: 'Shell', detail: 'Raw bash session', icon: '▣', needsPreflight: false },
-        { id: 'admin', label: 'Admin Panel', detail: 'Operational controls', icon: '⚙', needsPreflight: false },
-        { id: 'containers', label: 'Containers', detail: 'Live container state', icon: '⬒', needsPreflight: false },
-        { id: 'workflow', label: 'Workflow Builder', detail: 'Task graph orchestration', icon: '🔀', needsPreflight: false },
-        { id: 'channel', label: 'Agent Channel', detail: 'Inter-agent message surface', icon: '⬡', needsPreflight: false },
-        { id: 'metrics', label: 'Metrics Panel', detail: 'Session telemetry', icon: '📊', needsPreflight: false },
-        { id: 'log', label: 'Log Stream', detail: 'Live event feed', icon: '📜', needsPreflight: false },
-        { id: 'custom', label: 'Custom', detail: 'Run your own PTY command', icon: '⚙', needsPreflight: false },
+      const sections = [
+        {
+          title: 'Terminal Lanes',
+          items: [
+            { id: 'claude', label: 'Claude CLI', detail: 'Anthropic terminal agent', icon: '⚡', needsPreflight: true },
+            { id: 'codex', label: 'Codex CLI', detail: 'OpenAI terminal agent', icon: '⌁', needsPreflight: true },
+            { id: 'gemini', label: 'Gemini CLI', detail: 'Google terminal agent', icon: '◇', needsPreflight: true },
+            { id: 'shell', label: 'Shell', detail: 'Raw bash session', icon: '▣', needsPreflight: false },
+          ],
+        },
+        {
+          title: 'Panels',
+          items: [
+            { id: 'admin', label: 'Admin Panel', detail: 'Operational controls and task dispatch', icon: '⚙', needsPreflight: false },
+            { id: 'containers', label: 'Containers', detail: 'Live container state and bootstrap mode', icon: '⬒', needsPreflight: false },
+            { id: 'workflow', label: 'Workflow Builder', detail: 'Task graph orchestration', icon: '🔀', needsPreflight: false },
+            { id: 'channel', label: 'Agent Channel', detail: 'Inter-agent message surface', icon: '⬡', needsPreflight: false },
+            { id: 'metrics', label: 'Metrics Panel', detail: 'Session telemetry', icon: '📊', needsPreflight: false },
+            { id: 'log', label: 'Log Stream', detail: 'Live event feed', icon: '📜', needsPreflight: false },
+            { id: 'custom', label: 'Custom PTY', detail: 'Run your own PTY command', icon: '⚙', needsPreflight: false },
+          ],
+        },
       ];
       const menu = document.createElement('div');
       menu.className = 'cockpit-new-dropdown';
-      menu.innerHTML = items.map((it) => `
-        <div class="dropdown-item" data-agent="${it.id}">
-          <span class="dropdown-icon">${it.icon || ''}</span>
-          <span class="dropdown-copy">
-            <span class="dropdown-label">${escapeHtml(it.label)}</span>
-            <span class="dropdown-detail">${escapeHtml(it.detail || '')}</span>
-          </span>
-          ${it.needsPreflight ? `<span class="dropdown-status loading" data-status-for="${it.id}">…</span>` : ''}
+      menu.innerHTML = sections.map((section) => `
+        <div class="dropdown-section">
+          <div class="dropdown-section-title">${escapeHtml(section.title)}</div>
+          ${section.items.map((it) => `
+            <div class="dropdown-item" data-agent="${it.id}">
+              <span class="dropdown-icon">${it.icon || ''}</span>
+              <span class="dropdown-copy">
+                <span class="dropdown-label">${escapeHtml(it.label)}</span>
+                <span class="dropdown-detail">${escapeHtml(it.detail || '')}</span>
+              </span>
+              ${it.needsPreflight ? `<span class="dropdown-status loading" data-status-for="${it.id}">…</span>` : ''}
+            </div>
+          `).join('')}
         </div>
       `).join('') + `
         <div class="dropdown-footnote">
-          OpenRouter is configured for API-backed workflows, not as a cockpit PTY lane.
+          OpenRouter is available today through container/API agents in Admin, not as a PTY terminal lane.
         </div>
       `;
       menu.addEventListener('click', async (ev) => {
@@ -864,8 +931,10 @@
 
       const rect = anchor.getBoundingClientRect();
       menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
-      menu.style.left = `${Math.max(12, rect.left + window.scrollX - 10)}px`;
       document.body.appendChild(menu);
+      const maxLeft = window.scrollX + window.innerWidth - menu.offsetWidth - 12;
+      const preferredLeft = rect.left + window.scrollX - 10;
+      menu.style.left = `${Math.max(12 + window.scrollX, Math.min(preferredLeft, maxLeft))}px`;
       this.newDropdown = menu;
       this.populateNewDropdownStatuses(menu).catch(() => {});
     }
@@ -1076,6 +1145,9 @@
       this.sessions.set(session.id, { panel, tab, status: session.status || { state: 'active' }, cost: Number(session.estimated_cost_usd || 0) });
       this.updateTabCost(session.id, Number(session.estimated_cost_usd || 0));
       this.activateTab(session.id);
+      if (this.sessions.size === 2 && this.layout === '1') {
+        this.setLayout('2h');
+      }
     }
 
     createTab(sessionId, label) {
@@ -1629,6 +1701,11 @@
             <div class="mesh-section-title">Provision Container</div>
             <input class="input" name="image" value="nucleusdb:latest" />
             <input class="input" name="agent_id" placeholder="optional-agent-id" />
+            <select class="input" name="bootstrap_mode">
+              <option value="required">password required</option>
+              <option value="optional">password optional</option>
+              <option value="disabled">passwordless review</option>
+            </select>
             <button class="btn btn-sm btn-primary" type="submit">Provision</button>
           </form>
           <div class="table-wrap"><table>
@@ -1638,7 +1715,7 @@
                 <tr>
                   <td><code>${escapeHtml(session.session_id || '')}</code></td>
                   <td>${escapeHtml(session.agent_id || '')}</td>
-                  <td>${agentStatusBadge(session.lock_state || 'empty')}</td>
+                  <td>${lockStateBadge(session.lock_state || 'empty')}</td>
                   <td>${didBadge(session.identity?.did_uri || session.did_uri)}</td>
                   <td>
                     <button class="btn btn-sm" data-init-session="${escapeHtml(session.session_id || '')}">Init</button>
@@ -1659,6 +1736,7 @@
         await postJson('/api/containers/provision', {
           image: String(fd.get('image') || 'nucleusdb:latest'),
           agent_id: String(fd.get('agent_id') || '').trim() || null,
+          bootstrap_mode: String(fd.get('bootstrap_mode') || 'required'),
         });
         await render();
       });

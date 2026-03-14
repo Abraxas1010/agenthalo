@@ -757,6 +757,7 @@ async function fetchCryptoStatus(force) {
       password_protected: false,
       migration_status: 'unknown',
       active_scopes: [],
+      bootstrap_mode: 'required',
       retry_after_secs: 0,
       error: String(e && e.message || e),
     };
@@ -770,15 +771,26 @@ function hideCryptoOverlay() {
   if (overlay) overlay.style.display = 'none';
 }
 
+function cryptoBootstrapMode(status) {
+  return String(status?.bootstrap_mode || 'required').toLowerCase();
+}
+
+function cryptoNeedsPasswordCreation(status) {
+  return !status?.password_protected && (
+    status?.migration_status === 'needs_password_creation' ||
+    status?.migration_status === 'fresh'
+  );
+}
+
 function lockTitle(status) {
-  if (!status.password_protected || status.migration_status === 'needs_password_creation' || status.migration_status === 'fresh') {
+  if (cryptoNeedsPasswordCreation(status)) {
     return 'Create a password to protect your identity';
   }
   return 'Enter password to unlock';
 }
 
 function lockHint(status) {
-  if (!status.password_protected || status.migration_status === 'needs_password_creation' || status.migration_status === 'fresh') {
+  if (cryptoNeedsPasswordCreation(status)) {
     return 'This password protects local cryptographic scopes (sign, vault, wallet, identity, genesis).';
   }
   if (Number(status.retry_after_secs || 0) > 0) {
@@ -790,7 +802,7 @@ function lockHint(status) {
 function renderCryptoOverlay(status) {
   const overlay = $('#crypto-lock-overlay');
   if (!overlay) return;
-  const needsCreate = !status.password_protected || status.migration_status === 'needs_password_creation' || status.migration_status === 'fresh';
+  const needsCreate = cryptoNeedsPasswordCreation(status);
   overlay.style.display = 'flex';
   overlay.innerHTML = `
     <div class="crypto-lock-card">
@@ -879,6 +891,10 @@ function renderCryptoOverlay(status) {
 
 async function ensureCryptoUnlocked(force) {
   const status = await fetchCryptoStatus(force);
+  if (cryptoNeedsPasswordCreation(status) && cryptoBootstrapMode(status) === 'required') {
+    renderCryptoOverlay(status);
+    return false;
+  }
   if (status && status.locked) {
     renderCryptoOverlay(status);
     return false;
@@ -1090,7 +1106,7 @@ function updateNavLockState() {
   if (!_setupState) return;
   const complete = _setupState.complete;
   const justUnlocked = _lastSetupComplete === false && complete === true;
-  const NAV_EXEMPT = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs', 'agentpmt'];
+  const NAV_EXEMPT = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs', 'agentpmt', 'cockpit'];
   $$('.nav-link').forEach(a => {
     const page = a.dataset.page;
     if (page === 'setup') {
@@ -1210,7 +1226,7 @@ async function route() {
 
   // Fetch setup state and gate navigation.
   // Documentation/setup-adjacent pages are always accessible — setup gate only blocks operational pages.
-  const SETUP_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs', 'agentpmt'];
+  const SETUP_EXEMPT_PAGES = ['setup', 'overview', 'genesis', 'identification', 'communication', 'nucleusdb-docs', 'agentpmt', 'cockpit'];
   const ss = await fetchSetupState();
   if (!ss.complete && !SETUP_EXEMPT_PAGES.includes(page)) {
     location.hash = '#/setup';
@@ -1976,7 +1992,7 @@ async function renderConfig() {
   content.innerHTML = '<div class="loading">Loading config...</div>';
   try {
     const cfg = await api('/config');
-    let crypto = { locked: false, migration_status: 'unknown', active_scopes: [], password_protected: false };
+    let crypto = { locked: false, migration_status: 'unknown', active_scopes: [], password_protected: false, bootstrap_mode: 'required' };
     try {
       crypto = await api('/crypto/status');
     } catch (_e) {}
@@ -2024,12 +2040,15 @@ async function renderConfig() {
             <div class="config-desc">
               ${crypto.locked ? 'Locked' : 'Unlocked'}
               · status: ${esc(String(crypto.migration_status || 'unknown'))}
+              · bootstrap: ${esc(String(crypto.bootstrap_mode || 'required'))}
               · scopes: ${esc((crypto.active_scopes || []).join(', ') || 'none')}
             </div>
           </div>
           <div style="display:flex;gap:6px;align-items:center">
             <button class="btn btn-sm" onclick="forceCryptoLock()">Lock Now</button>
-            <button class="btn btn-sm btn-primary" onclick="ensureCryptoUnlocked(true)">Unlock</button>
+            ${!crypto.password_protected
+              ? '<button class="btn btn-sm btn-primary" onclick="showCryptoSetupPrompt()">Set Password</button>'
+              : '<button class="btn btn-sm btn-primary" onclick="ensureCryptoUnlocked(true)">Unlock</button>'}
           </div>
         </div>
       </div>
@@ -2392,6 +2411,11 @@ window.forceCryptoLock = async function forceCryptoLock() {
   } catch (e) {
     alert(`Lock failed: ${String(e && e.message || e)}`);
   }
+};
+
+window.showCryptoSetupPrompt = async function showCryptoSetupPrompt() {
+  const status = await fetchCryptoStatus(true);
+  renderCryptoOverlay(status);
 };
 
 window.authorizeAgentPrompt = async function authorizeAgentPrompt() {
