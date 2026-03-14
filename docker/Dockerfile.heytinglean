@@ -29,6 +29,9 @@ RUN mkdir -p /opt/heytinglean-cache \
     && cp lean-toolchain /opt/heytinglean-cache/lean-toolchain \
     && if [ -f lake-manifest.json ]; then cp lake-manifest.json /opt/heytinglean-cache/lake-manifest.json; fi
 
+# Runtime intentionally keeps the Rust/Lean toolchain because the local
+# compile-fallback path runs lake/cargo inside the container when no worker
+# claims a task.
 FROM rust:1.88-bookworm AS runtime
 
 ENV AGENTHALO_HEYTINGLEAN_CACHE_DIR=/opt/heytinglean-cache

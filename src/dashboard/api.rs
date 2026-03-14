@@ -2202,7 +2202,11 @@ async fn api_container_lock_status(_: AxumState<DashboardState>) -> ApiResult {
     })))
 }
 
-async fn api_compile_submit(Json(task): Json<CompileTask>) -> ApiResult {
+async fn api_compile_submit(
+    AxumState(state): AxumState<DashboardState>,
+    Json(task): Json<CompileTask>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
     let task = compile_workflow::prepare_compile_task(task);
     let task_id = task.task_id.clone();
     tokio::spawn(async move {
@@ -2214,15 +2218,21 @@ async fn api_compile_submit(Json(task): Json<CompileTask>) -> ApiResult {
     })))
 }
 
-async fn api_compile_poll(Query(query): Query<CompilePollQuery>) -> ApiResult {
+async fn api_compile_poll(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<CompilePollQuery>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
     let tasks = compile_workflow::poll_compile_tasks(&query.worker_did).map_err(bad_request_err)?;
     Ok(Json(json!({ "tasks": tasks })))
 }
 
 async fn api_compile_result(
+    AxumState(state): AxumState<DashboardState>,
     Path(task_id): Path<String>,
     Json(result): Json<CompileResult>,
 ) -> ApiResult {
+    require_sensitive_access(&state)?;
     if result.task_id != task_id {
         return Err(bad_request_err("task id mismatch"));
     }
@@ -2233,7 +2243,11 @@ async fn api_compile_result(
     })))
 }
 
-async fn api_compile_status(Path(task_id): Path<String>) -> ApiResult {
+async fn api_compile_status(
+    AxumState(state): AxumState<DashboardState>,
+    Path(task_id): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
     let value = match compile_workflow::get_compile_status(&task_id).map_err(bad_request_err)? {
         Some(result) => json!({ "task_id": task_id, "result": result }),
         None => json!({
@@ -9282,6 +9296,78 @@ async fn api_cli_auth(
 mod tests {
     use super::*;
     use axum::extract::Query;
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::TempDir;
+
+    fn dashboard_auth_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct DashboardAuthRequirementGuard {
+        previous: Option<String>,
+    }
+
+    impl DashboardAuthRequirementGuard {
+        fn enforced() -> Self {
+            let previous = std::env::var("AGENTHALO_REQUIRE_DASHBOARD_AUTH").ok();
+            unsafe {
+                std::env::set_var("AGENTHALO_REQUIRE_DASHBOARD_AUTH", "1");
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for DashboardAuthRequirementGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                unsafe {
+                    std::env::set_var("AGENTHALO_REQUIRE_DASHBOARD_AUTH", previous);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var("AGENTHALO_REQUIRE_DASHBOARD_AUTH");
+                }
+            }
+        }
+    }
+
+    fn unauthenticated_dashboard_state() -> (DashboardState, TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = crate::dashboard::build_state(
+            dir.path().join("dashboard.redb"),
+            dir.path().join("credentials.json"),
+        );
+        (state, dir)
+    }
+
+    fn sample_compile_task() -> CompileTask {
+        CompileTask {
+            task_id: "task-1".to_string(),
+            artifact_id: "artifact-1".to_string(),
+            lean_source: "def x := True".to_string(),
+            lakefile: "package demo".to_string(),
+            dependencies: Vec::new(),
+            output_type: compile_workflow::CompileOutputType::LeanBuild,
+            requester_did: Some("did:example:submitter".to_string()),
+            submitted_at: 1,
+            timeout_ms: 1000,
+        }
+    }
+
+    fn sample_compile_result(task_id: &str) -> CompileResult {
+        CompileResult {
+            task_id: task_id.to_string(),
+            status: CompileStatus::Success,
+            build_log: "ok".to_string(),
+            lean_hash: "deadbeef".to_string(),
+            lambda_ir: None,
+            c_source: None,
+            acsl_annotations: None,
+            timing_ms: 10.0,
+            worker_did: "did:example:worker".to_string(),
+        }
+    }
 
     #[test]
     fn stream_trace_response_includes_billing_and_stream_metadata() {
@@ -9383,6 +9469,42 @@ mod tests {
         assert!(!html.contains("</script><img"));
         assert!(html.contains("\\u003c"));
         assert!(html.contains("\\u003e"));
+    }
+
+    #[tokio::test]
+    async fn compile_endpoints_require_sensitive_access() {
+        let _env_lock = dashboard_auth_env_lock().lock().expect("env lock");
+        let _auth_guard = DashboardAuthRequirementGuard::enforced();
+        let (state, _dir) = unauthenticated_dashboard_state();
+
+        let submit_err = api_compile_submit(AxumState(state.clone()), Json(sample_compile_task()))
+            .await
+            .expect_err("submit should require auth");
+        assert_eq!(submit_err.0, StatusCode::UNAUTHORIZED);
+
+        let poll_err = api_compile_poll(
+            AxumState(state.clone()),
+            Query(CompilePollQuery {
+                worker_did: "did:example:worker".to_string(),
+            }),
+        )
+        .await
+        .expect_err("poll should require auth");
+        assert_eq!(poll_err.0, StatusCode::UNAUTHORIZED);
+
+        let result_err = api_compile_result(
+            AxumState(state.clone()),
+            Path("task-1".to_string()),
+            Json(sample_compile_result("task-1")),
+        )
+        .await
+        .expect_err("result should require auth");
+        assert_eq!(result_err.0, StatusCode::UNAUTHORIZED);
+
+        let status_err = api_compile_status(AxumState(state), Path("task-1".to_string()))
+            .await
+            .expect_err("status should require auth");
+        assert_eq!(status_err.0, StatusCode::UNAUTHORIZED);
     }
 
     #[test]

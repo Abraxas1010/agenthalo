@@ -286,6 +286,9 @@ fn wait_with_timeout(
                 exit_code: 124,
             });
         }
+        // This blocking path is only used for local fallback compilation, so a
+        // small poll interval keeps timeout handling simple without affecting a
+        // hot request path.
         std::thread::sleep(Duration::from_millis(25));
     }
 }
