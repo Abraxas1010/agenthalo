@@ -10,11 +10,16 @@
 # WARNING: mounting /var/run/docker.sock gives this container
 # host-level Docker control. Required for operator-subsidiary
 # container pattern. Keep this deployment on trusted machines only.
+#
+# For setup-page parity with a host-native install, this dev stack also mounts
+# the operator's home directory read-only so host-installed CLI agents and
+# their OAuth state can be detected inside the container.
 # ──────────────────────────────────────────────────────────────────
 services:
   nucleusdb:
     container_name: agenthalo-dev
     build: .
+    user: "0:0"
     labels:
       com.agenthalo.role: "development"
       com.agenthalo.persistent: "false"
@@ -23,6 +28,9 @@ services:
       - path: deploy/discord.env
         required: false
     environment:
+      HOME: ${HOME}
+      AGENTHALO_CLI_HOME: ${HOME}
+      PATH: ${HOME}/.local/bin:${HOME}/.nvm/versions/node/v22.22.0/bin:${PATH}
       NUCLEUSDB_HOME: /data
       AGENTHALO_HOME: /data
       NUCLEUSDB_CONTAINER_IMAGE: ${NUCLEUSDB_CONTAINER_IMAGE:-nucleusdb:latest}
@@ -34,6 +42,7 @@ services:
       - nucleusdb-dev-data:/data
       - nucleusdb-dev-mesh:/data/mesh
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}:${HOME}:ro
     group_add:
       - "${DOCKER_GID:-0}"
     ports:
@@ -45,8 +54,14 @@ services:
     tmpfs:
       - /tmp:size=50M
       - /run:size=10M
+    # The review container runs as root only to read the operator's host-side
+    # CLI binaries and OAuth files through the read-only home bind mount.
+    # Retain the minimum DAC capabilities needed for that parity surface.
     cap_drop:
       - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - DAC_READ_SEARCH
     security_opt:
       - no-new-privileges:true
 

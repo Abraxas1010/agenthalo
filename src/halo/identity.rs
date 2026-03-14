@@ -9,7 +9,7 @@ pub enum IdentitySecurityTier {
     LowSecurity,
 }
 
-pub const DEFAULT_SECURITY_TIER: IdentitySecurityTier = IdentitySecurityTier::LessSafe;
+pub const DEFAULT_SECURITY_TIER: IdentitySecurityTier = IdentitySecurityTier::MaxSafe;
 
 pub fn default_security_tier_str() -> &'static str {
     DEFAULT_SECURITY_TIER.as_str()

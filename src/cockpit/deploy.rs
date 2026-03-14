@@ -11,7 +11,7 @@ use crate::witness::WitnessSignatureAlgorithm;
 use crate::VcBackend;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -167,9 +167,9 @@ pub struct StoredTopoRecord {
 /// (> 2 bytes). This covers agents that authenticate via their own OAuth flow
 /// rather than requiring an API key in the HALO vault.
 pub fn cli_authenticated(agent_id: &str) -> bool {
-    let home = match std::env::var("HOME") {
-        Ok(h) => std::path::PathBuf::from(h),
-        Err(_) => return false,
+    let home = match cli_auth_home() {
+        Some(h) => h,
+        None => return false,
     };
     let auth_path = match agent_id {
         "claude" => home.join(".claude/.credentials.json"),
@@ -181,6 +181,19 @@ pub fn cli_authenticated(agent_id: &str) -> bool {
         && std::fs::metadata(&auth_path)
             .map(|m| m.len() > 2)
             .unwrap_or(false)
+}
+
+pub fn cli_auth_home() -> Option<PathBuf> {
+    std::env::var("AGENTHALO_CLI_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
+}
+
+pub fn cli_session_env() -> Vec<(String, String)> {
+    cli_auth_home()
+        .map(|home| vec![("HOME".to_string(), home.to_string_lossy().to_string())])
+        .unwrap_or_default()
 }
 
 pub fn preflight(
@@ -296,6 +309,9 @@ pub fn launch(
                 env_vars.extend(vars);
             }
         }
+    }
+    if agent.id != "shell" {
+        env_vars.extend(cli_session_env());
     }
 
     let mut command = if agent.id == "shell" {
@@ -571,12 +587,19 @@ fn which_command(command: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_docker_args, inspect_binary_topology, preflight, route_working_dir, StoredTopoRecord,
+        build_docker_args, cli_authenticated, cli_session_env, inspect_binary_topology, preflight,
+        route_working_dir, StoredTopoRecord,
     };
     use crate::halo::admission::AdmissionMode;
     use crate::halo::governor::GovernorConfig;
     use crate::halo::governor_registry::GovernorRegistry;
     use crate::halo::topo_signature::fingerprint;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn shell_uses_pty_cwd_not_cli_flag() {
@@ -690,5 +713,40 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "governor_gain_violated"));
+    }
+
+    #[test]
+    fn cli_authenticated_uses_agenthalo_cli_home_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).expect("claude dir");
+        std::fs::write(claude_dir.join(".credentials.json"), br#"{"token":"ok"}"#)
+            .expect("auth file");
+        unsafe {
+            std::env::set_var("AGENTHALO_CLI_HOME", dir.path());
+            std::env::remove_var("HOME");
+        }
+        assert!(cli_authenticated("claude"));
+        unsafe {
+            std::env::remove_var("AGENTHALO_CLI_HOME");
+        }
+    }
+
+    #[test]
+    fn cli_session_env_uses_cli_home_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        let dir = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("AGENTHALO_CLI_HOME", dir.path());
+            std::env::remove_var("HOME");
+        }
+        let env = cli_session_env();
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, "HOME");
+        assert_eq!(env[0].1, dir.path().to_string_lossy());
+        unsafe {
+            std::env::remove_var("AGENTHALO_CLI_HOME");
+        }
     }
 }

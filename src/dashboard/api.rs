@@ -9474,8 +9474,8 @@ async fn api_cli_detect(Path(agent): Path<String>) -> ApiResult {
 }
 
 /// POST /api/cli/install/{agent} — install a CLI agent via npm to the writable
-/// /data/npm-global prefix. CLIs are also background-installed at boot; this
-/// endpoint lets the frontend trigger or retry on demand.
+/// /data/npm-global prefix. This is an explicit on-demand action; the dashboard
+/// does not spawn background CLI installs at boot.
 async fn api_cli_install(
     AxumState(state): AxumState<DashboardState>,
     Path(agent): Path<String>,
@@ -9568,7 +9568,7 @@ async fn api_cli_auth(
         .create_session(
             &cmd,
             &args,
-            vec![],
+            deploy::cli_session_env(),
             None,
             120,
             24,

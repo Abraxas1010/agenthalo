@@ -1137,6 +1137,22 @@ async function route() {
     return;
   }
 
+  if (page === 'setup' && !window._setupCryptoPromptDone) {
+    const cryptoStatus = await fetchCryptoStatus(true);
+    if (cryptoStatus && cryptoStatus.password_protected) {
+      window._setupCryptoPromptDone = true;
+      if (!cryptoStatus.locked) {
+        try {
+          await apiPost('/crypto/lock', {});
+        } catch (_e) {}
+        _cryptoStatus = null;
+        _cryptoStatusFetchedAt = 0;
+        const relocked = await ensureCryptoUnlocked(true);
+        if (!relocked) return;
+      }
+    }
+  }
+
   // Genesis ceremony: always show the visual ceremony if genesis hasn't been done yet.
   // The ceremony handles the harvest POST + staged animation so the user sees
   // entropy sources being gathered and combined.
@@ -2549,7 +2565,7 @@ async function renderSetup() {
   }
   const identityConfigured = !!(identityCfg.device_configured && identityCfg.network_configured);
   const willAutoApply = !identityCfg.anonymous_mode && !identityConfigured
-    && !appliedSecurityTier && initialSecurityTier === 'max-safe';
+    && !tierCfg.configured && initialSecurityTier === 'max-safe';
   const hideSafetyUI = identityCfg.anonymous_mode || identityConfigured || willAutoApply;
 
   // Pre-compute LLM step done-state HTML (cannot use IIFE inside template literals)
