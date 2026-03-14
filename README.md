@@ -66,6 +66,30 @@ NUCLEUSDB_DB_PATH=./records.ndb ./target/release/nucleusdb dashboard --port 3100
 ./target/release/nucleusdb mcp --transport http --host 127.0.0.1 --port 3000 --db ./records.ndb
 ```
 
+## Container Ops
+
+Two compose surfaces are maintained for manual operations:
+
+- `docker-compose.yml` is the ephemeral development/testing stack. Its data is disposable.
+- `docker-compose.discord.yml` is the persistent Discord recording bridge. Its data is meant to survive restarts.
+
+The helper wrapper `scripts/agenthalo-instances.sh` manages both modes safely:
+
+```bash
+./scripts/agenthalo-instances.sh list
+./scripts/agenthalo-instances.sh start-dev
+./scripts/agenthalo-instances.sh stop-dev
+./scripts/agenthalo-instances.sh start-discord
+./scripts/agenthalo-instances.sh stop-discord
+```
+
+Before starting the persistent Discord bridge:
+
+```bash
+cp deploy/discord.env.example deploy/discord.env
+# edit deploy/discord.env and set NUCLEUSDB_DISCORD_TOKEN
+```
+
 ## Discord Bot
 
 `nucleusdb-discord` connects to Discord, records messages into an append-only NucleusDB instance, and exposes verification/search commands.
