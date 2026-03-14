@@ -2964,7 +2964,7 @@ async function renderSetup() {
       ` : ''}
     </div>
 
-    <!-- CLI Agent Setup (above OpenRouter) -->
+    <!-- SECTION 2: CLI Agents -->
     <div class="setup-card-v2" id="setup-cli-agents" style="margin-bottom:0;border-bottom:none;border-radius:10px 10px 0 0">
       <div class="card-header">
         <div class="card-icon">&#9000;</div>
