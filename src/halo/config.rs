@@ -1,4 +1,26 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+fn ensure_dir_mode(path: &Path, mode: u32, err_prefix: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    match std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            let current_mode = std::fs::metadata(path)
+                .map_err(|meta_err| format!("{err_prefix}: {e} (metadata: {meta_err})"))?
+                .permissions()
+                .mode()
+                & 0o777;
+            if current_mode == mode {
+                Ok(())
+            } else {
+                Err(format!("{err_prefix}: {e}"))
+            }
+        }
+        Err(e) => Err(format!("{err_prefix}: {e}")),
+    }
+}
 
 pub fn halo_dir() -> PathBuf {
     if let Ok(p) = std::env::var("AGENTHALO_HOME") {
@@ -204,9 +226,7 @@ pub fn ensure_halo_dir() -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create halo dir: {e}"))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("set halo dir permissions: {e}"))?;
+        ensure_dir_mode(&dir, 0o700, "set halo dir permissions")?;
     }
     Ok(())
 }
@@ -229,13 +249,11 @@ pub fn ensure_agent_credentials_dir() -> Result<(), String> {
         .map_err(|e| format!("create agent credentials dir {}: {e}", path.display()))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
-            format!(
-                "chmod agent credentials dir {} to 0700: {e}",
-                path.display()
-            )
-        })?;
+        ensure_dir_mode(
+            &path,
+            0o700,
+            &format!("chmod agent credentials dir {} to 0700", path.display()),
+        )?;
     }
     Ok(())
 }
@@ -246,13 +264,11 @@ pub fn ensure_proof_certificates_dir() -> Result<(), String> {
         .map_err(|e| format!("create proof certificates dir {}: {e}", path.display()))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
-            format!(
-                "chmod proof certificates dir {} to 0700: {e}",
-                path.display()
-            )
-        })?;
+        ensure_dir_mode(
+            &path,
+            0o700,
+            &format!("chmod proof certificates dir {} to 0700", path.display()),
+        )?;
     }
     Ok(())
 }

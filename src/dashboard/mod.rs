@@ -218,6 +218,22 @@ pub fn build_router(state: DashboardState) -> Router {
     Router::new()
         .nest("/api", api_router)
         .route("/events", get(api::sse_handler))
+        // AgentPMT same-origin reverse proxy: /__pmt/* proxies to agentpmt.com/*
+        // All HTTP methods needed for auth flows (login POST, session DELETE, etc.)
+        .route(
+            "/__pmt/{*rest}",
+            get(api::pmt_top_proxy)
+                .post(api::pmt_top_proxy)
+                .put(api::pmt_top_proxy)
+                .patch(api::pmt_top_proxy)
+                .delete(api::pmt_top_proxy),
+        )
+        // Catch-all for /_next/* — Next.js dynamic imports use path-absolute URLs
+        .route("/_next/{*rest}", get(api::pmt_next_proxy))
+        // Additional host-visible AgentPMT assets requested after pathname rewrite.
+        .route("/_vercel/{*rest}", get(api::pmt_vercel_proxy))
+        .route("/logo-w-text.svg", get(api::pmt_logo_proxy))
+        .route("/site.webmanifest", get(api::pmt_manifest_proxy))
         .fallback(get(assets::static_handler))
         .with_state(state)
 }

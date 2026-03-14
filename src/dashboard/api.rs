@@ -13,6 +13,7 @@ use super::mcp_bridge;
 use super::DashboardState;
 use crate::cli::default_witness_cfg;
 use crate::cockpit::deploy::{self, LaunchRequest};
+use crate::container::backend::ContainerBackend;
 use crate::container::{current_container_id, ContainerAgentLock, ReusePolicy};
 use crate::halo::addons;
 use crate::halo::agent_auth;
@@ -222,6 +223,19 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route(
             "/agentpmt/anonymous-wallet",
             post(api_agentpmt_anonymous_wallet),
+        )
+        .route(
+            "/embed/{*rest}",
+            get(api_agentpmt_embed_api_proxy)
+                .post(api_agentpmt_embed_api_proxy)
+                .put(api_agentpmt_embed_api_proxy)
+                .patch(api_agentpmt_embed_api_proxy)
+                .delete(api_agentpmt_embed_api_proxy),
+        )
+        .route("/public-errors", post(api_agentpmt_public_errors_proxy))
+        .route(
+            "/agentpmt/embed-proxy/{*rest}",
+            get(api_agentpmt_embed_proxy).post(api_agentpmt_embed_proxy),
         )
         .route("/agentaddress/status", get(api_agentaddress_status))
         .route("/agentaddress/chains", get(api_agentaddress_chains))
@@ -5858,6 +5872,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let local_model_status = tokio::task::spawn_blocking(crate::halo::local_models::detect_status)
         .await
         .map_err(|e| internal_err(format!("local model status task join: {e}")))?;
+    let container_runtime = ContainerBackend::detect_available();
     let llm_ok = state
         .vault
         .as_ref()
@@ -5939,6 +5954,10 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             "home": path_display_hint(&config::halo_dir()),
             "db": path_display_hint(&state.db_path),
             "credentials": path_display_hint(&state.credentials_path),
+        },
+        "container_runtime": {
+            "available": container_runtime.is_some(),
+            "engine": container_runtime.map(|b| b.binary()),
         },
     })))
 }
@@ -6092,6 +6111,253 @@ async fn api_agentpmt_anonymous_wallet(
         "token_saved": token_saved,
         "result": result,
     })))
+}
+
+/// Shared proxy logic for AgentPMT reverse proxy routes.
+///
+/// Fetches `upstream_url` using a direct ureq agent (bypassing privacy controller /
+/// Nym mixnet — the user explicitly opted into AgentPMT). For HTML responses,
+/// injects a pre-hydration pathname fix so Next.js sees `/embed/dashboard`
+/// instead of `/__pmt/embed/dashboard`, while all network traffic stays
+/// same-origin through the proxy routes.
+fn pmt_proxy_blocking(
+    upstream_url: &str,
+    method: &str,
+    content_type: &str,
+    body: &[u8],
+    cookie_header: &str,
+) -> Result<Response, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .into();
+
+    let resp = if method == "POST" || method == "PUT" || method == "PATCH" {
+        let mut req = agent.post(upstream_url);
+        req = req.header("Content-Type", content_type);
+        if !cookie_header.is_empty() {
+            req = req.header("Cookie", cookie_header);
+        }
+        req.send(body).map_err(|e| format!("proxy POST: {e}"))?
+    } else {
+        let mut req = agent.get(upstream_url);
+        if !cookie_header.is_empty() {
+            req = req.header("Cookie", cookie_header);
+        }
+        req.call().map_err(|e| format!("proxy GET: {e}"))?
+    };
+
+    let status = resp.status();
+    let resp_ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    // Collect Set-Cookie headers from upstream — essential for auth flows.
+    // Strip Domain, Secure, and SameSite attributes so the browser stores
+    // them as host-only cookies for localhost (our proxy origin).
+    let set_cookies: Vec<String> = resp
+        .headers()
+        .get_all("set-cookie")
+        .into_iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(|raw: &str| {
+            raw.split(';')
+                .filter(|part: &&str| {
+                    let lower = part.trim().to_ascii_lowercase();
+                    !lower.starts_with("domain=")
+                        && !lower.starts_with("secure")
+                        && !lower.starts_with("samesite=")
+                })
+                .collect::<Vec<&str>>()
+                .join(";")
+        })
+        .collect();
+
+    let resp_body = resp
+        .into_body()
+        .read_to_vec()
+        .map_err(|e| format!("proxy read body: {e}"))?;
+
+    // For HTML responses, inject a pathname fix before any Next.js code runs.
+    let final_body = if resp_ct.contains("text/html") {
+        let html = String::from_utf8_lossy(&resp_body);
+        // Inject a pathname fix before any Next.js code runs:
+        //
+        // 1. history.replaceState — strip the /__pmt prefix from the pathname.
+        //    Next.js App Router uses window.location.pathname for client-side
+        //    routing.  Without this, the router sees "/__pmt/embed/dashboard"
+        //    and can't match any route, leaving the page stuck on the Suspense
+        //    loading fallback forever.
+        //
+        let interceptor = r#"<script>(function(){var P='/__pmt';if(location.pathname.startsWith(P)){history.replaceState(null,'',location.pathname.slice(6)+location.search+location.hash);}})()</script>"#;
+        let final_html = if html.contains("<head>") {
+            html.replacen("<head>", &format!("<head>{interceptor}"), 1)
+        } else {
+            html.to_string()
+        };
+        final_html.into_bytes()
+    } else {
+        resp_body
+    };
+
+    let mut builder = Response::builder()
+        .status(status)
+        .header("content-type", &resp_ct)
+        .header("cache-control", "no-store");
+    for cookie in &set_cookies {
+        builder = builder.header("set-cookie", cookie);
+    }
+    Ok(builder
+        .body(axum::body::Body::from(final_body))
+        .unwrap_or_else(|_| {
+            Response::builder()
+                .status(502)
+                .body(axum::body::Body::from("proxy response build error"))
+                .unwrap()
+        }))
+}
+
+fn pmt_error_response(msg: String) -> Response {
+    Response::builder()
+        .status(502)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            serde_json::json!({"error": msg}).to_string(),
+        ))
+        .unwrap()
+}
+
+fn pmt_upstream_base() -> String {
+    std::env::var("AGENTHALO_AGENTPMT_BASE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "https://www.agentpmt.com".to_string())
+}
+
+/// Reverse proxy for AgentPMT embed API paths under `/api/embed/*`.
+async fn api_agentpmt_embed_api_proxy(
+    method: axum::http::Method,
+    Path(rest): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    pmt_proxy_path_handler(method.as_str(), format!("api/embed/{rest}"), headers, body).await
+}
+
+/// Proxy telemetry/error posts emitted by the embedded AgentPMT app.
+async fn api_agentpmt_public_errors_proxy(
+    method: axum::http::Method,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    pmt_proxy_path_handler(method.as_str(), "api/public-errors".to_string(), headers, body).await
+}
+
+/// Reverse proxy for the AgentPMT embed page (legacy path under /api/).
+async fn api_agentpmt_embed_proxy(
+    method: axum::http::Method,
+    Path(rest): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    pmt_proxy_path_handler(method.as_str(), rest, headers, body).await
+}
+
+/// Top-level AgentPMT reverse proxy at `/__pmt/{*rest}`.
+///
+/// This is the primary proxy route. The iframe loads `/__pmt/embed/dashboard?theme=dark`
+/// and ALL sub-requests (assets, API calls, data fetches) route through here, keeping
+/// everything same-origin so cookies, CSRF tokens, and auth flows work correctly.
+pub async fn pmt_top_proxy(
+    method: axum::http::Method,
+    Path(rest): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    pmt_proxy_path_handler(method.as_str(), rest, headers, body).await
+}
+
+/// Top-level catch-all for `/_next/{*rest}` — handles dynamic imports and runtime
+/// asset loads that Next.js JS initiates with path-absolute URLs.
+pub async fn pmt_next_proxy(
+    Path(rest): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    pmt_proxy_path_handler(
+        "GET",
+        format!("_next/{rest}"),
+        headers,
+        axum::body::Bytes::new(),
+    )
+    .await
+}
+
+/// Proxy Vercel analytics/runtime assets used by the embedded AgentPMT page.
+pub async fn pmt_vercel_proxy(Path(rest): Path<String>, headers: HeaderMap) -> Response {
+    pmt_proxy_path_handler(
+        "GET",
+        format!("_vercel/{rest}"),
+        headers,
+        axum::body::Bytes::new(),
+    )
+    .await
+}
+
+/// Proxy exact root-level assets requested by the embedded AgentPMT app.
+pub async fn pmt_logo_proxy(headers: HeaderMap) -> Response {
+    pmt_proxy_path_handler(
+        "GET",
+        "logo-w-text.svg".to_string(),
+        headers,
+        axum::body::Bytes::new(),
+    )
+    .await
+}
+
+pub async fn pmt_manifest_proxy(headers: HeaderMap) -> Response {
+    pmt_proxy_path_handler(
+        "GET",
+        "site.webmanifest".to_string(),
+        headers,
+        axum::body::Bytes::new(),
+    )
+    .await
+}
+
+fn extract_cookie_header(headers: &HeaderMap) -> String {
+    headers
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
+}
+
+async fn pmt_proxy_path_handler(
+    method_str: &str,
+    upstream_path: String,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let base = pmt_upstream_base();
+    let upstream_url = format!("{}/{}", base.trim_end_matches('/'), upstream_path);
+    let method = method_str.to_ascii_uppercase();
+    let content_type = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let cookie = extract_cookie_header(&headers);
+    let body_vec = body.to_vec();
+
+    let result = tokio::task::spawn_blocking(move || {
+        pmt_proxy_blocking(&upstream_url, &method, &content_type, &body_vec, &cookie)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("proxy task join: {e}")));
+    result.unwrap_or_else(pmt_error_response)
 }
 
 async fn api_agentaddress_status(AxumState(_state): AxumState<DashboardState>) -> ApiResult {

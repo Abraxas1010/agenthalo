@@ -121,10 +121,9 @@ async function renderAgentPmt() {
       </div>
       <div style="flex:1;min-height:0">
         <iframe
-          src="https://www.agentpmt.com/embed/dashboard?theme=dark"
+          src="/__pmt/embed/dashboard?theme=dark"
           title="AgentPMT Dashboard"
           style="width:100%;height:100%;border:none;display:block"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
           allow="storage-access"
           loading="lazy"
         ></iframe>
@@ -1037,8 +1036,9 @@ async function showGenesisCeremony() {
         ${esc(String(result.sources_count || sources.length || 0))} entropy sources combined
         ${result.curby_pulse_id ? ` · CURBy pulse #${esc(String(result.curby_pulse_id))}` : ''}
       </div>
-      <button class="genesis-continue-btn" onclick="completeGenesis()">Continue →</button>
     `;
+    // Auto-advance to setup after a brief pause
+    setTimeout(() => completeGenesis(), 1800);
   } catch (err) {
     const payload = (err && err.body && typeof err.body === 'object') ? err.body : err;
     const code = payload && payload.error_code;
@@ -3005,6 +3005,20 @@ async function renderSetup() {
           </div>
         </div>
       </div>
+      ${!(cfg && cfg.container_runtime && cfg.container_runtime.available) ? `
+        <div style="margin-top:12px;padding:10px 14px;border:1px solid var(--yellow);border-radius:6px;background:rgba(255,200,0,0.06)">
+          <span style="color:var(--yellow);font-weight:600">&#9888; No container runtime found</span>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:4px;line-height:1.5">
+            A container runtime is required for subsidiary agent deployment.<br>
+            Install <strong>Podman</strong> (recommended): <code>sudo apt install podman</code> or <a href="https://podman.io/docs/installation" target="_blank" rel="noopener" style="color:var(--accent)">podman.io</a><br>
+            Or <strong>Docker</strong>: <code>sudo apt install docker.io</code> or <a href="https://docs.docker.com/get-docker/" target="_blank" rel="noopener" style="color:var(--accent)">docker.com</a>
+          </div>
+        </div>
+      ` : `
+        <div style="margin-top:12px;font-size:12px;color:var(--text-dim)">
+          <span style="color:var(--green)">&#10003;</span> Container runtime: <strong>${cfg.container_runtime.engine}</strong>
+        </div>
+      `}
       <div id="cli-auth-terminal-wrap" style="display:none;margin-top:14px">
         <div style="font-size:12px;color:var(--accent);margin-bottom:6px" id="cli-auth-terminal-label">Authentication session</div>
         <div id="cli-auth-terminal" style="height:260px;border:1px solid var(--border);border-radius:6px;overflow:hidden"></div>
@@ -3152,7 +3166,16 @@ async function renderSetup() {
             </button>
             <span style="font-size:11px;color:var(--text-dim)">Removes your token and disables the tool proxy</span>
           </div>
-        ` : ''}
+        ` : `
+          <div style="margin-top:20px;text-align:center">
+            <button class="btn btn-primary" id="setup-agentpmt-initiate" style="padding:14px 36px;font-size:15px;border-radius:8px;font-weight:700;letter-spacing:0.5px">
+              &#9883; INITIATE
+            </button>
+            <div style="margin-top:10px">
+              <span style="font-size:12px;color:var(--text-dim)">Connect to AgentPMT for 100+ tools, budget controls, and workflow automation</span>
+            </div>
+          </div>
+        `}
       ` : `
         <div style="text-align:center;padding:24px 16px">
           <p style="font-size:15px;color:var(--text-muted);line-height:1.7;margin-bottom:20px;max-width:480px;margin-left:auto;margin-right:auto">
@@ -3317,7 +3340,13 @@ async function renderSetup() {
         }
         return;
       }
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Not found on PATH</span>';
+      if (statusEl) {
+        const pkg = cli === 'claude' ? '@anthropic-ai/claude-code'
+          : cli === 'codex' ? '@openai/codex'
+          : '@google/gemini-cli';
+        statusEl.innerHTML = '<span style="color:var(--yellow)">Not found</span> '
+          + '<span style="color:var(--text-dim);font-size:11px">Install: <code>npm i -g ' + pkg + '</code></span>';
+      }
       if (authBtn) {
         authBtn.disabled = true;
         authBtn.textContent = 'Authenticate';
@@ -3472,6 +3501,13 @@ async function renderSetup() {
   const setupNowBtn = document.getElementById('setup-agentpmt-setup-now');
   if (setupNowBtn) {
     setupNowBtn.addEventListener('click', () => {
+      window.location.hash = '#/agentpmt';
+    });
+  }
+
+  const initiateBtn = document.getElementById('setup-agentpmt-initiate');
+  if (initiateBtn) {
+    initiateBtn.addEventListener('click', () => {
       window.location.hash = '#/agentpmt';
     });
   }

@@ -10,22 +10,36 @@ pub enum ContainerBackend {
 }
 
 impl ContainerBackend {
-    pub fn detect() -> Self {
+    /// Detect the preferred container backend.
+    ///
+    /// Returns `None` when neither Podman nor Docker is found on PATH
+    /// and no explicit `NUCLEUSDB_CONTAINER_ENGINE` override is set.
+    pub fn detect_available() -> Option<Self> {
         if let Some(engine) = std::env::var("NUCLEUSDB_CONTAINER_ENGINE")
             .ok()
             .map(|value| value.trim().to_ascii_lowercase())
         {
             match engine.as_str() {
-                "podman" => return Self::Podman,
-                "docker" => return Self::Docker,
+                "podman" => return Some(Self::Podman),
+                "docker" => return Some(Self::Docker),
                 _ => {}
             }
         }
         if binary_in_path("podman") {
-            Self::Podman
+            Some(Self::Podman)
+        } else if binary_in_path("docker") {
+            Some(Self::Docker)
         } else {
-            Self::Docker
+            None
         }
+    }
+
+    /// Detect container backend, falling back to Docker if neither is found.
+    ///
+    /// Callers that need to handle the "nothing installed" case should use
+    /// [`detect_available`] instead.
+    pub fn detect() -> Self {
+        Self::detect_available().unwrap_or(Self::Docker)
     }
 
     pub fn binary(self) -> &'static str {
@@ -128,6 +142,29 @@ mod tests {
         let _engine = EnvVarGuard::set("NUCLEUSDB_CONTAINER_ENGINE", None);
         let _path = EnvVarGuard::set("PATH", Some(dir.path().to_str().expect("utf8 path")));
         assert_eq!(ContainerBackend::detect(), ContainerBackend::Podman);
+    }
+
+    #[test]
+    fn detect_available_returns_none_when_nothing_installed() {
+        let _guard = lock_env();
+        let _engine = EnvVarGuard::set("NUCLEUSDB_CONTAINER_ENGINE", None);
+        let _path = EnvVarGuard::set("PATH", Some(""));
+        assert_eq!(ContainerBackend::detect_available(), None);
+        // detect() still falls back to Docker for backwards compat
+        assert_eq!(ContainerBackend::detect(), ContainerBackend::Docker);
+    }
+
+    #[test]
+    fn detect_available_finds_docker_only() {
+        let _guard = lock_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_binary(dir.path(), "docker");
+        let _engine = EnvVarGuard::set("NUCLEUSDB_CONTAINER_ENGINE", None);
+        let _path = EnvVarGuard::set("PATH", Some(dir.path().to_str().expect("utf8 path")));
+        assert_eq!(
+            ContainerBackend::detect_available(),
+            Some(ContainerBackend::Docker)
+        );
     }
 
     #[test]
