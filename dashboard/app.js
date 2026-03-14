@@ -2548,7 +2548,9 @@ async function renderSetup() {
     try { localStorage.setItem('halo_identity_security_tier', serverTier); } catch (_e) {}
   }
   const identityConfigured = !!(identityCfg.device_configured && identityCfg.network_configured);
-  const hideSafetyUI = identityCfg.anonymous_mode || identityConfigured;
+  const willAutoApply = !identityCfg.anonymous_mode && !identityConfigured
+    && !appliedSecurityTier && initialSecurityTier === 'max-safe';
+  const hideSafetyUI = identityCfg.anonymous_mode || identityConfigured || willAutoApply;
 
   // Pre-compute LLM step done-state HTML (cannot use IIFE inside template literals)
   const _step2DoneHtml = (() => {
@@ -3047,7 +3049,7 @@ async function renderSetup() {
         <div class="card-icon">&#9000;</div>
         <div>
           <div class="card-title">Agent CLIs</div>
-          <div class="card-desc">Agent CLIs install in the background at startup &mdash; authenticate each via browser OAuth</div>
+          <div class="card-desc">Detect agent CLIs on your system &mdash; authenticate each via browser OAuth</div>
         </div>
       </div>
       <div class="cli-agents-grid" id="cli-agents-grid">
@@ -3056,7 +3058,7 @@ async function renderSetup() {
             <div class="cli-agent-name">Claude Code</div>
             <div class="cli-agent-provider">Anthropic</div>
           </div>
-          <div class="cli-agent-status" id="cli-status-claude">Installing...</div>
+          <div class="cli-agent-status" id="cli-status-claude">Detecting...</div>
           <div class="cli-agent-actions">
             <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="claude" disabled>Authenticate</button>
           </div>
@@ -3066,7 +3068,7 @@ async function renderSetup() {
             <div class="cli-agent-name">Codex</div>
             <div class="cli-agent-provider">OpenAI</div>
           </div>
-          <div class="cli-agent-status" id="cli-status-codex">Installing...</div>
+          <div class="cli-agent-status" id="cli-status-codex">Detecting...</div>
           <div class="cli-agent-actions">
             <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="codex" disabled>Authenticate</button>
           </div>
@@ -3076,7 +3078,7 @@ async function renderSetup() {
             <div class="cli-agent-name">Gemini CLI</div>
             <div class="cli-agent-provider">Google</div>
           </div>
-          <div class="cli-agent-status" id="cli-status-gemini">Installing...</div>
+          <div class="cli-agent-status" id="cli-status-gemini">Detecting...</div>
           <div class="cli-agent-actions">
             <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="gemini" disabled>Authenticate</button>
           </div>
@@ -3302,45 +3304,83 @@ async function renderSetup() {
 
   // ---- Wire up interactive elements ----
 
-  // --- CLI Agent Install & Auth ---
+  // --- CLI Agent Detect & Auth ---
   (async () => {
     const cliAgents = ['claude', 'codex', 'gemini'];
-    // Poll for CLI install completion (background install runs at boot)
-    const cliInstalled = {};
-    async function pollCliDetect() {
-      for (const cli of cliAgents) {
-        if (cliInstalled[cli]) continue;
-        const statusEl = document.getElementById('cli-status-' + cli);
-        const row = document.querySelector('.cli-agent-row[data-cli="' + cli + '"]');
-        const authBtn = row && row.querySelector('.cli-auth-btn');
-        try {
-          const resp = await api('/cli/detect/' + cli);
-          if (resp.installed) {
-            cliInstalled[cli] = true;
-            if (resp.authenticated) {
-              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
-              if (authBtn) {
-                authBtn.disabled = false;
-                authBtn.textContent = 'Re-authenticate';
-                authBtn.classList.remove('btn-primary');
-              }
-            } else {
-              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span> <span style="color:var(--yellow)">(not authenticated)</span>';
-              if (authBtn) authBtn.disabled = false;
-            }
-          } else {
-            if (statusEl) statusEl.innerHTML = '<span style="color:var(--yellow)">&#8987; Installing...</span>';
+    const cliResolved = {};
+    let cliPollTimer = null;
+    let cliPollCount = 0;
+    const maxCliPolls = 15;
+
+    const setCliStatus = (cli, resp, statusEl, authBtn) => {
+      if (resp.installed) {
+        cliResolved[cli] = true;
+        if (resp.authenticated) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
+          if (authBtn) {
+            authBtn.disabled = false;
+            authBtn.textContent = 'Re-authenticate';
+            authBtn.classList.remove('btn-primary');
           }
-        } catch (_e) {
-          if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Checking...</span>';
+          return;
         }
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Found</span> <span style="color:var(--yellow)">(not authenticated)</span>';
+        if (authBtn) {
+          authBtn.disabled = false;
+          authBtn.textContent = 'Authenticate';
+          authBtn.classList.add('btn-primary');
+        }
+        return;
       }
-      // Keep polling until all are installed
-      if (cliAgents.some(c => !cliInstalled[c])) {
-        setTimeout(pollCliDetect, 4000);
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Not found on PATH</span>';
+      if (authBtn) {
+        authBtn.disabled = true;
+        authBtn.textContent = 'Authenticate';
+        authBtn.classList.add('btn-primary');
       }
-    }
-    pollCliDetect();
+    };
+
+    const detectCli = async (cli) => {
+      const statusEl = document.getElementById('cli-status-' + cli);
+      const row = document.querySelector('.cli-agent-row[data-cli="' + cli + '"]');
+      const authBtn = row && row.querySelector('.cli-auth-btn');
+      try {
+        const resp = await api('/cli/detect/' + cli);
+        setCliStatus(cli, resp, statusEl, authBtn);
+      } catch (_e) {
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Detection error</span>';
+      }
+    };
+
+    const stopCliPolling = () => {
+      if (cliPollTimer) {
+        clearInterval(cliPollTimer);
+        cliPollTimer = null;
+      }
+    };
+
+    const maybeStartCliPolling = () => {
+      if (!cliAgents.some(cli => !cliResolved[cli])) {
+        stopCliPolling();
+        return;
+      }
+      if (cliPollTimer) return;
+      cliPollTimer = setInterval(async () => {
+        cliPollCount += 1;
+        await Promise.allSettled(
+          cliAgents
+            .filter(cli => !cliResolved[cli])
+            .map(detectCli),
+        );
+        if (!cliAgents.some(cli => !cliResolved[cli]) || cliPollCount >= maxCliPolls) {
+          stopCliPolling();
+        }
+      }, 8000);
+    };
+
+    await Promise.allSettled(cliAgents.map(detectCli));
+    maybeStartCliPolling();
+
     // Auth button handlers — open a PTY terminal for OAuth flow
     let _cliAuthTerm = null;
     let _cliAuthFitAddon = null;
@@ -3408,8 +3448,9 @@ async function renderSetup() {
                   btn.textContent = 'Re-authenticate';
                   btn.classList.remove('btn-primary');
                 } else {
-                  if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Installed</span> <span style="color:var(--red)">(auth failed)</span>';
+                  if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Found</span> <span style="color:var(--red)">(auth failed)</span>';
                   btn.textContent = 'Authenticate';
+                  btn.classList.add('btn-primary');
                 }
               } catch (_e) {
                 // Fallback: show as authenticated (session completed)
@@ -4160,8 +4201,8 @@ async function renderSetup() {
   setSecurityTier(initialSecurityTier, false);
 
   // Auto-apply "As Safe As Possible" on first visit if no tier has been set yet
-  if (!hideSafetyUI && !appliedSecurityTier && initialSecurityTier === 'max-safe') {
-    // Defer slightly to let the UI render before running the preset
+  if (willAutoApply) {
+    // Buttons start hidden to avoid flash; apply the preset in the background.
     setTimeout(() => applyTierPreset('max-safe'), 250);
   }
 
