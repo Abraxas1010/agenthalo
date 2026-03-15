@@ -29,7 +29,6 @@ use nucleusdb::halo::onchain::{
     warn_if_simulation_mode,
 };
 use nucleusdb::halo::p2pclaw;
-use nucleusdb::halo::p2pclaw_bridge;
 use nucleusdb::halo::password;
 use nucleusdb::halo::pq::{has_wallet, sign_pq_payload_with_scope_key};
 use nucleusdb::halo::privacy_controller;
@@ -1914,7 +1913,7 @@ fn orchestrator_tool_defs_for_listing() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "agent": {"type":"string", "description":"claude | codex | gemini | shell"},
+                    "agent": {"type":"string", "description":"claude | codex | gemini | openclaw | shell"},
                     "agent_name": {"type":"string"},
                     "working_dir": {"type":"string"},
                     "env": {"type":"object"},
@@ -2016,26 +2015,6 @@ fn p2pclaw_tool_defs_for_listing() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
-            "name": "p2pclaw_rank",
-            "description": "Fetch the current agent rank card from the P2PCLAW hive.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "agent": {"type": "string", "description": "Optional agent id override."}
-                }
-            }
-        }),
-        json!({
-            "name": "p2pclaw_agent_briefing",
-            "description": "Fetch the agent-specific briefing payload from the P2PCLAW hive.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "agent_id": {"type": "string", "description": "Optional agent id override."}
-                }
-            }
-        }),
-        json!({
             "name": "p2pclaw_list_papers",
             "description": "List verified research papers from P2PCLAW La Rueda.",
             "inputSchema": {
@@ -2104,18 +2083,6 @@ fn p2pclaw_tool_defs_for_listing() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
-            "name": "p2pclaw_create_investigation",
-            "description": "Create a new investigation in the P2PCLAW hive.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "description": {"type": "string"}
-                },
-                "required": ["title", "description"]
-            }
-        }),
-        json!({
             "name": "p2pclaw_search_wheel",
             "description": "Check if similar work already exists in P2PCLAW before publishing.",
             "inputSchema": {
@@ -2128,7 +2095,7 @@ fn p2pclaw_tool_defs_for_listing() -> Vec<Value> {
         }),
         json!({
             "name": "p2pclaw_verify_paper",
-            "description": "Run local or configured full verification on a P2PCLAW paper draft before publishing.",
+            "description": "Run local structural verification on a P2PCLAW paper draft before publishing.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2136,47 +2103,6 @@ fn p2pclaw_tool_defs_for_listing() -> Vec<Value> {
                     "content": {"type": "string"}
                 },
                 "required": ["title", "content"]
-            }
-        }),
-        json!({
-            "name": "p2pclaw_bridge_publish_paper",
-            "description": "Verify and optionally publish a paper through the AgentHALO P2PCLAW bridge.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "content": {"type": "string"},
-                    "dry_run": {"type": "boolean", "default": true}
-                },
-                "required": ["title", "content"]
-            }
-        }),
-        json!({
-            "name": "p2pclaw_bridge_status",
-            "description": "Inspect the local AgentHALO P2PCLAW bridge state, capabilities, and optional MCP sidecar tool inventory.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "include_mcp_tools": {"type": "boolean", "default": false}
-                }
-            }
-        }),
-        json!({
-            "name": "p2pclaw_bridge_run_once",
-            "description": "Run one bridge cycle: poll briefing/investigations/mempool/events and optionally validate, publish, or chat.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "dry_run": {"type": "boolean", "default": true},
-                    "include_mcp_tools": {"type": "boolean", "default": false},
-                    "publish_summary": {"type": "boolean", "default": false},
-                    "force_repeat_actions": {"type": "boolean", "default": false},
-                    "validate_paper_id": {"type": "string"},
-                    "validate_approve": {"type": "boolean", "default": true},
-                    "occam_score": {"type": "number"},
-                    "chat_message": {"type": "string"},
-                    "chat_channel": {"type": "string"}
-                }
             }
         }),
     ]
@@ -2275,8 +2201,6 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "privacy_classify" => tool_privacy_classify(arguments),
         "p2pclaw_status" => tool_p2pclaw_status(arguments),
         "p2pclaw_briefing" => tool_p2pclaw_briefing(arguments),
-        "p2pclaw_rank" => tool_p2pclaw_rank(arguments),
-        "p2pclaw_agent_briefing" => tool_p2pclaw_agent_briefing(arguments),
         "p2pclaw_list_papers" => tool_p2pclaw_list_papers(arguments),
         "p2pclaw_list_mempool" => tool_p2pclaw_list_mempool(arguments),
         "p2pclaw_publish_paper" => tool_p2pclaw_publish_paper(arguments),
@@ -2284,12 +2208,8 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "p2pclaw_poll_events" => tool_p2pclaw_poll_events(arguments),
         "p2pclaw_send_chat" => tool_p2pclaw_send_chat(arguments),
         "p2pclaw_list_investigations" => tool_p2pclaw_list_investigations(arguments),
-        "p2pclaw_create_investigation" => tool_p2pclaw_create_investigation(arguments),
         "p2pclaw_search_wheel" => tool_p2pclaw_search_wheel(arguments),
         "p2pclaw_verify_paper" => tool_p2pclaw_verify_paper(arguments),
-        "p2pclaw_bridge_publish_paper" => tool_p2pclaw_bridge_publish_paper(arguments),
-        "p2pclaw_bridge_status" => tool_p2pclaw_bridge_status(arguments),
-        "p2pclaw_bridge_run_once" => tool_p2pclaw_bridge_run_once(arguments),
         "p2pclaw_configure" => tool_p2pclaw_configure(arguments),
         "mesh_peers" => tool_mesh_peers(arguments),
         "mesh_ping" => tool_mesh_ping(arguments),
@@ -6201,27 +6121,6 @@ fn tool_p2pclaw_briefing(_arguments: Value) -> Result<Value, String> {
     }))
 }
 
-fn tool_p2pclaw_rank(arguments: Value) -> Result<Value, String> {
-    p2pclaw_require_enabled()?;
-    let cfg = p2pclaw_load_config()?;
-    let rank = p2pclaw::get_agent_rank(&cfg, arguments.get("agent").and_then(|v| v.as_str()))?;
-    Ok(json!({
-        "status": "ok",
-        "rank": rank
-    }))
-}
-
-fn tool_p2pclaw_agent_briefing(arguments: Value) -> Result<Value, String> {
-    p2pclaw_require_enabled()?;
-    let cfg = p2pclaw_load_config()?;
-    let briefing =
-        p2pclaw::get_agent_briefing(&cfg, arguments.get("agent_id").and_then(|v| v.as_str()))?;
-    Ok(json!({
-        "status": "ok",
-        "briefing": briefing
-    }))
-}
-
 fn tool_p2pclaw_list_papers(arguments: Value) -> Result<Value, String> {
     p2pclaw_require_enabled()?;
     let cfg = p2pclaw_load_config()?;
@@ -6329,28 +6228,6 @@ fn tool_p2pclaw_list_investigations(_arguments: Value) -> Result<Value, String> 
     }))
 }
 
-fn tool_p2pclaw_create_investigation(arguments: Value) -> Result<Value, String> {
-    p2pclaw_require_enabled()?;
-    let cfg = p2pclaw_load_config()?;
-    let title = arguments
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| "title is required".to_string())?;
-    let description = arguments
-        .get("description")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| "description is required".to_string())?;
-    let result = p2pclaw::create_investigation(&cfg, title, description)?;
-    Ok(json!({
-        "status": "ok",
-        "result": result
-    }))
-}
-
 fn tool_p2pclaw_search_wheel(arguments: Value) -> Result<Value, String> {
     p2pclaw_require_enabled()?;
     let cfg = p2pclaw_load_config()?;
@@ -6368,7 +6245,6 @@ fn tool_p2pclaw_search_wheel(arguments: Value) -> Result<Value, String> {
 }
 
 fn tool_p2pclaw_verify_paper(arguments: Value) -> Result<Value, String> {
-    let bridge_cfg = p2pclaw_bridge::load_config()?;
     let title = arguments
         .get("title")
         .and_then(|v| v.as_str())
@@ -6381,119 +6257,10 @@ fn tool_p2pclaw_verify_paper(arguments: Value) -> Result<Value, String> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| "content is required".to_string())?;
-    let script_path = nucleusdb::halo::p2pclaw_bridge::discover_verify_script(&bridge_cfg);
-    let verification = nucleusdb::halo::p2pclaw_verify::verify_paper_full(
-        &nucleusdb::halo::p2pclaw_verify::VerificationRequest {
-            title: title.to_string(),
-            content: content.to_string(),
-            claims: vec![],
-            agent_id: None,
-        },
-        script_path.as_deref(),
-        bridge_cfg
-            .heyting_verify_python
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("python3"),
-        bridge_cfg.heyting_verify_timeout_secs.unwrap_or(120),
-    );
+    let verification = nucleusdb::halo::p2pclaw_verify::verify_paper(title, content);
     Ok(json!({
         "status": "ok",
         "verification": verification
-    }))
-}
-
-fn tool_p2pclaw_bridge_publish_paper(arguments: Value) -> Result<Value, String> {
-    p2pclaw_require_enabled()?;
-    let cfg = p2pclaw_load_config()?;
-    let title = arguments
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| "title is required".to_string())?;
-    let content = arguments
-        .get("content")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| "content is required".to_string())?;
-    let result = p2pclaw_bridge::publish_verified_paper(
-        &cfg,
-        p2pclaw_bridge::BridgePaperPublishOptions {
-            title: title.to_string(),
-            content: content.to_string(),
-            dry_run: arguments
-                .get("dry_run")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-        },
-    )?;
-    Ok(json!({
-        "status": "ok",
-        "result": result
-    }))
-}
-
-fn tool_p2pclaw_bridge_status(arguments: Value) -> Result<Value, String> {
-    let cfg = p2pclaw::load_config().ok();
-    let status = p2pclaw_bridge::status(
-        cfg.as_ref(),
-        arguments
-            .get("include_mcp_tools")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-    )?;
-    Ok(json!({
-        "status": "ok",
-        "bridge": status
-    }))
-}
-
-fn tool_p2pclaw_bridge_run_once(arguments: Value) -> Result<Value, String> {
-    p2pclaw_require_enabled()?;
-    let cfg = p2pclaw_load_config()?;
-    let report = p2pclaw_bridge::run_once(
-        &cfg,
-        p2pclaw_bridge::BridgeRunOptions {
-            dry_run: arguments
-                .get("dry_run")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            include_mcp_tools: arguments
-                .get("include_mcp_tools")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            publish_summary: arguments
-                .get("publish_summary")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            force_repeat_actions: arguments
-                .get("force_repeat_actions")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            validate_paper_id: arguments
-                .get("validate_paper_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-            validate_approve: arguments
-                .get("validate_approve")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            validate_occam_score: arguments.get("occam_score").and_then(|v| v.as_f64()),
-            chat_message: arguments
-                .get("chat_message")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-            chat_channel: arguments
-                .get("chat_channel")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        },
-    )?;
-    Ok(json!({
-        "status": "ok",
-        "report": report
     }))
 }
 

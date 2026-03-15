@@ -658,6 +658,9 @@ fn cmd_governor(args: &[String]) -> Result<(), String> {
                 target,
                 formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime"
                     .to_string(),
+                ki: 0.0,
+                kb: 0.0,
+                adaptive: None,
             });
             let gamma = state.config.alpha + state.config.beta / state.config.dt;
             match state.validate_params() {

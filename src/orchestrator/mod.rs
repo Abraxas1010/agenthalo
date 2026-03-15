@@ -1577,7 +1577,6 @@ mod tests {
                 host_sock: "/tmp/slow.sock".to_string(),
                 started_at_unix: crate::pod::now_unix(),
                 mesh_port: Some(spec.mcp_port),
-                did_uri: Some("did:key:z6MkSlowDispatch".to_string()),
             })
         }
 
