@@ -1,5 +1,6 @@
 use crate::cockpit::pty_manager::PtyManager;
 use crate::container::{AgentHookupKind, ContainerAgentLock};
+use crate::dashboard::mcp_bridge;
 use crate::halo::config;
 use crate::halo::http_client;
 use crate::halo::local_models::{self, LocalBackendType, ServeRequest};
@@ -18,9 +19,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tempfile::TempDir;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub struct ToolCallRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
     pub name: String,
     #[serde(default)]
     pub input: Value,
@@ -87,6 +91,99 @@ struct HookupTrace {
     lock_path: PathBuf,
     writer: Mutex<TraceWriter>,
     runtime: Mutex<HookupRuntimeState>,
+}
+
+struct McpInjection {
+    _config_dir: TempDir,
+    working_dir: PathBuf,
+    endpoint: String,
+    secret: String,
+}
+
+impl McpInjection {
+    fn prepare() -> Result<Self, String> {
+        let (endpoint, secret) = mcp_bridge::running_session_endpoint()?;
+        let config_dir = tempfile::tempdir().map_err(|e| format!("create MCP config dir: {e}"))?;
+        let working_dir = config_dir.path().to_path_buf();
+        let rpc_url = format!("{}/mcp", endpoint.trim_end_matches('/'));
+        let auth_header = format!("Bearer {secret}");
+
+        let claude_config = json!({
+            "mcpServers": {
+                "agenthalo": {
+                    "type": "sse",
+                    "url": rpc_url,
+                    "headers": {
+                        "Authorization": auth_header
+                    }
+                }
+            }
+        });
+        std::fs::write(
+            working_dir.join(".mcp.json"),
+            serde_json::to_vec_pretty(&claude_config)
+                .map_err(|e| format!("serialize Claude MCP config: {e}"))?,
+        )
+        .map_err(|e| format!("write Claude MCP config: {e}"))?;
+
+        let codex_dir = working_dir.join(".codex");
+        std::fs::create_dir_all(&codex_dir)
+            .map_err(|e| format!("create Codex MCP config dir {}: {e}", codex_dir.display()))?;
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            format!(
+                "[mcp_servers.agenthalo]\n\
+type = \"sse\"\n\
+url = \"{rpc_url}\"\n\
+headers = {{ Authorization = \"{auth_header}\" }}\n"
+            ),
+        )
+        .map_err(|e| format!("write Codex MCP config: {e}"))?;
+
+        let gemini_dir = working_dir.join(".gemini");
+        std::fs::create_dir_all(&gemini_dir)
+            .map_err(|e| format!("create Gemini MCP config dir {}: {e}", gemini_dir.display()))?;
+        let gemini_config = json!({
+            "mcpServers": {
+                "agenthalo": {
+                    "type": "sse",
+                    "url": rpc_url,
+                    "headers": {
+                        "Authorization": auth_header
+                    }
+                }
+            }
+        });
+        std::fs::write(
+            gemini_dir.join("settings.json"),
+            serde_json::to_vec_pretty(&gemini_config)
+                .map_err(|e| format!("serialize Gemini MCP config: {e}"))?,
+        )
+        .map_err(|e| format!("write Gemini MCP config: {e}"))?;
+
+        Ok(Self {
+            _config_dir: config_dir,
+            working_dir,
+            endpoint,
+            secret,
+        })
+    }
+
+    fn env_vars(&self) -> [(String, String); 4] {
+        let rpc_endpoint = format!("{}/mcp", self.endpoint.trim_end_matches('/'));
+        [
+            ("AGENTHALO_MCP_ENDPOINT".to_string(), rpc_endpoint.clone()),
+            (
+                "AGENTHALO_ORCHESTRATOR_MCP_ENDPOINT".to_string(),
+                rpc_endpoint,
+            ),
+            ("AGENTHALO_MCP_SECRET".to_string(), self.secret.clone()),
+            (
+                "AGENTHALO_ORCHESTRATOR_PROXY_VIA_MCP".to_string(),
+                "1".to_string(),
+            ),
+        ]
+    }
 }
 
 impl HookupTrace {
@@ -392,6 +489,7 @@ pub struct CliAgentHookup {
     agent_pool: Arc<AgentPool>,
     trace: Arc<HookupTrace>,
     timeout_secs: u64,
+    mcp: Mutex<Option<McpInjection>>,
 }
 
 impl CliAgentHookup {
@@ -415,6 +513,7 @@ impl CliAgentHookup {
             agent_pool: Arc::new(AgentPool::new(pty_manager, None)),
             trace: Arc::new(HookupTrace::new(trace_db_path)?),
             timeout_secs: 120,
+            mcp: Mutex::new(None),
         })
     }
 
@@ -424,6 +523,15 @@ impl CliAgentHookup {
 
     pub fn trace_db_path(&self) -> &Path {
         self.trace.trace_db_path()
+    }
+
+    #[cfg(test)]
+    fn mcp_working_dir(&self) -> Option<PathBuf> {
+        self.mcp
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|mcp| mcp.working_dir.clone())
     }
 }
 
@@ -443,19 +551,28 @@ impl AgentHookup for CliAgentHookup {
         if !lock.can_initialize() {
             return Err(format!("container `{}` is not empty", lock.container_id));
         }
+        let mcp = McpInjection::prepare()?;
+        let mut env = std::collections::BTreeMap::new();
+        for (key, value) in mcp.env_vars() {
+            env.insert(key, value);
+        }
         let managed = self
             .agent_pool
             .launch(LaunchSpec {
                 agent: self.cli_name.clone(),
                 agent_name: format!("{}-container-hookup", self.cli_name),
-                working_dir: None,
-                env: Default::default(),
+                working_dir: Some(mcp.working_dir.display().to_string()),
+                env,
                 timeout_secs: self.timeout_secs,
                 model: self.model.clone(),
                 trace: false,
                 capabilities: vec!["*".to_string()],
             })
             .await?;
+        *self
+            .mcp
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(mcp);
         self.trace.activate(
             lock,
             &format!("{}-cli", self.cli_name),
@@ -548,7 +665,12 @@ impl AgentHookup for CliAgentHookup {
         if let Some(agent_id) = self.trace.runtime().agent_id {
             let _ = self.agent_pool.stop(&agent_id, true).await;
         }
-        self.trace.deactivate("shutdown")
+        let result = self.trace.deactivate("shutdown");
+        self.mcp
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        result
     }
 
     async fn health(&self) -> AgentHealth {
@@ -641,36 +763,28 @@ impl AgentHookup for ApiAgentHookup {
     async fn send_prompt(&self, prompt: &str) -> Result<AgentResponse, String> {
         self.trace.write_prompt_sent(prompt)?;
         let started = Instant::now();
-        let request = ChatCompletionRequest {
-            model: self.model.clone(),
-            messages: vec![Message {
-                role: "user".to_string(),
-                content: Value::String(prompt.to_string()),
-            }],
-            temperature: None,
-            max_tokens: None,
-            stream: Some(false),
-            top_p: None,
-        };
         let endpoint = api_endpoint(&self.provider, self.base_url_override.as_deref())?;
         let headers = api_headers(
             &self.provider,
             &self.api_key_source,
             self.base_url_override.is_some(),
         )?;
-        let body = match openai_chat_completion(&endpoint, &headers, &request) {
-            Ok(body) => body,
+        let response = match complete_with_optional_tools(
+            &endpoint,
+            &headers,
+            &self.model,
+            prompt,
+            started,
+            true,
+        )
+        .await
+        {
+            Ok(response) => response,
             Err(error) => {
                 self.trace.write_error("api_request", &error, true)?;
                 return Err(error);
             }
         };
-        let response = response_from_body(
-            &body,
-            &self.model,
-            started.elapsed().as_millis() as u64,
-            api_cost_usd(&self.model, &body),
-        );
         self.trace.write_response_received(&response)?;
         Ok(response)
     }
@@ -811,14 +925,12 @@ impl AgentHookup for LocalModelHookup {
             .ok_or_else(|| "local model hookup not started".to_string())?;
         let request = ChatCompletionRequest {
             model: self.model_id.clone(),
-            messages: vec![Message {
-                role: "user".to_string(),
-                content: Value::String(prompt.to_string()),
-            }],
+            messages: vec![user_message(prompt)],
             temperature: None,
             max_tokens: None,
             stream: Some(false),
             top_p: None,
+            tools: None,
         };
         let endpoint = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
         let body = match openai_chat_completion(&endpoint, &[], &request) {
@@ -980,6 +1092,188 @@ fn openai_chat_completion(
         .map_err(|e| format!("parse completion response from {url}: {e}"))
 }
 
+async fn complete_with_optional_tools(
+    endpoint: &str,
+    headers: &[(String, String)],
+    model: &str,
+    prompt: &str,
+    started: Instant,
+    enable_tools: bool,
+) -> Result<AgentResponse, String> {
+    let tools = if enable_tools {
+        Some(api_tool_definitions().await?)
+    } else {
+        None
+    };
+    let mut messages = vec![user_message(prompt)];
+    let mut total_input_tokens = 0u64;
+    let mut total_output_tokens = 0u64;
+    let mut total_cost_usd = 0.0;
+    let mut all_tool_calls = Vec::new();
+    let mut rounds = 0usize;
+
+    loop {
+        rounds += 1;
+        if rounds > 10 {
+            return Err("tool calling loop exceeded max rounds".to_string());
+        }
+
+        let request = ChatCompletionRequest {
+            model: model.to_string(),
+            messages: messages.clone(),
+            temperature: None,
+            max_tokens: None,
+            stream: Some(false),
+            top_p: None,
+            tools: tools.clone().filter(|items| !items.is_empty()),
+        };
+        let body = openai_chat_completion(endpoint, headers, &request)?;
+        let content = extract_content(&body);
+        let usage = usage_from_body(&body, model, &content);
+        total_input_tokens = total_input_tokens.saturating_add(usage.prompt_tokens);
+        total_output_tokens = total_output_tokens.saturating_add(usage.completion_tokens);
+        total_cost_usd += api_cost_usd(model, &body);
+
+        let tool_calls = extract_tool_calls(&body);
+        if tool_calls.is_empty() {
+            return Ok(AgentResponse {
+                content,
+                model: body
+                    .get("model")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(model)
+                    .to_string(),
+                input_tokens: total_input_tokens,
+                output_tokens: total_output_tokens,
+                cost_usd: total_cost_usd,
+                tool_calls: all_tool_calls,
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+        }
+
+        messages.push(assistant_tool_call_message(&body, &tool_calls));
+        for tool_call in tool_calls {
+            let tool_started = Instant::now();
+            let output = execute_tool_call(&tool_call).await?;
+            let duration_ms = tool_started.elapsed().as_millis() as u64;
+            messages.push(tool_result_message(tool_call.call_id.as_deref(), &output));
+            all_tool_calls.push(ToolCallRecord {
+                output: Some(output),
+                duration_ms,
+                ..tool_call
+            });
+        }
+    }
+}
+
+async fn api_tool_definitions() -> Result<Vec<Value>, String> {
+    let tools = mcp_bridge::tool_catalog().await?;
+    Ok(tools
+        .into_iter()
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description.unwrap_or_default(),
+                    "parameters": tool.input_schema,
+                }
+            })
+        })
+        .collect())
+}
+
+async fn execute_tool_call(tool_call: &ToolCallRecord) -> Result<Value, String> {
+    let args = normalize_tool_arguments(&tool_call.input)?;
+    let result = mcp_bridge::invoke_tool(&tool_call.name, args).await?;
+    Ok(json!({
+        "tool": result.tool,
+        "is_error": result.is_error,
+        "structured_content": result.structured_content,
+        "content": result.content,
+    }))
+}
+
+fn user_message(prompt: &str) -> Message {
+    Message {
+        role: "user".to_string(),
+        content: Value::String(prompt.to_string()),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+    }
+}
+
+fn assistant_tool_call_message(body: &Value, tool_calls: &[ToolCallRecord]) -> Message {
+    let raw_tool_calls = body
+        .get("choices")
+        .and_then(|value| value.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("tool_calls"))
+        .cloned()
+        .unwrap_or_else(|| {
+            Value::Array(
+                tool_calls
+                    .iter()
+                    .map(|tool_call| {
+                        json!({
+                            "id": tool_call.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call.name,
+                                "arguments": tool_call.input,
+                            }
+                        })
+                    })
+                    .collect(),
+            )
+        });
+    Message {
+        role: "assistant".to_string(),
+        content: body
+            .get("choices")
+            .and_then(|value| value.as_array())
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("content"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        name: None,
+        tool_call_id: None,
+        tool_calls: Some(raw_tool_calls),
+    }
+}
+
+fn tool_result_message(call_id: Option<&str>, result: &Value) -> Message {
+    Message {
+        role: "tool".to_string(),
+        content: Value::String(result.to_string()),
+        name: None,
+        tool_call_id: call_id.map(str::to_string),
+        tool_calls: None,
+    }
+}
+
+fn normalize_tool_arguments(value: &Value) -> Result<Value, String> {
+    match value {
+        Value::Null => Ok(json!({})),
+        Value::Object(_) => Ok(value.clone()),
+        Value::String(raw) => {
+            if raw.trim().is_empty() {
+                Ok(json!({}))
+            } else {
+                serde_json::from_str::<Value>(raw)
+                    .map_err(|e| format!("parse tool arguments for MCP execution: {e}"))
+            }
+        }
+        other => Err(format!(
+            "tool arguments must be an object or JSON string, got {}",
+            other
+        )),
+    }
+}
+
 fn response_from_body(
     body: &Value,
     default_model: &str,
@@ -1027,6 +1321,7 @@ fn extract_content(body: &Value) -> String {
         .and_then(|message| message.get("content"))
         .map(|content| match content {
             Value::String(text) => text.clone(),
+            Value::Null => String::new(),
             other => other.to_string(),
         })
         .unwrap_or_default()
@@ -1045,8 +1340,15 @@ fn extract_tool_calls(body: &Value) -> Vec<ToolCallRecord> {
                 .filter_map(|item| {
                     let function = item.get("function")?;
                     Some(ToolCallRecord {
+                        call_id: item
+                            .get("id")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string),
                         name: function.get("name")?.as_str()?.to_string(),
-                        input: function.get("arguments").cloned().unwrap_or(Value::Null),
+                        input: function
+                            .get("arguments")
+                            .map(parse_tool_argument_value)
+                            .unwrap_or(Value::Null),
                         output: None,
                         duration_ms: 0,
                     })
@@ -1054,6 +1356,15 @@ fn extract_tool_calls(body: &Value) -> Vec<ToolCallRecord> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn parse_tool_argument_value(value: &Value) -> Value {
+    match value {
+        Value::String(raw) => {
+            serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.clone()))
+        }
+        other => other.clone(),
+    }
 }
 
 fn api_cost_usd(model: &str, body: &Value) -> f64 {
@@ -1080,12 +1391,291 @@ mod tests {
     use super::*;
     use crate::halo::trace::session_events;
     use crate::test_support::{lock_env, EnvVarGuard, MockOpenAiServer};
+    use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+
+    #[derive(Clone, Debug, Default)]
+    struct MockMcpState {
+        tool_calls: usize,
+        last_tool: Option<String>,
+        last_arguments: Option<Value>,
+    }
+
+    struct MockMcpServer {
+        base_url: String,
+        state: Arc<Mutex<MockMcpState>>,
+        shutdown: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl MockMcpServer {
+        fn spawn() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock mcp server");
+            listener.set_nonblocking(true).expect("set nonblocking");
+            let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+            let state = Arc::new(Mutex::new(MockMcpState::default()));
+            let state_clone = state.clone();
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let shutdown_flag = shutdown.clone();
+            let handle = thread::spawn(move || {
+                while !shutdown_flag.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let mut buffer = [0u8; 16384];
+                            let bytes = stream.read(&mut buffer).unwrap_or(0);
+                            let request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+                            let body = request
+                                .split("\r\n\r\n")
+                                .nth(1)
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            let response = if request.starts_with("GET /health") {
+                                json!({"ok": true})
+                            } else {
+                                let rpc: Value =
+                                    serde_json::from_str(&body).expect("parse mock MCP rpc");
+                                let method = rpc
+                                    .get("method")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or_default();
+                                let result = match method {
+                                    "initialize" => json!({"protocolVersion": "2025-03-01"}),
+                                    "tools/list" => json!({
+                                        "tools": [{
+                                            "name": "nucleusdb_help",
+                                            "description": "Show NucleusDB help",
+                                            "inputSchema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "topic": { "type": "string" }
+                                                }
+                                            }
+                                        }]
+                                    }),
+                                    "tools/call" => {
+                                        let params =
+                                            rpc.get("params").cloned().unwrap_or_else(|| json!({}));
+                                        let tool_name = params
+                                            .get("name")
+                                            .and_then(|value| value.as_str())
+                                            .unwrap_or_default()
+                                            .to_string();
+                                        let arguments = params
+                                            .get("arguments")
+                                            .cloned()
+                                            .unwrap_or_else(|| json!({}));
+                                        let mut state = state_clone
+                                            .lock()
+                                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                        state.tool_calls += 1;
+                                        state.last_tool = Some(tool_name.clone());
+                                        state.last_arguments = Some(arguments.clone());
+                                        json!({
+                                            "isError": false,
+                                            "structuredContent": {
+                                                "message": format!("executed {tool_name}"),
+                                                "echo": arguments,
+                                            },
+                                            "content": [{
+                                                "type": "text",
+                                                "text": format!("executed {tool_name}"),
+                                            }]
+                                        })
+                                    }
+                                    other => json!({"unsupported": other}),
+                                };
+                                json!({
+                                    "jsonrpc": "2.0",
+                                    "id": rpc.get("id").cloned().unwrap_or(json!(1)),
+                                    "result": result,
+                                })
+                            };
+                            let raw = response.to_string();
+                            let http = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                raw.len(),
+                                raw
+                            );
+                            let _ = stream.write_all(http.as_bytes());
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                base_url,
+                state,
+                shutdown,
+                handle: Some(handle),
+            }
+        }
+
+        fn state(&self) -> MockMcpState {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+    }
+
+    impl Drop for MockMcpServer {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::Relaxed);
+            let _ = std::net::TcpStream::connect(self.base_url.trim_start_matches("http://"));
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    struct ToolLoopOpenAiServer {
+        base_url: String,
+        requests: Arc<Mutex<Vec<Value>>>,
+        shutdown: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl ToolLoopOpenAiServer {
+        fn spawn(model: &str) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock openai server");
+            listener.set_nonblocking(true).expect("set nonblocking");
+            let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let requests_clone = requests.clone();
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let shutdown_flag = shutdown.clone();
+            let model = model.to_string();
+            let handle = thread::spawn(move || {
+                while !shutdown_flag.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let mut buffer = [0u8; 16384];
+                            let bytes = stream.read(&mut buffer).unwrap_or(0);
+                            let request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+                            let body = request
+                                .split("\r\n\r\n")
+                                .nth(1)
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            let parsed: Value =
+                                serde_json::from_str(&body).expect("parse mock openai request");
+                            let mut requests = requests_clone
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            requests.push(parsed);
+                            let round = requests.len();
+                            drop(requests);
+                            let response = if round == 1 {
+                                json!({
+                                    "id": "chatcmpl-tool-1",
+                                    "object": "chat.completion",
+                                    "model": model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "message": {
+                                            "role": "assistant",
+                                            "content": Value::Null,
+                                            "tool_calls": [{
+                                                "id": "call_1",
+                                                "type": "function",
+                                                "function": {
+                                                    "name": "nucleusdb_help",
+                                                    "arguments": "{\"topic\":\"status\"}"
+                                                }
+                                            }]
+                                        },
+                                        "finish_reason": "tool_calls"
+                                    }],
+                                    "usage": {
+                                        "prompt_tokens": 11,
+                                        "completion_tokens": 5,
+                                        "total_tokens": 16
+                                    }
+                                })
+                            } else {
+                                json!({
+                                    "id": "chatcmpl-tool-2",
+                                    "object": "chat.completion",
+                                    "model": model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "message": {
+                                            "role": "assistant",
+                                            "content": "tool loop complete"
+                                        },
+                                        "finish_reason": "stop"
+                                    }],
+                                    "usage": {
+                                        "prompt_tokens": 7,
+                                        "completion_tokens": 4,
+                                        "total_tokens": 11
+                                    }
+                                })
+                            };
+                            let raw = response.to_string();
+                            let http = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                raw.len(),
+                                raw
+                            );
+                            let _ = stream.write_all(http.as_bytes());
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                base_url,
+                requests,
+                shutdown,
+                handle: Some(handle),
+            }
+        }
+
+        fn requests(&self) -> Vec<Value> {
+            self.requests
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+    }
+
+    impl Drop for ToolLoopOpenAiServer {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::Relaxed);
+            let _ = std::net::TcpStream::connect(self.base_url.trim_start_matches("http://"));
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn set_mock_mcp_env(mcp: &MockMcpServer) -> (EnvVarGuard, EnvVarGuard) {
+        let endpoint = format!("{}/mcp", mcp.base_url);
+        (
+            EnvVarGuard::set("AGENTHALO_MCP_SECRET", Some("bridge-secret")),
+            EnvVarGuard::set("AGENTHALO_ORCHESTRATOR_MCP_ENDPOINT", Some(&endpoint)),
+        )
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn cli_hookup_lifecycle_and_trace() {
         let _guard = lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let _env = EnvVarGuard::set("AGENTHALO_HOME", dir.path().to_str());
+        let mcp = MockMcpServer::spawn();
+        let (_mcp_secret, _mcp_endpoint) = set_mock_mcp_env(&mcp);
         let output_path = dir.path().join("cli_hookup_output.txt");
         let prompt = format!(
             "printf 'hello from shell\\n' > '{}' && cat '{}'",
@@ -1126,6 +1716,8 @@ mod tests {
         let _guard = lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let _env = EnvVarGuard::set("AGENTHALO_HOME", dir.path().to_str());
+        let mcp = MockMcpServer::spawn();
+        let (_mcp_secret, _mcp_endpoint) = set_mock_mcp_env(&mcp);
 
         let server = MockOpenAiServer::spawn("openrouter/test-model", "api response");
         let hookup = ApiAgentHookup::with_base_url(
@@ -1157,6 +1749,142 @@ mod tests {
                 EventType::AgentDeinitialized
             ]
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cli_hookup_mcp_config_injected() {
+        let _guard = lock_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("AGENTHALO_HOME", dir.path().to_str());
+        let mcp = MockMcpServer::spawn();
+        let (_mcp_secret, _mcp_endpoint) = set_mock_mcp_env(&mcp);
+
+        let pty_manager = Arc::new(PtyManager::new(2));
+        let hookup =
+            CliAgentHookup::with_trace_path("shell", pty_manager, None, &config::db_path())
+                .expect("hookup");
+        let mut lock = ContainerAgentLock::load_or_create("container-a").expect("lock");
+        hookup.start(&mut lock).await.expect("start");
+
+        let working_dir = hookup.mcp_working_dir().expect("mcp working dir");
+        let endpoint = format!("{}/mcp", mcp.base_url);
+        let claude = std::fs::read_to_string(working_dir.join(".mcp.json")).expect("claude config");
+        let codex =
+            std::fs::read_to_string(working_dir.join(".codex/config.toml")).expect("codex config");
+        let gemini = std::fs::read_to_string(working_dir.join(".gemini/settings.json"))
+            .expect("gemini config");
+        assert!(claude.contains(&endpoint));
+        assert!(claude.contains("bridge-secret"));
+        assert!(codex.contains(&endpoint));
+        assert!(gemini.contains(&endpoint));
+
+        hookup.stop().await.expect("stop");
+        assert!(
+            !working_dir.exists(),
+            "temp MCP config dir should be removed"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cli_hookup_mcp_tools_discoverable() {
+        let _guard = lock_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("AGENTHALO_HOME", dir.path().to_str());
+        let mcp = MockMcpServer::spawn();
+        let (_mcp_secret, _mcp_endpoint) = set_mock_mcp_env(&mcp);
+
+        let pty_manager = Arc::new(PtyManager::new(2));
+        let hookup =
+            CliAgentHookup::with_trace_path("shell", pty_manager, None, &config::db_path())
+                .expect("hookup");
+        let mut lock = ContainerAgentLock::load_or_create("container-a").expect("lock");
+        hookup.start(&mut lock).await.expect("start");
+        let response = hookup
+            .send_prompt("printf '%s' \"$AGENTHALO_MCP_ENDPOINT\"")
+            .await
+            .expect("response");
+        assert_eq!(response.content, format!("{}/mcp", mcp.base_url));
+        hookup.stop().await.expect("stop");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn api_hookup_tool_calling_loop() {
+        let _guard = lock_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("AGENTHALO_HOME", dir.path().to_str());
+        let mcp = MockMcpServer::spawn();
+        let (_mcp_secret, _mcp_endpoint) = set_mock_mcp_env(&mcp);
+        let server = ToolLoopOpenAiServer::spawn("openrouter/test-model");
+
+        let hookup = ApiAgentHookup::with_base_url(
+            "openrouter",
+            "openrouter/test-model",
+            "literal-test-key",
+            Some(server.base_url.clone()),
+            &config::db_path(),
+        )
+        .expect("hookup");
+        let mut lock = ContainerAgentLock::load_or_create("container-a").expect("lock");
+        hookup.start(&mut lock).await.expect("start");
+        let response = hookup.send_prompt("hello api").await.expect("response");
+        assert_eq!(response.content, "tool loop complete");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "nucleusdb_help");
+        assert_eq!(
+            response.tool_calls[0]
+                .output
+                .as_ref()
+                .and_then(|value| value.get("structured_content"))
+                .and_then(|value| value.get("message"))
+                .and_then(|value| value.as_str()),
+            Some("executed nucleusdb_help")
+        );
+        let mcp_state = mcp.state();
+        assert_eq!(mcp_state.tool_calls, 1);
+        assert_eq!(mcp_state.last_tool.as_deref(), Some("nucleusdb_help"));
+        assert_eq!(
+            mcp_state
+                .last_arguments
+                .as_ref()
+                .and_then(|value| value.get("topic"))
+                .and_then(|value| value.as_str()),
+            Some("status")
+        );
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0]["tools"].is_array());
+        assert_eq!(requests[1]["messages"][2]["role"], "tool");
+        hookup.stop().await.expect("stop");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn api_hookup_tool_calls_in_trace() {
+        let _guard = lock_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = EnvVarGuard::set("AGENTHALO_HOME", dir.path().to_str());
+        let mcp = MockMcpServer::spawn();
+        let (_mcp_secret, _mcp_endpoint) = set_mock_mcp_env(&mcp);
+        let server = ToolLoopOpenAiServer::spawn("openrouter/test-model");
+
+        let hookup = ApiAgentHookup::with_base_url(
+            "openrouter",
+            "openrouter/test-model",
+            "literal-test-key",
+            Some(server.base_url.clone()),
+            &config::db_path(),
+        )
+        .expect("hookup");
+        let mut lock = ContainerAgentLock::load_or_create("container-a").expect("lock");
+        hookup.start(&mut lock).await.expect("start");
+        let _response = hookup.send_prompt("hello api").await.expect("response");
+        hookup.stop().await.expect("stop");
+
+        let trace_id = hookup.trace_session_id().expect("trace session id");
+        let events = session_events(hookup.trace_db_path(), &trace_id).expect("events");
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall
+                && event.tool_name.as_deref() == Some("nucleusdb_help")));
     }
 
     #[tokio::test(flavor = "current_thread")]

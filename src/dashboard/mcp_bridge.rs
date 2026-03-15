@@ -81,6 +81,16 @@ pub async fn invoke_tool(tool: &str, params: Value) -> Result<McpInvokeResult, S
         .map_err(|e| format!("MCP invoke task join: {e}"))?
 }
 
+pub fn running_session_endpoint() -> Result<(String, String), String> {
+    let slot = bridge_session_slot();
+    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_live_session(&mut guard)?;
+    let session = guard
+        .as_ref()
+        .ok_or_else(|| "MCP bridge session unexpectedly missing".to_string())?;
+    Ok((session.endpoint.clone(), session.secret.clone()))
+}
+
 fn tool_catalog_blocking() -> Result<Vec<McpToolInfo>, String> {
     let result = with_bridge_session(|session| session.call("tools/list", json!({})))?;
     let tools = result

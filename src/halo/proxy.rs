@@ -35,17 +35,29 @@ use std::time::{Duration, Instant};
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<Message>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Value>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {
     pub role: String,
     pub content: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Value>,
 }
 
 /// Full result from a metered proxy call.
@@ -1225,11 +1237,15 @@ mod tests {
             messages: vec![Message {
                 role: "user".to_string(),
                 content: Value::String("hello".to_string()),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             max_tokens: Some(64),
             stream: Some(false),
             top_p: None,
+            tools: None,
         };
         let (_model, cost) = estimate_marked_up_request_cost(&request, &HashMap::new(), 0.2);
         assert_eq!(cost, 0.0);

@@ -9649,11 +9649,15 @@ mod tests {
             messages: vec![proxy::Message {
                 role: "user".to_string(),
                 content: Value::String("hello".to_string()),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             max_tokens: Some(32),
             stream: Some(true),
             top_p: None,
+            tools: None,
         };
         let telemetry = proxy::StreamTelemetry {
             prompt_tokens: Some(12),
@@ -9685,11 +9689,15 @@ mod tests {
             messages: vec![proxy::Message {
                 role: "user".to_string(),
                 content: Value::String("12345678".to_string()),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             max_tokens: Some(32),
             stream: Some(true),
             top_p: None,
+            tools: None,
         };
         let telemetry = proxy::StreamTelemetry {
             prompt_tokens: None,
