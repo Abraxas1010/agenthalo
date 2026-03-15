@@ -758,8 +758,11 @@ fn verify_cab_signature(
         return Ok(signature == cab_test_signature(agent_address, message));
     }
 
-    let _ = (agent_address, message, signature);
-    Err("CAB bearer-token verification is unavailable in standalone NucleusDB; use JWT auth".to_string())
+    #[cfg(not(test))]
+    {
+        let _ = (agent_address, message, signature);
+        Err("CAB bearer-token verification is unavailable in standalone NucleusDB; use JWT auth".to_string())
+    }
 }
 
 #[cfg(test)]

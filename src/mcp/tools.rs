@@ -6474,6 +6474,14 @@ mod tests {
 
         let run_dir = std::env::temp_dir().join("nucleusdb-container");
         std::fs::create_dir_all(&run_dir).expect("create run dir");
+        // Clean up stale session files from prior test runs to avoid count
+        // mismatches — list_sessions() reads ALL .json files from run_dir.
+        for entry in std::fs::read_dir(&run_dir).into_iter().flatten().flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("json") {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
         let session_ids = ["sess-hang-a", "sess-hang-b"];
         let session_paths = [
             run_dir.join(format!("{}.json", session_ids[0])),
