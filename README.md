@@ -66,14 +66,13 @@ NUCLEUSDB_DB_PATH=./records.ndb ./target/release/nucleusdb dashboard --port 3100
 ./target/release/nucleusdb mcp --transport http --host 127.0.0.1 --port 3000 --db ./records.ndb
 ```
 
-## Container Ops
+## Native Ops
 
-Two compose surfaces are maintained for manual operations:
+AgentHALO now runs natively. The helper wrapper `scripts/agenthalo-instances.sh`
+manages two local-process modes safely:
 
-- `docker-compose.yml` is the ephemeral development/testing stack. Its data is disposable.
-- `docker-compose.discord.yml` is the persistent Discord recording bridge. Its data is meant to survive restarts.
-
-The helper wrapper `scripts/agenthalo-instances.sh` manages both modes safely:
+- `start-dev` launches the review dashboard with an isolated `AGENTHALO_HOME`
+- `start-discord` launches the persistent Discord recorder from `deploy/discord.env`
 
 ```bash
 ./scripts/agenthalo-instances.sh list
@@ -89,6 +88,9 @@ Before starting the persistent Discord bridge:
 cp deploy/discord.env.example deploy/discord.env
 # edit deploy/discord.env and set NUCLEUSDB_DISCORD_TOKEN
 ```
+
+Runtime state is kept under `~/.agenthalo-runtimes/` so `wipe-dev` does not
+destroy the persistent Discord recorder home.
 
 ## Discord Bot
 
@@ -206,7 +208,10 @@ NucleusDB bridges runtime operations to machine-checked Lean 4 proofs maintained
 2. **Proof gate** — `configs/proof_gate.json` defines 14 theorem requirements across 6 tool surfaces, each bound to an exact declaration-line SHA-256, Heyting commit hash, and Ed25519 signature requirement
 3. **Certificate pipeline** — `.lean4export` signed provenance attestations validated by `src/verifier/` against statement hash, commit hash, and signature
 
-Current status: advisory mode (`enabled: false`). The gate evaluates certificates but does not block operations. Dashboard and API simulate results and label them as advisory.
+Current status: enforced mode. The gate evaluates signed certificates against
+current Heyting provenance and blocks covered operations when requirements are
+missing, stale, or invalid. Use `AGENTHALO_PROOF_GATE_SKIP=1` only for explicit
+development escape-hatch sessions; the runtime emits a warning when you do.
 
 Validation and certificate generation:
 
@@ -263,14 +268,14 @@ Cryptographic and operational surfaces currently in use:
 - append-only seal chaining via `immutable.rs`
 - AES-GCM encrypted local files for identity/genesis/vault state
 - Argon2-based password-derived master keys
-- Ed25519-signed formal provenance certificates binding runtime operations to Lean 4 theorems (advisory mode)
+- Ed25519-signed formal provenance certificates binding runtime operations to Lean 4 theorems (enforced by default)
 
 Operational guidance:
 
 - keep Discord tokens only in environment files, never source
 - run the bot under a dedicated `nucleusdb` system user
 - use `deploy/nucleusdb-discord.service`, `deploy/nucleusdb-mcp.service`, and `deploy/nucleusdb-dashboard.service` for restart-on-crash behavior
-- use the unified `Dockerfile` and `docker-compose.yml` when you want a single-container deployment
+- use `scripts/agenthalo-instances.sh` for native review/dev launches
 
 ## Testing
 
@@ -295,7 +300,7 @@ cargo test
 - `src/` — Rust implementation
 - `src/verifier/` — certificate parser and proof gate
 - `dashboard/` — embedded frontend assets
-- `deploy/` — systemd units, Docker entrypoint, environment templates
+- `deploy/` — systemd units and environment templates
 - `configs/` — proof gate configuration (`proof_gate.json`)
 - `lean/NucleusDB/` — 74 local Lean 4 mirror modules
 - `scripts/` — formal provenance validation, certificate generation

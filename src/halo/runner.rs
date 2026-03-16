@@ -3,6 +3,7 @@ use crate::halo::adapters::codex::CodexAdapter;
 use crate::halo::adapters::gemini::GeminiAdapter;
 use crate::halo::adapters::generic::GenericAdapter;
 use crate::halo::adapters::StreamAdapter;
+use crate::verifier::gate as proof_gate;
 use crate::halo::detect::{detect_agent, injection_flags, AgentType};
 use crate::halo::schema::{EventType, TraceEvent};
 use crate::halo::trace::{now_unix_secs, TraceWriter};
@@ -39,6 +40,30 @@ impl AgentRunner {
 
     /// Run the agent subprocess, recording all events. Returns (exit_code, detected_model).
     pub fn run(&self, trace_writer: &mut TraceWriter) -> Result<(i32, Option<String>), String> {
+        if std::env::var("AGENTHALO_PROOF_GATE_SKIP").is_ok() {
+            eprintln!("WARNING: Proof gate enforcement SKIPPED (AGENTHALO_PROOF_GATE_SKIP set)");
+            eprintln!("Formal verification checks are disabled. Do NOT use in production.");
+        } else {
+            let cfg = proof_gate::load_gate_config()?;
+            if cfg.enabled {
+                let result = proof_gate::check_all_requirements(&cfg);
+                if !result.passed {
+                    let stale = if result.stale_certificates.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " stale_certificates={}",
+                            result.stale_certificates.join(",")
+                        )
+                    };
+                    return Err(format!(
+                        "Proof gate failed: {}/{} requirements met.{} Run `agenthalo proof-gate status` for details.",
+                        result.total_met, result.total_checked, stale
+                    ));
+                }
+            }
+        }
+
         let mut full_args = injection_flags(&self.agent_type, &self.args);
         full_args.extend(self.args.clone());
 

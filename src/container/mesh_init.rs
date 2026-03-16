@@ -1,12 +1,12 @@
-//! Mesh network self-registration.
+//! Native mesh self-registration.
 //!
 //! Called by the MCP server binary at startup when `NUCLEUSDB_MESH_PORT` is set.
-//! Registers this container in the shared peer registry so other containers
-//! can discover it. Deregisters at shutdown.
+//! Registers this process in the shared peer registry so other local AgentHALO
+//! subprocesses can discover it. Deregisters at shutdown.
 
 use crate::container::mesh::{mesh_registry_path, PeerInfo, PeerRegistry, DEFAULT_MCP_PORT};
 
-/// Check whether this process is running inside a mesh-enabled container.
+/// Check whether this process is running inside a mesh-enabled agent session.
 pub fn mesh_enabled() -> bool {
     std::env::var("NUCLEUSDB_MESH_AGENT_ID")
         .ok()
@@ -14,7 +14,7 @@ pub fn mesh_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Register this container in the mesh peer registry.
+/// Register this process in the mesh peer registry.
 /// Called at MCP server startup.
 pub fn register_self_in_mesh() -> Result<(), String> {
     let mesh_port: u16 = std::env::var("NUCLEUSDB_MESH_PORT")
@@ -28,9 +28,8 @@ pub fn register_self_in_mesh() -> Result<(), String> {
     }
     let did_uri = std::env::var("NUCLEUSDB_MESH_DID").ok();
 
-    // Container hostname — set by --hostname in launch_container()
     let container_name = resolve_hostname().unwrap_or_else(|| agent_id.clone());
-    let endpoint_host = resolve_container_ip().unwrap_or_else(|| container_name.clone());
+    let endpoint_host = resolve_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
 
     let mcp_endpoint = format!("http://{endpoint_host}:{mesh_port}/mcp");
     let discovery_endpoint = format!("http://{endpoint_host}:{mesh_port}/.well-known/nucleus-pod");
@@ -56,7 +55,7 @@ pub fn register_self_in_mesh() -> Result<(), String> {
     Ok(())
 }
 
-/// Deregister this container from the mesh peer registry.
+/// Deregister this process from the mesh peer registry.
 /// Called at MCP server shutdown.
 pub fn deregister_self_from_mesh() {
     let agent_id = std::env::var("NUCLEUSDB_MESH_AGENT_ID").unwrap_or_default();
@@ -75,8 +74,7 @@ pub fn deregister_self_from_mesh() {
     }
 }
 
-/// Resolve container hostname. Uses the `hostname` command as a portable
-/// fallback (works inside Docker without extra crate dependencies).
+/// Resolve host name using the local system hostname command.
 fn resolve_hostname() -> Option<String> {
     std::process::Command::new("hostname")
         .output()
@@ -86,7 +84,7 @@ fn resolve_hostname() -> Option<String> {
         .filter(|h| !h.is_empty())
 }
 
-fn resolve_container_ip() -> Option<String> {
+fn resolve_local_ip() -> Option<String> {
     std::process::Command::new("hostname")
         .arg("-i")
         .output()
@@ -129,8 +127,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_container_ip_is_optional_but_valid_when_present() {
-        if let Some(ip) = resolve_container_ip() {
+    fn resolve_local_ip_is_optional_but_valid_when_present() {
+        if let Some(ip) = resolve_local_ip() {
             assert!(ip.parse::<std::net::IpAddr>().is_ok());
         }
     }

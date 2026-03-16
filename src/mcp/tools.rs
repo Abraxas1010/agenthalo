@@ -97,23 +97,11 @@ const SUBSIDIARY_PEER_REGISTRATION_POLL_INTERVAL: Duration = Duration::from_mill
 const SUBSIDIARY_PEER_HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn inspect_container_mesh_ip(session_id: &str) -> Result<Option<String>, String> {
-    let output = Command::new("docker")
-        .args([
-            "inspect",
-            "--format",
-            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-            session_id,
-        ])
-        .output()
-        .map_err(|e| format!("docker inspect mesh ip for `{session_id}`: {e}"))?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if ip.is_empty() {
-        Ok(None)
+    let session = crate::container::launcher::load_session(session_id)?;
+    if session.mesh_port.is_some() {
+        Ok(Some("127.0.0.1".to_string()))
     } else {
-        Ok(Some(ip))
+        Ok(None)
     }
 }
 
@@ -6839,20 +6827,20 @@ mod tests {
             registry_path.to_str().expect("utf8 registry path"),
         );
 
-        let run_dir = std::env::temp_dir().join("nucleusdb-container");
+        let run_dir = std::env::temp_dir().join("agenthalo-native");
         std::fs::create_dir_all(&run_dir).expect("create run dir");
         // Clean up stale session files from prior test runs to avoid count
-        // mismatches — list_sessions() reads ALL .json files from run_dir.
+        // mismatches — list_sessions() reads every session dir in run_dir.
         for entry in std::fs::read_dir(&run_dir).into_iter().flatten().flatten() {
             let p = entry.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("json") {
-                let _ = std::fs::remove_file(&p);
+            if p.is_dir() {
+                let _ = std::fs::remove_dir_all(&p);
             }
         }
         let session_ids = ["sess-hang-a", "sess-hang-b"];
         let session_paths = [
-            run_dir.join(format!("{}.json", session_ids[0])),
-            run_dir.join(format!("{}.json", session_ids[1])),
+            run_dir.join(session_ids[0]).join("session.json"),
+            run_dir.join(session_ids[1]).join("session.json"),
         ];
 
         let listeners = (0..2)
@@ -6874,6 +6862,9 @@ mod tests {
             .collect::<Vec<_>>();
 
         for (idx, path) in session_paths.iter().enumerate() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create session dir");
+            }
             let session = crate::container::launcher::SessionInfo {
                 session_id: session_ids[idx].to_string(),
                 container_id: format!("ctr-hang-{idx}"),
@@ -6882,6 +6873,8 @@ mod tests {
                 host_sock: std::env::temp_dir().join(format!("hang-{idx}.sock")),
                 started_at_unix: crate::pod::now_unix(),
                 mesh_port: Some(3000 + idx as u16),
+                pid: None,
+                log_path: None,
             };
             std::fs::write(
                 path,
@@ -6924,7 +6917,9 @@ mod tests {
         assert!(elapsed < max_elapsed, "elapsed: {elapsed:?}");
 
         for path in &session_paths {
-            let _ = std::fs::remove_file(path);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::remove_dir_all(parent);
+            }
         }
         for handle in handles {
             let _ = handle.join();
@@ -7022,9 +7017,11 @@ mod tests {
             }
         });
 
-        let run_dir = std::env::temp_dir().join("nucleusdb-container");
+        let run_dir = std::env::temp_dir().join("agenthalo-native");
         std::fs::create_dir_all(&run_dir).expect("create run dir");
-        let session_path = run_dir.join("sess-auth-lock.json");
+        let session_dir = run_dir.join("sess-auth-lock");
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+        let session_path = session_dir.join("session.json");
         std::fs::write(
             &session_path,
             serde_json::to_vec_pretty(&crate::container::launcher::SessionInfo {
@@ -7035,6 +7032,8 @@ mod tests {
                 host_sock: std::env::temp_dir().join("auth-lock.sock"),
                 started_at_unix: crate::pod::now_unix(),
                 mesh_port: Some(3000),
+                pid: None,
+                log_path: None,
             })
             .expect("encode session"),
         )
@@ -7066,7 +7065,7 @@ mod tests {
 
         shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = handle.join();
-        let _ = std::fs::remove_file(session_path);
+        let _ = std::fs::remove_dir_all(session_dir);
         cleanup_db_files(&db_path);
     }
 
@@ -7207,7 +7206,7 @@ mod tests {
             .await
             .expect("launch operator");
 
-        let run_dir = std::env::temp_dir().join("nucleusdb-container");
+        let run_dir = std::env::temp_dir().join("agenthalo-native");
         std::fs::create_dir_all(&run_dir).expect("create run dir");
         let owned_session_id = "sess-owned-phase4";
         let unowned_session_id = "sess-unowned-phase4";
@@ -7215,7 +7214,9 @@ mod tests {
             (owned_session_id, "peer-owned"),
             (unowned_session_id, "peer-unowned"),
         ] {
-            let path = run_dir.join(format!("{session_id}.json"));
+            let session_dir = run_dir.join(session_id);
+            std::fs::create_dir_all(&session_dir).expect("create session dir");
+            let path = session_dir.join("session.json");
             std::fs::write(
                 &path,
                 serde_json::to_vec_pretty(&crate::container::launcher::SessionInfo {
@@ -7226,6 +7227,8 @@ mod tests {
                     host_sock: std::env::temp_dir().join(format!("{session_id}.sock")),
                     started_at_unix: crate::pod::now_unix(),
                     mesh_port: Some(3000),
+                    pid: None,
+                    log_path: None,
                 })
                 .expect("encode session"),
             )
@@ -7320,7 +7323,7 @@ mod tests {
             .await
             .expect("subsidiary destroy");
         assert!(destroyed.destroyed);
-        assert!(!run_dir.join(format!("{owned_session_id}.json")).exists());
+        assert!(!run_dir.join(owned_session_id).exists());
 
         let Json(listed_after) = service
             .subsidiary_list(Parameters(SubsidiaryListRequest {
@@ -7336,7 +7339,7 @@ mod tests {
                 force: Some(true),
             }))
             .await;
-        let _ = std::fs::remove_file(run_dir.join(format!("{unowned_session_id}.json")));
+        let _ = std::fs::remove_dir_all(run_dir.join(unowned_session_id));
         cleanup_db_files(&db_path);
     }
 
@@ -7372,10 +7375,12 @@ mod tests {
             .await
             .expect("launch operator");
 
-        let run_dir = std::env::temp_dir().join("nucleusdb-container");
+        let run_dir = std::env::temp_dir().join("agenthalo-native");
         std::fs::create_dir_all(&run_dir).expect("create run dir");
         let session_id = "sess-delayed-peer-phase4";
-        let session_path = run_dir.join(format!("{session_id}.json"));
+        let session_dir = run_dir.join(session_id);
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+        let session_path = session_dir.join("session.json");
         std::fs::write(
             &session_path,
             serde_json::to_vec_pretty(&crate::container::launcher::SessionInfo {
@@ -7386,6 +7391,8 @@ mod tests {
                 host_sock: std::env::temp_dir().join("sess-delayed-peer.sock"),
                 started_at_unix: crate::pod::now_unix(),
                 mesh_port: None,
+                pid: None,
+                log_path: None,
             })
             .expect("encode session"),
         )
@@ -7448,7 +7455,7 @@ mod tests {
                 force: Some(true),
             }))
             .await;
-        let _ = std::fs::remove_file(session_path);
+        let _ = std::fs::remove_dir_all(session_dir);
         cleanup_db_files(&db_path);
     }
 
@@ -7492,10 +7499,12 @@ mod tests {
             .and_then(|v| v.parse::<u16>().ok())
             .expect("mock port");
 
-        let run_dir = std::env::temp_dir().join("nucleusdb-container");
+        let run_dir = std::env::temp_dir().join("agenthalo-native");
         std::fs::create_dir_all(&run_dir).expect("create run dir");
         let session_id = "localhost";
-        let session_path = run_dir.join(format!("{session_id}.json"));
+        let session_dir = run_dir.join(session_id);
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+        let session_path = session_dir.join("session.json");
         std::fs::write(
             &session_path,
             serde_json::to_vec_pretty(&crate::container::launcher::SessionInfo {
@@ -7506,6 +7515,8 @@ mod tests {
                 host_sock: std::env::temp_dir().join("sess-fallback-peer.sock"),
                 started_at_unix: crate::pod::now_unix(),
                 mesh_port: Some(port),
+                pid: None,
+                log_path: None,
             })
             .expect("encode session"),
         )

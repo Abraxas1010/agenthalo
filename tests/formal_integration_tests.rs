@@ -99,7 +99,7 @@ fn provenance_surface_has_no_duplicate_canonical_entries() {
 #[test]
 fn proof_gate_config_loads_from_repo() {
     let config = load_gate_config().expect("gate config should load");
-    assert!(!config.enabled);
+    assert!(config.enabled);
     assert!(config.requirements.len() >= 5);
 }
 
@@ -139,11 +139,11 @@ fn proof_gate_tools_cover_commit_kem_trace_and_dashboard_surfaces() {
 }
 
 #[test]
-fn advisory_gate_config_has_no_enforced_requirements_yet() {
+fn proof_gate_config_enforces_all_requirements() {
     let config = load_gate_config().expect("gate config should load");
     assert!(config
         .requirements
         .values()
         .flat_map(|reqs| reqs.iter())
-        .all(|req| !req.enforced));
+        .all(|req| req.enforced));
 }

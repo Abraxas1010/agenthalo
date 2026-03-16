@@ -1,11 +1,11 @@
-//! Container mesh network for inter-agent MCP communication.
+//! Native mesh registry for inter-agent MCP communication.
 //!
-//! Creates a shared Docker bridge network (`halo-mesh`) so containers
-//! can reach each other's MCP HTTP endpoints. Peers are discovered via
-//! Docker DNS (container-name:port) and registered in a shared peer list.
+//! Peers are discovered through a shared local registry file rather than a
+//! Docker bridge network. Historical `container` naming is retained so the
+//! broader AgentHALO orchestration stack can migrate without a second rename pass.
 
 use crate::container::coordination::{
-    acquire_pid_lock, prepare_bind_mount_dir, registry_volume_is_named,
+    acquire_pid_lock, prepare_bind_mount_dir, registry_volume_is_named, resolve_registry_dir,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -13,30 +13,29 @@ use std::fs::File;
 use std::io::Write;
 use std::net::ToSocketAddrs;
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
-pub const MESH_NETWORK_NAME: &str = "halo-mesh";
+pub const MESH_NETWORK_NAME: &str = "halo-native";
 pub const DEFAULT_MCP_PORT: u16 = 3000;
-pub const MESH_REGISTRY_PATH: &str = "/data/mesh/peers.json";
+pub const MESH_REGISTRY_PATH: &str = "mesh/peers.json";
 const MESH_REGISTRY_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const MESH_REGISTRY_LOCK_RETRY: Duration = Duration::from_millis(25);
 
 /// Resolve the peer registry path.
 ///
-/// Supports `NUCLEUSDB_MESH_REGISTRY` override for tests and non-container
-/// deployments; defaults to `/data/mesh/peers.json` in container mode.
+/// Supports `NUCLEUSDB_MESH_REGISTRY` override for tests and alternate native
+/// deployments; otherwise defaults to the AgentHALO home mesh registry.
 pub fn mesh_registry_path() -> std::path::PathBuf {
     std::env::var("NUCLEUSDB_MESH_REGISTRY")
         .ok()
         .filter(|v| !v.trim().is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(MESH_REGISTRY_PATH))
+        .unwrap_or_else(|| crate::halo::config::halo_dir().join(MESH_REGISTRY_PATH))
 }
 
 fn configure_registry_parent(parent: &Path) -> Result<(), String> {
     if registry_volume_is_named(parent) {
-        return Ok(());
+        return prepare_bind_mount_dir(&resolve_registry_dir(parent), "mesh registry dir");
     }
     prepare_bind_mount_dir(parent, "mesh registry dir")
 }
@@ -57,32 +56,10 @@ pub struct PeerRegistry {
     pub peers: BTreeMap<String, PeerInfo>,
 }
 
-/// Ensure the shared Docker bridge network exists.
+/// Native mesh no longer requires explicit network provisioning.
 pub fn ensure_mesh_network() -> Result<(), String> {
-    let inspect = Command::new("docker")
-        .args(["network", "inspect", MESH_NETWORK_NAME])
-        .output()
-        .map_err(|e| format!("docker network inspect failed: {e}"))?;
-    if inspect.status.success() {
-        return Ok(());
-    }
-    let create = Command::new("docker")
-        .args([
-            "network",
-            "create",
-            "--driver",
-            "bridge",
-            "--label",
-            "nucleusdb.mesh=true",
-            MESH_NETWORK_NAME,
-        ])
-        .output()
-        .map_err(|e| format!("docker network create failed: {e}"))?;
-    if !create.status.success() {
-        return Err(format!(
-            "failed to create mesh network: {}",
-            String::from_utf8_lossy(&create.stderr)
-        ));
+    if let Some(parent) = mesh_registry_path().parent() {
+        configure_registry_parent(parent)?;
     }
     Ok(())
 }
@@ -584,7 +561,10 @@ mod tests {
         } else {
             std::env::remove_var("NUCLEUSDB_MESH_REGISTRY");
         }
-        assert_eq!(mesh_registry_path(), PathBuf::from(MESH_REGISTRY_PATH));
+        assert_eq!(
+            mesh_registry_path(),
+            crate::halo::config::halo_dir().join(MESH_REGISTRY_PATH)
+        );
     }
 
     #[test]

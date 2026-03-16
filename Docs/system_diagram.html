@@ -908,16 +908,16 @@ graph TB
 <section id="s9">
   <div class="section-header">
     <span class="section-number">9</span>
-    <h2>Container & Mesh Networking</h2>
+    <h2>Native Sessions &amp; Mesh Networking</h2>
   </div>
-  <p class="description">Docker container lifecycle with P2P mesh and Bitswap content exchange.</p>
+  <p class="description">Native AgentHALO session lifecycle with P2P mesh and Bitswap content exchange.</p>
   <div class="diagram-card"><div class="card-body">
     <pre class="mermaid">
 graph TB
-    subgraph ContainerLC["Container Lifecycle"]
-        BUILD_9["Image Builder\nbuilder.rs"]
-        LAUNCH_9["Container Launcher\nlauncher.rs"]
-        SHIM_9["Container Shim\nshim/"]
+    subgraph ContainerLC["Session Lifecycle"]
+        LAUNCH_9["Native Launcher\nlauncher.rs"]
+        PROC_9["Native Agent Process\nagenthalo-mcp-server"]
+        SESSION_9["Session Metadata + Logs\n/tmp/agenthalo-native"]
         SIDECAR_9["WDK Sidecar\nwdk-sidecar/\nNode.js"]
     end
 
@@ -936,8 +936,8 @@ graph TB
         MANIFEST_9["Manifest Builder\nverify integrity"]
     end
 
-    BUILD_9 --> LAUNCH_9
-    LAUNCH_9 --> SHIM_9
+    LAUNCH_9 --> PROC_9
+    PROC_9 --> SESSION_9
     LAUNCH_9 --> SIDECAR_9
     LAUNCH_9 --> MINIT_9
 

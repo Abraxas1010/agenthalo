@@ -65,6 +65,16 @@ pub struct GateResult {
     pub elapsed_ms: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AggregateGateResult {
+    pub passed: bool,
+    pub total_checked: usize,
+    pub total_met: usize,
+    pub tool_results: Vec<GateResult>,
+    pub stale_certificates: Vec<String>,
+    pub elapsed_ms: u64,
+}
+
 fn tier_rank(tier: TrustTier) -> u8 {
     match tier {
         TrustTier::Untrusted => 0,
@@ -345,16 +355,19 @@ impl ProofGateConfig {
     }
 }
 
-fn local_did_identity() -> Option<crate::did::DIDIdentity> {
-    let seed = crate::genesis::load_seed_bytes().ok().flatten()?;
-    crate::did::did_from_genesis_seed(&seed).ok()
+fn local_did_identity() -> Option<crate::halo::did::DIDIdentity> {
+    let seed = crate::halo::genesis_seed::load_seed_bytes().ok().flatten()?;
+    crate::halo::did::did_from_genesis_seed(&seed).ok()
 }
 
 fn local_did() -> Option<String> {
     local_did_identity().map(|id| id.did)
 }
 
-fn sign_certificate_text(body: &str, identity: &crate::did::DIDIdentity) -> Result<String, String> {
+fn sign_certificate_text(
+    body: &str,
+    identity: &crate::halo::did::DIDIdentity,
+) -> Result<String, String> {
     let key_multibase = identity
         .did_document
         .verification_method
@@ -410,6 +423,62 @@ pub fn load_gate_config_with_path() -> Result<(ProofGateConfig, PathBuf), String
 
 pub fn load_gate_config() -> Result<ProofGateConfig, String> {
     load_gate_config_with_path().map(|(cfg, _)| cfg)
+}
+
+pub fn check_certificate_freshness(generated_at: u64, max_age_days: u64) -> bool {
+    let now = crate::util::now_unix_secs();
+    let max_age_secs = max_age_days.saturating_mul(24 * 60 * 60);
+    now.saturating_sub(generated_at) <= max_age_secs
+}
+
+pub fn check_all_requirements(cfg: &ProofGateConfig) -> AggregateGateResult {
+    let start = std::time::Instant::now();
+    if !cfg.enabled {
+        return AggregateGateResult {
+            passed: true,
+            total_checked: 0,
+            total_met: 0,
+            tool_results: Vec::new(),
+            stale_certificates: Vec::new(),
+            elapsed_ms: 0,
+        };
+    }
+
+    let mut tool_names = cfg.requirements.keys().cloned().collect::<Vec<_>>();
+    tool_names.sort();
+
+    let mut total_checked = 0usize;
+    let mut total_met = 0usize;
+    let mut stale = Vec::new();
+    let mut tool_results = Vec::new();
+    for tool_name in tool_names {
+        let result = cfg.evaluate(&tool_name);
+        total_checked = total_checked.saturating_add(result.requirements_checked);
+        total_met = total_met.saturating_add(result.requirements_met);
+        for check in &result.verification_results {
+            if let Some(cert_path) = &check.certificate_path {
+                if let Ok(v) = verify_export(Path::new(cert_path)) {
+                    if let Some(generated_at) = v.metadata.generated_at {
+                        if !check_certificate_freshness(generated_at, 7) {
+                            stale.push(cert_path.clone());
+                        }
+                    }
+                }
+            }
+        }
+        tool_results.push(result);
+    }
+    stale.sort();
+    stale.dedup();
+    let passed = tool_results.iter().all(|result| result.passed) && stale.is_empty();
+    AggregateGateResult {
+        passed,
+        total_checked,
+        total_met,
+        tool_results,
+        stale_certificates: stale,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    }
 }
 
 pub fn verify_certificate(path: &Path) -> Result<VerificationResult, String> {
@@ -508,7 +577,7 @@ pub fn submit_certificate(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::did::did_from_genesis_seed;
+    use crate::halo::did::did_from_genesis_seed;
 
     fn write_cert(dir: &Path, name: &str, body: &str) -> PathBuf {
         std::fs::create_dir_all(dir).expect("create cert dir");
@@ -517,7 +586,7 @@ mod tests {
         path
     }
 
-    fn sample_identity() -> crate::did::DIDIdentity {
+    fn sample_identity() -> crate::halo::did::DIDIdentity {
         did_from_genesis_seed(&[9u8; 64]).expect("derive did")
     }
 

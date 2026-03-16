@@ -543,16 +543,16 @@ graph TB
 
 ---
 
-## 9. Container & Mesh Networking
+## 9. Native Sessions & Mesh Networking
 
-Docker container lifecycle with P2P mesh.
+Native AgentHALO session lifecycle with P2P mesh.
 
 ```mermaid
 graph TB
-    subgraph "Container Lifecycle"
-        BUILD["Image Builder<br/><code>builder.rs</code>"]
-        LAUNCH["Container Launcher<br/><code>launcher.rs</code>"]
-        SHIM["Container Shim<br/><code>shim/</code>"]
+    subgraph "Session Lifecycle"
+        LAUNCH["Native Launcher<br/><code>launcher.rs</code>"]
+        PROC["Native Agent Process<br/><code>agenthalo-mcp-server</code>"]
+        SESSION["Session Metadata + Logs<br/><code>/tmp/agenthalo-native</code>"]
         SIDECAR["WDK Sidecar<br/><code>wdk-sidecar/</code><br/>(Node.js)"]
     end
 
@@ -571,8 +571,8 @@ graph TB
         MANIFEST["Manifest Builder<br/>verify integrity"]
     end
 
-    BUILD --> LAUNCH
-    LAUNCH --> SHIM
+    LAUNCH --> PROC
+    PROC --> SESSION
     LAUNCH --> SIDECAR
     LAUNCH --> MINIT
 

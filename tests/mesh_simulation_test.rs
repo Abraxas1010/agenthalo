@@ -134,7 +134,7 @@ fn sim_mesh_deregister_and_prune() {
 
 #[test]
 fn sim_mesh_network_name_constant() {
-    assert_eq!(MESH_NETWORK_NAME, "halo-mesh");
+    assert_eq!(MESH_NETWORK_NAME, "halo-native");
 }
 
 // ────────────────────────────────────────────────────────────────────

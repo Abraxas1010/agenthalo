@@ -83,8 +83,7 @@ The bot keeps the database in append-only mode. A delete event does not remove t
 - `deploy/nucleusdb-discord.service`
 - `deploy/nucleusdb-mcp.service`
 - `deploy/nucleusdb-dashboard.service`
-- `Dockerfile`
-- `docker-compose.yml`
+- `scripts/agenthalo-instances.sh`
 - `deploy/entrypoint.sh`
 
 The intended production shape is one shared database file with multiple cooperating processes:
@@ -131,13 +130,13 @@ These surfaces feed the advisory proof gate (`configs/proof_gate.json`), the ver
 
 Each requirement binds: exact canonical FQN, expected declaration-line SHA-256, expected Heyting commit hash, and `require_signature: true`.
 
-Current status: `enabled: false`, all `enforced: false` (advisory mode).
+Current status: `enabled: true`, all requirements enforced by default.
 
 ### Certificate Flow
 
 1. Validate theorem references with `scripts/validate_formal_provenance.sh` (namespace-aware resolution + commit-staleness check).
 2. Generate signed `.lean4export` provenance attestations with `scripts/generate_proof_certificates.sh`.
 3. Submit certificates through the CLI / verifier gate; submission re-checks statement hash, commit hash, and signature requirements.
-4. Keep `enabled: false` in the proof gate until operators are ready to enforce theorem requirements in production.
+4. Use `AGENTHALO_PROOF_GATE_SKIP=1` only for explicit development escape-hatch sessions; production runs stay enforced.
 
 Certificates are signed metadata attestations binding theorem claims to a specific Heyting commit and declaration line hash. They are not Lean kernel proof replay artifacts. See [FORMAL_VERIFICATION.md](FORMAL_VERIFICATION.md) for full details.

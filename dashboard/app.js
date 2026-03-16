@@ -3521,17 +3521,16 @@ async function renderSetup() {
         !(cfg && cfg.container_runtime && cfg.container_runtime.available)
           ? `
         <div style="margin-top:12px;padding:10px 14px;border:1px solid var(--yellow);border-radius:6px;background:rgba(255,200,0,0.06)">
-          <span style="color:var(--yellow);font-weight:600">&#9888; No container runtime found</span>
+          <span style="color:var(--yellow);font-weight:600">&#9888; Native session mode active</span>
           <div style="font-size:12px;color:var(--text-dim);margin-top:4px;line-height:1.5">
-            A container runtime is required for subsidiary agent deployment.<br>
-            Install <strong>Podman</strong> (recommended): <code>sudo apt install podman</code> or <a href="https://podman.io/docs/installation" target="_blank" rel="noopener" style="color:var(--accent)">podman.io</a><br>
-            Or <strong>Docker</strong>: <code>sudo apt install docker.io</code> or <a href="https://docs.docker.com/get-docker/" target="_blank" rel="noopener" style="color:var(--accent)">docker.com</a>
+            Subsidiary agents now launch as native local processes.<br>
+            No Docker or Podman installation is required for AgentHALO review or cockpit launches.
           </div>
         </div>
       `
           : `
         <div style="margin-top:12px;font-size:12px;color:var(--text-dim)">
-          <span style="color:var(--green)">&#10003;</span> Container runtime: <strong>${cfg.container_runtime.engine}</strong>
+          <span style="color:var(--green)">&#10003;</span> Native launcher: <strong>${cfg.container_runtime.engine}</strong>
         </div>
       `
       }

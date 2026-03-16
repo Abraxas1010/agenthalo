@@ -44,7 +44,6 @@ puf-server = []
 puf-tpm = ["dep:tss-esapi"]
 puf-dgx = ["puf-server"]
 puf-browser = []
-container-runtime = []
 zk-compute = ["dep:risc0-zkvm"]
 nym-native = ["dep:nym-sdk"]
 

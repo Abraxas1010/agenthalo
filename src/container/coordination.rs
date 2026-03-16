@@ -1,10 +1,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const DEFAULT_MESH_REGISTRY_VOLUME: &str = "agenthalo-mesh";
+pub const DEFAULT_MESH_REGISTRY_VOLUME: &str = "mesh";
 const SHARED_BIND_DIR_MODE: u32 = 0o1777;
 const PRIVATE_LOCK_FILE_MODE: u32 = 0o600;
 
@@ -23,6 +22,14 @@ pub fn registry_volume_is_named(path: &Path) -> bool {
     !path.is_absolute()
 }
 
+pub fn resolve_registry_dir(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        crate::halo::config::halo_dir().join(path)
+    }
+}
+
 pub fn prepare_bind_mount_dir(path: &Path, context: &str) -> Result<(), String> {
     std::fs::create_dir_all(path)
         .map_err(|e| format!("create {context} {}: {e}", path.display()))?;
@@ -36,47 +43,9 @@ pub fn prepare_bind_mount_dir(path: &Path, context: &str) -> Result<(), String> 
 }
 
 pub fn prepare_named_volume(volume: &Path, image: &str, context: &str) -> Result<(), String> {
-    let volume_name = volume
-        .to_str()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{context} name is empty"))?;
-
-    let create = Command::new("docker")
-        .args(["volume", "create", volume_name])
-        .output()
-        .map_err(|e| format!("create {context} `{volume_name}`: {e}"))?;
-    if !create.status.success() {
-        return Err(format!(
-            "create {context} `{volume_name}` failed: {}",
-            String::from_utf8_lossy(&create.stderr)
-        ));
-    }
-
-    let chmod_mode = format!("{SHARED_BIND_DIR_MODE:o}");
-    let prep = Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--entrypoint",
-            "sh",
-            "-u",
-            "0:0",
-            "-v",
-            &format!("{volume_name}:/data/mesh"),
-            image,
-            "-lc",
-            &format!("mkdir -p /data/mesh && chmod {chmod_mode} /data/mesh"),
-        ])
-        .output()
-        .map_err(|e| format!("prepare {context} `{volume_name}`: {e}"))?;
-    if !prep.status.success() {
-        return Err(format!(
-            "prepare {context} `{volume_name}` failed: {}",
-            String::from_utf8_lossy(&prep.stderr)
-        ));
-    }
-    Ok(())
+    let _ = image;
+    let target = resolve_registry_dir(volume);
+    prepare_bind_mount_dir(&target, context)
 }
 
 pub fn acquire_pid_lock(

@@ -1,34 +1,34 @@
 {
-  "_note": "Phase-0 advisory mode: enabled=false means no tool calls are blocked. Advisory certificates are signed metadata attestations tied to Heyting commit 92d1e2dfc3580ecc4d313738638e796b70104a57 and specific theorem declaration lines; they are not Lean kernel proof replay.",
+  "_note": "AgentHALO proof gate enforcement: signed metadata attestations are tied to Heyting commit ad1d2a187a82daa32df952a2597b3eaae3f7b274 and specific theorem declaration lines; they are not Lean kernel proof replay.",
   "certificate_dir": "~/.nucleusdb/proof_certificates",
-  "enabled": false,
+  "enabled": true,
   "requirements": {
     "nucleusdb_execute_sql": [
       {
         "tool_name": "nucleusdb_execute_sql",
         "required_theorem": "HeytingLean.NucleusDB.Core.verifyCommitCertificate_sound",
         "description": "Commit certificate verification is sound",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "13318b827cbe0247ada98025f64fb00537c7e952b11714d93ab44b08b749d079",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       },
       {
         "tool_name": "nucleusdb_execute_sql",
         "required_theorem": "HeytingLean.NucleusDB.Sheaf.verifyCoherence_sound",
         "description": "Sheaf coherence witnesses are accepted only when amalgamation holds",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "20db8f7e8909ecbff2c2f3d30665dee6f658667dee2eaf4122008d23d2e0068c",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       },
       {
         "tool_name": "nucleusdb_execute_sql",
         "required_theorem": "HeytingLean.Crypto.Commit.IPAInstance.openCorrect",
         "description": "Vector-commitment openings round-trip at the committed index",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "aaad47b608d8129097e095f19abd4f754ff0e6530841aed945116c90986237b3",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       }
     ],
@@ -37,18 +37,18 @@
         "tool_name": "nucleusdb_container_launch",
         "required_theorem": "HeytingLean.NucleusDB.Core.NucleusSystem.step_eq_apply",
         "description": "Core nucleus steps are the runtime apply relation",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "81727551e643acf45ba92050636250efab9e5f620a49e92e27d633ad059cdd64",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       },
       {
         "tool_name": "nucleusdb_container_launch",
         "required_theorem": "HeytingLean.NucleusDB.Security.certificate_to_refinement",
         "description": "Verified certificates refine runtime commit records",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "6189c594c2c573703e9938b6a9e30d3120b91205042e8e0bd4cf664d9ea8de1e",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       }
     ],
@@ -57,27 +57,27 @@
         "tool_name": "nucleusdb_commit",
         "required_theorem": "HeytingLean.NucleusDB.Transparency.RFC6962.consistency_implies_prefix",
         "description": "Consistency proofs imply append-only prefix relation",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "ca5cf8dd4710d0909cfcfca59c17e84f727bb06092e97e367673c3709d40b742",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       },
       {
         "tool_name": "nucleusdb_commit",
         "required_theorem": "HeytingLean.NucleusDB.Transparency.RFC6962.verifyInclusionProof_sound",
         "description": "Inclusion proofs replay to the claimed root",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "d71f47b21a98175ea48e8dfbbd6dc99788a7de0b9a0d4dde8a99c2cc39d67c8e",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       },
       {
         "tool_name": "nucleusdb_commit",
         "required_theorem": "HeytingLean.Crypto.Commit.IPAInstance.openSound_of_binding",
         "description": "Commitment openings are sound under binding",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "fa373da81915eaba356d2921f3b3f54d4546f1758afce8b247b9795eff52f3ef",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       }
     ],
@@ -86,18 +86,18 @@
         "tool_name": "nucleusdb_evm_sign",
         "required_theorem": "HeytingLean.NucleusDB.Crypto.evm_sign_requires_dual_auth",
         "description": "EVM signing requires dual authorization",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "901f6352c1f0dd71565efe5eeca5ed421a914376d8515a4d6a625e34deb93e24",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       },
       {
         "tool_name": "nucleusdb_evm_sign",
         "required_theorem": "HeytingLean.NucleusDB.Crypto.authorization_composable",
         "description": "Authorization steps compose to unlock signing",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "1e5eafd5308c16e6e01c15dad84a82666722ff39b4f8b2f0c20d3a9217d64978",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       }
     ],
@@ -106,9 +106,9 @@
         "tool_name": "nucleusdb_kem_encapsulate",
         "required_theorem": "HeytingLean.Crypto.KEM.hybrid_security_of_documentedAssumptions",
         "description": "Hybrid KEM security is exported only through documented reduction assumptions",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "49f7b048d7be9d966eb45ac5d5ab6743b74b4894b658f1167834c5bf0f66deff",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       }
     ],
@@ -117,27 +117,27 @@
         "tool_name": "nucleusdb_trace_analysis",
         "required_theorem": "HeytingLean.NucleusDB.Sheaf.TraceTopology.refines_preserves_connected",
         "description": "Trace refinement preserves connectivity",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "9523c621825cbb51c1c18cd253ec0f91054d68c1504963aa8852d0158cab734c",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       },
       {
         "tool_name": "nucleusdb_trace_analysis",
         "required_theorem": "HeytingLean.NucleusDB.Sheaf.TraceTopology.componentConstant_iff_exists_lift",
         "description": "Component-constant observables factor through the quotient",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "13f989655790e52f0ade47f93eee6874c614bd0896df59542ae485dd55fca0ff",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       },
       {
         "tool_name": "nucleusdb_trace_analysis",
         "required_theorem": "HeytingLean.NucleusDB.Sheaf.TraceTopology.componentCount_mono_of_refines",
         "description": "Refining the metric can only merge connected components",
-        "enforced": false,
+        "enforced": true,
         "expected_statement_hash": "5e5b47394783f8b7940890c434c65cad2128bef4f1201d88d54767dfdb996ad3",
-        "expected_commit_hash": "92d1e2dfc3580ecc4d313738638e796b70104a57",
+        "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",
         "require_signature": true
       }
     ]

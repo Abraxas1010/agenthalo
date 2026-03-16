@@ -577,10 +577,12 @@ async fn api_containers_route_uses_local_stateful_service() {
     let _home_guard = EnvVarGuard::set("AGENTHALO_HOME", Some(home.path().to_str().expect("utf8")));
     let (state, db_path) = test_state("api_containers_local_stateful");
 
-    let run_dir = std::env::temp_dir().join("nucleusdb-container");
+    let run_dir = std::env::temp_dir().join("agenthalo-native");
     std::fs::create_dir_all(&run_dir).expect("create container run dir");
     let session_id = format!("sess-dashboard-local-{}", now_unix_secs());
-    let session_path = run_dir.join(format!("{session_id}.json"));
+    let session_dir = run_dir.join(&session_id);
+    std::fs::create_dir_all(&session_dir).expect("create session dir");
+    let session_path = session_dir.join("session.json");
     let session = SessionInfo {
         session_id: session_id.clone(),
         container_id: "container-dashboard-local".to_string(),
@@ -589,6 +591,8 @@ async fn api_containers_route_uses_local_stateful_service() {
         host_sock: std::env::temp_dir().join("dashboard-local.sock"),
         started_at_unix: now_unix_secs(),
         mesh_port: Some(3000),
+        pid: None,
+        log_path: None,
     };
     std::fs::write(
         &session_path,
@@ -597,7 +601,7 @@ async fn api_containers_route_uses_local_stateful_service() {
     .expect("write session");
 
     let (status, val) = api_get(state, "/containers").await;
-    let _ = std::fs::remove_file(&session_path);
+    let _ = std::fs::remove_dir_all(&session_dir);
     assert_eq!(status, StatusCode::OK, "containers route failed: {val}");
     let sessions = val["sessions"].as_array().expect("sessions array");
     let view = sessions

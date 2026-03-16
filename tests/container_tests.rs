@@ -1,8 +1,8 @@
 use nucleusdb::cockpit::pty_manager::PtyManager;
-use nucleusdb::container::builder::parse_channel_list;
 use nucleusdb::container::launcher::{Channel, MeshConfig, MonitorConfig};
 use nucleusdb::container::{
-    AgentHookup, ApiAgentHookup, CliAgentHookup, ContainerAgentLock, LocalModelHookup,
+    parse_channel_list, AgentHookup, ApiAgentHookup, CliAgentHookup, ContainerAgentLock,
+    LocalModelHookup,
 };
 use nucleusdb::halo::config;
 use nucleusdb::halo::schema::{EventType, TraceEvent};
@@ -180,13 +180,15 @@ async fn operator_subsidiary_list_filters_owned_sessions() {
         .await
         .expect("launch operator");
 
-    let run_dir = std::env::temp_dir().join("nucleusdb-container");
+    let run_dir = std::env::temp_dir().join("agenthalo-native");
     std::fs::create_dir_all(&run_dir).expect("create run dir");
     for (session_id, agent_id) in [
         ("sess-owned-int", "peer-owned"),
         ("sess-other-int", "peer-other"),
     ] {
-        let path = run_dir.join(format!("{session_id}.json"));
+        let session_dir = run_dir.join(session_id);
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+        let path = session_dir.join("session.json");
         std::fs::write(
             &path,
             serde_json::to_vec_pretty(&nucleusdb::container::SessionInfo {
@@ -197,6 +199,8 @@ async fn operator_subsidiary_list_filters_owned_sessions() {
                 host_sock: std::env::temp_dir().join(format!("{session_id}.sock")),
                 started_at_unix: 1,
                 mesh_port: Some(3000),
+                pid: None,
+                log_path: None,
             })
             .expect("encode session"),
         )
@@ -220,8 +224,8 @@ async fn operator_subsidiary_list_filters_owned_sessions() {
     assert_eq!(listed.count, 1);
     assert_eq!(listed.subsidiaries[0].session_id, "sess-owned-int");
 
-    let _ = std::fs::remove_file(run_dir.join("sess-owned-int.json"));
-    let _ = std::fs::remove_file(run_dir.join("sess-other-int.json"));
+    let _ = std::fs::remove_dir_all(run_dir.join("sess-owned-int"));
+    let _ = std::fs::remove_dir_all(run_dir.join("sess-other-int"));
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(format!("{}.wal", db_path.display()));
 }

@@ -1,7 +1,7 @@
 # AgentHALO — Agent Instructions
 
-**Repo:** `Abraxas1010/nucleusdb`  
-**Scope:** Human-AI Agent Lifecycle Orchestrator with verifiable database, agent cockpit, metered proxy, container orchestration, and P2PCLAW marketplace integration
+**Repo:** `Abraxas1010/agenthalo`  
+**Scope:** Human-AI Agent Lifecycle Orchestrator with verifiable database, agent cockpit, metered proxy, native session orchestration, and P2PCLAW marketplace integration
 
 Notes:
 - `CLAUDE.md`, `CODEX.md`, and `GEMINI.md` are symlinks to this file.
@@ -30,10 +30,10 @@ Build and maintain these active product surfaces unless the user explicitly narr
 - Core NucleusDB: `src/protocol.rs`, `src/sql/`, `src/persistence.rs`, `src/blob_store.rs`, `src/vector_index.rs`
 - Agent lifecycle: `src/halo/`, `src/cockpit/`, `src/orchestrator/`
 - Identity and crypto: `src/genesis.rs`, `src/identity.rs`, `src/encrypted_file.rs`, `src/password.rs`, `src/vault.rs`, `src/did.rs`, `src/puf/`
-- Networking and containers: `src/container/`, `src/comms/`, `src/swarm/`, `src/pod/`
+- Networking and native sessions: `src/container/`, `src/comms/`, `src/swarm/`, `src/pod/`
 - Verification and trust: `src/verifier/`, `src/sheaf/`, `src/trust/`
 - Operator and customer surfaces: `src/mcp/`, `src/dashboard/`, `src/discord/`, `src/tui/`
-- Integration surfaces: `contracts/`, `deploy/`, `Dockerfile`, `docker-compose.yml`, `lean/NucleusDB/`
+- Integration surfaces: `contracts/`, `deploy/`, `scripts/agenthalo-instances.sh`, `lean/NucleusDB/`
 
 ## Build Targets
 
@@ -79,7 +79,7 @@ Use the Heyting repo only as the read-only canonical theorem source. Do not impo
 - stdio and HTTP MCP transports both stay working
 - dashboard keeps the CRT aesthetic across cockpit, setup, verification, and operator surfaces
 - credentials stay in environment files or encrypted local storage, never hardcoded
-- cockpit, mesh, wallet-routing, proxy telemetry, and container orchestration are first-class product surfaces, not legacy exclusions
+- cockpit, mesh, wallet-routing, proxy telemetry, and native session orchestration are first-class product surfaces, not legacy exclusions
 
 ## Handoff
 

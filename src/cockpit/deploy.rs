@@ -99,6 +99,7 @@ pub struct PreflightResult {
     pub keys_configured: bool,
     pub missing_keys: Vec<String>,
     pub docker_available: bool,
+    pub native_supported: bool,
     pub ready: bool,
     pub install_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -227,7 +228,6 @@ pub fn preflight(
     // Agent is considered key-ready if vault keys are present OR it has native
     // OAuth credentials (Claude/Codex/Gemini authenticate via their own CLIs).
     let keys_configured = vault_keys_ok || native_auth;
-    let docker_available = which_command("docker").is_some();
     let binary_topology = cli_path
         .as_deref()
         .map(|path| inspect_binary_topology(agent_id, Path::new(path), db_path))
@@ -251,7 +251,8 @@ pub fn preflight(
         } else {
             missing_keys
         },
-        docker_available,
+        docker_available: false,
+        native_supported: true,
         ready: cli_installed && keys_configured && admission_allowed,
         install_hint: agent.install_hint.map(|s| s.to_string()),
         binary_topology,
@@ -314,7 +315,7 @@ pub fn launch(
         env_vars.extend(cli_session_env());
     }
 
-    let mut command = if agent.id == "shell" {
+    let command = if agent.id == "shell" {
         "/bin/bash".to_string()
     } else {
         agent.cli_command.to_string()
@@ -325,25 +326,12 @@ pub fn launch(
         .iter()
         .map(|s| (*s).to_string())
         .collect();
-    let mut pty_working_dir = route_working_dir(agent.id, req.working_dir.as_deref(), &mut args);
+    let pty_working_dir = route_working_dir(agent.id, req.working_dir.as_deref(), &mut args);
 
     if req.container {
-        if which_command("docker").is_none() {
-            return Err("container mode requested but docker is not available on PATH".to_string());
-        }
-        let image = std::env::var("AGENTHALO_COCKPIT_CONTAINER_IMAGE")
-            .unwrap_or_else(|_| "ubuntu:24.04".to_string());
-        args = build_docker_args(
-            &image,
-            &command,
-            &args,
-            &env_vars,
-            req.working_dir.as_deref(),
+        return Err(
+            "Docker launch mode has been removed. Launch AgentHALO sessions natively.".to_string(),
         );
-        command = "docker".to_string();
-        // Env vars are passed as docker -e flags in container mode.
-        env_vars.clear();
-        pty_working_dir = None;
     }
 
     let id = pty_manager.create_session(
@@ -514,42 +502,6 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn build_docker_args(
-    image: &str,
-    inner_command: &str,
-    inner_args: &[String],
-    env_vars: &[(String, String)],
-    requested_dir: Option<&str>,
-) -> Vec<String> {
-    let mut out = vec![
-        "run".to_string(),
-        "--rm".to_string(),
-        "-it".to_string(),
-        "--name".to_string(),
-        format!(
-            "agenthalo-{}",
-            &uuid::Uuid::new_v4().as_simple().to_string()[..8]
-        ),
-    ];
-
-    if let Some(dir) = requested_dir.map(str::trim).filter(|d| !d.is_empty()) {
-        out.push("-v".to_string());
-        out.push(format!("{dir}:{dir}"));
-        out.push("-w".to_string());
-        out.push(dir.to_string());
-    }
-
-    for (k, v) in env_vars {
-        out.push("-e".to_string());
-        out.push(format!("{k}={v}"));
-    }
-
-    out.push(image.to_string());
-    out.push(inner_command.to_string());
-    out.extend(inner_args.iter().cloned());
-    out
-}
-
 fn route_working_dir<'a>(
     agent_id: &str,
     requested_dir: Option<&'a str>,
@@ -587,7 +539,7 @@ fn which_command(command: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_docker_args, cli_authenticated, cli_session_env, inspect_binary_topology, preflight,
+        cli_authenticated, cli_session_env, inspect_binary_topology, preflight,
         route_working_dir, StoredTopoRecord,
     };
     use crate::halo::admission::AdmissionMode;
@@ -623,23 +575,6 @@ mod tests {
         let cwd = route_working_dir("codex", Some("/tmp/work"), &mut args);
         assert_eq!(cwd, None);
         assert!(!args.iter().any(|a| a == "--cwd"));
-    }
-
-    #[test]
-    fn docker_args_include_env_and_workdir() {
-        let args = build_docker_args(
-            "ubuntu:24.04",
-            "codex",
-            &["--json".to_string()],
-            &[("OPENAI_API_KEY".to_string(), "sk-test".to_string())],
-            Some("/tmp/work"),
-        );
-        assert!(args
-            .windows(2)
-            .any(|w| w == ["-e", "OPENAI_API_KEY=sk-test"]));
-        assert!(args.windows(2).any(|w| w == ["-w", "/tmp/work"]));
-        assert!(args.iter().any(|a| a == "ubuntu:24.04"));
-        assert!(args.iter().any(|a| a == "codex"));
     }
 
     #[test]
