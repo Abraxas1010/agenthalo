@@ -802,34 +802,177 @@ body.no-crt #crt-overlay { display: none; }
   overflow: visible;
 }
 
-/* Proof lattice hero (replaces identity-instruct-overlay) */
-.proof-lattice-hero {
-  position: relative;
+/* Proof lattice wrap (hero + sidebar) */
+.proof-lattice-wrap {
+  display: flex;
   width: 100%;
+  height: 320px;
   margin-bottom: 14px;
-  border: 1px solid rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.12);
   border-radius: 8px;
-  background: linear-gradient(135deg, rgba(4, 12, 5, 0.9), rgba(8, 20, 10, 0.85));
+  background: #030a04;
   overflow: hidden;
   box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.3),
-    inset 0 0 30px rgba(34, 197, 94, 0.04);
+    0 4px 16px rgba(0, 0, 0, 0.4),
+    inset 0 0 30px rgba(34, 197, 94, 0.03);
+}
+
+.proof-lattice-hero {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 320px;
+  overflow: hidden;
+}
+
+#proof-lattice-three {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .proof-lattice-hero canvas {
   display: block;
-  width: 100%;
-  height: 200px;
+  width: 100% !important;
+  height: 320px !important;
+  cursor: grab;
+}
+
+.proof-lattice-hero canvas:active {
+  cursor: grabbing;
 }
 
 .proof-lattice-status {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
   text-align: center;
   font-size: 10px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
+  color: rgba(34, 197, 94, 0.6);
+  padding: 6px 0 8px;
+  text-shadow: 0 0 8px rgba(0, 255, 65, 0.25);
+  background: linear-gradient(to top, rgba(3, 10, 4, 0.9), transparent);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Sidebar — fixed height, no layout shift */
+.proof-lattice-sidebar {
+  width: 190px;
+  height: 320px;
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-left: 1px solid rgba(34, 197, 94, 0.1);
+  overflow-y: auto;
+  background: rgba(3, 10, 4, 0.95);
+  font-size: 11px;
+}
+
+.pls-header {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(34, 197, 94, 0.45);
+  margin-bottom: 6px;
+}
+
+.pls-divider {
+  height: 1px;
+  background: rgba(34, 197, 94, 0.08);
+  margin: 8px 0;
+}
+
+.pls-muted {
+  color: rgba(180, 180, 180, 0.35);
+  font-size: 10px;
+  font-style: italic;
+}
+
+/* Family list */
+.pls-fam-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.pls-fam-row:hover {
+  background: rgba(34, 197, 94, 0.08);
+}
+.pls-fam-row.pls-fam-active {
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+}
+.pls-fam-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pls-fam-name {
+  flex: 1;
+  color: rgba(220, 230, 220, 0.8);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pls-fam-count {
+  color: rgba(34, 197, 94, 0.5);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Stats */
+.pls-stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 0;
+  color: rgba(200, 210, 200, 0.6);
+  font-size: 10px;
+}
+.pls-stat-row span:last-child {
+  color: rgba(34, 197, 94, 0.7);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Selected node — fixed space to prevent layout shift */
+.pls-selected {
+  min-height: 60px;
+}
+.pls-sel-name {
   color: var(--green);
-  padding: 4px 0 8px;
-  text-shadow: 0 0 8px rgba(0, 255, 65, 0.3);
+  font-weight: 600;
+  font-size: 11px;
+  word-break: break-all;
+  margin-bottom: 2px;
+}
+.pls-sel-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: rgba(200, 210, 200, 0.65);
+  margin-bottom: 2px;
+}
+.pls-sel-file {
+  font-size: 9px;
+  color: rgba(180, 190, 180, 0.45);
+  word-break: break-all;
+  margin-bottom: 2px;
+}
+.pls-sel-imp {
+  font-size: 9px;
+  color: rgba(34, 197, 94, 0.5);
 }
 
 .anon-mode-shell {
@@ -3783,7 +3926,10 @@ input:focus, select:focus, textarea:focus {
     width: 100%;
     margin-top: 6px;
   }
-  .proof-lattice-hero canvas { height: 150px; }
+  .proof-lattice-wrap { flex-direction: column; height: auto; }
+  .proof-lattice-sidebar { width: 100%; height: auto; max-height: 140px; border-left: none; border-top: 1px solid rgba(34, 197, 94, 0.1); }
+  .proof-lattice-hero { height: 200px; }
+  .proof-lattice-hero canvas { height: 200px; }
   .setup-recommended { padding: 16px; }
   .setup-cta-big { padding: 12px 20px; font-size: 13px; }
   .setup-token-row { flex-wrap: wrap; }

@@ -3223,16 +3223,22 @@ async function renderSetup() {
 
     <!-- SECTION 1: Identity -->
     <div class="setup-card-v2 ${identityCardClass}" id="setup-identity">
-      <div class="proof-lattice-hero" id="proof-lattice-hero">
-        <canvas id="proof-lattice-canvas"></canvas>
-        <div class="proof-lattice-status" id="proof-lattice-status">Initializing proof lattice...</div>
+      <div class="proof-lattice-wrap" id="proof-lattice-wrap">
+        <div class="proof-lattice-hero" id="proof-lattice-hero">
+          <div id="proof-lattice-three"></div>
+          <div class="proof-lattice-status" id="proof-lattice-status">Initializing proof lattice...</div>
+        </div>
+        <div class="proof-lattice-sidebar" id="proof-lattice-sidebar">
+          <div class="pls-header">Proof Families</div>
+          <div class="pls-families" id="pls-families"></div>
+          <div class="pls-divider"></div>
+          <div class="pls-header">Stats</div>
+          <div class="pls-stats" id="pls-stats"><span class="pls-muted">Loading...</span></div>
+          <div class="pls-divider"></div>
+          <div class="pls-header">Selected Node</div>
+          <div class="pls-selected" id="pls-selected"><span class="pls-muted">Click a node to inspect</span></div>
+        </div>
       </div>
-      <div class="card-header">
-        <img src="img/agenthalodl.png" alt="My Identity" style="width:100%;height:auto;display:block;border-radius:6px">
-      </div>
-
-
-
 
       <div class="identity-tech-options-title" id="tech-options-title">Individual Technical Options</div>
 
@@ -3674,169 +3680,558 @@ async function renderSetup() {
   </div>
   `;
 
-  // ---- Proof lattice canvas animation ----
+  // ---- Proof lattice Three.js visualization (green theme + sidebar) ----
   (async () => {
-    const latticeCanvas = document.getElementById("proof-lattice-canvas");
-    const latticeStatus = document.getElementById("proof-lattice-status");
-    if (!latticeCanvas) return;
-    const ctx2d = latticeCanvas.getContext("2d");
-    if (!ctx2d) return;
+    var latticeContainer = document.getElementById("proof-lattice-three");
+    var latticeStatus = document.getElementById("proof-lattice-status");
+    var sidebarFamilies = document.getElementById("pls-families");
+    var sidebarStats = document.getElementById("pls-stats");
+    var sidebarSelected = document.getElementById("pls-selected");
+    if (!latticeContainer) return;
 
-    let gateData = null;
     try {
-      const payload = await api("/proof-gate/status");
-      gateData = payload;
-    } catch (_e) {}
+      var THREE = await import("three");
+      var OrbitControls = (await import("three/addons/controls/OrbitControls.js")).OrbitControls;
+      var EffectComposer = (await import("three/addons/postprocessing/EffectComposer.js")).EffectComposer;
+      var RenderPass = (await import("three/addons/postprocessing/RenderPass.js")).RenderPass;
+      var UnrealBloomPass = (await import("three/addons/postprocessing/UnrealBloomPass.js")).UnrealBloomPass;
 
-    const reqs = (gateData && gateData.requirements) || [];
-    const totalMet = reqs.filter(r => r.met).length;
-    const totalReqs = reqs.length || 14;
+      // Load proof lattice data (built from AgentHALO Lean proofs)
+      var DATA = null;
+      try {
+        var res = await fetch("proof-lattice.json");
+        if (res.ok) DATA = await res.json();
+      } catch (_e) {}
 
-    if (latticeStatus) {
-      latticeStatus.innerHTML = totalMet + "/" + totalReqs + " proofs verified";
-      latticeStatus.style.color = totalMet === totalReqs ? "var(--green)" : "var(--yellow)";
-    }
+      if (!DATA || !DATA.nodes || DATA.nodes.length === 0) {
+        if (latticeStatus) latticeStatus.textContent = "Proof lattice data unavailable";
+        return;
+      }
+      if (!document.getElementById("proof-lattice-three")) return;
 
-    // Node positions in a lattice layout
-    const nodes = [];
-    const count = Math.max(totalReqs, 14);
-    const cols = Math.ceil(Math.sqrt(count * 1.8));
-    const rows = Math.ceil(count / cols);
-    for (let i = 0; i < count; i++) {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const met = reqs[i] ? reqs[i].met : false;
-      nodes.push({
-        x: (col + 0.5) / cols,
-        y: (row + 0.5) / rows,
-        met: met,
-        name: reqs[i] ? (reqs[i].tool_name || "") : "",
-        phase: Math.random() * Math.PI * 2,
-        fireTime: -1,
+      // ---- GREEN family color palette ----
+      var FAMILY_COLORS = {
+        Core:            0x22c55e,  // Green-500
+        Comms:           0x16a34a,  // Green-600
+        Identity:        0x4ade80,  // Green-400
+        Genesis:         0x86efac,  // Green-300
+        Security:        0xef4444,  // Red (danger stays red)
+        Crypto:          0xa78bfa,  // Violet
+        PaymentChannels: 0x34d399,  // Emerald
+        TrustLayer:      0x10b981,  // Emerald-500
+        Sheaf:           0x059669,  // Emerald-600
+        Adversarial:     0xf97316,  // Orange (threat)
+        Transparency:    0x6ee7b7,  // Emerald-300
+        Commitment:      0x15803d,  // Green-700
+        Contracts:       0xa3e635,  // Lime
+        Integration:     0x84cc16,  // Lime-500
+        Bridge:          0xbbf7d0,  // Green-200
+      };
+      var FAMILY_CSS = {};
+      Object.keys(FAMILY_COLORS).forEach(function(k) {
+        FAMILY_CSS[k] = "#" + FAMILY_COLORS[k].toString(16).padStart(6, "0");
       });
-    }
 
-    // Edges: connect neighboring nodes
-    const edges = [];
-    for (let i = 0; i < nodes.length; i++) {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      if (col + 1 < cols && i + 1 < nodes.length) edges.push([i, i + 1]);
-      if (i + cols < nodes.length) edges.push([i, i + cols]);
-      if (col + 1 < cols && i + cols + 1 < nodes.length) edges.push([i, i + cols + 1]);
-    }
+      // Green emissive base color
+      var GREEN_EMISSIVE = 0x00ff41;
+      var GREEN_EDGE = 0x22c55e;
 
-    let animFrame = 0;
-    let elapsed = 0;
-    let lastTime = performance.now();
+      // ---- Populate sidebar ----
+      var enabledFamilies = {};
+      (DATA.families || []).forEach(function(f) { enabledFamilies[f] = true; });
 
-    function resize() {
-      const hero = document.getElementById("proof-lattice-hero");
-      if (!hero) return;
-      const w = hero.clientWidth || 400;
-      const h = 200;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      latticeCanvas.width = w * dpr;
-      latticeCanvas.height = h * dpr;
-      latticeCanvas.style.width = w + "px";
-      latticeCanvas.style.height = h + "px";
-      ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
-    }
-    resize();
-    window.addEventListener("resize", resize);
-
-    function draw() {
-      const now = performance.now();
-      const dt = Math.min((now - lastTime) / 1000, 0.05);
-      lastTime = now;
-      elapsed += dt;
-
-      const w = latticeCanvas.width / (Math.min(window.devicePixelRatio || 1, 2));
-      const h = latticeCanvas.height / (Math.min(window.devicePixelRatio || 1, 2));
-      const pad = 28;
-      const iw = w - pad * 2;
-      const ih = h - pad * 2;
-
-      ctx2d.clearRect(0, 0, w, h);
-
-      // Random neural firing
-      if (Math.random() < 0.06) {
-        const idx = Math.floor(Math.random() * nodes.length);
-        nodes[idx].fireTime = elapsed;
+      if (sidebarFamilies) {
+        var famHtml = "";
+        var famCounts = {};
+        DATA.nodes.forEach(function(n) { famCounts[n.family] = (famCounts[n.family] || 0) + 1; });
+        (DATA.families || []).forEach(function(f) {
+          var c = FAMILY_CSS[f] || "#22c55e";
+          var cnt = famCounts[f] || 0;
+          famHtml += '<label class="pls-fam-row" data-fam="' + f + '">'
+            + '<span class="pls-fam-dot" style="background:' + c + '"></span>'
+            + '<span class="pls-fam-name">' + f + '</span>'
+            + '<span class="pls-fam-count">' + cnt + '</span>'
+            + '</label>';
+        });
+        sidebarFamilies.innerHTML = famHtml;
       }
 
-      // Draw edges
-      for (const [a, b] of edges) {
-        const na = nodes[a], nb = nodes[b];
-        const ax = pad + na.x * iw, ay = pad + na.y * ih;
-        const bx = pad + nb.x * iw, by = pad + nb.y * ih;
-        const firing = (elapsed - na.fireTime < 0.4 || elapsed - nb.fireTime < 0.4);
-        const pulse = Math.sin(elapsed * 2.5 + a * 0.5) * 0.3 + 0.5;
-        ctx2d.beginPath();
-        ctx2d.moveTo(ax, ay);
-        ctx2d.lineTo(bx, by);
-        if (firing) {
-          ctx2d.strokeStyle = "rgba(74,222,128," + (0.6 + pulse * 0.4) + ")";
-          ctx2d.lineWidth = 1.5;
-        } else {
-          ctx2d.strokeStyle = "rgba(34,197,94," + (0.12 + pulse * 0.08) + ")";
-          ctx2d.lineWidth = 0.8;
+      var s = DATA.stats || {};
+      if (sidebarStats) {
+        sidebarStats.innerHTML =
+          '<div class="pls-stat-row"><span>Declarations</span><span>' + (s.total_declarations || DATA.nodes.length) + '</span></div>'
+          + '<div class="pls-stat-row"><span>Edges</span><span>' + (s.total_edges || DATA.edges.length) + '</span></div>'
+          + '<div class="pls-stat-row"><span>Files</span><span>' + (s.total_files || "?") + '</span></div>'
+          + '<div class="pls-stat-row"><span>Theorems</span><span>' + ((s.by_kind || {}).theorem || 0) + '</span></div>'
+          + '<div class="pls-stat-row"><span>Lemmas</span><span>' + ((s.by_kind || {}).lemma || 0) + '</span></div>'
+          + '<div class="pls-stat-row"><span>Defs</span><span>' + ((s.by_kind || {}).def || 0) + '</span></div>'
+          + '<div class="pls-stat-row"><span>Structures</span><span>' + ((s.by_kind || {}).structure || 0) + '</span></div>';
+      }
+
+      if (latticeStatus) {
+        latticeStatus.textContent = (s.total_declarations || DATA.nodes.length) + " verified Lean declarations";
+      }
+
+      // ---- Three.js scene (green theme) ----
+      var hero = document.getElementById("proof-lattice-hero");
+      var width = (hero ? hero.clientWidth : latticeContainer.clientWidth) || 600;
+      var height = 320;
+
+      var scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x030a04); // Very dark green-black
+
+      var camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 100);
+      camera.position.set(0, 0, 2.5);
+
+      var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(width, height);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      latticeContainer.appendChild(renderer.domElement);
+
+      var controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+      controls.enableZoom = true;
+      controls.minDistance = 1;
+      controls.maxDistance = 5;
+      controls.autoRotate = true;
+      controls.autoRotateSpeed = 3.0;
+
+      var clock = new THREE.Clock();
+
+      // Post-processing bloom (green tinted)
+      var composer = new EffectComposer(renderer);
+      composer.addPass(new RenderPass(scene, camera));
+      var bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(width, height), 0.9, 0.35, 0.65
+      );
+      composer.addPass(bloomPass);
+
+      // Lighting — green-tinted
+      var ambient = new THREE.AmbientLight(0x0a4020, 0.6);
+      scene.add(ambient);
+      var directional = new THREE.DirectionalLight(0x20b040, 0.7);
+      directional.position.set(2, 2, 2);
+      scene.add(directional);
+      var backLight = new THREE.DirectionalLight(0x084018, 0.4);
+      backLight.position.set(-2, -1, -2);
+      scene.add(backLight);
+      var pointLight = new THREE.PointLight(0x00ff41, 0.8, 5);
+      pointLight.position.set(0, 0, 0);
+      scene.add(pointLight);
+
+      // Normalize positions
+      var nodes = DATA.nodes;
+      var xs = nodes.map(function(n) { return n.x; });
+      var ys = nodes.map(function(n) { return n.y; });
+      var zs = nodes.map(function(n) { return n.z; });
+      var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+      var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+      var minZ = Math.min.apply(null, zs), maxZ = Math.max.apply(null, zs);
+      var rX = maxX - minX || 1, rY = maxY - minY || 1, rZ = maxZ - minZ || 1;
+      function norm(n) {
+        return { nx: (n.x - minX) / rX, ny: (n.y - minY) / rY, nz: (n.z - minZ) / rZ };
+      }
+      var maxImportance = Math.max.apply(null, nodes.map(function(n) { return n.importance; }));
+
+      // Nodes
+      var nodeGroup = new THREE.Group();
+      var nodeMeshes = [];
+      nodes.forEach(function(node) {
+        var color = FAMILY_COLORS[node.family] || 0x22c55e;
+        var sizeScale = 0.008 + (node.importance / maxImportance) * 0.012;
+        var geo = new THREE.SphereGeometry(sizeScale, 16, 16);
+        var mat = new THREE.MeshPhongMaterial({
+          color: color, transparent: true, opacity: 0.95,
+          emissive: GREEN_EMISSIVE, emissiveIntensity: 0.25, shininess: 80,
+        });
+        var mesh = new THREE.Mesh(geo, mat);
+        var p = norm(node);
+        mesh.position.set((p.nx - 0.5) * 2, (p.ny - 0.5) * 2, (p.nz - 0.5) * 2);
+        mesh._family = node.family;
+        mesh._nodeId = node.id;
+        mesh._importance = node.importance;
+        mesh._originalColor = color;
+        mesh._baseScale = 1;
+        nodeGroup.add(mesh);
+        nodeMeshes.push(mesh);
+      });
+      scene.add(nodeGroup);
+
+      // Edges — green tubes
+      var edgeGroup = new THREE.Group();
+      DATA.edges.forEach(function(pair) {
+        var nA = nodes[pair[0]], nB = nodes[pair[1]];
+        if (!nA || !nB) return;
+        var a = norm(nA), b = norm(nB);
+        var start = new THREE.Vector3((a.nx - 0.5) * 2, (a.ny - 0.5) * 2, (a.nz - 0.5) * 2);
+        var end = new THREE.Vector3((b.nx - 0.5) * 2, (b.ny - 0.5) * 2, (b.nz - 0.5) * 2);
+        var edgeImp = (nA.importance + nB.importance) / 2;
+        var normImp = edgeImp / maxImportance;
+
+        var mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+        var dir = new THREE.Vector3().subVectors(end, start).normalize();
+        var perp = new THREE.Vector3(-dir.y, dir.x, dir.z * 0.3).normalize();
+        var offset = 0.02 + Math.random() * 0.04;
+        mid.add(perp.multiplyScalar(offset * (Math.random() > 0.5 ? 1 : -1)));
+
+        var curve = new THREE.QuadraticBezierCurve3(start, mid, end);
+        var tubeRadius = 0.001 + normImp * 0.003;
+        var tubeGeo = new THREE.TubeGeometry(curve, 12, tubeRadius, 6, false);
+        var edgeColor = new THREE.Color(GREEN_EDGE);
+        var tubeMat = new THREE.MeshBasicMaterial({
+          color: edgeColor, transparent: true, opacity: 0.15 + normImp * 0.45,
+        });
+        var tube = new THREE.Mesh(tubeGeo, tubeMat);
+        tube._nodeA = pair[0]; tube._nodeB = pair[1];
+        tube._famA = nA.family; tube._famB = nB.family;
+        tube._defaultColor = edgeColor.clone();
+        tube._baseColor = edgeColor.clone();
+        tube._baseOpacity = tubeMat.opacity;
+        edgeGroup.add(tube);
+      });
+      scene.add(edgeGroup);
+
+      // Ambient particles — green dust
+      var particleCount = 150;
+      var pGeo = new THREE.BufferGeometry();
+      var pPos = new Float32Array(particleCount * 3);
+      var pCol = new Float32Array(particleCount * 3);
+      for (var pi = 0; pi < particleCount; pi++) {
+        pPos[pi * 3] = (Math.random() - 0.5) * 3;
+        pPos[pi * 3 + 1] = (Math.random() - 0.5) * 3;
+        pPos[pi * 3 + 2] = (Math.random() - 0.5) * 3;
+        var cool = 0.3 + Math.random() * 0.5;
+        pCol[pi * 3] = cool * 0.2;      // Low red
+        pCol[pi * 3 + 1] = cool;         // High green
+        pCol[pi * 3 + 2] = cool * 0.25;  // Low blue
+      }
+      pGeo.setAttribute("position", new THREE.BufferAttribute(pPos, 3));
+      pGeo.setAttribute("color", new THREE.BufferAttribute(pCol, 3));
+      var particles = new THREE.Points(pGeo, new THREE.PointsMaterial({
+        size: 0.015, transparent: true, opacity: 0.25, vertexColors: true,
+      }));
+      scene.add(particles);
+
+      // ---- Raycasting for node selection ----
+      var raycaster = new THREE.Raycaster();
+      var mouse = new THREE.Vector2();
+      var lastHoveredMesh = null;
+      var selectedMesh = null;
+      var highlightedFamily = null;
+
+      function showSelectedNode(nodeData) {
+        if (!sidebarSelected) return;
+        if (!nodeData) {
+          sidebarSelected.innerHTML = '<span class="pls-muted">Click a node to inspect</span>';
+          return;
         }
-        ctx2d.stroke();
+        var c = FAMILY_CSS[nodeData.family] || "#22c55e";
+        sidebarSelected.innerHTML =
+          '<div class="pls-sel-name">' + nodeData.name + '</div>'
+          + '<div class="pls-sel-meta"><span class="pls-fam-dot" style="background:' + c + '"></span> ' + nodeData.family + ' &middot; ' + nodeData.kind + '</div>'
+          + '<div class="pls-sel-file">' + nodeData.file + ':' + nodeData.line + '</div>'
+          + '<div class="pls-sel-imp">Importance: ' + nodeData.importance.toFixed(1) + '</div>';
       }
 
-      // Draw nodes
-      for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i];
-        const x = pad + n.x * iw;
-        const y = pad + n.y * ih;
-        const pulse = Math.sin(elapsed * 2.0 + n.phase) * 0.5 + 0.5;
-        const firing = elapsed - n.fireTime < 0.4;
-        const fireIntensity = firing ? Math.max(0, 1 - (elapsed - n.fireTime) / 0.4) : 0;
-
-        // Glow
-        if (n.met || firing) {
-          const glowR = 8 + pulse * 4 + fireIntensity * 12;
-          const grad = ctx2d.createRadialGradient(x, y, 0, x, y, glowR);
-          if (firing) {
-            grad.addColorStop(0, "rgba(187,247,208," + (0.7 * fireIntensity) + ")");
-            grad.addColorStop(1, "rgba(34,197,94,0)");
+      function updateFamilyFilter(fam) {
+        highlightedFamily = fam;
+        var highlightColor = new THREE.Color(0x4ade80);
+        nodeMeshes.forEach(function(mesh) {
+          var mat = mesh.material;
+          if (fam === null) {
+            mat.opacity = 0.95;
+            mat.emissiveIntensity = 0.25;
+            mesh.visible = enabledFamilies[mesh._family] !== false;
+            mesh.scale.setScalar(1);
+            mesh._baseScale = 1;
+          } else if (mesh._family === fam) {
+            mat.opacity = 1;
+            mat.emissiveIntensity = 0.5;
+            mesh.visible = true;
+            mesh.scale.setScalar(1.5);
+            mesh._baseScale = 1.5;
           } else {
-            grad.addColorStop(0, "rgba(74,222,128," + (0.25 + pulse * 0.15) + ")");
-            grad.addColorStop(1, "rgba(34,197,94,0)");
+            mat.opacity = 0.12;
+            mat.emissiveIntensity = 0.05;
+            mesh.visible = true;
+            mesh.scale.setScalar(0.5);
+            mesh._baseScale = 0.5;
           }
-          ctx2d.beginPath();
-          ctx2d.arc(x, y, glowR, 0, Math.PI * 2);
-          ctx2d.fillStyle = grad;
-          ctx2d.fill();
-        }
+        });
+        edgeGroup.children.forEach(function(tube) {
+          var mat = tube.material;
+          if (fam === null) {
+            mat.opacity = tube._baseOpacity;
+            mat.color.copy(tube._defaultColor);
+            tube.visible = enabledFamilies[tube._famA] !== false && enabledFamilies[tube._famB] !== false;
+          } else if (tube._famA === fam || tube._famB === fam) {
+            mat.opacity = 0.7;
+            mat.color.copy(highlightColor);
+            tube.visible = true;
+          } else {
+            mat.opacity = 0.03;
+            mat.color.copy(tube._defaultColor);
+            tube.visible = true;
+          }
+        });
+      }
 
-        // Node circle
-        const r = n.met ? 3.5 + pulse * 1 : 2.5;
-        ctx2d.beginPath();
-        ctx2d.arc(x, y, r + fireIntensity * 3, 0, Math.PI * 2);
-        if (firing) {
-          ctx2d.fillStyle = "rgba(220,252,231," + (0.9 + fireIntensity * 0.1) + ")";
-        } else if (n.met) {
-          ctx2d.fillStyle = "rgba(74,222,128," + (0.7 + pulse * 0.3) + ")";
+      // Family click handler on sidebar
+      if (sidebarFamilies) {
+        sidebarFamilies.addEventListener("click", function(e) {
+          var row = e.target.closest(".pls-fam-row");
+          if (!row) return;
+          var fam = row.dataset.fam;
+          if (highlightedFamily === fam) {
+            // Toggle off — show all
+            row.classList.remove("pls-fam-active");
+            updateFamilyFilter(null);
+          } else {
+            // Deactivate previous
+            var prev = sidebarFamilies.querySelector(".pls-fam-active");
+            if (prev) prev.classList.remove("pls-fam-active");
+            row.classList.add("pls-fam-active");
+            updateFamilyFilter(fam);
+          }
+        });
+      }
+
+      renderer.domElement.addEventListener("mousemove", function(e) {
+        var rect = renderer.domElement.getBoundingClientRect();
+        mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+        var hits = raycaster.intersectObjects(nodeGroup.children);
+        if (hits.length > 0) {
+          var mesh = hits[0].object;
+          if (mesh !== lastHoveredMesh) {
+            if (lastHoveredMesh && lastHoveredMesh.material) {
+              lastHoveredMesh.scale.setScalar(lastHoveredMesh._baseScale || 1);
+            }
+            lastHoveredMesh = mesh;
+            mesh.scale.setScalar((mesh._baseScale || 1) * 1.6);
+            // Show hover info
+            var nd = nodes.find(function(n) { return n.id === mesh._nodeId; });
+            if (nd) showSelectedNode(nd);
+          }
+          renderer.domElement.style.cursor = "pointer";
         } else {
-          ctx2d.fillStyle = "rgba(100,116,139," + (0.3 + pulse * 0.2) + ")";
+          if (lastHoveredMesh && lastHoveredMesh.material) {
+            lastHoveredMesh.scale.setScalar(lastHoveredMesh._baseScale || 1);
+          }
+          lastHoveredMesh = null;
+          if (!selectedMesh) showSelectedNode(null);
+          renderer.domElement.style.cursor = "grab";
         }
-        ctx2d.fill();
-      }
+      });
 
-      animFrame = requestAnimationFrame(draw);
+      renderer.domElement.addEventListener("click", function(e) {
+        var rect = renderer.domElement.getBoundingClientRect();
+        mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+        var hits = raycaster.intersectObjects(nodeGroup.children);
+        // Reset previous selection
+        if (selectedMesh && selectedMesh.material) {
+          selectedMesh.material.color.setHex(selectedMesh._originalColor);
+          selectedMesh.material.emissive.setHex(GREEN_EMISSIVE);
+          selectedMesh.material.emissiveIntensity = 0.25;
+        }
+        if (hits.length > 0) {
+          var mesh = hits[0].object;
+          selectedMesh = mesh;
+          mesh.material.color.setHex(0xffffff);
+          mesh.material.emissive.setHex(0xbbf7d0);
+          mesh.material.emissiveIntensity = 0.8;
+          var nd = nodes.find(function(n) { return n.id === mesh._nodeId; });
+          if (nd) showSelectedNode(nd);
+        } else {
+          selectedMesh = null;
+          showSelectedNode(null);
+        }
+      });
+
+      renderer.domElement.addEventListener("mouseleave", function() {
+        if (lastHoveredMesh && lastHoveredMesh.material) {
+          lastHoveredMesh.scale.setScalar(lastHoveredMesh._baseScale || 1);
+        }
+        lastHoveredMesh = null;
+        renderer.domElement.style.cursor = "grab";
+      });
+
+      renderer.domElement.style.cursor = "grab";
+
+      // ---- Neural firing state ----
+      var firingNodes = new Map();
+      var firingEdges = new Map();
+      var FIRE_DURATION = 0.5;
+      var NODE_FIRE_CHANCE = 0.08;
+      var EDGE_FIRE_CHANCE = 0.12;
+      var PROPAGATION_DELAY = 0.03;
+      var CASCADE_CHANCE = 0.5;
+      var elapsedTime = 0;
+      var animationId = 0;
+
+      function animate() {
+        animationId = requestAnimationFrame(animate);
+        var delta = clock.getDelta();
+        elapsedTime += delta;
+        controls.update();
+
+        var pulse = Math.sin(elapsedTime * 2.5) * 0.5 + 0.5;
+        var slowPulse = Math.sin(elapsedTime * 1.5) * 0.4 + 0.6;
+        pointLight.intensity = 0.3 + pulse * 1.2;
+
+        // Neural firing
+        if (Math.random() < NODE_FIRE_CHANCE) {
+          var idx = Math.floor(Math.random() * nodeMeshes.length);
+          if (!firingNodes.has(idx)) {
+            firingNodes.set(idx, { startTime: elapsedTime, intensity: 0.9 + Math.random() * 0.1 });
+            edgeGroup.children.forEach(function(tube, edgeIdx) {
+              if (tube._nodeA === idx || tube._nodeB === idx) {
+                if (!firingEdges.has(edgeIdx)) {
+                  firingEdges.set(edgeIdx, {
+                    startTime: elapsedTime + PROPAGATION_DELAY,
+                    intensity: 0.9 + Math.random() * 0.1,
+                    direction: tube._nodeA === idx ? 1 : -1
+                  });
+                  if (Math.random() < CASCADE_CHANCE) {
+                    var target = tube._nodeA === idx ? tube._nodeB : tube._nodeA;
+                    if (!firingNodes.has(target)) {
+                      firingNodes.set(target, {
+                        startTime: elapsedTime + PROPAGATION_DELAY * 2.5,
+                        intensity: 0.75 + Math.random() * 0.2
+                      });
+                    }
+                  }
+                }
+              }
+            });
+          }
+        }
+        if (Math.random() < EDGE_FIRE_CHANCE) {
+          var rIdx = Math.floor(Math.random() * edgeGroup.children.length);
+          if (!firingEdges.has(rIdx)) {
+            firingEdges.set(rIdx, {
+              startTime: elapsedTime, intensity: 0.7 + Math.random() * 0.3,
+              direction: Math.random() > 0.5 ? 1 : -1
+            });
+          }
+        }
+
+        // Update firing nodes — GREEN flashes
+        nodeMeshes.forEach(function(mesh, i) {
+          if (!mesh.material) return;
+          var nodePhase = Math.sin(elapsedTime * 2.5 + i * 0.03) * 0.3 + 0.7;
+          var emInt = 0.15 + nodePhase * slowPulse * 0.5;
+          var emColor = GREEN_EMISSIVE;
+          var targetScale = mesh._baseScale || 1;
+
+          var firing = firingNodes.get(i);
+          if (firing) {
+            var fe = elapsedTime - firing.startTime;
+            if (fe >= 0 && fe < FIRE_DURATION) {
+              var fp = fe / FIRE_DURATION;
+              var fi = fp < 0.12 ? fp / 0.12 : Math.pow(1 - ((fp - 0.12) / 0.88), 1.5);
+              emInt = 0.4 + firing.intensity * fi * 3.0;
+              targetScale = (mesh._baseScale || 1) * (1 + fi * 0.6);
+              if (fi > 0.3) {
+                mesh.material.emissive.setHex(0xbbf7d0); // Bright green for bloom
+                mesh.material.color.setHex(0xffffff);
+              } else if (fi > 0.15) {
+                mesh.material.emissive.setHex(0x86efac); // Medium green
+                mesh.material.color.setHex(mesh._originalColor);
+              } else {
+                mesh.material.emissive.setHex(emColor);
+                mesh.material.color.setHex(mesh._originalColor);
+              }
+            } else if (fe >= FIRE_DURATION) {
+              firingNodes.delete(i);
+              mesh.material.emissive.setHex(emColor);
+              mesh.material.color.setHex(mesh._originalColor);
+            }
+          } else {
+            mesh.material.emissive.setHex(emColor);
+          }
+          mesh.material.emissiveIntensity = emInt;
+          var cs = mesh.scale.x;
+          mesh.scale.setScalar(cs + (targetScale - cs) * 0.15);
+        });
+
+        // Update firing edges — GREEN pulses
+        edgeGroup.children.forEach(function(tube, eIdx) {
+          var mat = tube.material;
+          var firing = firingEdges.get(eIdx);
+          if (firing) {
+            var fe = elapsedTime - firing.startTime;
+            if (fe >= 0 && fe < FIRE_DURATION) {
+              var fp = fe / FIRE_DURATION;
+              var pp = fp * 1.3;
+              var fi = Math.exp(-Math.pow((pp - 0.5) / 0.2, 2)) * firing.intensity;
+              if (fi > 0.2) {
+                mat.color.setHex(0xbbf7d0); // Bright green flash
+                mat.opacity = Math.min(1, 0.6 + fi * 0.4);
+              } else if (fi > 0.08) {
+                mat.color.setHex(0x4ade80); // Medium green
+                mat.opacity = Math.min(1, 0.4 + fi * 0.4);
+              } else {
+                mat.color.copy(tube._baseColor || new THREE.Color(GREEN_EDGE));
+                if (typeof tube._baseOpacity === "number") mat.opacity = tube._baseOpacity;
+              }
+            } else if (fe >= FIRE_DURATION) {
+              firingEdges.delete(eIdx);
+              mat.color.copy(tube._baseColor || new THREE.Color(GREEN_EDGE));
+              if (typeof tube._baseOpacity === "number") mat.opacity = tube._baseOpacity;
+            }
+          }
+        });
+
+        var activeFirings = firingNodes.size + firingEdges.size;
+        bloomPass.strength = 0.6 + Math.min(activeFirings * 0.03, 0.5);
+        if (activeFirings > 0) {
+          pointLight.intensity = 0.4 + pulse * 1.0 + activeFirings * 0.04;
+          pointLight.color.setHex(0x86efac);
+        } else {
+          pointLight.color.setHex(0x00ff41);
+        }
+        ambient.intensity = 0.25 + slowPulse * 0.4;
+        particles.rotation.y += delta * 0.08;
+        particles.rotation.x += delta * 0.04;
+
+        composer.render();
+      }
+      animationId = requestAnimationFrame(animate);
+
+      // Resize
+      function onResize() {
+        var h = document.getElementById("proof-lattice-hero");
+        if (!h) return;
+        var w = h.clientWidth || 600;
+        var ht = 320;
+        camera.aspect = w / ht;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, ht);
+        composer.setSize(w, ht);
+      }
+      window.addEventListener("resize", onResize);
+
+      // Cleanup on page navigation
+      var latticeObserver = new MutationObserver(function() {
+        if (!document.getElementById("proof-lattice-three")) {
+          cancelAnimationFrame(animationId);
+          window.removeEventListener("resize", onResize);
+          renderer.dispose();
+          pGeo.dispose();
+          latticeObserver.disconnect();
+        }
+      });
+      latticeObserver.observe(content, { childList: true });
+
+    } catch (err) {
+      console.warn("Proof lattice Three.js init failed:", err);
+      if (latticeStatus) latticeStatus.textContent = "Proof lattice visualization unavailable";
     }
-    animFrame = requestAnimationFrame(draw);
-
-    // Cleanup on page navigation
-    const observer = new MutationObserver(() => {
-      if (!document.getElementById("proof-lattice-canvas")) {
-        cancelAnimationFrame(animFrame);
-        observer.disconnect();
-      }
-    });
-    observer.observe(content, { childList: true });
   })();
 
   // ---- Auto-detect and apply identity (always run everything available) ----
