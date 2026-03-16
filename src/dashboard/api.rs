@@ -127,6 +127,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/orchestrator/tasks", get(api_orch_tasks))
         .route("/orchestrator/graph", get(api_orch_graph))
         .route("/orchestrator/mesh", get(api_orch_mesh))
+        .route("/orchestrator/readiness", post(api_orch_readiness))
         .route("/orchestrator/launch", post(api_orch_launch))
         .route("/orchestrator/task", post(api_orch_task))
         .route("/orchestrator/pipe", post(api_orch_pipe))
@@ -2036,7 +2037,10 @@ async fn trace_enriched_cockpit_sessions(
         let total_tokens = summary
             .total_input_tokens
             .saturating_add(summary.total_output_tokens);
-        if total_tokens == 0 && summary.estimated_cost_usd <= 0.0 && session.resolved_model.is_some() {
+        if total_tokens == 0
+            && summary.estimated_cost_usd <= 0.0
+            && session.resolved_model.is_some()
+        {
             continue;
         }
         if session.trace_session_id.is_none() {
@@ -4757,6 +4761,7 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
             "agent_id": a.agent_id,
             "agent_name": a.agent_name,
             "agent_type": a.agent_type,
+            "working_dir": a.working_dir,
             "status": match a.status {
                 crate::orchestrator::agent_pool::AgentStatus::Idle => "idle",
                 crate::orchestrator::agent_pool::AgentStatus::Busy { .. } => "busy",
@@ -4833,17 +4838,7 @@ async fn api_orch_launch(
     if orchestrator_mcp_proxy_enabled() {
         let payload = call_orchestrator_tool_via_mcp(
             "orchestrator_launch",
-            json!({
-                "agent": req.agent,
-                "agent_name": req.agent_name.unwrap_or_else(|| "agent".to_string()),
-                "working_dir": req.working_dir,
-                "env": req.env,
-                "timeout_secs": req.timeout_secs.unwrap_or(600),
-                "model": req.model,
-                "trace": req.trace.unwrap_or(true),
-                "capabilities": req.capabilities,
-                "admission_mode": req.admission_mode,
-            }),
+            orchestrator_launch_proxy_payload(&req),
         )
         .await?;
         return Ok(Json(payload));
@@ -4893,6 +4888,54 @@ async fn api_orch_launch(
         "model": launched.model,
         "admission": admission,
     })))
+}
+
+async fn api_orch_readiness(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<DeployPreflightRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let admission_mode =
+        crate::halo::admission::AdmissionMode::parse(req.admission_mode.as_deref())
+            .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let preflight = deploy::preflight(
+        &req.agent_id,
+        state.vault.as_deref(),
+        Some(&state.db_path),
+        Some(&state.governor_registry),
+        admission_mode,
+    )
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let mesh_network_ready = crate::container::mesh::ensure_mesh_network().is_ok();
+    let mesh_secret_ready = crate::container::mesh_auth_token().is_some();
+    let mcp_server_path = resolve_binary("agenthalo-mcp-server");
+    let ready =
+        preflight.ready && mesh_network_ready && mesh_secret_ready && mcp_server_path.is_some();
+    Ok(Json(json!({
+        "agent_id": req.agent_id,
+        "ready": ready,
+        "preflight": preflight,
+        "mesh_network_ready": mesh_network_ready,
+        "mesh_secret_ready": mesh_secret_ready,
+        "mcp_server_path": mcp_server_path,
+        "dispatch_mode": "container",
+    })))
+}
+
+fn orchestrator_launch_proxy_payload(req: &OrchestratorLaunchApiRequest) -> Value {
+    json!({
+        "agent": req.agent,
+        "agent_name": req.agent_name.clone().unwrap_or_else(|| "agent".to_string()),
+        "working_dir": req.working_dir,
+        "env": req.env,
+        "timeout_secs": req.timeout_secs.unwrap_or(600),
+        "model": req.model,
+        "trace": req.trace.unwrap_or(true),
+        "capabilities": req.capabilities,
+        "dispatch_mode": req.dispatch_mode,
+        "container_hookup": req.container_hookup,
+        "admission_mode": req.admission_mode,
+    })
 }
 
 async fn api_orch_task(
@@ -5235,7 +5278,8 @@ async fn api_addons_post(
     })))
 }
 
-fn load_mutable_proof_gate_config() -> Result<(proof_gate::ProofGateConfig, std::path::PathBuf), String> {
+fn load_mutable_proof_gate_config(
+) -> Result<(proof_gate::ProofGateConfig, std::path::PathBuf), String> {
     proof_gate::load_gate_config_with_path()
 }
 
@@ -10065,6 +10109,13 @@ fn resolve_binary(name: &str) -> Option<String> {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+                .filter(|candidate| candidate.exists())
+                .map(|candidate| candidate.display().to_string())
+        })
 }
 
 #[cfg(test)]
@@ -10238,5 +10289,29 @@ mod tests {
             &local_state,
             "nucleusdb_subsidiary_provision"
         ));
+    }
+
+    #[test]
+    fn orchestrator_launch_proxy_payload_preserves_container_dispatch_fields() {
+        let payload = orchestrator_launch_proxy_payload(&OrchestratorLaunchApiRequest {
+            agent: "claude".to_string(),
+            agent_name: Some("mesh-claude".to_string()),
+            working_dir: Some("/tmp/work".to_string()),
+            env: std::collections::BTreeMap::new(),
+            timeout_secs: Some(123),
+            model: Some("claude-sonnet".to_string()),
+            trace: Some(true),
+            capabilities: vec!["memory_read".to_string()],
+            dispatch_mode: Some(crate::orchestrator::DispatchMode::Container),
+            container_hookup: Some(crate::orchestrator::ContainerHookupRequest::Cli {
+                cli_name: "claude".to_string(),
+                model: Some("claude-sonnet".to_string()),
+            }),
+            admission_mode: Some("warn".to_string()),
+        });
+        assert_eq!(payload["dispatch_mode"], "container");
+        assert_eq!(payload["container_hookup"]["kind"], "cli");
+        assert_eq!(payload["container_hookup"]["cli_name"], "claude");
+        assert_eq!(payload["working_dir"], "/tmp/work");
     }
 }

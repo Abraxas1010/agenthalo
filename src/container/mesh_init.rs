@@ -29,7 +29,7 @@ pub fn register_self_in_mesh() -> Result<(), String> {
     let did_uri = std::env::var("NUCLEUSDB_MESH_DID").ok();
 
     let container_name = resolve_hostname().unwrap_or_else(|| agent_id.clone());
-    let endpoint_host = resolve_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
+    let endpoint_host = resolve_endpoint_host();
 
     let mcp_endpoint = format!("http://{endpoint_host}:{mesh_port}/mcp");
     let discovery_endpoint = format!("http://{endpoint_host}:{mesh_port}/.well-known/nucleus-pod");
@@ -53,6 +53,16 @@ pub fn register_self_in_mesh() -> Result<(), String> {
 
     eprintln!("[mesh] registered as agent '{agent_id}' on port {mesh_port}");
     Ok(())
+}
+
+fn resolve_endpoint_host() -> String {
+    std::env::var("AGENTHALO_MCP_HOST")
+        .ok()
+        .or_else(|| std::env::var("NUCLEUSDB_MCP_HOST").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(resolve_local_ip)
+        .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 /// Deregister this process from the mesh peer registry.
@@ -130,6 +140,19 @@ mod tests {
     fn resolve_local_ip_is_optional_but_valid_when_present() {
         if let Some(ip) = resolve_local_ip() {
             assert!(ip.parse::<std::net::IpAddr>().is_ok());
+        }
+    }
+
+    #[test]
+    fn resolve_endpoint_host_prefers_explicit_bind_host() {
+        let _guard = test_support::lock_env();
+        let prev = std::env::var("AGENTHALO_MCP_HOST").ok();
+        std::env::set_var("AGENTHALO_MCP_HOST", "127.0.0.1");
+        assert_eq!(resolve_endpoint_host(), "127.0.0.1".to_string());
+        if let Some(v) = prev {
+            std::env::set_var("AGENTHALO_MCP_HOST", v);
+        } else {
+            std::env::remove_var("AGENTHALO_MCP_HOST");
         }
     }
 

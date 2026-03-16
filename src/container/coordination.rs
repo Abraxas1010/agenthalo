@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const DEFAULT_MESH_REGISTRY_VOLUME: &str = "mesh";
+const LOCAL_MESH_AUTH_TOKEN_PATH: &str = "mesh/auth_token";
 const SHARED_BIND_DIR_MODE: u32 = 0o1777;
+const PRIVATE_DIR_MODE: u32 = 0o700;
 const PRIVATE_LOCK_FILE_MODE: u32 = 0o600;
 
 pub fn mesh_auth_token() -> Option<String> {
@@ -16,6 +18,7 @@ pub fn mesh_auth_token() -> Option<String> {
                 .ok()
                 .filter(|v| !v.trim().is_empty())
         })
+        .or_else(|| local_mesh_auth_token().ok())
 }
 
 pub fn registry_volume_is_named(path: &Path) -> bool {
@@ -46,6 +49,69 @@ pub fn prepare_named_volume(volume: &Path, image: &str, context: &str) -> Result
     let _ = image;
     let target = resolve_registry_dir(volume);
     prepare_bind_mount_dir(&target, context)
+}
+
+fn local_mesh_auth_token() -> Result<String, String> {
+    let path = crate::halo::config::halo_dir().join(LOCAL_MESH_AUTH_TOKEN_PATH);
+    if let Ok(existing) = read_nonempty_token(&path) {
+        return Ok(existing);
+    }
+
+    if let Some(parent) = path.parent() {
+        prepare_private_dir(parent, "mesh auth dir")?;
+    }
+
+    let lock = lock_path(&path);
+    let _guard = acquire_pid_lock(
+        &lock,
+        Duration::from_secs(2),
+        Duration::from_millis(20),
+        "mesh auth token",
+    )?;
+
+    if let Ok(existing) = read_nonempty_token(&path) {
+        return Ok(existing);
+    }
+
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    write_private_file(&path, token.as_bytes(), "mesh auth token")?;
+    Ok(token)
+}
+
+fn read_nonempty_token(path: &Path) -> Result<String, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read mesh auth token {}: {e}", path.display()))?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("mesh auth token {} is empty", path.display()));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn write_private_file(path: &Path, data: &[u8], context: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        prepare_private_dir(parent, context)?;
+    }
+    std::fs::write(path, data).map_err(|e| format!("write {context} {}: {e}", path.display()))?;
+    set_private_file_permissions(path);
+    Ok(())
+}
+
+fn lock_path(path: &Path) -> PathBuf {
+    let mut lock = path.as_os_str().to_os_string();
+    lock.push(".lock");
+    PathBuf::from(lock)
+}
+
+fn prepare_private_dir(path: &Path, context: &str) -> Result<(), String> {
+    std::fs::create_dir_all(path)
+        .map_err(|e| format!("create {context} {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE_DIR_MODE));
+    }
+    Ok(())
 }
 
 pub fn acquire_pid_lock(
@@ -158,6 +224,27 @@ mod tests {
         let _mesh = EnvVarGuard::set("NUCLEUSDB_MESH_AUTH_TOKEN", Some("mesh-secret"));
         let _mcp = EnvVarGuard::set("AGENTHALO_MCP_SECRET", Some("mcp-secret"));
         assert_eq!(mesh_auth_token().as_deref(), Some("mesh-secret"));
+    }
+
+    #[test]
+    fn mesh_auth_token_generates_local_secret_when_env_missing() {
+        let _guard = lock_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set(
+            "AGENTHALO_HOME",
+            Some(home.path().to_str().expect("utf8 home")),
+        );
+        let _mesh = EnvVarGuard::set("NUCLEUSDB_MESH_AUTH_TOKEN", None);
+        let _mcp = EnvVarGuard::set("AGENTHALO_MCP_SECRET", None);
+
+        let first = mesh_auth_token().expect("generated token");
+        let second = mesh_auth_token().expect("stable token");
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 32);
+
+        let saved = std::fs::read_to_string(home.path().join(LOCAL_MESH_AUTH_TOKEN_PATH))
+            .expect("saved token");
+        assert_eq!(saved.trim(), first);
     }
 
     #[test]

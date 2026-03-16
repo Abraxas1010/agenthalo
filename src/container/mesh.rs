@@ -349,10 +349,43 @@ pub fn call_remote_tool_with_timeout(
             serde_json::to_string(err).unwrap_or_default()
         ));
     }
-    Ok(body
+    let result = body
         .get("result")
         .cloned()
-        .unwrap_or(serde_json::Value::Null))
+        .unwrap_or(serde_json::Value::Null);
+    if result
+        .get("isError")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        let message = result
+            .get("structuredContent")
+            .and_then(|value| value.get("message"))
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                result
+                    .get("content")
+                    .and_then(|value| value.as_array())
+                    .and_then(|items| items.first())
+                    .and_then(|item| item.get("text"))
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or("remote tool returned an unknown error");
+        return Err(message.to_string());
+    }
+    Ok(result
+        .get("structuredContent")
+        .cloned()
+        .or_else(|| {
+            result
+                .get("content")
+                .and_then(|value| value.as_array())
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("text"))
+                .and_then(|value| value.as_str())
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        })
+        .unwrap_or(result))
 }
 
 fn call_remote_rpc_with_timeout(
@@ -668,6 +701,89 @@ mod tests {
             calls,
             vec!["initialize".to_string(), "tools/call".to_string()]
         );
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn call_remote_tool_unwraps_structured_content() {
+        use axum::http::{HeaderMap, HeaderValue, StatusCode};
+        use axum::routing::post;
+        use axum::{Json, Router};
+        use serde_json::Value;
+
+        async fn mcp_handler(
+            headers: HeaderMap,
+            Json(body): Json<Value>,
+        ) -> (StatusCode, HeaderMap, String) {
+            let method = body
+                .get("method")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let mut out_headers = HeaderMap::new();
+            if method == "initialize" {
+                out_headers.insert(
+                    "mcp-session-id",
+                    HeaderValue::from_static("sess-structured"),
+                );
+                return (
+                    StatusCode::OK,
+                    out_headers,
+                    "{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{}}}".to_string(),
+                );
+            }
+            let auth_ok = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                == Some("Bearer secret");
+            let session_ok = headers
+                .get("mcp-session-id")
+                .and_then(|value| value.to_str().ok())
+                == Some("sess-structured");
+            let body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "structuredContent": {
+                        "container_id": "native-123",
+                        "agent_id": "orch-123",
+                        "state": if auth_ok && session_ok { "locked" } else { "bad" },
+                        "trace_session_id": null,
+                        "reuse_policy": "reusable"
+                    },
+                    "content": [{"type":"text","text":"ignored"}],
+                    "isError": false
+                }
+            });
+            (StatusCode::OK, HeaderMap::new(), body.to_string())
+        }
+
+        let app = Router::new().route("/mcp", post(mcp_handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind structured listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let peer = PeerInfo {
+            agent_id: "remote-agent".to_string(),
+            container_name: "remote".to_string(),
+            did_uri: None,
+            mcp_endpoint: format!("http://{addr}/mcp"),
+            discovery_endpoint: String::new(),
+            registered_at: crate::pod::now_unix(),
+            last_seen: crate::pod::now_unix(),
+        };
+        let result = call_remote_tool(
+            &peer,
+            "nucleusdb_container_initialize",
+            serde_json::json!({}),
+            Some("secret"),
+        )
+        .expect("structured call");
+        assert_eq!(result["container_id"], "native-123");
+        assert_eq!(result["state"], "locked");
         server.abort();
     }
 }

@@ -87,6 +87,137 @@
       this.installResizeHandles();
     }
 
+    attachChat(agentId, agentType, options = {}) {
+      this.agentId = agentId;
+      this.agentType = agentType;
+      this.chatMessages = [];
+      const history = Array.isArray(options.history) ? options.history : [];
+      const subtitle = options.workingDir
+        ? `Headless API mode · ${options.workingDir}`
+        : 'Headless API mode · type a task below';
+      this.body.innerHTML = `
+        <div class="cockpit-chat-shell">
+          <div class="cockpit-chat-thread" id="chat-thread-${escapeHtml(this.id)}">
+            <div class="chat-welcome">
+              <div class="chat-welcome-icon">${agentType === 'claude' ? '⚡' : agentType === 'codex' ? '⌁' : agentType === 'gemini' ? '◇' : '▣'}</div>
+              <div class="chat-welcome-title">${escapeHtml(agentType)} agent ready</div>
+              <div class="chat-welcome-sub">${escapeHtml(subtitle)}</div>
+            </div>
+          </div>
+          <form class="cockpit-chat-composer" id="chat-form-${escapeHtml(this.id)}">
+            <textarea class="input cockpit-chat-input" rows="2" placeholder="Describe a task for ${escapeHtml(agentType)}…"></textarea>
+            <div class="cockpit-chat-actions">
+              <button type="submit" class="btn btn-sm btn-primary">Send</button>
+              <button type="button" class="btn btn-sm" data-chat-clear="1">Clear</button>
+            </div>
+          </form>
+        </div>
+      `;
+      const thread = this.body.querySelector(`#chat-thread-${CSS.escape(this.id)}`);
+      const composer = this.body.querySelector(`#chat-form-${CSS.escape(this.id)}`);
+      const input = this.body.querySelector('.cockpit-chat-input');
+      const renderWelcome = () => {
+        thread.innerHTML = `
+          <div class="chat-welcome">
+            <div class="chat-welcome-icon">${agentType === 'claude' ? '⚡' : agentType === 'codex' ? '⌁' : agentType === 'gemini' ? '◇' : '▣'}</div>
+            <div class="chat-welcome-title">${escapeHtml(agentType)} agent ready</div>
+            <div class="chat-welcome-sub">${escapeHtml(subtitle)}</div>
+          </div>
+        `;
+      };
+
+      const appendMessage = (role, content, meta) => {
+        const msg = document.createElement('div');
+        msg.className = `chat-msg chat-msg-${role}`;
+        const metaHtml = meta ? `<div class="chat-msg-meta">${escapeHtml(meta)}</div>` : '';
+        if (role === 'user') {
+          msg.innerHTML = `<div class="chat-msg-bubble chat-bubble-user">${escapeHtml(content)}</div>${metaHtml}`;
+        } else if (role === 'thinking') {
+          msg.innerHTML = `<div class="chat-msg-bubble chat-bubble-thinking"><span class="chat-thinking-dot">●</span> Thinking…</div>`;
+        } else if (role === 'error') {
+          msg.innerHTML = `<div class="chat-msg-bubble chat-bubble-error"><pre class="chat-agent-text">${escapeHtml(content)}</pre></div>${metaHtml}`;
+        } else {
+          msg.innerHTML = `<div class="chat-msg-bubble chat-bubble-agent"><pre class="chat-agent-text">${escapeHtml(content)}</pre></div>${metaHtml}`;
+        }
+        thread.appendChild(msg);
+        thread.scrollTop = thread.scrollHeight;
+        return msg;
+      };
+      const hydrateHistory = (items) => {
+        thread.innerHTML = '';
+        if (!items.length) {
+          renderWelcome();
+          return;
+        }
+        items.forEach((item) => appendMessage(item.role, item.content, item.meta));
+      };
+      this.focusTerminal = () => {
+        try { input?.focus(); } catch (_e) {}
+      };
+      hydrateHistory(history);
+
+      const sendTask = async (text) => {
+        appendMessage('user', text);
+        const thinkingEl = appendMessage('thinking', '');
+        input.disabled = true;
+        try {
+          const res = await fetch('/api/orchestrator/task', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              agent_id: agentId,
+              task: text,
+              timeout_secs: 600,
+              wait: true,
+            }),
+          });
+          thinkingEl.remove();
+          if (!res.ok) {
+            const err = await res.text();
+            let errMsg = err;
+            try { errMsg = JSON.parse(err).error || err; } catch (_e) {}
+            appendMessage('error', `Error: ${errMsg}`, `HTTP ${res.status}`);
+            return;
+          }
+          const payload = await res.json();
+          const task = payload.task || payload;
+          const answer = task.result || task.answer || task.error || '(no response)';
+          const usage = task.usage || {};
+          const tokens = (Number(usage.input_tokens || 0) + Number(usage.output_tokens || 0));
+          const cost = Number(usage.cost_usd || 0);
+          const parts = [];
+          if (task.status) parts.push(task.status);
+          if (tokens > 0) parts.push(`${tokens} tokens`);
+          if (cost > 0) parts.push(`$${cost.toFixed(4)}`);
+          if (task.task_id) parts.push(task.task_id);
+          appendMessage('agent', answer, parts.join(' · '));
+        } catch (e) {
+          thinkingEl.remove();
+          appendMessage('error', `Network error: ${e.message || e}`);
+        } finally {
+          input.disabled = false;
+          input.focus();
+        }
+      };
+
+      composer?.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        const value = String(input?.value || '').trim();
+        if (!value) return;
+        input.value = '';
+        sendTask(value);
+      });
+      input?.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' && !ev.shiftKey) {
+          ev.preventDefault();
+          composer?.requestSubmit();
+        }
+      });
+      this.body.querySelector('[data-chat-clear="1"]')?.addEventListener('click', () => {
+        renderWelcome();
+      });
+    }
+
     attachTerminal(sessionId, wsUrl, onStatus) {
       this.sessionId = sessionId;
       this.wsUrl = wsUrl;
@@ -737,16 +868,31 @@
     }
 
     async refreshSessionStats() {
-      const res = await fetch('/api/cockpit/sessions');
-      if (!res.ok) return;
-      const payload = await res.json();
+      const [ptyRes, agentRes] = await Promise.all([
+        fetch('/api/cockpit/sessions'),
+        fetch('/api/orchestrator/agents').catch(() => null),
+      ]);
+      if (!ptyRes.ok) return;
+      const payload = await ptyRes.json();
       const rows = Array.isArray(payload.sessions) ? payload.sessions : [];
+      const agentPayload = agentRes && agentRes.ok ? await agentRes.json() : { agents: [] };
+      const agents = Array.isArray(agentPayload.agents) ? agentPayload.agents : [];
       this.lastSessionSnapshot = rows;
       const byId = new Map(rows.map((s) => [s.id, s]));
+      const chatsByPanel = new Map(
+        agents.filter((agent) => this.isChatAgent(agent)).map((agent) => [this.chatPanelId(agent.agent_id), agent]),
+      );
 
       this.sessions.forEach((entry, id) => {
         const isSystemPanel = entry.panel.type === 'metrics' || entry.panel.type === 'log';
         if (isSystemPanel) return;
+        if (entry.panel.type === 'chat') {
+          const agent = chatsByPanel.get(id);
+          if (!agent) return;
+          this.updateTabStatus(id, this.chatTabState(agent.status));
+          this.updateTabCost(id, Number(agent.total_cost_usd || 0));
+          return;
+        }
         const row = byId.get(id);
         if (!row) return;
         this.updateTabStatus(id, row.status || {});
@@ -758,7 +904,13 @@
 
       this.sessions.forEach((entry) => {
         if (entry.panel.type === 'metrics') {
-          entry.panel.updateMetrics(rows);
+          const chatRows = agents.filter((agent) => this.isChatAgent(agent)).map((agent) => ({
+            id: this.chatPanelId(agent.agent_id),
+            resolved_model: agent.model || null,
+            actual_total_tokens: 0,
+            actual_total_cost_usd: Number(agent.total_cost_usd || 0),
+          }));
+          entry.panel.updateMetrics(rows.concat(chatRows));
         }
       });
     }
@@ -999,12 +1151,18 @@
       }
       const sections = [
         {
-          title: 'Terminal Lanes',
+          title: 'Agent Lanes (API)',
           items: [
-            { id: 'claude', label: 'Claude CLI', detail: 'Anthropic terminal agent', icon: '⚡', needsPreflight: true },
-            { id: 'codex', label: 'Codex CLI', detail: 'OpenAI terminal agent', icon: '⌁', needsPreflight: true },
-            { id: 'gemini', label: 'Gemini CLI', detail: 'Google terminal agent', icon: '◇', needsPreflight: true },
-            { id: 'shell', label: 'Shell', detail: 'Raw bash session', icon: '▣', needsPreflight: false },
+            { id: 'claude', label: 'Claude', detail: 'Anthropic agent — headless API', icon: '⚡', needsPreflight: true },
+            { id: 'codex', label: 'Codex', detail: 'OpenAI agent — headless API', icon: '⌁', needsPreflight: true },
+            { id: 'gemini', label: 'Gemini', detail: 'Google agent — headless API', icon: '◇', needsPreflight: true },
+          ],
+        },
+        {
+          title: 'Terminals',
+          items: [
+            { id: 'shell', label: 'Shell', detail: 'Interactive bash PTY session', icon: '▣', needsPreflight: false },
+            { id: 'custom', label: 'Custom PTY', detail: 'Run your own PTY command', icon: '⚙', needsPreflight: false },
           ],
         },
         {
@@ -1016,7 +1174,6 @@
             { id: 'channel', label: 'Agent Channel', detail: 'Inter-agent message surface', icon: '⬡', needsPreflight: false },
             { id: 'metrics', label: 'Metrics Panel', detail: 'Session telemetry', icon: '📊', needsPreflight: false },
             { id: 'log', label: 'Log Stream', detail: 'Live event feed', icon: '📜', needsPreflight: false },
-            { id: 'custom', label: 'Custom PTY', detail: 'Run your own PTY command', icon: '⚙', needsPreflight: false },
           ],
         },
       ];
@@ -1038,7 +1195,7 @@
         </div>
       `).join('') + `
         <div class="dropdown-footnote">
-          OpenRouter is available today through container/API agents in Admin, not as a PTY terminal lane.
+          Agent lanes use headless API dispatch. Shell and Custom PTY use interactive terminals.
         </div>
       `;
       menu.addEventListener('click', async (ev) => {
@@ -1076,12 +1233,18 @@
         const statusEl = menu.querySelector(`[data-status-for="${CSS.escape(agent.id)}"]`);
         if (!statusEl) return;
         try {
-          const pre = await this.fetchDeployPreflight(agent.id);
+          const pre = agent.id === 'shell'
+            ? await this.fetchDeployPreflight(agent.id)
+            : await this.fetchOrchestratorReadiness(agent.id);
+          const readiness = pre.preflight || pre;
           statusEl.classList.remove('loading');
-          if (pre.cli_installed && pre.keys_configured) {
+          if (pre.ready === true) {
             statusEl.classList.add('ready');
             statusEl.textContent = '● ready';
-          } else if (pre.cli_installed) {
+          } else if (readiness.cli_installed && readiness.keys_configured) {
+            statusEl.classList.add('partial');
+            statusEl.textContent = '◐ launch';
+          } else if (readiness.cli_installed) {
             statusEl.classList.add('partial');
             statusEl.textContent = '◐ keys';
           } else {
@@ -1106,6 +1269,109 @@
         throw await buildApiError(res, '/api/deploy/preflight');
       }
       return res.json();
+    }
+
+    async fetchOrchestratorReadiness(agentId) {
+      const res = await fetch('/api/orchestrator/readiness', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_id: agentId }),
+      });
+      if (!res.ok) {
+        throw await buildApiError(res, '/api/orchestrator/readiness');
+      }
+      return res.json();
+    }
+
+    isChatAgent(agent) {
+      return !!(agent && agent.container_session_id && agent.agent_id);
+    }
+
+    chatPanelId(agentId) {
+      return `chat-${agentId}`;
+    }
+
+    chatTabState(status) {
+      const state = String(status || 'idle').toLowerCase();
+      if (state === 'busy') return { state: 'waiting' };
+      if (state === 'stopped') return { state: 'error' };
+      return { state: 'active' };
+    }
+
+    buildChatHistory(tasks) {
+      return [...(Array.isArray(tasks) ? tasks : [])]
+        .sort((a, b) => {
+          const left = Number(a?.started_at || a?.completed_at || 0);
+          const right = Number(b?.started_at || b?.completed_at || 0);
+          return left - right;
+        })
+        .flatMap((task) => {
+          const items = [];
+          const prompt = String(task?.prompt || '').trim();
+          if (prompt) {
+            items.push({ role: 'user', content: prompt, meta: task?.task_id || null });
+          }
+          const usage = task?.usage || {};
+          const tokens = Number(usage.input_tokens || 0) + Number(usage.output_tokens || 0);
+          const cost = Number(usage.estimated_cost_usd || 0);
+          const meta = [];
+          if (task?.status) meta.push(String(task.status));
+          if (tokens > 0) meta.push(`${tokens} tokens`);
+          if (cost > 0) meta.push(`$${cost.toFixed(4)}`);
+          if (task?.task_id) meta.push(task.task_id);
+          const taskMeta = meta.join(' · ');
+          const status = String(task?.status || '').toLowerCase();
+          if (status === 'running' || status === 'pending') {
+            items.push({ role: 'thinking', content: '', meta: taskMeta });
+            return items;
+          }
+          if (status === 'failed' || status === 'timeout') {
+            items.push({
+              role: 'error',
+              content: task?.error || task?.result || '(no response)',
+              meta: taskMeta,
+            });
+            return items;
+          }
+          items.push({
+            role: 'agent',
+            content: task?.result || task?.answer || task?.error || '(no response)',
+            meta: taskMeta,
+          });
+          return items;
+        });
+    }
+
+    attachChatSession(agent, tasks) {
+      const panelId = this.chatPanelId(agent.agent_id);
+      if (this.sessions.has(panelId)) return panelId;
+
+      const panel = new CockpitPanel(panelId, 'chat', `${agent.agent_type}:${agent.agent_id.slice(0, 8)}`, this);
+      panel.agentType = agent.agent_type;
+      const tab = this.createTab(panelId, agent.agent_type || 'agent');
+      panel.el.querySelector('[data-action="close"]').addEventListener('click', () => this.destroySession(panelId));
+      panel.attachChat(agent.agent_id, agent.agent_type, {
+        history: this.buildChatHistory(tasks),
+        workingDir: agent.working_dir,
+      });
+
+      this.gridEl.appendChild(panel.el);
+      this.sessions.set(panelId, {
+        panel,
+        tab,
+        status: this.chatTabState(agent.status),
+        cost: Number(agent.total_cost_usd || 0),
+        agentId: agent.agent_id,
+        sessionKind: 'chat',
+      });
+      this.updateTabStatus(panelId, this.chatTabState(agent.status));
+      this.updateTabCost(panelId, Number(agent.total_cost_usd || 0));
+      this.activateTab(panelId);
+      if (this.sessions.size === 2 && this.layout === '1') {
+        this.setLayout('2h');
+      }
+      this.applyLayout();
+      return panelId;
     }
 
     hideDropdown() {
@@ -1136,17 +1402,49 @@
         return;
       }
 
+      // Shell uses PTY; AI agents use headless API dispatch
+      if (agent === 'shell') {
+        await this.createSession('/bin/bash', [], 'shell');
+        return;
+      }
+
       const ready = await this.ensurePresetReady(agent);
       if (!ready) return;
 
-      const map = {
-        shell: { command: '/bin/bash', args: [], agentType: 'shell' },
-        claude: { command: 'claude', args: [], agentType: 'claude' },
-        codex: { command: 'codex', args: [], agentType: 'codex' },
-        gemini: { command: 'gemini', args: [], agentType: 'gemini' },
-      };
-      const cfg = map[agent] || map.shell;
-      await this.createSession(cfg.command, cfg.args, cfg.agentType);
+      await this.launchAgentChat(agent);
+    }
+
+    async launchAgentChat(agentType) {
+      const agentName = `${agentType}-${Date.now().toString(36)}`;
+      const res = await fetch('/api/orchestrator/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent: agentType,
+          agent_name: agentName,
+          timeout_secs: 600,
+          trace: true,
+          capabilities: ['memory_read', 'memory_write'],
+          dispatch_mode: 'container',
+          container_hookup: {
+            kind: 'cli',
+            cli_name: agentType,
+            model: null,
+          },
+        }),
+      });
+      if (!res.ok) {
+        throw await buildApiError(res, '/api/orchestrator/launch');
+      }
+      const payload = await res.json();
+      const agentId = payload.agent_id || payload.id || agentName;
+      this.attachChatSession({
+        agent_id: agentId,
+        agent_type: agentType,
+        status: 'idle',
+        total_cost_usd: 0,
+        working_dir: payload.working_dir || null,
+      }, []);
     }
 
     attachSystemPanel(kind) {
@@ -1188,15 +1486,8 @@
 
     async ensurePresetReady(agent) {
       if (agent === 'shell' || agent === 'custom') return true;
-      const res = await fetch('/api/deploy/preflight', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent_id: agent }),
-      });
-      if (!res.ok) {
-        throw await buildApiError(res, '/api/deploy/preflight');
-      }
-      const pre = await res.json();
+      const readiness = await this.fetchOrchestratorReadiness(agent);
+      const pre = readiness.preflight || {};
       if (!pre.cli_installed) {
         const hint = pre.install_hint || `Install ${agent} CLI and retry.`;
         alert(`${agent}: CLI missing. ${hint}`);
@@ -1213,6 +1504,14 @@
           return false;
         }
         location.hash = '#/config';
+        return false;
+      }
+      if (!readiness.ready) {
+        const reasons = [];
+        if (!readiness.mesh_network_ready) reasons.push('mesh registry is not writable');
+        if (!readiness.mesh_secret_ready) reasons.push('mesh auth token could not be prepared');
+        if (!readiness.mcp_server_path) reasons.push('agenthalo-mcp-server is not on PATH');
+        alert(`${agent}: orchestrator launch is not ready. ${reasons.join('; ') || 'check native mesh worker bootstrap.'}`);
         return false;
       }
       return true;
@@ -1233,10 +1532,25 @@
     }
 
     async restoreSessions() {
-      const res = await fetch('/api/cockpit/sessions');
-      if (!res.ok) return;
-      const payload = await res.json();
+      const [ptyRes, agentRes, taskRes] = await Promise.all([
+        fetch('/api/cockpit/sessions'),
+        fetch('/api/orchestrator/agents').catch(() => null),
+        fetch('/api/orchestrator/tasks').catch(() => null),
+      ]);
+      if (!ptyRes.ok) return;
+      const payload = await ptyRes.json();
       const sessions = payload.sessions || [];
+      const agentPayload = agentRes && agentRes.ok ? await agentRes.json() : { agents: [] };
+      const taskPayload = taskRes && taskRes.ok ? await taskRes.json() : { tasks: [] };
+      const agents = Array.isArray(agentPayload.agents) ? agentPayload.agents : [];
+      const tasks = Array.isArray(taskPayload.tasks) ? taskPayload.tasks : [];
+      const tasksByAgent = new Map();
+      tasks.forEach((task) => {
+        const agentId = task && task.agent_id;
+        if (!agentId) return;
+        if (!tasksByAgent.has(agentId)) tasksByAgent.set(agentId, []);
+        tasksByAgent.get(agentId).push(task);
+      });
 
       // Rebuild from server truth whenever mounting.
       this.sessions.forEach((entry) => entry.panel.destroy());
@@ -1251,6 +1565,9 @@
           ws_url: `/api/cockpit/sessions/${encodeURIComponent(s.id)}/ws`,
           status: s.status,
         });
+      });
+      agents.filter((agent) => this.isChatAgent(agent)).forEach((agent) => {
+        this.attachChatSession(agent, tasksByAgent.get(agent.agent_id) || []);
       });
       this.setLayout(this.layout);
     }
@@ -1339,14 +1656,14 @@
         hint.className = 'cockpit-empty-hint';
         hint.innerHTML = `
           <div class="empty-hint-title">No active sessions.</div>
-          <div class="empty-hint-subtitle">Choose the execution lane you want: Claude, Codex, Gemini, or a raw shell. Use <b>+ New</b> for panels like Containers, Workflow, Metrics, and Admin.</div>
+          <div class="empty-hint-subtitle">Launch an agent via headless API dispatch, or open a shell terminal. Use <b>+ New</b> for additional panels.</div>
           <div class="empty-hint-actions">
             <button type="button" class="btn btn-sm btn-primary" data-launch-agent="claude">Start Claude</button>
             <button type="button" class="btn btn-sm" data-launch-agent="codex">Start Codex</button>
             <button type="button" class="btn btn-sm" data-launch-agent="gemini">Start Gemini</button>
-            <button type="button" class="btn btn-sm" data-launch-agent="shell">Start Shell</button>
+            <button type="button" class="btn btn-sm" data-launch-agent="shell">Shell</button>
           </div>
-          <div class="empty-hint-note">OpenRouter currently powers API-backed features and workflow panels, not an interactive PTY session.</div>
+          <div class="empty-hint-note">Agent lanes use the orchestrator API with structured JSON I/O. Shell opens an interactive PTY terminal.</div>
         `;
         hint.querySelectorAll('[data-launch-agent]').forEach((btn) => {
           btn.addEventListener('click', async (ev) => {
@@ -1398,6 +1715,21 @@
     }
 
     async destroySession(sessionId) {
+      const entry = this.sessions.get(sessionId);
+      if (entry && entry.panel.type === 'chat') {
+        const agentId = entry.agentId || entry.panel.agentId;
+        const res = await fetch('/api/orchestrator/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent_id: agentId, force: true }),
+        });
+        if (!res.ok) {
+          alert(`Failed to stop agent ${agentId}`);
+          return;
+        }
+        this.detachSession(sessionId, true);
+        return;
+      }
       const res = await fetch(`/api/cockpit/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
       if (!res.ok) {
         alert(`Failed to close session ${sessionId}`);
@@ -1425,6 +1757,12 @@
     async restartSession(sessionId) {
       const entry = this.sessions.get(sessionId);
       if (!entry) return;
+      if (entry.panel.type === 'chat') {
+        const agentType = entry.panel.agentType || 'claude';
+        await this.destroySession(sessionId);
+        await this.launchAgentChat(agentType);
+        return;
+      }
       const cmd = prompt('Restart command:', '/bin/bash');
       if (!cmd) return;
       await this.destroySession(sessionId);

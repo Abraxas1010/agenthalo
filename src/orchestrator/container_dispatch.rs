@@ -168,6 +168,17 @@ impl MeshContainerDispatch {
     }
 }
 
+fn allocate_local_mcp_port(preferred: u16) -> Result<u16, String> {
+    if preferred != 0 && std::net::TcpListener::bind(("127.0.0.1", preferred)).is_ok() {
+        return Ok(preferred);
+    }
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("bind fallback MCP port: {e}"))?
+        .local_addr()
+        .map_err(|e| format!("read fallback MCP port: {e}"))
+        .map(|addr| addr.port())
+}
+
 #[async_trait]
 impl ContainerDispatch for MeshContainerDispatch {
     fn provision_defaults(&self) -> ContainerProvisionDefaults {
@@ -192,11 +203,12 @@ impl ContainerDispatch for MeshContainerDispatch {
         } else {
             spec.registry_volume
         };
-        let mcp_port = if spec.mcp_port == 0 {
+        let requested_mcp_port = if spec.mcp_port == 0 {
             self.default_mcp_port
         } else {
             spec.mcp_port
         };
+        let mcp_port = allocate_local_mcp_port(requested_mcp_port)?;
         let peer_agent_id = spec.peer_agent_id.clone();
         let env_vars = spec.env.into_iter().collect::<Vec<_>>();
         let info = tokio::task::spawn_blocking(move || {
@@ -465,6 +477,15 @@ mod tests {
             .expect("initialize");
         assert_eq!(initialized.state, "locked");
         assert_eq!(initialized.reuse_policy, ReusePolicy::SingleUse);
+    }
+
+    #[test]
+    fn allocate_local_mcp_port_falls_back_when_preferred_is_busy() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind busy port");
+        let busy_port = listener.local_addr().expect("local addr").port();
+        let fallback = allocate_local_mcp_port(busy_port).expect("fallback port");
+        assert_ne!(fallback, busy_port);
+        assert!(fallback > 0);
     }
 
     #[tokio::test]
