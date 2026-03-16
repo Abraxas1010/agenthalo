@@ -38,6 +38,7 @@ pub struct ProvisionedContainer {
     pub host_sock: String,
     pub started_at_unix: u64,
     pub mesh_port: Option<u16>,
+    pub agent_home: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +237,7 @@ impl ContainerDispatch for MeshContainerDispatch {
             host_sock: info.host_sock.display().to_string(),
             started_at_unix: info.started_at_unix,
             mesh_port: info.mesh_port,
+            agent_home: info.agent_home.map(|path| path.display().to_string()),
         })
     }
 
@@ -342,13 +344,14 @@ impl ContainerDispatch for InMemoryContainerDispatch {
             },
         );
         Ok(ProvisionedContainer {
-            session_id,
+            session_id: session_id.clone(),
             container_id,
             image: spec.image,
             peer_agent_id: spec.peer_agent_id,
             host_sock: "/tmp/in-memory.sock".to_string(),
             started_at_unix: crate::pod::now_unix(),
             mesh_port: Some(spec.mcp_port),
+            agent_home: Some(format!("/tmp/{session_id}/home")),
         })
     }
 

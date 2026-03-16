@@ -980,6 +980,7 @@ struct OrchestratorPipeApiRequest {
 struct OrchestratorStopApiRequest {
     agent_id: String,
     force: Option<bool>,
+    purge: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4750,13 +4751,29 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
     for a in agents {
         let base_trust = base_agent_trust(&a.agent_type);
         let trust = trust_model.nucleus(base_trust);
-        let (container_session_id, container_id, lock_state) = orchestrator
+        let (
+            container_session_id,
+            container_id,
+            lock_state,
+            peer_agent_id,
+            trace_session_id,
+            agent_home,
+            identity_digest,
+        ) = orchestrator
             .container_agent_metadata(&a.agent_id)
             .await
-            .map(|(session_id, container_id, lock_state)| {
-                (Some(session_id), Some(container_id), Some(lock_state))
+            .map(|meta| {
+                (
+                    Some(meta.session_id),
+                    Some(meta.container_id),
+                    Some(meta.lock_state),
+                    Some(meta.peer_agent_id),
+                    meta.trace_session_id,
+                    meta.agent_home,
+                    Some(meta.identity_digest),
+                )
             })
-            .unwrap_or((None, None, None));
+            .unwrap_or((None, None, None, None, None, None, None));
         rows.push(json!({
             "agent_id": a.agent_id,
             "agent_name": a.agent_name,
@@ -4777,6 +4794,10 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
             "container_session_id": container_session_id,
             "container_id": container_id,
             "lock_state": lock_state,
+            "peer_agent_id": peer_agent_id,
+            "trace_session_id": trace_session_id,
+            "agent_home": agent_home,
+            "identity_digest": identity_digest,
         }));
     }
     Ok(Json(json!({
@@ -4879,6 +4900,7 @@ async fn api_orch_launch(
         })
         .await
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let metadata = orchestrator.container_agent_metadata(&launched.agent_id).await;
     Ok(Json(json!({
         "agent_id": launched.agent_id,
         "status": "idle",
@@ -4886,6 +4908,14 @@ async fn api_orch_launch(
         "agent_type": launched.agent_type,
         "capabilities": launched.capabilities,
         "model": launched.model,
+        "working_dir": launched.working_dir,
+        "container_session_id": metadata.as_ref().map(|meta| meta.session_id.clone()),
+        "container_id": metadata.as_ref().map(|meta| meta.container_id.clone()),
+        "lock_state": metadata.as_ref().map(|meta| meta.lock_state.clone()),
+        "peer_agent_id": metadata.as_ref().map(|meta| meta.peer_agent_id.clone()),
+        "trace_session_id": metadata.as_ref().and_then(|meta| meta.trace_session_id.clone()),
+        "agent_home": metadata.as_ref().and_then(|meta| meta.agent_home.clone()),
+        "identity_digest": metadata.as_ref().map(|meta| meta.identity_digest.clone()),
         "admission": admission,
     })))
 }
@@ -5024,6 +5054,7 @@ async fn api_orch_stop(
             json!({
                 "agent_id": req.agent_id,
                 "force": req.force.unwrap_or(false),
+                "purge": req.purge.unwrap_or(false),
             }),
         )
         .await?;
@@ -5034,6 +5065,7 @@ async fn api_orch_stop(
         .stop_agent(crate::orchestrator::StopRequest {
             agent_id: req.agent_id,
             force: req.force.unwrap_or(false),
+            purge: req.purge.unwrap_or(false),
         })
         .await
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
@@ -5042,6 +5074,7 @@ async fn api_orch_stop(
         "status": stopped.status,
         "trace_session_id": stopped.trace_session_id,
         "attestation_ready": stopped.attestation_ready,
+        "purged": stopped.purged,
     })))
 }
 

@@ -6998,6 +6998,7 @@ fn tool_orchestrator_stop(arguments: Value) -> Result<Value, String> {
             .stop_agent(nucleusdb::orchestrator::StopRequest {
                 agent_id: req.agent_id,
                 force: req.force.unwrap_or(false),
+                purge: req.purge.unwrap_or(false),
             })
             .await?;
         Ok(json!({
@@ -7005,6 +7006,7 @@ fn tool_orchestrator_stop(arguments: Value) -> Result<Value, String> {
             "status": stopped.status,
             "trace_session_id": stopped.trace_session_id,
             "attestation_ready": stopped.attestation_ready,
+            "purged": stopped.purged,
         }))
     })
 }

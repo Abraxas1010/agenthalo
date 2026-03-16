@@ -390,6 +390,10 @@
   font-size: 11px;
 }
 
+.cockpit-panel-actions button.is-hidden {
+  display: none;
+}
+
 .cockpit-panel-body {
   flex: 1;
   position: relative;

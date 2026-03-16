@@ -4192,19 +4192,48 @@ async function renderSetup() {
   (async () => {
     try {
       const idStatus = await api("/identity/status");
+      let changed = false;
       if (!idStatus.device_configured) {
-        try { await apiPost("/identity/device", { enable: true, components: true, browser: true }); } catch (_e) {}
+        try {
+          await apiPost("/identity/device", { enable: true, components: true, browser: true });
+          changed = true;
+        } catch (_e) {}
       }
       if (!idStatus.network_configured) {
-        try { await apiPost("/identity/network", { share_local_ip: true, share_mac: true }); } catch (_e) {}
+        try {
+          const networkMeta = await api("/identity/network");
+          await apiPost("/identity/network", {
+            share_local_ip: true,
+            share_public_ip: false,
+            share_mac: true,
+            local_ip: networkMeta.local_ip || null,
+            mac_addresses: networkMeta.mac_address ? [networkMeta.mac_address] : [],
+          });
+          changed = true;
+        } catch (_e) {}
       }
       // Auto-apply max-safe tier if not yet configured
       try {
         const tier = await api("/identity/tier");
         if (!tier.configured) {
           await apiPost("/identity/tier", { tier: "max-safe", applied_by: "auto_setup" });
+          changed = true;
         }
       } catch (_e) {}
+      if (changed && !window.__agenthaloSetupAutoRefreshPending) {
+        window.__agenthaloSetupAutoRefreshPending = true;
+        window._invalidateSetupState?.();
+        setTimeout(async () => {
+          try {
+            await fetchSetupState(true);
+            await renderSetup();
+            updateNavLockState();
+          } catch (_e) {
+          } finally {
+            window.__agenthaloSetupAutoRefreshPending = false;
+          }
+        }, 0);
+      }
     } catch (_e) {}
   })();
 

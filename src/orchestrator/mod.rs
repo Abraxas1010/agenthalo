@@ -27,6 +27,7 @@ use crate::orchestrator::task_graph::{PipeTransform, TaskEdge, TaskGraph};
 use crate::persistence::{default_wal_path, persist_snapshot_and_sync_wal};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -71,6 +72,7 @@ pub struct PipeRequest {
 pub struct StopRequest {
     pub agent_id: String,
     pub force: bool,
+    pub purge: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -79,6 +81,7 @@ pub struct StopResult {
     pub status: String,
     pub trace_session_id: Option<String>,
     pub attestation_ready: bool,
+    pub purged: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -141,6 +144,19 @@ struct ContainerAgentSession {
     peer_agent_id: String,
     reuse_policy: ReusePolicy,
     lock_state: String,
+    trace_session_id: Option<String>,
+    agent_home: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContainerAgentMetadata {
+    pub session_id: String,
+    pub container_id: String,
+    pub peer_agent_id: String,
+    pub lock_state: String,
+    pub trace_session_id: Option<String>,
+    pub agent_home: Option<String>,
+    pub identity_digest: String,
 }
 
 const MAX_TASK_TIMEOUT_SECS: u64 = 3600;
@@ -151,6 +167,29 @@ const MEMORY_RECALL_LIMIT: usize = 3;
 const MEMORY_RECALL_DISTANCE_MAX: f64 = 0.45;
 const MEMORY_RECALL_TEXT_LIMIT: usize = 240;
 const MEMORY_META_SUFFIX: &str = ":meta";
+
+fn container_identity_digest(
+    agent_id: &str,
+    launched_at: u64,
+    session: &ContainerAgentSession,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agenthalo.cockpit.container.identity.v1");
+    hasher.update(agent_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(launched_at.to_string().as_bytes());
+    hasher.update(b"|");
+    hasher.update(session.session_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(session.container_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(session.peer_agent_id.as_bytes());
+    if let Some(trace_session_id) = session.trace_session_id.as_deref() {
+        hasher.update(b"|");
+        hasher.update(trace_session_id.as_bytes());
+    }
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
 
 impl Orchestrator {
     pub fn new(
@@ -822,6 +861,8 @@ impl Orchestrator {
                 peer_agent_id,
                 reuse_policy: initialized.reuse_policy,
                 lock_state: initialized.state,
+                trace_session_id: initialized.trace_session_id,
+                agent_home: provisioned.agent_home,
             },
         );
         Ok(managed)
@@ -1196,23 +1237,48 @@ impl Orchestrator {
                 .ok_or_else(|| {
                     format!("missing container session metadata for {}", req.agent_id)
                 })?;
-            let deinit = self
-                .inner
-                .container_dispatch
-                .deinitialize(ContainerDeinitializeSpec {
-                    peer_agent_id: session.peer_agent_id.clone(),
-                })
-                .await?;
-            if req.force || session.reuse_policy == ReusePolicy::SingleUse {
+            let deinit = if session.lock_state == "locked" {
+                Some(
+                    self.inner
+                        .container_dispatch
+                        .deinitialize(ContainerDeinitializeSpec {
+                            peer_agent_id: session.peer_agent_id.clone(),
+                        })
+                        .await?,
+                )
+            } else {
+                None
+            };
+            let should_destroy =
+                req.force || req.purge || session.reuse_policy == ReusePolicy::SingleUse;
+            if should_destroy {
                 self.inner
                     .container_dispatch
                     .destroy(&session.session_id)
                     .await?;
             }
+            if req.purge {
+                self.inner.container_sessions.lock().await.remove(&req.agent_id);
+                self.inner.container_agents.lock().await.remove(&req.agent_id);
+                return Ok(StopResult {
+                    agent_id: req.agent_id,
+                    status: "reset".to_string(),
+                    trace_session_id: deinit.and_then(|value| value.trace_session_id),
+                    attestation_ready: true,
+                    purged: true,
+                });
+            }
             {
                 let mut sessions = self.inner.container_sessions.lock().await;
                 if let Some(meta) = sessions.get_mut(&req.agent_id) {
-                    meta.lock_state = deinit.state.clone();
+                    meta.lock_state = deinit
+                        .as_ref()
+                        .map(|value| value.state.clone())
+                        .unwrap_or_else(|| "empty".to_string());
+                    meta.trace_session_id = deinit
+                        .as_ref()
+                        .and_then(|value| value.trace_session_id.clone())
+                        .or(meta.trace_session_id.clone());
                 }
             }
             let stopped = {
@@ -1227,8 +1293,9 @@ impl Orchestrator {
             return Ok(StopResult {
                 agent_id: stopped.agent_id,
                 status: "stopped".to_string(),
-                trace_session_id: deinit.trace_session_id,
+                trace_session_id: deinit.and_then(|value| value.trace_session_id),
                 attestation_ready: true,
+                purged: false,
             });
         }
         self.cancel_inflight_for_agent(&req.agent_id).await;
@@ -1238,6 +1305,7 @@ impl Orchestrator {
             status: "stopped".to_string(),
             trace_session_id: None,
             attestation_ready: true,
+            purged: false,
         })
     }
 
@@ -1255,19 +1323,30 @@ impl Orchestrator {
     pub async fn container_agent_metadata(
         &self,
         agent_id: &str,
-    ) -> Option<(String, String, String)> {
-        self.inner
+    ) -> Option<ContainerAgentMetadata> {
+        let session = self
+            .inner
             .container_sessions
             .lock()
             .await
             .get(agent_id)
-            .map(|meta| {
-                (
-                    meta.session_id.clone(),
-                    meta.container_id.clone(),
-                    meta.lock_state.clone(),
-                )
-            })
+            .cloned()?;
+        let agent = self
+            .inner
+            .container_agents
+            .lock()
+            .await
+            .get(agent_id)
+            .cloned()?;
+        Some(ContainerAgentMetadata {
+            session_id: session.session_id.clone(),
+            container_id: session.container_id.clone(),
+            peer_agent_id: session.peer_agent_id.clone(),
+            lock_state: session.lock_state.clone(),
+            trace_session_id: session.trace_session_id.clone(),
+            agent_home: session.agent_home.clone(),
+            identity_digest: container_identity_digest(agent_id, agent.launched_at, &session),
+        })
     }
 
     pub async fn require_capability(&self, agent_id: &str, capability: &str) -> Result<(), String> {
@@ -1577,6 +1656,7 @@ mod tests {
                 host_sock: "/tmp/slow.sock".to_string(),
                 started_at_unix: crate::pod::now_unix(),
                 mesh_port: Some(spec.mcp_port),
+                agent_home: Some("/tmp/sess-slow/home".to_string()),
             })
         }
 
@@ -1703,6 +1783,7 @@ mod tests {
             .stop_agent(StopRequest {
                 agent_id: agent.agent_id.clone(),
                 force: false,
+                purge: false,
             })
             .await
             .expect("stop container cli");
@@ -1762,6 +1843,7 @@ mod tests {
             .stop_agent(StopRequest {
                 agent_id: agent.agent_id,
                 force: false,
+                purge: false,
             })
             .await
             .expect("stop container api");
@@ -1815,10 +1897,53 @@ mod tests {
             .stop_agent(StopRequest {
                 agent_id: agent.agent_id,
                 force: true,
+                purge: false,
             })
             .await
             .expect("force stop container local");
         assert_eq!(stopped.status, "stopped");
+    }
+
+    #[tokio::test]
+    async fn container_stop_with_purge_removes_agent_metadata() {
+        let orchestrator = test_container_orchestrator();
+        let agent = orchestrator
+            .launch_agent(LaunchAgentRequest {
+                agent: "shell".to_string(),
+                agent_name: "container-reset".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 30,
+                model: None,
+                trace: true,
+                capabilities: vec!["memory_read".to_string()],
+                dispatch_mode: Some(DispatchMode::Container),
+                container_hookup: Some(ContainerHookupRequest::Cli {
+                    cli_name: "shell".to_string(),
+                    model: None,
+                }),
+            })
+            .await
+            .expect("launch container agent");
+
+        let stopped = orchestrator
+            .stop_agent(StopRequest {
+                agent_id: agent.agent_id.clone(),
+                force: true,
+                purge: true,
+            })
+            .await
+            .expect("purge container agent");
+        assert_eq!(stopped.status, "reset");
+        assert!(stopped.purged);
+        assert!(orchestrator.container_agent_metadata(&agent.agent_id).await.is_none());
+        assert!(
+            orchestrator
+                .list_agents()
+                .await
+                .into_iter()
+                .all(|candidate| candidate.agent_id != agent.agent_id)
+        );
     }
 
     #[tokio::test]
@@ -1949,6 +2074,7 @@ mod tests {
             .stop_agent(StopRequest {
                 agent_id: agent.agent_id,
                 force: false,
+                purge: false,
             })
             .await
             .expect("stop agent");
@@ -2249,12 +2375,14 @@ mod tests {
             .stop_agent(StopRequest {
                 agent_id: first.agent_id,
                 force: true,
+                purge: false,
             })
             .await;
         let _ = orchestrator
             .stop_agent(StopRequest {
                 agent_id: second.agent_id,
                 force: true,
+                purge: false,
             })
             .await;
     }
@@ -2318,6 +2446,7 @@ mod tests {
             .stop_agent(StopRequest {
                 agent_id: stopped_agent.agent_id.clone(),
                 force: true,
+                purge: false,
             })
             .await
             .expect("stop one agent");
@@ -2332,12 +2461,14 @@ mod tests {
             .stop_agent(StopRequest {
                 agent_id: busy_agent.agent_id,
                 force: true,
+                purge: false,
             })
             .await;
         let _ = orchestrator
             .stop_agent(StopRequest {
                 agent_id: idle_agent.agent_id,
                 force: true,
+                purge: false,
             })
             .await;
     }

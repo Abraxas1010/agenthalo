@@ -57,7 +57,9 @@
           <span class="title-status" id="panel-status-${escapeHtml(id)}">active</span>
         </div>
         <div class="cockpit-panel-actions">
+          <button type="button" data-action="new" title="New lane">+</button>
           <button type="button" data-action="maximize" title="Maximize">□</button>
+          <button type="button" data-action="reset" title="Reset agent" class="is-hidden">↺</button>
           <button type="button" data-action="close" title="Close">×</button>
         </div>`;
       this.body = document.createElement('div');
@@ -67,6 +69,14 @@
       this.el.appendChild(this.body);
 
       header.addEventListener('dblclick', () => this.el.classList.toggle('maximized'));
+      header.querySelector('[data-action="new"]').addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.manager?.toggleNewDropdown(ev.currentTarget, {
+          sourcePanelId: this.id,
+          sourceAgentType: this.agentType || null,
+        });
+      });
       header.querySelector('[data-action="maximize"]').addEventListener('click', () => {
         this.el.classList.toggle('maximized');
       });
@@ -85,6 +95,20 @@
       });
 
       this.installResizeHandles();
+    }
+
+    setResetAction(handler) {
+      const btn = this.el.querySelector('[data-action="reset"]');
+      if (!btn) return;
+      btn.classList.toggle('is-hidden', typeof handler !== 'function');
+      btn.onclick = null;
+      if (typeof handler === 'function') {
+        btn.onclick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          handler();
+        };
+      }
     }
 
     attachChat(agentId, agentType, options = {}) {
@@ -1144,20 +1168,76 @@
       this.topologyChart.update('none');
     }
 
-    async toggleNewDropdown(anchor) {
-      if (this.newDropdown) {
-        this.hideDropdown();
-        return;
+    async fetchAgentState() {
+      const [agentRes, taskRes] = await Promise.all([
+        fetch('/api/orchestrator/agents').catch(() => null),
+        fetch('/api/orchestrator/tasks').catch(() => null),
+      ]);
+      const agentPayload = agentRes && agentRes.ok ? await agentRes.json() : { agents: [] };
+      const taskPayload = taskRes && taskRes.ok ? await taskRes.json() : { tasks: [] };
+      return {
+        agents: Array.isArray(agentPayload.agents) ? agentPayload.agents : [],
+        tasks: Array.isArray(taskPayload.tasks) ? taskPayload.tasks : [],
+      };
+    }
+
+    async attachExistingAgent(agentId) {
+      const { agents, tasks } = await this.fetchAgentState();
+      const agent = agents.find((item) => item && item.agent_id === agentId);
+      if (!agent) throw new Error(`Unknown agent ${agentId}`);
+      const history = tasks.filter((task) => task && task.agent_id === agentId);
+      this.attachChatSession(agent, history);
+    }
+
+    async resetChatAgent(sessionId) {
+      const entry = this.sessions.get(sessionId);
+      const agentId = entry?.agentId || entry?.panel?.agentId;
+      if (!agentId) return;
+      const res = await fetch('/api/orchestrator/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_id: agentId, force: true, purge: true }),
+      });
+      if (!res.ok) {
+        throw await buildApiError(res, '/api/orchestrator/stop');
       }
+      this.detachSession(sessionId, true);
+    }
+
+    async buildNewDropdownSections(context = {}) {
+      const sourceAgentType = String(context.sourceAgentType || '').trim().toLowerCase();
+      const { agents } = await this.fetchAgentState();
+      const persistentAgents = agents
+        .filter((agent) => this.isChatAgent(agent))
+        .sort((left, right) => {
+          const leftMatch = String(left?.agent_type || '').toLowerCase() === sourceAgentType ? -1 : 0;
+          const rightMatch = String(right?.agent_type || '').toLowerCase() === sourceAgentType ? -1 : 0;
+          if (leftMatch !== rightMatch) return leftMatch - rightMatch;
+          return String(left?.agent_name || left?.agent_id || '').localeCompare(String(right?.agent_name || right?.agent_id || ''));
+        });
       const sections = [
         {
-          title: 'Agent Lanes (API)',
+          title: 'New Agent Lanes',
           items: [
             { id: 'claude', label: 'Claude', detail: 'Anthropic agent — headless API', icon: '⚡', needsPreflight: true },
             { id: 'codex', label: 'Codex', detail: 'OpenAI agent — headless API', icon: '⌁', needsPreflight: true },
             { id: 'gemini', label: 'Gemini', detail: 'Google agent — headless API', icon: '◇', needsPreflight: true },
           ],
         },
+      ];
+      if (persistentAgents.length) {
+        sections.push({
+          title: 'Existing Agents',
+          items: persistentAgents.map((agent) => ({
+            id: `attach:${agent.agent_id}`,
+            label: agent.agent_name || agent.agent_id,
+            detail: `${agent.agent_type} · ${agent.status || 'idle'} · ${(agent.identity_digest || agent.agent_id || '').slice(0, 24)}`,
+            icon: agent.agent_type === 'claude' ? '⚡' : agent.agent_type === 'codex' ? '⌁' : agent.agent_type === 'gemini' ? '◇' : '▣',
+            needsPreflight: false,
+          })),
+        });
+      }
+      sections.push(
         {
           title: 'Terminals',
           items: [
@@ -1176,7 +1256,16 @@
             { id: 'log', label: 'Log Stream', detail: 'Live event feed', icon: '📜', needsPreflight: false },
           ],
         },
-      ];
+      );
+      return sections;
+    }
+
+    async toggleNewDropdown(anchor, context = {}) {
+      if (this.newDropdown) {
+        this.hideDropdown();
+        return;
+      }
+      const sections = await this.buildNewDropdownSections(context);
       const menu = document.createElement('div');
       menu.className = 'cockpit-new-dropdown';
       menu.innerHTML = sections.map((section) => `
@@ -1203,7 +1292,12 @@
         const item = ev.target.closest('[data-agent]');
         if (!item) return;
         try {
-          await this.createFromPreset(item.dataset.agent);
+          const target = String(item.dataset.agent || '');
+          if (target.startsWith('attach:')) {
+            await this.attachExistingAgent(target.slice('attach:'.length));
+          } else {
+            await this.createFromPreset(target);
+          }
         } catch (e) {
           if (!(typeof window.trySetupRedirect === 'function' && window.trySetupRedirect(e, item.dataset.agent, 'cockpit'))) {
             alert(`Launch failed: ${e.message || e}`);
@@ -1344,12 +1438,16 @@
 
     attachChatSession(agent, tasks) {
       const panelId = this.chatPanelId(agent.agent_id);
-      if (this.sessions.has(panelId)) return panelId;
+      if (this.sessions.has(panelId)) {
+        this.activateTab(panelId);
+        return panelId;
+      }
 
       const panel = new CockpitPanel(panelId, 'chat', `${agent.agent_type}:${agent.agent_id.slice(0, 8)}`, this);
       panel.agentType = agent.agent_type;
       const tab = this.createTab(panelId, agent.agent_type || 'agent');
-      panel.el.querySelector('[data-action="close"]').addEventListener('click', () => this.destroySession(panelId));
+      panel.el.querySelector('[data-action="close"]').addEventListener('click', () => this.detachSession(panelId, true));
+      panel.setResetAction(() => this.resetChatAgent(panelId));
       panel.attachChat(agent.agent_id, agent.agent_type, {
         history: this.buildChatHistory(tasks),
         workingDir: agent.working_dir,
@@ -1609,9 +1707,12 @@
       });
       tab.addEventListener('contextmenu', (ev) => {
         ev.preventDefault();
+        const entry = this.sessions.get(sessionId);
+        const isChat = entry?.panel?.type === 'chat';
         showContextMenu(ev.clientX, ev.clientY, [
-          { label: 'Close', onClick: () => this.destroySession(sessionId) },
+          { label: isChat ? 'Close Panel' : 'Close', onClick: () => isChat ? this.detachSession(sessionId, true) : this.destroySession(sessionId) },
           { label: 'Restart', onClick: () => this.restartSession(sessionId) },
+          ...(isChat ? [{ label: 'Reset Agent', onClick: () => this.resetChatAgent(sessionId) }] : []),
           { label: 'Export', onClick: () => this.sessions.get(sessionId)?.panel?.exportLog() },
           { label: 'Detach', onClick: () => this.detachSession(sessionId) },
         ]);
@@ -1656,14 +1757,14 @@
         hint.className = 'cockpit-empty-hint';
         hint.innerHTML = `
           <div class="empty-hint-title">No active sessions.</div>
-          <div class="empty-hint-subtitle">Launch an agent via headless API dispatch, or open a shell terminal. Use <b>+ New</b> for additional panels.</div>
+          <div class="empty-hint-subtitle">Launch a new agent lane, attach an existing persistent agent, or open a shell terminal. Use <b>+ New</b> for additional panels.</div>
           <div class="empty-hint-actions">
             <button type="button" class="btn btn-sm btn-primary" data-launch-agent="claude">Start Claude</button>
             <button type="button" class="btn btn-sm" data-launch-agent="codex">Start Codex</button>
             <button type="button" class="btn btn-sm" data-launch-agent="gemini">Start Gemini</button>
             <button type="button" class="btn btn-sm" data-launch-agent="shell">Shell</button>
           </div>
-          <div class="empty-hint-note">Agent lanes use the orchestrator API with structured JSON I/O. Shell opens an interactive PTY terminal.</div>
+          <div class="empty-hint-note">Agent lanes use the orchestrator API with structured JSON I/O and persistent trace identity. Shell opens an interactive PTY terminal.</div>
         `;
         hint.querySelectorAll('[data-launch-agent]').forEach((btn) => {
           btn.addEventListener('click', async (ev) => {
@@ -1717,16 +1818,6 @@
     async destroySession(sessionId) {
       const entry = this.sessions.get(sessionId);
       if (entry && entry.panel.type === 'chat') {
-        const agentId = entry.agentId || entry.panel.agentId;
-        const res = await fetch('/api/orchestrator/stop', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent_id: agentId, force: true }),
-        });
-        if (!res.ok) {
-          alert(`Failed to stop agent ${agentId}`);
-          return;
-        }
         this.detachSession(sessionId, true);
         return;
       }
@@ -1759,7 +1850,7 @@
       if (!entry) return;
       if (entry.panel.type === 'chat') {
         const agentType = entry.panel.agentType || 'claude';
-        await this.destroySession(sessionId);
+        await this.resetChatAgent(sessionId);
         await this.launchAgentChat(agentType);
         return;
       }

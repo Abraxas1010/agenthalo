@@ -116,6 +116,8 @@ pub struct SessionInfo {
     pub pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_home: Option<PathBuf>,
 }
 
 fn now_unix_secs() -> u64 {
@@ -150,8 +152,44 @@ fn direct_mcp_server_command(command: &[String]) -> bool {
         .unwrap_or(false)
 }
 
+fn apply_direct_mcp_defaults(
+    session_id: &str,
+    agent_id: &str,
+    agent_home: &Path,
+    env_vars: &mut Vec<(String, String)>,
+) -> bool {
+    if !env_contains(env_vars, "AGENTHALO_HOME") {
+        env_vars.push((
+            "AGENTHALO_HOME".to_string(),
+            agent_home.display().to_string(),
+        ));
+    }
+    if !env_contains(env_vars, "AGENTHALO_SESSION_ID") {
+        env_vars.push(("AGENTHALO_SESSION_ID".to_string(), session_id.to_string()));
+    }
+    if !env_contains(env_vars, "AGENTHALO_AGENT_ID") {
+        env_vars.push(("AGENTHALO_AGENT_ID".to_string(), agent_id.to_string()));
+    }
+    if !env_contains(env_vars, "AGENTHALO_MCP_HOST") {
+        env_vars.push(("AGENTHALO_MCP_HOST".to_string(), "127.0.0.1".to_string()));
+    }
+    if let Some(secret) = mesh_auth_token() {
+        if !env_contains(env_vars, "AGENTHALO_MCP_SECRET") {
+            env_vars.push(("AGENTHALO_MCP_SECRET".to_string(), secret.clone()));
+        }
+        if !env_contains(env_vars, "NUCLEUSDB_MESH_AUTH_TOKEN") {
+            env_vars.push(("NUCLEUSDB_MESH_AUTH_TOKEN".to_string(), secret));
+        }
+    }
+    true
+}
+
 fn session_dir(session_id: &str) -> PathBuf {
     run_dir().join(session_id)
+}
+
+fn session_home_dir(session_id: &str) -> PathBuf {
+    session_dir(session_id).join("home")
 }
 
 fn pid_is_alive(pid: u32) -> bool {
@@ -201,6 +239,9 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
     let log_path = dir.join("process.log");
 
     let mut env_vars = cfg.env_vars.clone();
+    let agent_home = session_home_dir(&session_id);
+    std::fs::create_dir_all(&agent_home)
+        .map_err(|e| format!("failed to create agent home {}: {e}", agent_home.display()))?;
     let mut mesh_port_out: Option<u16> = None;
     if let Some(mesh_cfg) = &cfg.mesh {
         if mesh_cfg.enabled {
@@ -241,17 +282,7 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
     }
 
     if direct_mcp_server_command(&cfg.command) {
-        if !env_contains(&env_vars, "AGENTHALO_MCP_HOST") {
-            env_vars.push(("AGENTHALO_MCP_HOST".to_string(), "127.0.0.1".to_string()));
-        }
-        if let Some(secret) = mesh_auth_token() {
-            if !env_contains(&env_vars, "AGENTHALO_MCP_SECRET") {
-                env_vars.push(("AGENTHALO_MCP_SECRET".to_string(), secret.clone()));
-            }
-            if !env_contains(&env_vars, "NUCLEUSDB_MESH_AUTH_TOKEN") {
-                env_vars.push(("NUCLEUSDB_MESH_AUTH_TOKEN".to_string(), secret));
-            }
-        }
+        apply_direct_mcp_defaults(&session_id, &cfg.agent_id, &agent_home, &mut env_vars);
     }
 
     let (entrypoint, args) = cfg
@@ -300,6 +331,7 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
         mesh_port: mesh_port_out,
         pid: Some(child.id()),
         log_path: Some(log_path),
+        agent_home: Some(agent_home),
     };
     std::fs::write(
         metadata_path(&session_id),
@@ -393,4 +425,33 @@ pub fn ensure_sidecar_binary(path: &Path) -> Result<(), String> {
         "native sidecar binary missing at {}",
         path.display()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_direct_mcp_defaults_sets_isolated_home_and_identity_env() {
+        let mut env_vars = Vec::new();
+        let home = std::env::temp_dir().join("agenthalo-test-home");
+        apply_direct_mcp_defaults("sess-123", "agent-456", &home, &mut env_vars);
+        let as_map = env_vars.into_iter().collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            as_map.get("AGENTHALO_HOME").map(String::as_str),
+            Some(home.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            as_map.get("AGENTHALO_SESSION_ID").map(String::as_str),
+            Some("sess-123")
+        );
+        assert_eq!(
+            as_map.get("AGENTHALO_AGENT_ID").map(String::as_str),
+            Some("agent-456")
+        );
+        assert_eq!(
+            as_map.get("AGENTHALO_MCP_HOST").map(String::as_str),
+            Some("127.0.0.1")
+        );
+    }
 }

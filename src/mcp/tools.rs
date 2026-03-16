@@ -457,12 +457,21 @@ pub struct OrchestratorAgentView {
     pub total_cost_usd: f64,
     pub capabilities: Vec<String>,
     pub launched_at: u64,
+    pub working_dir: Option<String>,
+    pub container_session_id: Option<String>,
+    pub container_id: Option<String>,
+    pub lock_state: Option<String>,
+    pub peer_agent_id: Option<String>,
+    pub trace_session_id: Option<String>,
+    pub agent_home: Option<String>,
+    pub identity_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OrchestratorStopRequest {
     pub agent_id: String,
     pub force: Option<bool>,
+    pub purge: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -471,6 +480,7 @@ pub struct OrchestratorStopResponse {
     pub status: String,
     pub trace_session_id: Option<String>,
     pub attestation_ready: bool,
+    pub purged: bool,
 }
 
 // ── Mesh tool request/response types ────────────────────────────────
@@ -6106,9 +6116,10 @@ impl NucleusDbMcpService {
         }
         let orchestrator = { self.state.lock().await.orchestrator.clone() };
         let agents = orchestrator.list_agents().await;
-        let views = agents
-            .into_iter()
-            .map(|a| OrchestratorAgentView {
+        let mut views = Vec::with_capacity(agents.len());
+        for a in agents {
+            let metadata = orchestrator.container_agent_metadata(&a.agent_id).await;
+            views.push(OrchestratorAgentView {
                 agent_id: a.agent_id,
                 agent_name: a.agent_name,
                 agent_type: a.agent_type,
@@ -6123,8 +6134,16 @@ impl NucleusDbMcpService {
                 total_cost_usd: a.total_cost_usd,
                 capabilities: a.capabilities,
                 launched_at: a.launched_at,
-            })
-            .collect();
+                working_dir: a.working_dir,
+                container_session_id: metadata.as_ref().map(|meta| meta.session_id.clone()),
+                container_id: metadata.as_ref().map(|meta| meta.container_id.clone()),
+                lock_state: metadata.as_ref().map(|meta| meta.lock_state.clone()),
+                peer_agent_id: metadata.as_ref().map(|meta| meta.peer_agent_id.clone()),
+                trace_session_id: metadata.as_ref().and_then(|meta| meta.trace_session_id.clone()),
+                agent_home: metadata.as_ref().and_then(|meta| meta.agent_home.clone()),
+                identity_digest: metadata.as_ref().map(|meta| meta.identity_digest.clone()),
+            });
+        }
         Ok(Json(OrchestratorListResponse { agents: views }))
     }
 
@@ -6241,6 +6260,7 @@ impl NucleusDbMcpService {
             .stop_agent(OrchStopRequest {
                 agent_id: req.agent_id,
                 force: req.force.unwrap_or(false),
+                purge: req.purge.unwrap_or(false),
             })
             .await
             .map_err(|e| McpError::invalid_params(e, None))?;
@@ -6249,6 +6269,7 @@ impl NucleusDbMcpService {
             status: stopped.status,
             trace_session_id: stopped.trace_session_id,
             attestation_ready: stopped.attestation_ready,
+            purged: stopped.purged,
         }))
     }
 
@@ -6866,6 +6887,7 @@ mod tests {
                 mesh_port: Some(3000 + idx as u16),
                 pid: None,
                 log_path: None,
+                agent_home: Some(std::env::temp_dir().join(format!("hang-home-{idx}"))),
             };
             std::fs::write(
                 path,
@@ -7026,6 +7048,7 @@ mod tests {
                 mesh_port: Some(3000),
                 pid: None,
                 log_path: None,
+                agent_home: Some(session_dir.join("home")),
             })
             .expect("encode session"),
         )
@@ -7221,6 +7244,7 @@ mod tests {
                     mesh_port: Some(3000),
                     pid: None,
                     log_path: None,
+                    agent_home: Some(session_dir.join("home")),
                 })
                 .expect("encode session"),
             )
@@ -7329,6 +7353,7 @@ mod tests {
             .orchestrator_stop(Parameters(OrchestratorStopRequest {
                 agent_id: operator.agent_id.clone(),
                 force: Some(true),
+                purge: Some(false),
             }))
             .await;
         let _ = std::fs::remove_dir_all(run_dir.join(unowned_session_id));
@@ -7385,6 +7410,7 @@ mod tests {
                 mesh_port: None,
                 pid: None,
                 log_path: None,
+                agent_home: Some(session_dir.join("home")),
             })
             .expect("encode session"),
         )
@@ -7445,6 +7471,7 @@ mod tests {
             .orchestrator_stop(Parameters(OrchestratorStopRequest {
                 agent_id: operator.agent_id.clone(),
                 force: Some(true),
+                purge: Some(false),
             }))
             .await;
         let _ = std::fs::remove_dir_all(session_dir);
@@ -7509,6 +7536,7 @@ mod tests {
                 mesh_port: Some(port),
                 pid: None,
                 log_path: None,
+                agent_home: Some(session_dir.join("home")),
             })
             .expect("encode session"),
         )
@@ -7544,6 +7572,7 @@ mod tests {
             .orchestrator_stop(Parameters(OrchestratorStopRequest {
                 agent_id: operator.agent_id.clone(),
                 force: Some(true),
+                purge: Some(false),
             }))
             .await;
         let _ = std::fs::remove_file(session_path);
@@ -7620,6 +7649,7 @@ mod tests {
             .stop_agent(crate::orchestrator::StopRequest {
                 agent_id: launched.agent_id,
                 force: true,
+                purge: false,
             })
             .await;
         cleanup_db_files(&db_path);
@@ -7665,6 +7695,7 @@ mod tests {
             .orchestrator_stop(Parameters(OrchestratorStopRequest {
                 agent_id: operator.agent_id.clone(),
                 force: Some(true),
+                purge: Some(false),
             }))
             .await;
         cleanup_db_files(&db_path);
