@@ -32,7 +32,7 @@ DEFAULT_AGENTHALO_HOME = Path(
 ).resolve()
 DEFAULT_NUCLEUSDB_ROOT = Path(os.environ.get(
     "NUCLEUSDB_ROOT",
-    str(AGENTHALO_ROOT) if AGENTHALO_ROOT.exists() else "/home/abraxas/Work/nucleusdb",
+    str(AGENTHALO_ROOT) if AGENTHALO_ROOT.exists() else "/home/abraxas/Work/agenthalo",
 ))
 
 _BUNDLED_ARTIFACT_ROOT = AGENTHALO_ROOT / "artifacts" / "living_agent"
