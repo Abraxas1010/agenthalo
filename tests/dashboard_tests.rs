@@ -276,6 +276,139 @@ async fn api_unknown_route_returns_json_404_payload() {
 }
 
 #[tokio::test]
+async fn api_proof_gate_status_reports_dynamic_counts() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let cert_dir = home.path().join("certs");
+    std::fs::create_dir_all(&cert_dir).expect("cert dir");
+    std::fs::write(
+        cert_dir.join("sample.lean4export"),
+        "#THM T.Sample\n#AX propext\n",
+    )
+    .expect("write cert");
+    let cfg_path = home.path().join("proof_gate.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::to_vec_pretty(&json!({
+            "certificate_dir": cert_dir,
+            "enabled": false,
+            "requirements": {
+                "tool_a": [{
+                    "tool_name": "tool_a",
+                    "required_theorem": "T.Sample",
+                    "description": "sample theorem",
+                    "enforced": false,
+                    "require_signature": false
+                }]
+            }
+        }))
+        .expect("serialize proof gate config"),
+    )
+    .expect("write proof gate config");
+    let _cfg_guard = EnvVarGuard::set(
+        "NUCLEUSDB_PROOF_GATE_CONFIG",
+        Some(cfg_path.to_str().expect("utf8 cfg path")),
+    );
+    let (state, db_path) = test_state("proof_gate_status");
+    let (status, body) = api_get(state, "/proof-gate/status").await;
+    assert_eq!(status, StatusCode::OK, "proof gate status failed: {body}");
+    assert_eq!(body["tool_count"], 1);
+    assert_eq!(body["requirement_count"], 1);
+    assert_eq!(body["certificate_count"], 1);
+    assert_eq!(body["tools"][0]["tool_name"], "tool_a");
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_proof_gate_toggle_master_persists_mutable_config() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let cfg_path = home.path().join("proof_gate.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::to_vec_pretty(&json!({
+            "certificate_dir": home.path().join("certs"),
+            "enabled": false,
+            "requirements": {}
+        }))
+        .expect("serialize proof gate config"),
+    )
+    .expect("write proof gate config");
+    let _cfg_guard = EnvVarGuard::set(
+        "NUCLEUSDB_PROOF_GATE_CONFIG",
+        Some(cfg_path.to_str().expect("utf8 cfg path")),
+    );
+    let (state, db_path) = test_state("proof_gate_toggle_master");
+    let (status, body) =
+        api_post(state, "/proof-gate/toggle-master", json!({"enabled": true})).await;
+    assert_eq!(status, StatusCode::OK, "toggle master failed: {body}");
+    let raw = std::fs::read_to_string(&cfg_path).expect("read cfg");
+    let parsed: Value = serde_json::from_str(&raw).expect("parse cfg");
+    assert_eq!(parsed["enabled"], true);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn api_proof_gate_submit_and_delete_certificate_roundtrip() {
+    let _guard = lock_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let cert_dir = home.path().join("certs");
+    let cfg_path = home.path().join("proof_gate.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::to_vec_pretty(&json!({
+            "certificate_dir": cert_dir,
+            "enabled": false,
+            "requirements": {}
+        }))
+        .expect("serialize proof gate config"),
+    )
+    .expect("write proof gate config");
+    let _cfg_guard = EnvVarGuard::set(
+        "NUCLEUSDB_PROOF_GATE_CONFIG",
+        Some(cfg_path.to_str().expect("utf8 cfg path")),
+    );
+    let (state, db_path) = test_state("proof_gate_submit_delete");
+    let cert_body = "#THM T.Uploaded\n#AX propext\n";
+    let (submit_status, submit_body) = api_post(
+        state.clone(),
+        "/proof-gate/submit-cert",
+        json!({
+            "filename": "uploaded.lean4export",
+            "content": cert_body
+        }),
+    )
+    .await;
+    assert_eq!(
+        submit_status,
+        StatusCode::OK,
+        "submit proof gate cert failed: {submit_body}"
+    );
+    let (list_status, list_body) = api_get(state.clone(), "/proof-gate/certificates").await;
+    assert_eq!(
+        list_status,
+        StatusCode::OK,
+        "list certificates failed: {list_body}"
+    );
+    assert_eq!(list_body["count"], 1);
+    let cert_id = list_body["certificates"][0]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(!cert_id.is_empty());
+
+    let (delete_status, delete_body) =
+        api_delete(state, &format!("/proof-gate/certificate/{cert_id}")).await;
+    assert_eq!(
+        delete_status,
+        StatusCode::OK,
+        "delete certificate failed: {delete_body}"
+    );
+    assert!(!cert_dir.join(cert_id).exists());
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn api_alias_and_summary_routes_return_json() {
     let (state, db_path) = test_state("api_alias_routes");
     // Routes that should return 200 OK with JSON.

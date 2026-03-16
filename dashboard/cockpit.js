@@ -188,15 +188,49 @@
     }
 
     attachLogStream() {
-      this.body.innerHTML = '<pre class="cockpit-log-stream"></pre>';
+      this.body.innerHTML = `
+        <div class="cockpit-log-toolbar">
+          <select class="input cockpit-log-filter">
+            <option value="all">All severities</option>
+            <option value="info">Info</option>
+            <option value="warn">Warn</option>
+            <option value="error">Error</option>
+          </select>
+          <input class="input cockpit-log-search" placeholder="Filter log text">
+        </div>
+        <pre class="cockpit-log-stream"></pre>
+      `;
       const out = this.body.querySelector('.cockpit-log-stream');
+      const filterEl = this.body.querySelector('.cockpit-log-filter');
+      const searchEl = this.body.querySelector('.cockpit-log-search');
+      this.logEntries = [];
+      const classify = (label, payload) => {
+        const hay = `${label} ${payload || ''}`.toLowerCase();
+        if (hay.includes('error') || hay.includes('failed')) return 'error';
+        if (hay.includes('warn')) return 'warn';
+        return 'info';
+      };
+      const renderLog = () => {
+        const severity = filterEl?.value || 'all';
+        const query = String(searchEl?.value || '').trim().toLowerCase();
+        const lines = this.logEntries
+          .filter((entry) => severity === 'all' || entry.severity === severity)
+          .filter((entry) => !query || entry.line.toLowerCase().includes(query))
+          .map((entry) => entry.line);
+        out.textContent = lines.join('');
+        out.scrollTop = out.scrollHeight;
+      };
       const writeLine = (label, payload) => {
         const ts = new Date().toLocaleTimeString();
         const line = `[${ts}] ${label} ${payload || ''}\n`;
         this.logBuffer += line;
-        out.textContent += line;
-        out.scrollTop = out.scrollHeight;
+        this.logEntries.push({ severity: classify(label, payload), line });
+        if (this.logEntries.length > 600) this.logEntries.shift();
+        renderLog();
       };
+
+      filterEl?.addEventListener('change', renderLog);
+      searchEl?.addEventListener('input', renderLog);
 
       writeLine('log', 'connected');
       try {
@@ -213,28 +247,111 @@
       this.body.innerHTML = `
         <div class="cockpit-metrics">
           <div class="metric-row"><span>Sessions</span><span id="metric-sessions-${escapeHtml(this.id)}">0</span></div>
-          <div class="metric-row"><span>Input Tokens</span><span id="metric-in-${escapeHtml(this.id)}">0</span></div>
-          <div class="metric-row"><span>Output Tokens</span><span id="metric-out-${escapeHtml(this.id)}">0</span></div>
-          <div class="metric-row"><span>Estimated Cost</span><span id="metric-cost-${escapeHtml(this.id)}">$0.00</span></div>
+          <div class="metric-row"><span>Total Tokens</span><span id="metric-in-${escapeHtml(this.id)}">0</span></div>
+          <div class="metric-row"><span>Resolved Models</span><span id="metric-out-${escapeHtml(this.id)}">0</span></div>
+          <div class="metric-row"><span>Total Cost</span><span id="metric-cost-${escapeHtml(this.id)}">$0.00</span></div>
+          <div class="metric-row"><span>Telemetry</span><span id="metric-mode-${escapeHtml(this.id)}">estimated</span></div>
+        </div>
+        <div class="cockpit-metric-charts">
+          <div class="cockpit-metric-chart-card">
+            <div class="card-sub">Session sparkline</div>
+            <canvas id="metric-sessions-chart-${escapeHtml(this.id)}" height="80"></canvas>
+          </div>
+          <div class="cockpit-metric-chart-card">
+            <div class="card-sub">Cost sparkline</div>
+            <canvas id="metric-cost-chart-${escapeHtml(this.id)}" height="80"></canvas>
+          </div>
         </div>
       `;
+      this.metricHistory = [];
+      this.sessionChartEl = this.body.querySelector(`#metric-sessions-chart-${CSS.escape(this.id)}`);
+      this.costChartEl = this.body.querySelector(`#metric-cost-chart-${CSS.escape(this.id)}`);
     }
 
     updateMetrics(rows) {
       if (this.type !== 'metrics') return;
       const list = Array.isArray(rows) ? rows : [];
       const sessions = list.length;
-      const input = list.reduce((acc, s) => acc + Number(s.estimated_input_tokens || 0), 0);
-      const output = list.reduce((acc, s) => acc + Number(s.estimated_output_tokens || 0), 0);
-      const cost = list.reduce((acc, s) => acc + Number(s.estimated_cost_usd || 0), 0);
+      const input = list.reduce((acc, s) => {
+        const actual = Number(s.actual_total_tokens || 0);
+        const estimated =
+          Number(s.estimated_input_tokens || 0) +
+          Number(s.estimated_output_tokens || 0);
+        return acc + (actual > 0 ? actual : estimated);
+      }, 0);
+      const resolvedModels = new Set(
+        list.map((s) => String(s.resolved_model || '')).filter(Boolean),
+      );
+      const cost = list.reduce((acc, s) => {
+        const actual = Number(s.actual_total_cost_usd || 0);
+        const estimated = Number(s.estimated_cost_usd || 0);
+        return acc + (actual > 0 ? actual : estimated);
+      }, 0);
+      const actualCount = list.filter((s) => Number(s.actual_total_tokens || 0) > 0).length;
+      const mode = actualCount > 0 ? `actual ${actualCount}/${sessions}` : 'estimated';
       const setText = (id, text) => {
         const el = this.body.querySelector(id);
         if (el) el.textContent = text;
       };
       setText(`#metric-sessions-${CSS.escape(this.id)}`, String(sessions));
       setText(`#metric-in-${CSS.escape(this.id)}`, String(input));
-      setText(`#metric-out-${CSS.escape(this.id)}`, String(output));
+      setText(`#metric-out-${CSS.escape(this.id)}`, String(resolvedModels.size));
       setText(`#metric-cost-${CSS.escape(this.id)}`, formatUsd(cost));
+      setText(`#metric-mode-${CSS.escape(this.id)}`, mode);
+      this.metricHistory.push({
+        label: new Date().toLocaleTimeString(),
+        sessions,
+        cost,
+      });
+      if (this.metricHistory.length > 24) this.metricHistory.shift();
+      this.updateMetricCharts();
+    }
+
+    updateMetricCharts() {
+      if (typeof Chart === 'undefined') return;
+      const labels = this.metricHistory.map((point) => point.label);
+      const sessionValues = this.metricHistory.map((point) => point.sessions);
+      const costValues = this.metricHistory.map((point) => point.cost);
+      const baseOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { display: false },
+          y: { display: false, beginAtZero: true },
+        },
+        elements: { point: { radius: 0 }, line: { tension: 0.25 } },
+      };
+      if (!this.sessionSparkline && this.sessionChartEl) {
+        this.sessionSparkline = new Chart(this.sessionChartEl, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{ data: sessionValues, borderColor: '#00ff41', backgroundColor: 'rgba(0,255,65,0.18)', fill: true }],
+          },
+          options: baseOptions,
+        });
+      }
+      if (!this.costSparkline && this.costChartEl) {
+        this.costSparkline = new Chart(this.costChartEl, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{ data: costValues, borderColor: '#ffb830', backgroundColor: 'rgba(255,184,48,0.18)', fill: true }],
+          },
+          options: baseOptions,
+        });
+      }
+      if (this.sessionSparkline) {
+        this.sessionSparkline.data.labels = labels;
+        this.sessionSparkline.data.datasets[0].data = sessionValues;
+        this.sessionSparkline.update('none');
+      }
+      if (this.costSparkline) {
+        this.costSparkline.data.labels = labels;
+        this.costSparkline.data.datasets[0].data = costValues;
+        this.costSparkline.update('none');
+      }
     }
 
     installResizeHandles() {
@@ -449,6 +566,12 @@
       if (this.term) {
         try { this.term.dispose(); } catch (_e) {}
       }
+      if (this.sessionSparkline) {
+        try { this.sessionSparkline.destroy(); } catch (_e) {}
+      }
+      if (this.costSparkline) {
+        try { this.costSparkline.destroy(); } catch (_e) {}
+      }
       this.el.remove();
     }
   }
@@ -627,7 +750,10 @@
         const row = byId.get(id);
         if (!row) return;
         this.updateTabStatus(id, row.status || {});
-        this.updateTabCost(id, Number(row.estimated_cost_usd || 0));
+        this.updateTabCost(
+          id,
+          Number(row.actual_total_cost_usd || row.estimated_cost_usd || 0),
+        );
       });
 
       this.sessions.forEach((entry) => {
@@ -1142,8 +1268,8 @@
       panel.attachTerminal(session.id, session.ws_url, (statusMsg) => this.updateTabStatus(session.id, statusMsg));
 
       this.gridEl.appendChild(panel.el);
-      this.sessions.set(session.id, { panel, tab, status: session.status || { state: 'active' }, cost: Number(session.estimated_cost_usd || 0) });
-      this.updateTabCost(session.id, Number(session.estimated_cost_usd || 0));
+      this.sessions.set(session.id, { panel, tab, status: session.status || { state: 'active' }, cost: Number(session.actual_total_cost_usd || session.estimated_cost_usd || 0) });
+      this.updateTabCost(session.id, Number(session.actual_total_cost_usd || session.estimated_cost_usd || 0));
       this.activateTab(session.id);
       if (this.sessions.size === 2 && this.layout === '1') {
         this.setLayout('2h');

@@ -479,13 +479,18 @@ pub fn submit_certificate(path: &Path) -> Result<PathBuf, String> {
         }
     }
 
-    crate::config::ensure_proof_certificates_dir()?;
+    std::fs::create_dir_all(&gate.certificate_dir).map_err(|e| {
+        format!(
+            "create proof certificate dir {}: {e}",
+            gate.certificate_dir.display()
+        )
+    })?;
     let base = path
         .file_name()
         .and_then(|s| s.to_str())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("certificate.lean4export");
-    let dest = crate::config::proof_certificates_dir().join(base);
+    let dest = gate.certificate_dir.join(base);
     std::fs::copy(path, &dest).map_err(|e| {
         format!(
             "copy certificate {} -> {}: {e}",

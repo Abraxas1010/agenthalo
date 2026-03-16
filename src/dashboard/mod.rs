@@ -59,6 +59,25 @@ pub struct DashboardState {
     pub governor_registry: Arc<crate::halo::governor_registry::GovernorRegistry>,
     /// Live proxy admission/runtime telemetry wrapper.
     pub proxy_governor: Arc<crate::halo::proxy::ProxyGovernorRuntime>,
+    /// First-run password/bootstrap behavior for this dashboard process.
+    pub bootstrap_mode: DashboardBootstrapMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DashboardBootstrapMode {
+    Required,
+    Optional,
+    Disabled,
+}
+
+impl DashboardBootstrapMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Optional => "optional",
+            Self::Disabled => "disabled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +206,15 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         }
         .expect("dashboard-local MCP service should initialize"),
     );
+    let bootstrap_mode = match std::env::var("AGENTHALO_DASHBOARD_BOOTSTRAP_MODE")
+        .unwrap_or_else(|_| "disabled".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "required" => DashboardBootstrapMode::Required,
+        "optional" => DashboardBootstrapMode::Optional,
+        _ => DashboardBootstrapMode::Disabled,
+    };
 
     DashboardState {
         db_path,
@@ -210,6 +238,7 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         mcp_service,
         governor_registry,
         proxy_governor,
+        bootstrap_mode,
     }
 }
 

@@ -36,6 +36,14 @@ pub struct SessionInfo {
     pub estimated_output_tokens: u64,
     #[serde(default)]
     pub estimated_cost_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_total_cost_usd: Option<f64>,
     #[serde(default)]
     pub runtime_secs: u64,
     #[serde(default)]

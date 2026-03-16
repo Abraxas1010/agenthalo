@@ -309,6 +309,12 @@ pub fn mark_local_models_chosen() -> Result<(), String> {
     save_config(&cfg)
 }
 
+pub fn clear_local_models_chosen() -> Result<(), String> {
+    let mut cfg = load_or_default();
+    cfg.local_models_chosen = false;
+    save_config(&cfg)
+}
+
 pub fn save_config(cfg: &LocalModelsConfig) -> Result<(), String> {
     config::ensure_halo_dir()?;
     let path = config::local_models_config_path();

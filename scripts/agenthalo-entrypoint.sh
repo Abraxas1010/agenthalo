@@ -8,12 +8,14 @@ WDK_PORT="${WDK_PORT:-7321}"
 DASHBOARD_PORT="${AGENTHALO_DASHBOARD_PORT:-3100}"
 MCP_PORT="${AGENTHALO_MCP_PORT:-8390}"
 NUCLEUSDB_PORT="${NUCLEUSDB_PORT:-8088}"
+PASSWORD_BOOTSTRAP_MODE="${AGENTHALO_PASSWORD_BOOTSTRAP_MODE:-disabled}"
 LOG_DIR="${AGENTHALO_HOME:-/data}/logs"
 NOMIC_MODEL_DIR="${NOMIC_MODEL_DIR:-/opt/models/nomic-embed-text}"
 EMBEDDINGS_REQUIRED="${AGENTHALO_REQUIRE_EMBEDDING_MODEL:-0}"
 
 export AGENTHALO_DASHBOARD_HOST="${AGENTHALO_DASHBOARD_HOST:-0.0.0.0}"
 export AGENTHALO_MCP_HOST="${AGENTHALO_MCP_HOST:-0.0.0.0}"
+export AGENTHALO_DASHBOARD_BOOTSTRAP_MODE="${PASSWORD_BOOTSTRAP_MODE}"
 
 if [[ -z "${WDK_AUTH_TOKEN:-}" ]]; then
   WDK_AUTH_TOKEN="$(openssl rand -hex 32)"
@@ -157,6 +159,7 @@ log " NYM_FAIL_OPEN:  ${NYM_FAIL_OPEN:-false}"
 log " SOCKS5_PROXY:   ${SOCKS5_PROXY:-not set}"
 log " Dashboard:      ${DASHBOARD_PORT}"
 log " MCP:            ${MCP_PORT}"
+log " Bootstrap:      ${PASSWORD_BOOTSTRAP_MODE}"
 log "============================================"
 
 if [[ -S /var/run/docker.sock ]]; then
@@ -320,7 +323,11 @@ wait_for_port "NucleusDB" "${NUCLEUSDB_PORT}" 15
 start_bg "mcp" "${LOG_DIR}/mcp.log" agenthalo-mcp-server
 wait_for_http "MCP server" "http://127.0.0.1:${MCP_PORT}/health" 20
 
-start_bg "dashboard" "${LOG_DIR}/dashboard.log" agenthalo dashboard --port "${DASHBOARD_PORT}" --no-open
+dashboard_args=(dashboard --port "${DASHBOARD_PORT}" --no-open)
+if [[ "${PASSWORD_BOOTSTRAP_MODE}" == "required" ]]; then
+  dashboard_args+=(--password-protected)
+fi
+start_bg "dashboard" "${LOG_DIR}/dashboard.log" agenthalo "${dashboard_args[@]}"
 wait_for_http "Dashboard" "http://127.0.0.1:${DASHBOARD_PORT}/api/status" 30
 
 log "============================================"

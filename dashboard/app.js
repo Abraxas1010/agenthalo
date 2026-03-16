@@ -70,26 +70,6 @@ const PROVIDER_INFO = {
   },
 };
 
-// --- OpenRouter OAuth PKCE helpers ---
-function base64urlEncode(buf) {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-function generateCodeVerifier() {
-  const arr = new Uint8Array(48);
-  crypto.getRandomValues(arr);
-  return base64urlEncode(arr);
-}
-
-async function generateCodeChallenge(verifier) {
-  const data = new TextEncoder().encode(verifier);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return base64urlEncode(hash);
-}
-
 function renderMcpToolsPageRoute() {
   if (typeof window.renderMcpToolsPage === "function") {
     window.renderMcpToolsPage();
@@ -152,8 +132,10 @@ const pages = {
   identification: renderIdentificationPage,
   communication: renderCommunicationPage,
   "nucleusdb-docs": renderNucleusDBDocsPage,
-  networking: renderNetworkingPage,
+  networking: renderP2PClawPage,
+  p2pclaw: renderP2PClawPage,
   trust: renderTrust,
+  "proof-gate": renderProofGate,
   nucleusdb: renderNucleusDB,
   cockpit: renderCockpit,
   "mcp-tools": renderMcpToolsPageRoute,
@@ -196,6 +178,17 @@ const NETWORKS = [
   },
 ];
 let _networkingSelected = "p2pclaw";
+let _p2pclawPaperTab = "published";
+let _p2pclawTimers = [];
+
+function clearP2PClawTimers() {
+  _p2pclawTimers.forEach((timer) => {
+    try {
+      clearInterval(timer);
+    } catch (_e) {}
+  });
+  _p2pclawTimers = [];
+}
 
 // Genesis + Overview hub + Identification pages — rendering logic in genesis-docs.js (loaded after app.js)
 function renderGenesisPage() {
@@ -222,504 +215,516 @@ function renderNucleusDBDocsPage() {
     content.innerHTML =
       '<div class="loading">NucleusDB docs module not loaded.</div>';
 }
-async function renderNetworkingPage() {
-  let available = [];
-  try {
-    const data = await api("/networking/available");
-    available = Array.isArray(data && data.networks) ? data.networks : [];
-  } catch (_e) {
-    available = [];
-  }
-  const availableById = Object.fromEntries(
-    available.filter((n) => n && n.id).map((n) => [n.id, n]),
-  );
-  const cards = NETWORKS.map((base) => {
-    const live = availableById[base.id] || {};
-    return {
-      ...base,
-      enabled: !!live.enabled,
-      configurable:
-        live.configurable !== undefined
-          ? !!live.configurable
-          : base.configurable,
-      comingSoon:
-        live.coming_soon !== undefined ? !!live.coming_soon : base.comingSoon,
-    };
-  });
-  if (!cards.some((n) => n.id === _networkingSelected && n.configurable)) {
-    _networkingSelected = "p2pclaw";
-  }
-
-  let p2status = null;
-  let p2error = "";
-  let nymStatus = null;
-  let nymError = "";
-  let didcommStatus = null;
-  let didcommError = "";
-  try {
-    p2status = await api("/p2pclaw/status");
-  } catch (err) {
-    p2error = String((err && err.message) || err || "");
-  }
-  let bridgePayload = null;
-  let bridgeError = "";
-  try {
-    bridgePayload = await api("/p2pclaw/bridge/status?include_mcp_tools=true");
-  } catch (err) {
-    bridgeError = String((err && err.message) || err || "");
-  }
-  if (_networkingSelected === "nym-mesh") {
-    try {
-      nymStatus = await api("/nym/status");
-    } catch (err) {
-      nymError = String((err && err.message) || err || "");
-    }
-  }
-  if (_networkingSelected === "didcomm-federation") {
-    try {
-      didcommStatus = await api("/didcomm/status");
-    } catch (err) {
-      didcommError = String((err && err.message) || err || "");
-    }
-  }
-  const p2cfg = (p2status && p2status.config) || {
-    endpoint_url: "https://p2pclaw.com",
-    agent_id: "agenthalo",
-    agent_name: "AgentHALO",
-    tier: "tier1",
+async function renderProofGate() {
+  clearP2PClawTimers();
+  content.innerHTML = '<div class="loading">Loading proof gate...</div>';
+  const fmtWhen = (ts) =>
+    ts ? new Date(Number(ts) * 1000).toLocaleString() : "Never";
+  const statusTone = (req) => {
+    const check = req && req.check;
+    if (check && check.verified) return { label: "Satisfied", color: "var(--green)" };
+    if (req && req.enforced) return { label: "Blocked", color: "var(--red)" };
+    return { label: "Advisory", color: "var(--amber)" };
   };
-  const p2enabled = !!(cards.find((n) => n.id === "p2pclaw") || {}).enabled;
-  const swarm = (p2status && p2status.swarm) || {};
-  const bridge = (bridgePayload && bridgePayload.bridge) || {};
-  const bridgeState = bridge.state || {};
-  const bridgeCaps = Array.isArray(bridge.capabilities)
-    ? bridge.capabilities
-    : [];
-
-  const cardsHtml = cards
-    .map((n) => {
-      const selected = _networkingSelected === n.id;
-      const status = n.comingSoon
-        ? '<span class="badge badge-warn">Coming Soon</span>'
-        : n.enabled
-          ? '<span class="badge badge-ok">Enabled</span>'
-          : '<span class="badge">Disabled</span>';
-      return `<button class="network-card${selected ? " is-selected" : ""}${n.comingSoon ? " is-coming-soon" : ""}"
-      data-network-id="${esc(n.id)}" ${n.configurable ? "" : "disabled"}
-      title="${n.configurable ? "Select network" : "Coming soon"}">
-      <div class="network-card-head">
-        <span class="network-card-icon">${n.icon}</span>
-        <span class="network-card-title">${esc(n.name)}</span>
-      </div>
-      <div class="network-card-desc">${esc(n.description)}</div>
-      <div class="network-card-status">${status}</div>
-    </button>`;
-    })
-    .join("");
-
-  let detailsHtml = "";
-  if (_networkingSelected === "nym-mesh") {
-    const ns = nymStatus || {};
-    const nymHealthy = !!ns.healthy;
-    const nymMode = ns.mode || "disabled";
-    const proxy = ns.socks5_proxy || "None detected";
-    const failClosed = ns.fail_closed !== false;
-    const nativeConn = !!ns.native_connected;
-    const nativeAddr = ns.native_address || "-";
-    const inbound = !!ns.inbound_registered;
-    const cover = !!ns.cover_traffic_active;
-    const healthDot = nymHealthy
-      ? '<span style="color:var(--green)">&#9679;</span> Healthy'
-      : '<span style="color:var(--red)">&#9679;</span> No transport';
-    detailsHtml =
-      '<div class="networking-detail-grid">' +
-      '<section class="card networking-config-card">' +
-      '<div class="card-label">Nym Mixnet Status</div>' +
-      '<div class="card-sub">Privacy-preserving transport layer for external traffic.</div>' +
-      '<div class="network-stat-grid">' +
-      '<div class="network-stat"><span>Health</span><strong>' +
-      healthDot +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Mode</span><strong>' +
-      esc(String(nymMode)) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>SOCKS5 Proxy</span><strong>' +
-      esc(String(proxy)) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Fail-Closed</span><strong>' +
-      (failClosed ? "Yes (secure)" : "No (fail-open)") +
-      "</strong></div>" +
-      "</div>" +
-      "</section>" +
-      '<section class="card networking-status-card">' +
-      '<div class="card-label">Native Mixnet (nym-sdk)</div>' +
-      '<div class="card-sub">Direct mixnet integration via the Nym SDK client.</div>' +
-      '<div class="network-stat-grid">' +
-      '<div class="network-stat"><span>Connected</span><strong>' +
-      (nativeConn ? '<span style="color:var(--green)">Yes</span>' : "No") +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Address</span><strong style="font-size:11px;word-break:break-all">' +
-      esc(String(nativeAddr)) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Inbound Registered</span><strong>' +
-      (inbound ? "Yes" : "No") +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Cover Traffic</span><strong>' +
-      (cover ? '<span style="color:var(--green)">Active</span>' : "Inactive") +
-      "</strong></div>" +
-      "</div>" +
-      "</section>" +
-      '<section class="card networking-bridge-card">' +
-      '<div class="card-label">Configuration</div>' +
-      '<div class="card-sub">Environment variables control Nym transport behavior.</div>' +
-      '<div class="network-form-row"><label>SOCKS5_PROXY</label><div class="network-inline-note">Set to override auto-detection (e.g. 127.0.0.1:1080)</div></div>' +
-      '<div class="network-form-row"><label>NYM_FAIL_OPEN</label><div class="network-inline-note">Set to "true" to allow direct fallback when no proxy is available</div></div>' +
-      '<div class="network-form-row"><label>NYM_NATIVE_ENABLED</label><div class="network-inline-note">Set to "true" to enable native nym-sdk transport</div></div>' +
-      '<div class="network-form-row"><label>NYM_COVER_TRAFFIC_SECS</label><div class="network-inline-note">Interval in seconds for cover traffic (0 = disabled)</div></div>' +
-      '<div class="network-form-actions"><button class="btn" id="nym-refresh-btn">Refresh Status</button></div>' +
-      '<div id="nym-msg" class="networking-msg">' +
-      (nymError ? esc(nymError) : ns.note ? esc(String(ns.note)) : "") +
-      "</div>" +
-      "</section>" +
-      "</div>";
-  } else if (_networkingSelected === "didcomm-federation") {
-    const dc = didcommStatus || {};
-    const identOk = !!dc.identity_configured;
-    const transportOk = !!dc.transport_available;
-    const transportMode = dc.transport_mode || "disabled";
-    const failClosed = dc.fail_closed !== false;
-    const enc = dc.encryption || {};
-    const msgTypes = Array.isArray(dc.supported_message_types)
-      ? dc.supported_message_types
+  try {
+    const payload = await api("/proof-gate/status");
+    const tools = Array.isArray(payload.tools) ? payload.tools : [];
+    const certificates = Array.isArray(payload.certificates)
+      ? payload.certificates
       : [];
-    const meshTypes = Array.isArray(dc.mesh_message_types)
-      ? dc.mesh_message_types
-      : [];
-    const identDot = identOk
-      ? '<span style="color:var(--green)">&#9679;</span> Configured'
-      : '<span style="color:var(--amber)">&#9679;</span> Not configured';
-    const transportDot = transportOk
-      ? '<span style="color:var(--green)">&#9679;</span> Available'
-      : '<span style="color:var(--amber)">&#9679;</span> No transport';
-    detailsHtml =
-      '<div class="networking-detail-grid">' +
-      '<section class="card networking-config-card">' +
-      '<div class="card-label">DIDComm Federation Status</div>' +
-      '<div class="card-sub">Hybrid post-quantum encrypted messaging between agents.</div>' +
-      '<div class="network-stat-grid">' +
-      '<div class="network-stat"><span>DID Identity</span><strong>' +
-      identDot +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Transport</span><strong>' +
-      transportDot +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Transport Mode</span><strong>' +
-      esc(String(transportMode)) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Fail-Closed</span><strong>' +
-      (failClosed ? "Yes" : "No") +
-      "</strong></div>" +
-      "</div>" +
-      "</section>" +
-      '<section class="card networking-status-card">' +
-      '<div class="card-label">Cryptographic Stack</div>' +
-      '<div class="card-sub">Post-quantum hybrid encryption with dual signing.</div>' +
-      '<div class="network-stat-grid">' +
-      '<div class="network-stat"><span>Classical KEM</span><strong style="font-size:11px">' +
-      esc(String(enc.classical || "X25519 + AES-256-GCM")) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Post-Quantum KEM</span><strong style="font-size:11px">' +
-      esc(String(enc.post_quantum || "ML-KEM-768")) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Signatures</span><strong style="font-size:11px">' +
-      esc(String(enc.signatures || "Ed25519 + ML-DSA-65")) +
-      "</strong></div>" +
-      "</div>" +
-      "</section>" +
-      '<section class="card networking-bridge-card">' +
-      '<div class="card-label">Message Types</div>' +
-      '<div class="card-sub">Supported DIDComm v2 and mesh communication protocols.</div>' +
-      '<div class="network-form-row"><label>DIDComm v2</label>' +
-      '<div class="network-cap-list">' +
-      (msgTypes.length
-        ? msgTypes
-            .map(function (t) {
-              return (
-                '<span class="network-cap-pill">' + esc(String(t)) + "</span>"
-              );
-            })
-            .join("")
-        : '<span class="muted">No types reported.</span>') +
-      "</div></div>" +
-      '<div class="network-form-row"><label>Mesh Protocol</label>' +
-      '<div class="network-cap-list">' +
-      (meshTypes.length
-        ? meshTypes
-            .map(function (t) {
-              return (
-                '<span class="network-cap-pill">' + esc(String(t)) + "</span>"
-              );
-            })
-            .join("")
-        : '<span class="muted">No types reported.</span>') +
-      "</div></div>" +
-      '<div class="network-form-actions"><button class="btn" id="didcomm-refresh-btn">Refresh Status</button></div>' +
-      '<div id="didcomm-msg" class="networking-msg">' +
-      (didcommError ? esc(didcommError) : "") +
-      "</div>" +
-      "</section>" +
-      "</div>";
-  } else {
-    detailsHtml =
-      '<div class="networking-detail-grid">' +
-      '<section class="card networking-config-card">' +
-      '<div class="card-label">P2PCLAW Configuration</div>' +
-      '<div class="card-sub">Enable integration and configure endpoint + agent identity.</div>' +
-      '<div class="network-form-row network-toggle-row">' +
-      '<label class="network-toggle-label">Enable P2PCLAW</label>' +
-      '<label class="switch">' +
-      '<input type="checkbox" id="p2pclaw-enabled-toggle" ' +
-      (p2enabled ? "checked" : "") +
-      ">" +
-      '<span class="slider"></span>' +
-      "</label></div>" +
-      '<div class="network-form-row"><label for="p2-endpoint-url">Endpoint URL</label>' +
-      '<input class="input" id="p2-endpoint-url" value="' +
-      esc(p2cfg.endpoint_url || "https://p2pclaw.com") +
-      '" placeholder="https://p2pclaw.com"></div>' +
-      '<div class="network-form-row"><label for="p2-agent-name">Agent Name</label>' +
-      '<input class="input" id="p2-agent-name" value="' +
-      esc(p2cfg.agent_name || "AgentHALO") +
-      '" placeholder="AgentHALO"></div>' +
-      '<div class="network-form-row"><label for="p2-agent-id">Agent ID</label>' +
-      '<input class="input" id="p2-agent-id" value="' +
-      esc(p2cfg.agent_id || "agenthalo") +
-      '" placeholder="agenthalo-alice"></div>' +
-      '<div class="network-form-row"><label for="p2-auth-secret">Auth Secret (optional)</label>' +
-      '<input class="input" id="p2-auth-secret" type="password" placeholder="Shared HMAC secret"></div>' +
-      '<div class="network-form-row"><label>Tier</label><div class="network-tier-row">' +
-      '<label><input type="radio" name="p2-tier" value="tier1" ' +
-      ((p2cfg.tier || "tier1") === "tier1" ? "checked" : "") +
-      "> Tier 1 (Free)</label>" +
-      '<label><input type="radio" name="p2-tier" value="tier2" ' +
-      ((p2cfg.tier || "tier1") === "tier2" ? "checked" : "") +
-      "> Tier 2 (Prepaid)</label>" +
-      "</div></div>" +
-      '<div class="network-form-actions">' +
-      '<button class="btn" id="p2-test-btn">Test Connection</button>' +
-      '<button class="btn btn-primary" id="p2-save-btn">Save</button></div>' +
-      '<div id="p2-config-msg" class="networking-msg">' +
-      (p2error ? esc(p2error) : "") +
-      "</div>" +
-      "</section>" +
-      '<section class="card networking-status-card">' +
-      '<div class="card-label">Hive Status</div>' +
-      '<div class="card-sub">Real-time metrics from /api/p2pclaw/status</div>' +
-      '<div class="network-stat-grid">' +
-      '<div class="network-stat"><span>Active Agents</span><strong id="p2-stat-agents">' +
-      Number(swarm.agents || 0) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Papers</span><strong id="p2-stat-papers">' +
-      Number(swarm.papers || 0) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Mempool</span><strong id="p2-stat-mempool">' +
-      Number(swarm.mempool || 0) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Last Event</span><strong id="p2-stat-last">' +
-      esc(String(swarm.last_event_ts || "-")) +
-      "</strong></div>" +
-      "</div>" +
-      '<div class="network-form-actions" style="margin-top:10px"><button class="btn btn-sm" id="p2-briefing-btn">Load Briefing</button></div>' +
-      '<pre id="p2-briefing" class="network-briefing">No briefing loaded.</pre>' +
-      "</section>" +
-      '<section class="card networking-bridge-card">' +
-      '<div class="card-label">Bridge Worker</div>' +
-      '<div class="card-sub">Persistent bridge state, compute split, and detected capabilities.</div>' +
-      '<div class="network-stat-grid">' +
-      '<div class="network-stat"><span>Configured</span><strong>' +
-      (bridge.configured ? "Yes" : "No") +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Enabled</span><strong>' +
-      (bridge.enabled ? "Yes" : "No") +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Last Poll</span><strong>' +
-      esc(
-        String(bridgeState.last_success_at || bridgeState.last_run_at || "-"),
-      ) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Next Poll</span><strong>' +
-      esc(String(bridgeState.next_poll_not_before || "-")) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Compute Split</span><strong>' +
-      (typeof bridge.compute_split_ratio === "number"
-        ? (bridge.compute_split_ratio * 100).toFixed(1) + "% hive"
-        : "-") +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Nash</span><strong>' +
-      (bridge.nash_compliant ? "Compliant" : "Not yet") +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Polls</span><strong>' +
-      Number(bridgeState.polls_total || 0) +
-      "</strong></div>" +
-      '<div class="network-stat"><span>Failures</span><strong>' +
-      Number(bridgeState.consecutive_failures || 0) +
-      "</strong></div>" +
-      "</div>" +
-      '<div class="network-form-row"><label>Capabilities</label>' +
-      '<div class="network-cap-list">' +
-      (bridgeCaps.length
-        ? bridgeCaps
-            .map(function (cap) {
-              return (
-                '<span class="network-cap-pill">' + esc(String(cap)) + "</span>"
-              );
-            })
-            .join("")
-        : '<span class="muted">No capabilities reported.</span>') +
-      "</div></div>" +
-      '<div class="network-form-row"><label>Bridge Config Path</label>' +
-      '<div class="network-inline-note">' +
-      esc(String(bridge.config_path || "~/.agenthalo/p2pclaw_bridge.json")) +
-      "</div></div>" +
-      '<div class="network-form-row"><label>Last Error</label>' +
-      '<div class="network-inline-note">' +
-      esc(String(bridgeState.last_error || bridgeError || "None")) +
-      "</div></div>" +
-      "</section></div>";
-  }
+    content.innerHTML = `
+      <div class="page-title">Proof Gate</div>
+      <p class="muted">Formal gate control plane over the live theorem requirement registry.</p>
+      <section class="card" style="border-color:${payload.enabled ? "var(--green)" : "var(--amber)"};margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <div class="card-label">Master Mode</div>
+            <div class="card-value" style="font-size:20px;color:${payload.enabled ? "var(--green)" : "var(--amber)"}">
+              ${payload.enabled ? "ENFORCEMENT MODE" : "ADVISORY MODE"}
+            </div>
+            <div class="card-sub">Counts and tool surfaces are rendered directly from the live proof gate config.</div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <label class="switch">
+              <input type="checkbox" id="proof-gate-master-toggle" ${payload.enabled ? "checked" : ""}>
+              <span class="slider"></span>
+            </label>
+            <button class="btn btn-sm" id="proof-gate-verify-all">Verify All</button>
+            <button class="btn btn-sm btn-primary" id="proof-gate-upload">Submit Certificate</button>
+            <input type="file" id="proof-gate-file" accept=".lean4export" style="display:none">
+          </div>
+        </div>
+        <div class="card-grid" style="margin-top:16px">
+          <div class="card"><div class="card-label">Tool Surfaces</div><div class="card-value">${Number(payload.tool_count || tools.length)}</div></div>
+          <div class="card"><div class="card-label">Requirements</div><div class="card-value">${Number(payload.requirement_count || 0)}</div></div>
+          <div class="card"><div class="card-label">Enforced</div><div class="card-value">${Number(payload.enforced_count || 0)}</div></div>
+          <div class="card"><div class="card-label">Certificates</div><div class="card-value">${certificates.length}</div><div class="card-sub">${esc(String(payload.certificate_dir || ""))}</div></div>
+        </div>
+        <div class="card-sub" style="margin-top:10px">Last evaluation: ${fmtWhen(payload.evaluated_at)}</div>
+      </section>
+      <section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px">
+        ${tools
+          .map((tool) => {
+            const evaln = tool.evaluation || {};
+            const reqs = Array.isArray(tool.requirements) ? tool.requirements : [];
+            return `
+              <div class="card">
+                <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
+                  <div>
+                    <div class="card-label" style="font-family:var(--mono)">${esc(String(tool.tool_name || ""))}</div>
+                    <div class="card-sub">${reqs.length} requirements · ${Number(evaln.requirements_met || 0)} satisfied</div>
+                  </div>
+                  <span class="badge ${evaln.passed ? "badge-ok" : "badge-warn"}">${evaln.passed ? "PASS" : "CHECK"}</span>
+                </div>
+                <div class="network-form-actions" style="margin:12px 0">
+                  <button class="btn btn-sm" data-proof-verify-tool="${esc(String(tool.tool_name || ""))}">Verify Now</button>
+                </div>
+                ${reqs
+                  .map((req) => {
+                    const tone = statusTone(req);
+                    const check = req.check || {};
+                    return `
+                      <details style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px">
+                        <summary style="cursor:pointer;display:flex;justify-content:space-between;gap:12px;align-items:center">
+                          <span style="font-family:var(--mono);font-size:12px">${esc(String(req.required_theorem || ""))}</span>
+                          <span style="color:${tone.color};font-size:12px">${tone.label}</span>
+                        </summary>
+                        <div style="padding-top:10px;display:grid;gap:8px">
+                          <div class="config-desc">${esc(String(req.description || ""))}</div>
+                          <div class="config-desc">Statement hash: <code>${esc(truncate(String(req.expected_statement_hash || "n/a"), 24))}</code></div>
+                          <div class="config-desc">Commit hash: <code>${esc(truncate(String(req.expected_commit_hash || "n/a"), 18))}</code></div>
+                          <div class="config-desc">Signature required: ${req.require_signature ? "yes" : "no"} · Certificate: ${check.found ? "submitted" : "missing"}</div>
+                          <div class="config-desc">${check.error ? esc(String(check.error)) : check.verified ? "Verification passed." : "Awaiting verification."}</div>
+                          <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
+                            <label style="display:flex;align-items:center;gap:8px">
+                              <input type="checkbox" data-proof-enforced="1" data-proof-tool="${esc(String(tool.tool_name || ""))}" data-proof-theorem="${esc(String(req.required_theorem || ""))}" ${req.enforced ? "checked" : ""}>
+                              <span>Enforce</span>
+                            </label>
+                            <button class="btn btn-sm" data-proof-upload="1">Submit Certificate</button>
+                          </div>
+                        </div>
+                      </details>
+                    `;
+                  })
+                  .join("")}
+              </div>
+            `;
+          })
+          .join("")}
+      </section>
+      <section class="card" style="margin-top:18px">
+        <div style="display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap">
+          <div>
+            <div class="section-header">Certificate Management</div>
+            <div class="card-sub">Upload or remove signed .lean4export artifacts from the active certificate directory.</div>
+          </div>
+          <button class="btn btn-sm" id="proof-gate-refresh-certs">Refresh</button>
+        </div>
+        <div class="table-wrap" style="margin-top:12px">
+          <table>
+            <thead><tr><th>File</th><th>Status</th><th>Theorems</th><th>Modified</th><th>Actions</th></tr></thead>
+            <tbody>
+              ${
+                certificates.length
+                  ? certificates
+                      .map((cert) => {
+                        const verification = cert.verification || {};
+                        const theorems = Array.isArray(verification.theorem_names)
+                          ? verification.theorem_names
+                          : [];
+                        return `<tr>
+                          <td style="font-family:var(--mono);font-size:11px">${esc(String(cert.filename || cert.id || ""))}</td>
+                          <td>${esc(String(cert.status || "unknown"))}</td>
+                          <td style="font-size:11px">${esc(theorems.slice(0, 2).join(", ") || "n/a")}${theorems.length > 2 ? ` (+${theorems.length - 2})` : ""}</td>
+                          <td>${fmtWhen(cert.modified_at)}</td>
+                          <td><button class="btn btn-sm" data-proof-delete="${esc(String(cert.id || ""))}">Delete</button></td>
+                        </tr>`;
+                      })
+                      .join("")
+                  : '<tr><td colspan="5" class="muted">No certificates submitted yet.</td></tr>'
+              }
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
 
-  content.innerHTML = `
-    <h1>Networking Integrations</h1>
-    <p class="muted">Configure sovereign communication networks for AgentHALO.</p>
-    <section class="network-selector">${cardsHtml}</section>
-    <section class="network-detail">${detailsHtml}</section>
-    <p class="networking-footer">Network integrations extend AgentHALO's sovereign communication stack. Each network is independently enabled and configured.</p>
-  `;
-
-  $$(".network-card[data-network-id]").forEach((el) => {
-    if (el.disabled) return;
-    el.addEventListener("click", () => {
-      _networkingSelected = el.dataset.networkId || "p2pclaw";
-      renderNetworkingPage();
+    const fileInput = $("#proof-gate-file");
+    $("#proof-gate-upload")?.addEventListener("click", () => fileInput?.click());
+    $("[data-proof-upload='1']")?.addEventListener?.("click", () => {});
+    $$("[data-proof-upload='1']").forEach((btn) =>
+      btn.addEventListener("click", () => fileInput?.click()),
+    );
+    $("#proof-gate-master-toggle")?.addEventListener("change", async (ev) => {
+      const enabled = !!ev.currentTarget.checked;
+      const confirmed = window.confirm(
+        enabled
+          ? "Enable enforcement mode? Tool calls will be blocked when enforced requirements fail."
+          : "Return the proof gate to advisory mode?",
+      );
+      if (!confirmed) {
+        ev.currentTarget.checked = !enabled;
+        return;
+      }
+      await apiPost("/proof-gate/toggle-master", { enabled });
+      await renderProofGate();
     });
-  });
-
-  // Nym refresh handler
-  const nymRefreshBtn = $("#nym-refresh-btn");
-  if (nymRefreshBtn) {
-    nymRefreshBtn.addEventListener("click", () => renderNetworkingPage());
-  }
-  // DIDComm refresh handler
-  const didcommRefreshBtn = $("#didcomm-refresh-btn");
-  if (didcommRefreshBtn) {
-    didcommRefreshBtn.addEventListener("click", () => renderNetworkingPage());
-  }
-
-  if (_networkingSelected !== "p2pclaw") return;
-
-  const msgEl = $("#p2-config-msg");
-  const setMsg = (text, ok) => {
-    if (!msgEl) return;
-    msgEl.textContent = text || "";
-    msgEl.classList.toggle("ok", !!ok);
-    msgEl.classList.toggle("err", !!text && !ok);
-  };
-
-  const toggle = $("#p2pclaw-enabled-toggle");
-  if (toggle) {
-    toggle.addEventListener("change", async () => {
-      try {
-        await apiPost("/addons", {
-          name: "p2pclaw",
-          enabled: !!toggle.checked,
+    $("#proof-gate-verify-all")?.addEventListener("click", async () => {
+      await apiPost("/proof-gate/verify", {});
+      await renderProofGate();
+    });
+    $("#proof-gate-refresh-certs")?.addEventListener("click", () => renderProofGate());
+    $$("[data-proof-verify-tool]").forEach((btn) =>
+      btn.addEventListener("click", async () => {
+        await apiPost("/proof-gate/verify", { tool_name: btn.dataset.proofVerifyTool });
+        await renderProofGate();
+      }),
+    );
+    $$("[data-proof-enforced='1']").forEach((toggle) =>
+      toggle.addEventListener("change", async () => {
+        await apiPost("/proof-gate/toggle-requirement", {
+          tool_name: toggle.dataset.proofTool,
+          theorem_name: toggle.dataset.proofTheorem,
+          enforced: !!toggle.checked,
         });
-        setMsg(`P2PCLAW ${toggle.checked ? "enabled" : "disabled"}.`, true);
-      } catch (err) {
-        setMsg(
-          String(
-            (err && err.message) || err || "failed to update addon toggle",
-          ),
-          false,
-        );
-      }
+        await renderProofGate();
+      }),
+    );
+    $$("[data-proof-delete]").forEach((btn) =>
+      btn.addEventListener("click", async () => {
+        if (!window.confirm(`Delete certificate ${btn.dataset.proofDelete}?`)) return;
+        await apiDelete(`/proof-gate/certificate/${encodeURIComponent(btn.dataset.proofDelete)}`);
+        await renderProofGate();
+      }),
+    );
+    fileInput?.addEventListener("change", async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const contentText = await file.text();
+      await apiPost("/proof-gate/submit-cert", {
+        filename: file.name,
+        content: contentText,
+      });
+      fileInput.value = "";
+      await renderProofGate();
     });
+  } catch (e) {
+    content.innerHTML = `<div class="card"><div class="card-label">Proof Gate unavailable</div><div class="card-sub">${esc(String((e && e.message) || e))}</div></div>`;
   }
+}
 
-  const testBtn = $("#p2-test-btn");
-  if (testBtn) {
-    testBtn.addEventListener("click", async () => {
-      setMsg("Testing connection...", true);
+async function renderP2PClawPage() {
+  clearP2PClawTimers();
+  content.innerHTML = '<div class="loading">Loading P2PCLAW hive...</div>';
+  const fmtWhen = (ts) =>
+    ts ? new Date(Number(ts) * 1000).toLocaleString() : "Never";
+  const safeList = (value) => (Array.isArray(value) ? value : []);
+  try {
+    const [addons, statusRes, briefingRes, papersRes, mempoolRes, investigationsRes, eventsRes] =
+      await Promise.all([
+        api("/addons").catch(() => ({ addons: {} })),
+        api("/p2pclaw/status").catch((error) => ({ error })),
+        api("/p2pclaw/briefing").catch((error) => ({ error })),
+        api("/p2pclaw/papers?limit=12").catch((error) => ({ papers: [], error })),
+        api("/p2pclaw/mempool").catch((error) => ({ papers: [], error })),
+        api("/p2pclaw/investigations").catch((error) => ({ investigations: [], error })),
+        api("/p2pclaw/events?limit=12").catch((error) => ({ events: [], error })),
+      ]);
+
+    const statusErr = statusRes && statusRes.error;
+    const status = statusErr ? null : statusRes;
+    const config = (status && status.config) || {
+      endpoint_url: "https://p2pclaw.com",
+      agent_id: "agenthalo",
+      agent_name: "AgentHALO",
+      tier: "tier1",
+      auth_configured: false,
+    };
+    const swarm = (status && status.swarm) || {};
+    const papers = safeList(papersRes && papersRes.papers);
+    const mempool = safeList(mempoolRes && mempoolRes.papers);
+    const investigations = safeList(investigationsRes && investigationsRes.investigations);
+    const events = safeList(eventsRes && eventsRes.events);
+    const activePapers = _p2pclawPaperTab === "mempool" ? mempool : papers;
+    const briefingText =
+      (briefingRes && briefingRes.briefing_markdown) ||
+      (briefingRes && briefingRes.error && String(briefingRes.error.message || briefingRes.error)) ||
+      "No briefing yet.";
+    const enabled = !!(addons && addons.addons && addons.addons.p2pclaw_enabled);
+    const connectionLive = !statusErr;
+
+    content.innerHTML = `
+      <div class="page-title" style="color:#ff4e1a">P2PCLAW Research Hive</div>
+      <p class="muted">> silicon / carbon coordination surface for the live research hive</p>
+      <section class="card" style="border-color:#ff4e1a;background:linear-gradient(180deg,rgba(255,78,26,0.08),rgba(8,10,8,0.92))">
+        <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap">
+          <div style="display:grid;gap:8px">
+            <div style="font-size:20px;color:${connectionLive ? "var(--green)" : "var(--text-dim)"}">
+              ${connectionLive ? "● CONNECTED" : "○ DISCONNECTED"}
+            </div>
+            <div class="config-desc">Peer count ${Number(swarm.agents || 0)} · agent ${esc(String(config.agent_id || "agenthalo"))}</div>
+            <div class="config-desc">Mode: silicon agent / carbon human</div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <span class="badge ${enabled ? "badge-ok" : "badge-muted"}">${enabled ? "ENABLED" : "DISABLED"}</span>
+            <label class="switch">
+              <input type="checkbox" id="p2pclaw-enabled-toggle" ${enabled ? "checked" : ""}>
+              <span class="slider"></span>
+            </label>
+            <button class="btn btn-sm" id="p2pclaw-refresh">Refresh</button>
+          </div>
+        </div>
+        ${
+          statusErr
+            ? `<div class="networking-msg err" style="margin-top:12px">${esc(String(statusErr.message || statusErr))}</div>`
+            : ""
+        }
+      </section>
+      <section class="card" style="margin-top:16px">
+        <div class="section-header" style="color:#ff4e1a">Agent Briefing</div>
+        <pre id="p2pclaw-briefing" class="network-briefing" style="min-height:180px;border-color:#69311d">${esc(String(briefingText))}</pre>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
+          <div class="section-header" style="color:#ff4e1a">Papers</div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-sm ${_p2pclawPaperTab === "published" ? "btn-primary" : ""}" data-p2-tab="published">> Published</button>
+            <button class="btn btn-sm ${_p2pclawPaperTab === "mempool" ? "btn-primary" : ""}" data-p2-tab="mempool">> Mempool</button>
+          </div>
+        </div>
+        <div class="table-wrap" style="margin-top:12px">
+          <table>
+            <thead><tr><th>Title</th><th>Author</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>
+            <tbody>
+              ${
+                activePapers.length
+                  ? activePapers
+                      .map((paper) => {
+                        const paperId = paper.paper_id || paper.id || "";
+                        return `<tr>
+                          <td>${esc(String(paper.title || paperId || "untitled"))}</td>
+                          <td>${esc(String(paper.author || paper.agentId || "unknown"))}</td>
+                          <td>${esc(String(paper.status || (_p2pclawPaperTab === "mempool" ? "pending" : "published")))}</td>
+                          <td>${fmtWhen(paper.timestamp)}</td>
+                          <td style="display:flex;gap:6px;flex-wrap:wrap">
+                            ${
+                              _p2pclawPaperTab === "mempool"
+                                ? `<button class="btn btn-sm" data-p2-validate="${esc(String(paperId))}" data-p2-approve="1">Validate</button>`
+                                : `<button class="btn btn-sm" data-p2-verify="${esc(String(paperId))}" data-p2-title="${esc(String(paper.title || ""))}" data-p2-content="${esc(String(paper.extra?.content || paper.content || ""))}">Verify</button>`
+                            }
+                          </td>
+                        </tr>`;
+                      })
+                      .join("")
+                  : '<tr><td colspan="5" class="muted">No papers available on this tab.</td></tr>'
+              }
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <div class="section-header" style="color:#ff4e1a">Publish</div>
+        <div class="network-form-row"><label>Title</label><input class="input" id="p2-publish-title" placeholder="Research note title"></div>
+        <div class="network-form-row"><label>Abstract</label><textarea class="input" id="p2-publish-abstract" rows="3" placeholder="Abstract"></textarea></div>
+        <div class="network-form-row"><label>Content</label><textarea class="input" id="p2-publish-content" rows="8" placeholder="Paper body, markdown, or extracted notes"></textarea></div>
+        <div class="network-form-row"><label>Category</label><input class="input" id="p2-publish-category" placeholder="systems / proofs / markets"></div>
+        <div class="network-form-actions">
+          <button class="btn btn-primary" id="p2-publish-submit">Publish Paper</button>
+        </div>
+        <div id="p2-publish-msg" class="networking-msg"></div>
+      </section>
+      <section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-top:16px">
+        <div class="card">
+          <div class="section-header" style="color:#ff4e1a">Investigation Wheel</div>
+          <div class="network-form-row"><label>> Search wheel</label><input class="input" id="p2-wheel-query" placeholder="enter hypothesis, theorem, or paper id"></div>
+          <div class="network-form-actions"><button class="btn btn-sm" id="p2-wheel-search">Search</button></div>
+          <pre id="p2-wheel-result" class="network-briefing" style="min-height:120px">Awaiting query.</pre>
+          <div class="card-sub">Active investigations</div>
+          <div style="display:grid;gap:8px;margin-top:8px">
+            ${
+              investigations.length
+                ? investigations
+                    .map(
+                      (it) => `<div style="border:1px solid var(--border);border-radius:8px;padding:10px">
+                        <div style="font-family:var(--mono)">${esc(String(it.title || it.id || "untitled"))}</div>
+                        <div class="config-desc">${esc(String(it.status || "open"))}</div>
+                      </div>`,
+                    )
+                    .join("")
+                : '<div class="muted">No investigations reported.</div>'
+            }
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-header" style="color:#ff4e1a">Chat</div>
+          <div class="network-form-row"><label>> Send message</label><textarea class="input" id="p2-chat-message" rows="4" placeholder="Ask the hive a question"></textarea></div>
+          <div class="network-form-actions"><button class="btn btn-sm" id="p2-chat-send">Send</button></div>
+          <pre id="p2-chat-events" class="network-briefing" style="min-height:220px">${esc(
+            events
+              .map((event) =>
+                `[${fmtWhen(event.timestamp)}] ${event.kind || "event"} ${JSON.stringify(event.extra || {})}`,
+              )
+              .join("\n") || "No hive events yet.",
+          )}</pre>
+        </div>
+      </section>
+      <section class="card" style="margin-top:16px">
+        <div class="section-header" style="color:#ff4e1a">Configuration</div>
+        <div class="network-form-row"><label>Endpoint</label><input class="input" id="p2-endpoint-url" value="${esc(String(config.endpoint_url || "https://p2pclaw.com"))}"></div>
+        <div class="network-form-row"><label>Agent Name</label><input class="input" id="p2-agent-name" value="${esc(String(config.agent_name || "AgentHALO"))}"></div>
+        <div class="network-form-row"><label>Agent ID</label><input class="input" id="p2-agent-id" value="${esc(String(config.agent_id || "agenthalo"))}"></div>
+        <div class="network-form-row"><label>HMAC Secret</label><input class="input" id="p2-auth-secret" type="password" placeholder="optional shared secret"></div>
+        <div class="network-form-row"><label>Tier</label><div class="network-tier-row">
+          <label><input type="radio" name="p2-tier" value="tier1" ${String(config.tier || "tier1") === "tier1" ? "checked" : ""}> Tier 1</label>
+          <label><input type="radio" name="p2-tier" value="tier2" ${String(config.tier || "tier1") === "tier2" ? "checked" : ""}> Tier 2</label>
+        </div></div>
+        <div class="network-form-actions">
+          <button class="btn btn-sm" id="p2-test-btn">Test Connection</button>
+          <button class="btn btn-primary" id="p2-save-btn">Save Config</button>
+        </div>
+        <div id="p2-config-msg" class="networking-msg"></div>
+      </section>
+    `;
+
+    const setConfigMsg = (text, ok) => {
+      const msg = $("#p2-config-msg");
+      if (!msg) return;
+      msg.textContent = text || "";
+      msg.classList.toggle("ok", !!ok);
+      msg.classList.toggle("err", !!text && !ok);
+    };
+    const setPublishMsg = (text, ok) => {
+      const msg = $("#p2-publish-msg");
+      if (!msg) return;
+      msg.textContent = text || "";
+      msg.classList.toggle("ok", !!ok);
+      msg.classList.toggle("err", !!text && !ok);
+    };
+
+    $("#p2pclaw-enabled-toggle")?.addEventListener("change", async (ev) => {
+      await apiPost("/addons", { name: "p2pclaw", enabled: !!ev.currentTarget.checked });
+      await renderP2PClawPage();
+    });
+    $("#p2pclaw-refresh")?.addEventListener("click", () => renderP2PClawPage());
+    $$("[data-p2-tab]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        _p2pclawPaperTab = btn.dataset.p2Tab || "published";
+        renderP2PClawPage();
+      }),
+    );
+    $("#p2-test-btn")?.addEventListener("click", async () => {
       try {
-        const res = await api("/p2pclaw/status");
-        const s = (res && res.swarm) || {};
-        const setStat = (id, val) => {
-          const el = $(id);
-          if (el) el.textContent = String(val);
-        };
-        setStat("#p2-stat-agents", Number(s.agents || 0));
-        setStat("#p2-stat-papers", Number(s.papers || 0));
-        setStat("#p2-stat-mempool", Number(s.mempool || 0));
-        setStat("#p2-stat-last", s.last_event_ts || "-");
-        setMsg("Connection successful.", true);
-      } catch (err) {
-        setMsg(
-          String((err && err.message) || err || "connection test failed"),
-          false,
-        );
+        await api("/p2pclaw/status");
+        setConfigMsg("Connection successful.", true);
+      } catch (e) {
+        setConfigMsg(String((e && e.message) || e), false);
       }
     });
-  }
-
-  const saveBtn = $("#p2-save-btn");
-  if (saveBtn) {
-    saveBtn.addEventListener("click", async () => {
-      const endpoint_url = ($("#p2-endpoint-url")?.value || "").trim();
-      const agent_name = ($("#p2-agent-name")?.value || "").trim();
-      const agent_id = ($("#p2-agent-id")?.value || "").trim();
-      const auth_secret = ($("#p2-auth-secret")?.value || "").trim();
-      const tier = (
-        $('input[name="p2-tier"]:checked')?.value || "tier1"
-      ).trim();
-      const payload = { endpoint_url, agent_name, agent_id, tier };
-      if (auth_secret) payload.auth_secret = auth_secret;
-      setMsg("Saving configuration...", true);
+    $("#p2-save-btn")?.addEventListener("click", async () => {
+      const payload = {
+        endpoint_url: ($("#p2-endpoint-url")?.value || "").trim(),
+        agent_name: ($("#p2-agent-name")?.value || "").trim(),
+        agent_id: ($("#p2-agent-id")?.value || "").trim(),
+        tier: $('input[name="p2-tier"]:checked')?.value || "tier1",
+      };
+      const authSecret = ($("#p2-auth-secret")?.value || "").trim();
+      if (authSecret) payload.auth_secret = authSecret;
       try {
         const res = await apiPost("/p2pclaw/configure", payload);
-        const inVault = !!(res && res.auth_in_vault);
-        setMsg(
-          `Saved. Auth secret ${auth_secret ? (inVault ? "stored in vault." : "stored via insecure fallback.") : "unchanged."}`,
+        setConfigMsg(
+          authSecret
+            ? `Saved. Secret ${res.auth_in_vault ? "stored in vault." : "stored via insecure fallback."}`
+            : "Saved.",
           true,
         );
-        const authInput = $("#p2-auth-secret");
-        if (authInput) authInput.value = "";
-      } catch (err) {
-        setMsg(
-          String((err && err.message) || err || "failed to save config"),
-          false,
-        );
+        await renderP2PClawPage();
+      } catch (e) {
+        setConfigMsg(String((e && e.message) || e), false);
       }
     });
-  }
-
-  const briefingBtn = $("#p2-briefing-btn");
-  if (briefingBtn) {
-    briefingBtn.addEventListener("click", async () => {
-      const target = $("#p2-briefing");
-      if (target) target.textContent = "Loading briefing...";
+    $("#p2-publish-submit")?.addEventListener("click", async () => {
+      const title = ($("#p2-publish-title")?.value || "").trim();
+      const abstractText = ($("#p2-publish-abstract")?.value || "").trim();
+      const body = ($("#p2-publish-content")?.value || "").trim();
+      const category = ($("#p2-publish-category")?.value || "").trim();
+      const contentText = [
+        abstractText ? `Abstract:\n${abstractText}` : "",
+        category ? `Category: ${category}` : "",
+        body,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
       try {
-        const res = await api("/p2pclaw/briefing");
-        if (target)
-          target.textContent = String(
-            (res && res.briefing_markdown) || "No briefing content.",
-          );
-      } catch (err) {
-        if (target)
-          target.textContent = String(
-            (err && err.message) || err || "Failed to load briefing.",
-          );
+        const result = await apiPost("/p2pclaw/papers/publish", {
+          title,
+          content: contentText,
+        });
+        setPublishMsg(
+          `Published ${result.paper_id || title || "paper"} (${result.status || "ok"}).`,
+          true,
+        );
+        await renderP2PClawPage();
+      } catch (e) {
+        setPublishMsg(String((e && e.message) || e), false);
       }
     });
+    $("#p2-wheel-search")?.addEventListener("click", async () => {
+      const query = ($("#p2-wheel-query")?.value || "").trim();
+      const target = $("#p2-wheel-result");
+      if (target) target.textContent = "Searching...";
+      try {
+        const result = await api(`/p2pclaw/wheel?q=${encodeURIComponent(query)}`);
+        if (target) target.textContent = JSON.stringify(result, null, 2);
+      } catch (e) {
+        if (target) target.textContent = String((e && e.message) || e);
+      }
+    });
+    $("#p2-chat-send")?.addEventListener("click", async () => {
+      const message = ($("#p2-chat-message")?.value || "").trim();
+      if (!message) return;
+      await apiPost("/p2pclaw/chat", { message, channel: "research" });
+      await renderP2PClawPage();
+    });
+    $$("[data-p2-validate]").forEach((btn) =>
+      btn.addEventListener("click", async () => {
+        await apiPost("/p2pclaw/papers/validate", {
+          paper_id: btn.dataset.p2Validate,
+          approve: btn.dataset.p2Approve === "1",
+        });
+        await renderP2PClawPage();
+      }),
+    );
+    $$("[data-p2-verify]").forEach((btn) =>
+      btn.addEventListener("click", async () => {
+        const result = await apiPost("/p2pclaw/verify", {
+          title: btn.dataset.p2Title || btn.dataset.p2Verify || "paper",
+          content: btn.dataset.p2Content || "",
+        });
+        alert(JSON.stringify(result, null, 2));
+      }),
+    );
+
+    const briefingTimer = setInterval(async () => {
+      const currentPage = (location.hash.replace("#/", "") || "setup").split("/")[0];
+      if (!["p2pclaw", "networking"].includes(currentPage)) return;
+      try {
+        const fresh = await api("/p2pclaw/briefing");
+        const target = $("#p2pclaw-briefing");
+        if (target) {
+          target.textContent = String(
+            (fresh && fresh.briefing_markdown) || "No briefing content.",
+          );
+        }
+      } catch (_e) {}
+    }, 30000);
+    _p2pclawTimers.push(briefingTimer);
+  } catch (e) {
+    content.innerHTML = `<div class="card"><div class="card-label">P2PCLAW unavailable</div><div class="card-sub">${esc(String((e && e.message) || e))}</div></div>`;
   }
+}
+
+async function renderNetworkingPage() {
+  return renderP2PClawPage();
 }
 function renderOverviewHub() {
   if (typeof renderDocsOverview === "function") {
@@ -1444,7 +1449,7 @@ function updateNavLockState() {
         _setupState.wallet !== undefined
           ? _setupState.wallet
           : _setupState.agentpmt;
-      const steps = [_setupState.identity, walletDone, _setupState.llm];
+      const steps = [_setupState.identity, _setupState.llm, walletDone];
       const done = steps.filter(Boolean).length;
       prog.style.display = "block";
       prog.innerHTML = `Setup: ${done}/${steps.length}
@@ -2225,7 +2230,7 @@ async function renderConfig() {
     content.innerHTML = `
       <div class="page-title">Configuration</div>
 
-      <div class="section-header">Authentication</div>
+      <div class="section-header">🔐 Authentication</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         <div class="config-row">
           <div>
@@ -2240,7 +2245,7 @@ async function renderConfig() {
         </div>
       </div>
 
-      <div class="section-header">Crypto Lock</div>
+      <div class="section-header">🛡 Crypto Lock</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         <div class="config-row">
           <div>
@@ -2263,7 +2268,7 @@ async function renderConfig() {
         </div>
       </div>
 
-      <div class="section-header">Authorized Agents</div>
+      <div class="section-header">🤖 Authorized Agents</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         <div class="config-row">
           <div>
@@ -2301,7 +2306,7 @@ async function renderConfig() {
         }
       </div>
 
-      <div class="section-header">Agent Wrapping</div>
+      <div class="section-header">↪ Agent Wrapping</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         ${["claude", "codex", "gemini"]
           .map(
@@ -2322,7 +2327,7 @@ async function renderConfig() {
         </div>
       </div>
 
-      <div class="section-header">x402 Payments</div>
+      <div class="section-header">💸 x402 Payments</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         <div class="config-row">
           <div>
@@ -2347,7 +2352,7 @@ async function renderConfig() {
         </div>
       </div>
 
-      <div class="section-header">AgentPMT</div>
+      <div class="section-header">⚛ AgentPMT</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         <div class="config-row">
           <div>
@@ -2415,7 +2420,7 @@ async function renderConfig() {
         }
       </div>
 
-      <div class="section-header">On-Chain</div>
+      <div class="section-header">⛓ On-Chain</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         <div class="config-row">
           <div>
@@ -2431,7 +2436,7 @@ async function renderConfig() {
         </div>
       </div>
 
-      <div class="section-header">Add-ons</div>
+      <div class="section-header">🧩 Add-ons</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         <div class="config-row">
           <div>
@@ -2451,7 +2456,7 @@ async function renderConfig() {
         </div>
       </div>
 
-      <div class="section-header">API Keys &amp; Services</div>
+      <div class="section-header">🔑 API Keys &amp; Services</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         ${
           cfg.vault?.available
@@ -2516,7 +2521,7 @@ async function renderConfig() {
         }
       </div>
 
-      <div class="section-header">Paths</div>
+      <div class="section-header">📁 Paths</div>
       <div style="border:1px solid var(--border);border-radius:var(--radius)">
         <div class="config-row"><div><div class="config-label">Home</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.home)}</div></div></div>
         <div class="config-row"><div><div class="config-label">Database</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.db)}</div></div></div>
@@ -2546,19 +2551,25 @@ async function renderConfig() {
 async function injectConfigModelsSection() {
   try {
     const status = await api("/models/status");
+    const installed = Array.isArray(status?.backend?.installed_models)
+      ? status.backend.installed_models
+      : [];
+    const served = new Set(
+      Array.isArray(status?.backend?.served_models) ? status.backend.served_models : [],
+    );
     const mount = document.createElement("div");
     mount.innerHTML = `
-      <div class="section-header">Local Models</div>
+      <div class="section-header">🖥 Local Models</div>
       <div class="card-grid">
         <div class="card">
           <div class="card-label">Backend</div>
-          <div class="card-value" style="font-size:15px">vLLM</div>
+          <div class="card-value" style="font-size:15px">${esc(status?.backend?.cli_installed ? "vLLM" : "Not installed")}</div>
           <div class="card-sub">managed: ${esc(summarizeManagedBackends(status?.config))}</div>
         </div>
         <div class="card">
           <div class="card-label">Installed Models</div>
           <div class="card-value">${summarizeModelCounts(status)}</div>
-          <div class="card-sub">served: ${esc((status?.vllm?.served_models || []).join(", ") || "none")}</div>
+          <div class="card-sub">served: ${esc((status?.backend?.served_models || []).join(", ") || "none")}</div>
         </div>
         <div class="card">
           <div class="card-label">GPU</div>
@@ -2577,6 +2588,39 @@ async function injectConfigModelsSection() {
             <button class="btn btn-sm" onclick="modelsStop('vllm')">Stop</button>
             <button class="btn btn-sm" onclick="modelsLoginHuggingFace()">Set HF Token</button>
           </div>
+        </div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius);margin-top:12px">
+        <div class="config-row">
+          <div>
+            <div class="config-label">Installed Model Inventory</div>
+            <div class="config-desc">Card/table view of the local model cache and served state.</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Model ID</th><th>Size</th><th>Backend</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>
+              ${
+                installed.length
+                  ? installed
+                      .map((item) => `
+                        <tr>
+                          <td style="font-family:var(--mono);font-size:11px">${esc(String(item.model || ""))}</td>
+                          <td>${esc(String(item.size || "unknown"))}</td>
+                          <td>${esc(String(item.backend || "vllm"))}</td>
+                          <td>${served.has(String(item.model || "")) || item.served ? "Serving" : "Installed"}</td>
+                          <td style="display:flex;gap:6px;flex-wrap:wrap">
+                            <button class="btn btn-sm" onclick="modelsServe('vllm', '${esc(String(item.model || ""))}')">Serve</button>
+                            <button class="btn btn-sm" onclick="modelsRemove('${esc(String(item.model || ""))}', '${esc(String(item.source || ""))}')">Remove</button>
+                          </td>
+                        </tr>
+                      `)
+                      .join("")
+                  : '<tr><td colspan="5" class="muted">No local models discovered yet.</td></tr>'
+              }
+            </tbody>
+          </table>
         </div>
       </div>
     `;
@@ -2619,7 +2663,8 @@ window.modelsLoginHuggingFace = async function modelsLoginHuggingFace() {
 window.modelsServe = async function modelsServe(backend) {
   try {
     const payload = { backend };
-    const model = window.prompt(
+    const existingModel = arguments.length > 1 ? arguments[1] : "";
+    const model = existingModel || window.prompt(
       "vLLM model to serve (installed HF repo id or path)",
       "",
     );
@@ -2847,9 +2892,6 @@ async function renderSetup() {
     `;
   }
 
-  const requiredProviders = Object.keys(PROVIDER_INFO).filter(
-    (p) => PROVIDER_INFO[p].required,
-  );
   const optionalLLM = Object.keys(PROVIDER_INFO).filter(
     (p) => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "llm",
   );
@@ -2903,7 +2945,6 @@ async function renderSetup() {
     walletPath === "agentaddress"
       ? "Agent identity ready for autonomous agents"
       : `Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + "+" : ""} tools, workflows, and budget management`;
-  const orStatus = providerStatus("openrouter");
 
   // Card classes
   const identityCardClass = identityDone ? "card-done" : "card-active";
@@ -2984,13 +3025,12 @@ async function renderSetup() {
       cfg.local_models.config &&
       cfg.local_models.config.local_models_chosen;
     const lm = (cfg && cfg.local_models) || {};
-    const ollamaUp = lm.ollama && lm.ollama.healthy;
-    const vllmUp = lm.vllm && lm.vllm.healthy;
-    const anyBackendUp = ollamaUp || vllmUp;
-    const servedModels = [
-      ...((ollamaUp && lm.ollama.served_models) || []),
-      ...((vllmUp && lm.vllm.served_models) || []),
-    ];
+    const backendStatus = lm.backend || {};
+    const anyBackendUp = !!backendStatus.healthy;
+    const servedModels = Array.isArray(backendStatus.served_models)
+      ? backendStatus.served_models
+      : [];
+    const backendName = backendStatus.base_url ? "vLLM" : "local backend";
     if (lmChosen) {
       const statusLine = anyBackendUp
         ? '<span style="color:var(--green)">&#9679;</span> Connected &mdash; ' +
@@ -2999,7 +3039,7 @@ async function renderSetup() {
               (servedModels.length > 3
                 ? " (+" + (servedModels.length - 3) + ")"
                 : "")
-            : (ollamaUp ? "Ollama" : "vLLM") + " ready")
+            : backendName + " ready")
         : '<span style="color:var(--amber)">&#9679;</span> No backend running &mdash; start a model from the Models tab';
       return (
         '<div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">' +
@@ -3016,19 +3056,10 @@ async function renderSetup() {
         "</div>"
       );
     }
-    const orLabel = orStatus.tested
-      ? "OpenRouter <strong>verified</strong>"
-      : "OpenRouter connected";
     return (
-      '<div class="setup-success-banner"><span class="success-icon">&#10003;</span><span>' +
-      orLabel +
-      " &mdash; LLM inference ready</span></div>" +
+      '<div class="setup-success-banner"><span class="success-icon">&#10003;</span><span>LLM access configured &mdash; manage providers from Configuration</span></div>' +
       '<div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
-      (orStatus.configured
-        ? '<button class="btn btn-sm setup-provider-config-btn" data-provider="openrouter" style="border-radius:6px">Change Key</button>' +
-          '<button class="btn btn-sm setup-provider-test-btn" data-provider="openrouter" style="border-radius:6px">Re-test</button>' +
-          '<button class="btn btn-sm setup-provider-disconnect-btn" data-provider="openrouter" style="border-color:var(--red);color:var(--red);border-radius:6px">Disconnect</button>'
-        : "") +
+      '<a href="#/config" class="btn btn-sm btn-primary" style="border-radius:6px">Open Configuration</a>' +
       "</div>"
     );
   })();
@@ -3041,16 +3072,6 @@ async function renderSetup() {
       <img class="setup-hero-img" src="img/agenthalo_ready.png" alt="Agent H.A.L.O." onerror="this.style.display='none'">
       <h1>Welcome, my name is Agent H.A.L.O., but you can just call me Hal :)</h1>
       <p>Let's get everything properly set up for you. Then, we can build something amazing together!</p>
-    </div>
-
-    <div style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-top:10px;background:rgba(4,14,8,0.45)">
-      <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:8px">Quick Start</div>
-      <ol class="setup-steps-friendly" style="margin:0">
-        <li><span class="step-circle">1</span><span>Set your agents identity &amp; safety level</span></li>
-        <li><span class="step-circle">2</span><span>Detect your agent CLIs</span></li>
-        <li><span class="step-circle">3</span><span>Connect your agent to an LLM</span></li>
-        <li><span class="step-circle">4</span><span>Set up your AgentPMT wallet</span></li>
-      </ol>
     </div>
 
     <!-- SECTION 1: Identity -->
@@ -3452,12 +3473,12 @@ async function renderSetup() {
         <!-- Choice: two options -->
         <div class="setup-llm-choice-grid">
 
-          <!-- Option A: Local Models -->
+          <!-- Option: Local Models -->
           <div class="setup-llm-option" id="setup-local-models">
             <div class="setup-llm-option-icon">&#128421;</div>
             <div class="setup-llm-option-title">Local Models</div>
             <div class="setup-llm-option-desc">
-              Run models on your own hardware via vLLM. Free, private, no API key needed.
+              Use your own hardware through vLLM. This is the default guided path for AgentHALO.
             </div>
             <button class="btn btn-primary" id="setup-choose-local-models-btn"
                     style="border-radius:8px;padding:10px 24px;font-size:13px;margin-top:auto">
@@ -3465,74 +3486,11 @@ async function renderSetup() {
             </button>
             <div id="setup-local-models-status" style="margin-top:6px;font-size:11px;min-height:16px"></div>
           </div>
-
-          <!-- Divider -->
-          <div class="setup-llm-divider">
-            <span>or</span>
-          </div>
-
-          <!-- Option B: OpenRouter -->
-          <div class="setup-llm-option" id="setup-openrouter">
-            <div class="setup-llm-option-icon">
-              <img src="img/openrouter-logo.svg" alt="OpenRouter" style="height:28px;opacity:0.85">
-            </div>
-            <div class="setup-llm-option-title">OpenRouter</div>
-            <div class="setup-llm-option-desc">
-              One key for 200+ cloud models. Sign up or log in &mdash; no copy-paste needed.
-            </div>
-            <button class="btn btn-primary" id="openrouter-oauth-connect-btn"
-                    style="border-radius:8px;padding:10px 24px;font-size:13px;margin-top:auto">
-              Connect OpenRouter
-            </button>
-            <div id="openrouter-oauth-status" style="margin-top:6px;font-size:11px;min-height:16px"></div>
-          </div>
-
         </div>
-
-        <details style="margin-top:16px">
-          <summary style="font-size:11px;color:var(--text-dim);cursor:pointer">
-            Or paste an OpenRouter API key manually
-          </summary>
-          <div style="margin-top:8px">
-            ${requiredProviders
-              .map((p) => {
-                const info = PROVIDER_INFO[p] || {
-                  name: p,
-                  envVar: providerDefaultEnv(p),
-                  keyUrl: "#",
-                  description: "",
-                };
-                const s = providerStatus(p);
-                return `
-                <div class="setup-provider-card">
-                  <div class="provider-info">
-                    <div class="provider-name">${esc(info.name)}</div>
-                    <div class="provider-env">${esc(info.envVar)}</div>
-                    ${info.description ? '<div class="provider-desc">' + esc(info.description) + "</div>" : ""}
-                  </div>
-                  <div class="provider-actions">
-                    ${statusBadgeHtml(p)}
-                    ${info.keyUrl && info.keyUrl !== "#" ? '<a class="btn btn-sm" href="' + esc(info.keyUrl) + '" target="_blank" rel="noopener noreferrer">Get Key</a>' : ""}
-                    <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(p)}">Set Key</button>
-                    ${s.configured ? '<button class="btn btn-sm setup-provider-test-btn" data-provider="' + esc(p) + '">Test</button>' : ""}
-                  </div>
-                </div>
-              `;
-              })
-              .join("")}
-          </div>
-        </details>
-
-        ${
-          step1Done
-            ? `
-          <div class="setup-info-box" style="margin-top:14px">
-            <span class="info-icon">&#9888;</span>
-            <span>Add your OpenRouter key so customers can use LLM inference through your agents.</span>
-          </div>
-        `
-            : ""
-        }
+        <div class="setup-info-box" style="margin-top:14px">
+          <span class="info-icon">&#9432;</span>
+          <span>Cloud providers, including OpenRouter, remain available from Configuration if you want to add them later.</span>
+        </div>
       `
       }
     </div>
@@ -3646,7 +3604,7 @@ async function renderSetup() {
       `
           : `
         <p style="color:var(--text-dim);font-size:13px;line-height:1.6;margin-top:4px">
-          Once you connect your account and add an LLM key, all tabs unlock automatically.
+          Finish identity, choose your model path, and connect a wallet to unlock the full dashboard.
         </p>
       `
       }
@@ -5082,117 +5040,6 @@ async function renderSetup() {
         window.vaultRemoveKey(btn.dataset.provider || "");
       });
     });
-
-  // OpenRouter OAuth PKCE connect flow
-  const oauthConnectBtn = content.querySelector(
-    "#openrouter-oauth-connect-btn",
-  );
-  const oauthStatusEl = content.querySelector("#openrouter-oauth-status");
-  if (oauthConnectBtn) {
-    oauthConnectBtn.addEventListener("click", async () => {
-      oauthConnectBtn.disabled = true;
-      oauthConnectBtn.textContent = "Connecting...";
-      if (oauthStatusEl) {
-        oauthStatusEl.innerHTML =
-          '<span style="color:var(--text-dim)">Opening OpenRouter...</span>';
-      }
-
-      try {
-        const codeVerifier = generateCodeVerifier();
-        const codeChallenge = await generateCodeChallenge(codeVerifier);
-        sessionStorage.setItem("halo_or_code_verifier", codeVerifier);
-
-        const callbackUrl = encodeURIComponent(
-          `${window.location.origin}/api/openrouter/oauth/callback`,
-        );
-        const authUrl = `https://openrouter.ai/auth?callback_url=${callbackUrl}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
-        const popup = window.open(
-          authUrl,
-          "openrouter_oauth",
-          "width=600,height=700,scrollbars=yes",
-        );
-        if (!popup) {
-          throw new Error("Popup blocked. Please allow popups for this page.");
-        }
-
-        let settled = false;
-        let pollClosed = null;
-        const resetButton = () => {
-          oauthConnectBtn.disabled = false;
-          oauthConnectBtn.textContent = "Connect with OpenRouter";
-        };
-        const clearVerifier = () =>
-          sessionStorage.removeItem("halo_or_code_verifier");
-
-        const handler = async (event) => {
-          if (event.origin !== window.location.origin) return;
-          if (!event.data || event.data.type !== "agenthalo-openrouter-oauth")
-            return;
-          settled = true;
-          window.removeEventListener("message", handler);
-          if (pollClosed) clearInterval(pollClosed);
-
-          if (event.data.status === "ok" && event.data.code) {
-            if (oauthStatusEl) {
-              oauthStatusEl.innerHTML =
-                '<span style="color:var(--text-dim)">Exchanging token...</span>';
-            }
-            try {
-              const verifier =
-                sessionStorage.getItem("halo_or_code_verifier") || "";
-              clearVerifier();
-              const resp = await apiPost("/openrouter/oauth/exchange", {
-                code: event.data.code,
-                code_verifier: verifier,
-              });
-              if (resp && resp.ok) {
-                if (oauthStatusEl) {
-                  oauthStatusEl.innerHTML =
-                    '<span style="color:var(--green)">&#10003; Connected!</span>';
-                }
-                window._invalidateSetupState();
-                await fetchSetupState(true);
-                await renderSetup();
-                updateNavLockState();
-              } else {
-                throw new Error(resp.error || "OpenRouter exchange failed");
-              }
-            } catch (e) {
-              if (oauthStatusEl) {
-                oauthStatusEl.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
-              }
-              resetButton();
-            }
-            return;
-          }
-
-          clearVerifier();
-          if (oauthStatusEl) {
-            oauthStatusEl.innerHTML = `<span style="color:var(--red)">${esc(event.data.message || "Authorization failed")}</span>`;
-          }
-          resetButton();
-        };
-        window.addEventListener("message", handler);
-
-        pollClosed = setInterval(() => {
-          if (!popup || !popup.closed || settled) return;
-          settled = true;
-          window.removeEventListener("message", handler);
-          clearInterval(pollClosed);
-          clearVerifier();
-          resetButton();
-          if (oauthStatusEl) oauthStatusEl.innerHTML = "";
-        }, 500);
-      } catch (e) {
-        sessionStorage.removeItem("halo_or_code_verifier");
-        if (oauthStatusEl) {
-          oauthStatusEl.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
-        }
-        oauthConnectBtn.disabled = false;
-        oauthConnectBtn.textContent = "Connect with OpenRouter";
-      }
-    });
-  }
 
   // "Use Local Models" button handler
   const chooseLocalBtn = content.querySelector(

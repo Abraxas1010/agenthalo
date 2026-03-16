@@ -1,11 +1,11 @@
-# NucleusDB — Agent Instructions
+# AgentHALO — Agent Instructions
 
 **Repo:** `Abraxas1010/nucleusdb`  
-**Scope:** standalone verifiable database core, Discord recorder, MCP server, dashboard
+**Scope:** Human-AI Agent Lifecycle Orchestrator with verifiable database, agent cockpit, metered proxy, container orchestration, and P2PCLAW marketplace integration
 
 Notes:
 - `CLAUDE.md`, `CODEX.md`, and `GEMINI.md` are symlinks to this file.
-- Keep edits additive and product-focused. This repo is not AgentHALO.
+- Keep edits additive and product-focused. This repo is the live AgentHALO product surface.
 
 ## Foundations
 
@@ -25,22 +25,22 @@ Operating commitments:
 
 ## Project Boundaries
 
-Build and maintain only these surfaces unless the user explicitly expands scope:
+Build and maintain these active product surfaces unless the user explicitly narrows scope:
 
-- `src/protocol.rs`, `src/sql/`, `src/persistence.rs`, `src/blob_store.rs`, `src/vector_index.rs`
-- `src/mcp/`
-- `src/dashboard/`
-- `src/discord/`
-- `src/genesis.rs`, `src/identity.rs`, `src/encrypted_file.rs`, `src/password.rs`, `src/vault.rs`, `src/did.rs`
-- `deploy/`, `Dockerfile`, `docker-compose.yml`
-- `lean/NucleusDB/`
-
-Do not reintroduce HALO orchestration, wallet-routing, mesh, cockpit, or agent-wrapper features into this repo.
+- Core NucleusDB: `src/protocol.rs`, `src/sql/`, `src/persistence.rs`, `src/blob_store.rs`, `src/vector_index.rs`
+- Agent lifecycle: `src/halo/`, `src/cockpit/`, `src/orchestrator/`
+- Identity and crypto: `src/genesis.rs`, `src/identity.rs`, `src/encrypted_file.rs`, `src/password.rs`, `src/vault.rs`, `src/did.rs`, `src/puf/`
+- Networking and containers: `src/container/`, `src/comms/`, `src/swarm/`, `src/pod/`
+- Verification and trust: `src/verifier/`, `src/sheaf/`, `src/trust/`
+- Operator and customer surfaces: `src/mcp/`, `src/dashboard/`, `src/discord/`, `src/tui/`
+- Integration surfaces: `contracts/`, `deploy/`, `Dockerfile`, `docker-compose.yml`, `lean/NucleusDB/`
 
 ## Build Targets
 
 ```bash
 cargo build --release \
+  --bin agenthalo \
+  --bin agenthalo-mcp-server \
   --bin nucleusdb \
   --bin nucleusdb-server \
   --bin nucleusdb-mcp \
@@ -53,7 +53,7 @@ cargo build --release \
 Minimum verification after code changes:
 
 ```bash
-cargo check --bin nucleusdb --bin nucleusdb-mcp --bin nucleusdb-discord --bin nucleusdb-server --bin nucleusdb-tui
+cargo check --bin agenthalo --bin agenthalo-mcp-server --bin nucleusdb --bin nucleusdb-mcp --bin nucleusdb-discord --bin nucleusdb-server --bin nucleusdb-tui
 cargo test
 ```
 
@@ -77,8 +77,9 @@ Use the Heyting repo only as the read-only canonical theorem source. Do not impo
 - Discord recording is append-only by default
 - edits and deletes are logged as new records, never overwrites
 - stdio and HTTP MCP transports both stay working
-- dashboard keeps the CRT aesthetic but only for NucleusDB/identity/security surfaces
+- dashboard keeps the CRT aesthetic across cockpit, setup, verification, and operator surfaces
 - credentials stay in environment files or encrypted local storage, never hardcoded
+- cockpit, mesh, wallet-routing, proxy telemetry, and container orchestration are first-class product surfaces, not legacy exclusions
 
 ## Handoff
 

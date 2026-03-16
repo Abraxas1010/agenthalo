@@ -189,7 +189,7 @@ stop_discord() {
 }
 
 start_dev() {
-    local password_mode="required"
+    local password_mode="disabled"
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --password-mode)

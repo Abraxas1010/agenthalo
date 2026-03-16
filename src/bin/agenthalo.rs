@@ -3640,6 +3640,36 @@ fn cmd_comms(args: &[String]) -> Result<(), String> {
         Ok(MeshRegistrationGuard { registered: true })
     }
 
+    fn print_missing_genesis_bootstrap(
+        cfg: &StartupConfig,
+        note: &str,
+        command: &str,
+    ) -> Result<(), String> {
+        let out = serde_json::json!({
+            "status": "needs_genesis",
+            "command": command,
+            "note": note,
+            "next_step": "agenthalo genesis harvest",
+            "nym": nucleusdb::halo::nym::status(),
+            "p2p_config": {
+                "enabled": cfg.p2p_enabled && cfg.p2p_config.enabled,
+                "listen_port": cfg.p2p_config.listen_port,
+                "bootstrap_peers": cfg
+                    .p2p_config
+                    .bootstrap_peers
+                    .iter()
+                    .map(|addr| addr.to_string())
+                    .collect::<Vec<_>>(),
+            }
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out)
+                .map_err(|e| format!("serialize comms degraded status: {e}"))?
+        );
+        Ok(())
+    }
+
     let sub = args.first().map(|s| s.as_str()).unwrap_or("status");
     match sub {
         "status" => {
@@ -3666,10 +3696,14 @@ fn cmd_comms(args: &[String]) -> Result<(), String> {
         }
         "bootstrap" => {
             let _mesh_guard = register_mesh_if_enabled()?;
-            let seed = genesis_seed::load_seed_bytes()?.ok_or_else(|| {
-                "genesis seed missing; run `agenthalo genesis harvest` first".to_string()
-            })?;
             let cfg = StartupConfig::from_env()?;
+            let Some(seed) = genesis_seed::load_seed_bytes()? else {
+                return print_missing_genesis_bootstrap(
+                    &cfg,
+                    "genesis seed missing; sovereign comms stack was not started",
+                    "bootstrap",
+                );
+            };
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -3697,10 +3731,14 @@ fn cmd_comms(args: &[String]) -> Result<(), String> {
         }
         "run" => {
             let _mesh_guard = register_mesh_if_enabled()?;
-            let seed = genesis_seed::load_seed_bytes()?.ok_or_else(|| {
-                "genesis seed missing; run `agenthalo genesis harvest` first".to_string()
-            })?;
             let cfg = StartupConfig::from_env()?;
+            let Some(seed) = genesis_seed::load_seed_bytes()? else {
+                return print_missing_genesis_bootstrap(
+                    &cfg,
+                    "genesis seed missing; sovereign comms event loop was not started",
+                    "run",
+                );
+            };
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -5144,6 +5182,7 @@ fn cmd_dashboard(args: &[String]) -> Result<(), String> {
 
     let mut port: u16 = 3100;
     let mut open_browser = true;
+    let mut password_protected = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -5159,12 +5198,28 @@ fn cmd_dashboard(args: &[String]) -> Result<(), String> {
             "--no-open" => {
                 open_browser = false;
             }
+            "--password-protected" | "--require-password" => {
+                password_protected = true;
+            }
             other => return Err(format!("unknown dashboard flag: {other}")),
         }
         i += 1;
     }
 
     config::ensure_halo_dir()?;
+    let inherited_bootstrap_mode = std::env::var("AGENTHALO_DASHBOARD_BOOTSTRAP_MODE")
+        .ok()
+        .map(|value| value.to_ascii_lowercase())
+        .filter(|value| matches!(value.as_str(), "required" | "optional" | "disabled"))
+        .unwrap_or_else(|| "disabled".to_string());
+    std::env::set_var(
+        "AGENTHALO_DASHBOARD_BOOTSTRAP_MODE",
+        if password_protected {
+            "required"
+        } else {
+            inherited_bootstrap_mode.as_str()
+        },
+    );
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("create tokio runtime: {e}"))?;
     rt.block_on(dashboard::serve(port, open_browser))
@@ -5172,7 +5227,7 @@ fn cmd_dashboard(args: &[String]) -> Result<(), String> {
 
 fn print_dashboard_usage() {
     println!(
-        "Usage:\n  agenthalo dashboard [--port N] [--no-open]\n\nOptions:\n  --port N     Port for dashboard HTTP server (default: 3100)\n  --no-open    Do not open browser automatically\n  -h, --help   Show this help"
+        "Usage:\n  agenthalo dashboard [--port N] [--no-open] [--password-protected|--require-password]\n\nOptions:\n  --port N               Port for dashboard HTTP server (default: 3100)\n  --no-open              Do not open browser automatically\n  --password-protected   Require password creation/unlock on startup\n  --require-password     Alias for --password-protected\n  -h, --help             Show this help"
     );
 }
 

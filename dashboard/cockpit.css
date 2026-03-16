@@ -438,10 +438,27 @@
   background: #0d1408;
 }
 
+.cockpit-log-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(10, 18, 10, 0.9);
+}
+
+.cockpit-log-filter,
+.cockpit-log-search {
+  min-height: 34px;
+}
+
+.cockpit-log-search {
+  flex: 1;
+}
+
 .cockpit-log-stream {
   margin: 0;
   padding: 10px;
-  height: 100%;
+  height: calc(100% - 56px);
   overflow: auto;
   color: var(--text);
   background: #050905;
@@ -462,6 +479,23 @@
   padding: 6px 8px;
   color: var(--text);
   font-size: 12px;
+}
+
+.cockpit-metric-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.cockpit-metric-chart-card {
+  border: 1px solid var(--border);
+  padding: 8px;
+  background: rgba(8, 16, 8, 0.78);
+}
+
+.cockpit-metric-chart-card canvas {
+  width: 100%;
 }
 
 .cockpit-terminal-host .xterm,

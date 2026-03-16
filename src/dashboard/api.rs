@@ -145,6 +145,22 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/p2pclaw/chat", post(api_p2pclaw_chat))
         .route("/p2pclaw/wheel", get(api_p2pclaw_wheel))
         .route("/p2pclaw/investigations", get(api_p2pclaw_investigations))
+        .route("/proof-gate/status", get(api_proof_gate_status))
+        .route(
+            "/proof-gate/toggle-master",
+            post(api_proof_gate_toggle_master),
+        )
+        .route(
+            "/proof-gate/toggle-requirement",
+            post(api_proof_gate_toggle_requirement),
+        )
+        .route("/proof-gate/verify", post(api_proof_gate_verify))
+        .route("/proof-gate/submit-cert", post(api_proof_gate_submit_cert))
+        .route("/proof-gate/certificates", get(api_proof_gate_certificates))
+        .route(
+            "/proof-gate/certificate/{id}",
+            axum::routing::delete(api_proof_gate_delete_certificate),
+        )
         .route("/mcp/tools", get(api_mcp_tools))
         .route("/mcp/tools/{name}", get(api_mcp_tool_detail))
         .route("/mcp/invoke", post(api_mcp_invoke))
@@ -282,6 +298,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/deploy/launch", post(api_deploy_launch))
         .route("/deploy/status/{id}", get(api_deploy_status))
         .route("/models/status", get(api_models_status))
+        .route("/models/choose-local", post(api_models_choose_local))
+        .route("/models/unchoose-local", post(api_models_unchoose_local))
         .route("/models/search", get(api_models_search))
         .route("/models/pull", post(api_models_pull))
         .route("/models/rm", post(api_models_rm))
@@ -452,6 +470,30 @@ struct P2PClawValidateRequest {
 struct P2PClawChatRequest {
     message: String,
     channel: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProofGateToggleMasterRequest {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct ProofGateToggleRequirementRequest {
+    tool_name: String,
+    theorem_name: String,
+    enforced: bool,
+}
+
+#[derive(Deserialize, Default)]
+struct ProofGateVerifyRequest {
+    tool_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProofGateSubmitCertificateRequest {
+    content: String,
+    #[serde(default)]
+    filename: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -1973,11 +2015,82 @@ fn extract_completion_text(response: &Value) -> String {
         .to_string()
 }
 
+const COCKPIT_SESSION_HEADER: &str = "x-agenthalo-cockpit-session";
+
+#[derive(Debug, Clone, Default)]
+struct CockpitTelemetryDelta {
+    resolved_model: Option<String>,
+    total_tokens: u64,
+    total_cost_usd: f64,
+}
+
+fn cockpit_session_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(COCKPIT_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn cockpit_telemetry_delta(
+    response: &Value,
+    request: &proxy::ChatCompletionRequest,
+) -> CockpitTelemetryDelta {
+    let prompt_tokens = response
+        .get("usage")
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(|| estimate_message_tokens(&request.messages));
+    let completion_tokens = response
+        .get("usage")
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(|| estimate_text_tokens(&extract_completion_text(response)));
+    let resolved_model = response
+        .get("x_agenthalo")
+        .and_then(|v| v.get("model"))
+        .and_then(|v| v.as_str())
+        .or_else(|| response.get("model").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .or_else(|| Some(request.model.clone()));
+    let total_cost_usd = response
+        .get("x_agenthalo")
+        .and_then(|v| v.get("cost_usd"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    CockpitTelemetryDelta {
+        resolved_model,
+        total_tokens: prompt_tokens.saturating_add(completion_tokens),
+        total_cost_usd,
+    }
+}
+
+fn update_cockpit_proxy_telemetry(
+    state: &DashboardState,
+    cockpit_session_id: Option<&str>,
+    trace_session_id: Option<String>,
+    delta: &CockpitTelemetryDelta,
+) {
+    let Some(cockpit_session_id) = cockpit_session_id else {
+        return;
+    };
+    let Some(session) = state.pty_manager.get_session(cockpit_session_id) else {
+        return;
+    };
+    session.record_actual_telemetry(
+        trace_session_id,
+        delta.resolved_model.clone(),
+        delta.total_tokens,
+        delta.total_cost_usd,
+    );
+}
+
 async fn record_proxy_trace(
     state: &DashboardState,
     request: &proxy::ChatCompletionRequest,
     response: &Value,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let started = now_unix_secs();
     let session_id = format!(
         "proxy-{}-{}",
@@ -2036,7 +2149,7 @@ async fn record_proxy_trace(
     })?;
 
     writer.end_session(HaloSessionStatus::Completed)?;
-    Ok(())
+    Ok(session_id)
 }
 
 fn stream_trace_response(
@@ -2500,7 +2613,7 @@ async fn api_crypto_status(AxumState(state): AxumState<DashboardState>) -> ApiRe
     let password_protected = encrypted_file::header_exists();
     let mut crypto = lock_crypto_state(&state)?;
     crypto.session.reap_expired();
-    let locked = !crypto.session.is_unlocked();
+    let locked = password_protected && !crypto.session.is_unlocked();
     let mut active_scopes = crypto
         .session
         .active_scopes()
@@ -2527,6 +2640,7 @@ async fn api_crypto_status(AxumState(state): AxumState<DashboardState>) -> ApiRe
         "migration_status": migration_status_name(&status),
         "active_scopes": active_scopes,
         "password_protected": password_protected,
+        "bootstrap_mode": state.bootstrap_mode.as_str(),
         "failed_attempts": crypto.session.failed_attempts(),
         "retry_after_secs": retry_after_secs,
     })))
@@ -5150,6 +5264,323 @@ async fn api_addons_post(
     })))
 }
 
+fn proof_gate_mutable_config_path() -> std::path::PathBuf {
+    std::env::var("NUCLEUSDB_PROOF_GATE_CONFIG")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(crate::config::proof_gate_config_path)
+}
+
+fn sanitize_proof_gate_certificate_id(id: &str) -> Result<String, String> {
+    let trimmed = id.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+    {
+        return Err("invalid certificate identifier".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn list_proof_gate_certificates(cfg: &proof_gate::ProofGateConfig) -> Result<Vec<Value>, String> {
+    if !cfg.certificate_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&cfg.certificate_dir).map_err(|e| {
+        format!(
+            "read proof certificate dir {}: {e}",
+            cfg.certificate_dir.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = match entry {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("lean4export") {
+            continue;
+        }
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| format!("stat proof certificate {}: {e}", path.display()))?;
+        let modified_at = meta
+            .modified()
+            .ok()
+            .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|dur| dur.as_secs());
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("certificate.lean4export")
+            .to_string();
+        match proof_gate::verify_certificate(&path) {
+            Ok(verification) => out.push(json!({
+                "id": filename,
+                "filename": filename,
+                "path": path.display().to_string(),
+                "size_bytes": meta.len(),
+                "modified_at": modified_at,
+                "status": if verification.all_checked { "verified" } else { "invalid" },
+                "verification": verification,
+            })),
+            Err(err) => out.push(json!({
+                "id": filename,
+                "filename": filename,
+                "path": path.display().to_string(),
+                "size_bytes": meta.len(),
+                "modified_at": modified_at,
+                "status": "unreadable",
+                "error": err,
+            })),
+        }
+    }
+    out.sort_by(|a, b| {
+        let am = a.get("modified_at").and_then(Value::as_u64).unwrap_or(0);
+        let bm = b.get("modified_at").and_then(Value::as_u64).unwrap_or(0);
+        bm.cmp(&am).then_with(|| {
+            a.get("filename")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .cmp(b.get("filename").and_then(Value::as_str).unwrap_or(""))
+        })
+    });
+    Ok(out)
+}
+
+fn proof_gate_dashboard_payload() -> Result<Value, String> {
+    let cfg = proof_gate::load_gate_config()?;
+    let certificates = list_proof_gate_certificates(&cfg)?;
+    let certificate_dir = cfg.certificate_dir.clone();
+    let mut tool_names = cfg.requirements.keys().cloned().collect::<Vec<_>>();
+    tool_names.sort();
+    let tools = tool_names
+        .iter()
+        .map(|tool_name| {
+            let evaluation = cfg.evaluate(tool_name);
+            let requirements = cfg
+                .requirements
+                .get(tool_name)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|req| {
+                    let check = evaluation
+                        .verification_results
+                        .iter()
+                        .find(|item| item.theorem_name == req.required_theorem)
+                        .cloned();
+                    json!({
+                        "tool_name": req.tool_name,
+                        "required_theorem": req.required_theorem,
+                        "description": req.description,
+                        "enforced": req.enforced,
+                        "expected_statement_hash": req.expected_statement_hash,
+                        "expected_commit_hash": req.expected_commit_hash,
+                        "require_signature": req.require_signature,
+                        "min_trust_tier": req.min_trust_tier,
+                        "check": check,
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "tool_name": tool_name,
+                "evaluation": evaluation,
+                "requirements": requirements,
+            })
+        })
+        .collect::<Vec<_>>();
+    let requirement_count = cfg
+        .requirements
+        .values()
+        .map(|items| items.len())
+        .sum::<usize>();
+    let enforced_count = cfg
+        .requirements
+        .values()
+        .flat_map(|items| items.iter())
+        .filter(|req| req.enforced)
+        .count();
+    Ok(json!({
+        "enabled": cfg.enabled,
+        "certificate_dir": certificate_dir,
+        "tool_count": tools.len(),
+        "requirement_count": requirement_count,
+        "enforced_count": enforced_count,
+        "certificate_count": certificates.len(),
+        "evaluated_at": now_unix_secs(),
+        "tools": tools,
+        "certificates": certificates,
+    }))
+}
+
+async fn api_proof_gate_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    Ok(Json(proof_gate_dashboard_payload().map_err(|e| {
+        internal_err(format!("proof gate status: {e}"))
+    })?))
+}
+
+async fn api_proof_gate_toggle_master(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<ProofGateToggleMasterRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mut cfg = proof_gate::load_gate_config()
+        .map_err(|e| internal_err(format!("load proof gate config: {e}")))?;
+    cfg.enabled = req.enabled;
+    let path = proof_gate_mutable_config_path();
+    cfg.save(&path)
+        .map_err(|e| internal_err(format!("save proof gate config {}: {e}", path.display())))?;
+    Ok(Json(json!({
+        "ok": true,
+        "enabled": cfg.enabled,
+        "config_path": path.display().to_string(),
+        "status": proof_gate_dashboard_payload().map_err(|e| internal_err(format!("proof gate refresh: {e}")))?,
+    })))
+}
+
+async fn api_proof_gate_toggle_requirement(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<ProofGateToggleRequirementRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let mut cfg = proof_gate::load_gate_config()
+        .map_err(|e| internal_err(format!("load proof gate config: {e}")))?;
+    let mut updated = false;
+    if let Some(items) = cfg.requirements.get_mut(req.tool_name.trim()) {
+        for item in items.iter_mut() {
+            if item.required_theorem == req.theorem_name {
+                item.enforced = req.enforced;
+                updated = true;
+                break;
+            }
+        }
+    }
+    if !updated {
+        return Err(api_err(
+            StatusCode::NOT_FOUND,
+            "proof-gate requirement not found",
+        ));
+    }
+    let path = proof_gate_mutable_config_path();
+    cfg.save(&path)
+        .map_err(|e| internal_err(format!("save proof gate config {}: {e}", path.display())))?;
+    Ok(Json(json!({
+        "ok": true,
+        "tool_name": req.tool_name,
+        "theorem_name": req.theorem_name,
+        "enforced": req.enforced,
+        "config_path": path.display().to_string(),
+        "status": proof_gate_dashboard_payload().map_err(|e| internal_err(format!("proof gate refresh: {e}")))?,
+    })))
+}
+
+async fn api_proof_gate_verify(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<ProofGateVerifyRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if let Some(tool_name) = req.tool_name.as_deref() {
+        let cfg = proof_gate::load_gate_config()
+            .map_err(|e| internal_err(format!("load proof gate config: {e}")))?;
+        let evaluation = cfg.evaluate(tool_name);
+        return Ok(Json(json!({
+            "ok": true,
+            "tool_name": tool_name,
+            "evaluation": evaluation,
+        })));
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "status": proof_gate_dashboard_payload().map_err(|e| internal_err(format!("proof gate verify: {e}")))?,
+    })))
+}
+
+async fn api_proof_gate_submit_cert(
+    AxumState(state): AxumState<DashboardState>,
+    Json(req): Json<ProofGateSubmitCertificateRequest>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    if req.content.trim().is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "certificate content is empty",
+        ));
+    }
+    let filename = sanitize_proof_gate_certificate_id(
+        req.filename
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("dashboard-upload.lean4export"),
+    )
+    .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let filename = if filename.ends_with(".lean4export") {
+        filename
+    } else {
+        format!("{filename}.lean4export")
+    };
+    let temp_path = std::env::temp_dir().join(format!(
+        "agenthalo-proof-gate-{}-{}",
+        uuid::Uuid::new_v4().as_simple(),
+        filename
+    ));
+    std::fs::write(&temp_path, req.content).map_err(|e| {
+        internal_err(format!(
+            "write temp certificate {}: {e}",
+            temp_path.display()
+        ))
+    })?;
+    let verification = proof_gate::verify_certificate(&temp_path)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let stored_path = proof_gate::submit_certificate(&temp_path)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e));
+    let _ = std::fs::remove_file(&temp_path);
+    let stored_path = stored_path?;
+    Ok(Json(json!({
+        "ok": true,
+        "stored_path": stored_path.display().to_string(),
+        "verification": verification,
+        "status": proof_gate_dashboard_payload().map_err(|e| internal_err(format!("proof gate refresh: {e}")))?,
+    })))
+}
+
+async fn api_proof_gate_certificates(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cfg = proof_gate::load_gate_config()
+        .map_err(|e| internal_err(format!("load proof gate config: {e}")))?;
+    let certificates = list_proof_gate_certificates(&cfg)
+        .map_err(|e| internal_err(format!("list proof gate certificates: {e}")))?;
+    Ok(Json(json!({
+        "certificate_dir": cfg.certificate_dir,
+        "count": certificates.len(),
+        "certificates": certificates,
+    })))
+}
+
+async fn api_proof_gate_delete_certificate(
+    AxumState(state): AxumState<DashboardState>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let cert_id = sanitize_proof_gate_certificate_id(&id)
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let cfg = proof_gate::load_gate_config()
+        .map_err(|e| internal_err(format!("load proof gate config: {e}")))?;
+    let path = cfg.certificate_dir.join(&cert_id);
+    if !path.exists() {
+        return Err(api_err(StatusCode::NOT_FOUND, "certificate not found"));
+    }
+    std::fs::remove_file(&path)
+        .map_err(|e| internal_err(format!("remove certificate {}: {e}", path.display())))?;
+    Ok(Json(json!({
+        "ok": true,
+        "id": cert_id,
+        "status": proof_gate_dashboard_payload().map_err(|e| internal_err(format!("proof gate refresh: {e}")))?,
+    })))
+}
+
 async fn api_p2pclaw_configure(
     AxumState(state): AxumState<DashboardState>,
     Json(req): Json<P2PClawConfigureRequest>,
@@ -5769,6 +6200,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
     let local_model_status = tokio::task::spawn_blocking(crate::halo::local_models::detect_status)
         .await
         .map_err(|e| internal_err(format!("local model status task join: {e}")))?;
+    let local_models_chosen = local_model_status.config.local_models_chosen;
     let llm_ok = state
         .vault
         .as_ref()
@@ -5785,6 +6217,7 @@ async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .is_some()
+        || local_models_chosen
         || local_model_status.backend.healthy;
     let setup_complete = identity_ok && wallet_complete && llm_ok;
 
@@ -7188,6 +7621,38 @@ async fn api_models_status(AxumState(state): AxumState<DashboardState>) -> ApiRe
     Ok(Json(json!(status)))
 }
 
+async fn api_models_choose_local(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    tokio::task::spawn_blocking(crate::halo::local_models::mark_local_models_chosen)
+        .await
+        .map_err(|e| internal_err(format!("local model choose task join: {e}")))?
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let status = tokio::task::spawn_blocking(crate::halo::local_models::detect_status)
+        .await
+        .map_err(|e| internal_err(format!("local model status task join: {e}")))?;
+    Ok(Json(json!({
+        "ok": true,
+        "chosen": true,
+        "status": status
+    })))
+}
+
+async fn api_models_unchoose_local(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    tokio::task::spawn_blocking(crate::halo::local_models::clear_local_models_chosen)
+        .await
+        .map_err(|e| internal_err(format!("local model unchoose task join: {e}")))?
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    let status = tokio::task::spawn_blocking(crate::halo::local_models::detect_status)
+        .await
+        .map_err(|e| internal_err(format!("local model status task join: {e}")))?;
+    Ok(Json(json!({
+        "ok": true,
+        "chosen": false,
+        "status": status
+    })))
+}
+
 async fn api_models_search(
     AxumState(state): AxumState<DashboardState>,
     Query(query): Query<ModelSearchQuery>,
@@ -7298,10 +7763,12 @@ async fn api_proxy_models(AxumState(state): AxumState<DashboardState>) -> ApiRes
 
 async fn api_proxy_chat(
     AxumState(state): AxumState<DashboardState>,
+    headers: HeaderMap,
     Json(req): Json<proxy::ChatCompletionRequest>,
 ) -> Result<Response, (StatusCode, Json<Value>)> {
     require_sensitive_access(&state)?;
     let vault = state.vault.clone();
+    let cockpit_session_id = cockpit_session_from_headers(&headers);
 
     if req.stream.unwrap_or(false) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
@@ -7310,6 +7777,7 @@ async fn api_proxy_chat(
         req_for_proxy.stream = Some(true);
         let req_for_trace = req.clone();
         let state_for_trace = state.clone();
+        let cockpit_session_for_trace = cockpit_session_id.clone();
         let proxy_runtime = state.proxy_governor.clone();
         let permit = proxy_runtime
             .try_acquire()
@@ -7342,9 +7810,19 @@ async fn api_proxy_chat(
         });
         tokio::spawn(async move {
             if let Ok(summary) = trace_rx.await {
-                if let Err(e) = record_proxy_trace(&state_for_trace, &req_for_trace, &summary).await
-                {
-                    eprintln!("warning: stream proxy trace write failed: {e}");
+                let delta = cockpit_telemetry_delta(&summary, &req_for_trace);
+                match record_proxy_trace(&state_for_trace, &req_for_trace, &summary).await {
+                    Ok(trace_session_id) => {
+                        update_cockpit_proxy_telemetry(
+                            &state_for_trace,
+                            cockpit_session_for_trace.as_deref(),
+                            Some(trace_session_id),
+                            &delta,
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("warning: stream proxy trace write failed: {e}");
+                    }
                 }
             }
         });
@@ -7371,8 +7849,17 @@ async fn api_proxy_chat(
         eprintln!("warning: proxy governor latency update failed: {e}");
     }
 
-    if let Err(e) = record_proxy_trace(&state, &req, &response).await {
-        eprintln!("warning: proxy trace write failed: {e}");
+    let delta = cockpit_telemetry_delta(&response, &req);
+    match record_proxy_trace(&state, &req, &response).await {
+        Ok(trace_session_id) => update_cockpit_proxy_telemetry(
+            &state,
+            cockpit_session_id.as_deref(),
+            Some(trace_session_id),
+            &delta,
+        ),
+        Err(e) => {
+            eprintln!("warning: proxy trace write failed: {e}");
+        }
     }
 
     Ok(Json(response).into_response())
@@ -7445,6 +7932,7 @@ async fn api_metered_proxy_chat(
         req_for_proxy.stream = Some(true);
         let req_for_trace = req.clone();
         let state_for_trace = state.clone();
+        let cockpit_session_for_trace = cockpit_session_from_headers(&headers);
         let proxy_runtime = state.proxy_governor.clone();
         let permit = proxy_runtime
             .try_acquire()
@@ -7517,9 +8005,19 @@ async fn api_metered_proxy_chat(
         });
         tokio::spawn(async move {
             if let Ok(summary) = trace_rx.await {
-                if let Err(e) = record_proxy_trace(&state_for_trace, &req_for_trace, &summary).await
-                {
-                    eprintln!("warning: metered stream proxy trace write failed: {e}");
+                let delta = cockpit_telemetry_delta(&summary, &req_for_trace);
+                match record_proxy_trace(&state_for_trace, &req_for_trace, &summary).await {
+                    Ok(trace_session_id) => {
+                        update_cockpit_proxy_telemetry(
+                            &state_for_trace,
+                            cockpit_session_for_trace.as_deref(),
+                            Some(trace_session_id),
+                            &delta,
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("warning: metered stream proxy trace write failed: {e}");
+                    }
                 }
             }
         });
@@ -7556,8 +8054,18 @@ async fn api_metered_proxy_chat(
         eprintln!("warning: metered proxy governor cost update failed: {e}");
     }
 
-    if let Err(e) = record_proxy_trace(&state, &req, &result.body).await {
-        eprintln!("warning: metered proxy trace write failed: {e}");
+    let cockpit_session_id = cockpit_session_from_headers(&headers);
+    let delta = cockpit_telemetry_delta(&result.body, &req);
+    match record_proxy_trace(&state, &req, &result.body).await {
+        Ok(trace_session_id) => update_cockpit_proxy_telemetry(
+            &state,
+            cockpit_session_id.as_deref(),
+            Some(trace_session_id),
+            &delta,
+        ),
+        Err(e) => {
+            eprintln!("warning: metered proxy trace write failed: {e}");
+        }
     }
 
     Ok(Json(result.body).into_response())

@@ -50,6 +50,15 @@ pub struct PtySession {
     output_bytes: AtomicU64,
     trace_flushed: AtomicBool,
     last_activity_unix: AtomicU64,
+    actual_telemetry: Mutex<ActualTelemetry>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ActualTelemetry {
+    trace_session_id: Option<String>,
+    resolved_model: Option<String>,
+    total_tokens: u64,
+    total_cost_usd: f64,
 }
 
 impl PtySession {
@@ -185,6 +194,11 @@ impl PtySession {
 
     pub fn info(&self) -> SessionInfo {
         let t = self.telemetry_snapshot();
+        let actual = self
+            .actual_telemetry
+            .lock()
+            .map(|telemetry| telemetry.clone())
+            .unwrap_or_default();
         SessionInfo {
             id: self.id.clone(),
             agent_type: self.agent_type.clone(),
@@ -199,6 +213,10 @@ impl PtySession {
             estimated_input_tokens: t.estimated_input_tokens,
             estimated_output_tokens: t.estimated_output_tokens,
             estimated_cost_usd: t.estimated_cost_usd,
+            trace_session_id: actual.trace_session_id,
+            resolved_model: actual.resolved_model,
+            actual_total_tokens: (actual.total_tokens > 0).then_some(actual.total_tokens),
+            actual_total_cost_usd: (actual.total_cost_usd > 0.0).then_some(actual.total_cost_usd),
             runtime_secs: t.runtime_secs,
             trace_flushed: t.trace_flushed,
             idle_secs: self.idle_secs(),
@@ -226,6 +244,27 @@ impl PtySession {
 
     fn touch_activity(&self) {
         self.last_activity_unix.store(now_unix(), Ordering::Relaxed);
+    }
+
+    pub fn record_actual_telemetry(
+        &self,
+        trace_session_id: Option<String>,
+        resolved_model: Option<String>,
+        total_tokens_delta: u64,
+        total_cost_usd_delta: f64,
+    ) {
+        if let Ok(mut actual) = self.actual_telemetry.lock() {
+            if let Some(trace_session_id) = trace_session_id.filter(|value| !value.is_empty()) {
+                actual.trace_session_id = Some(trace_session_id);
+            }
+            if let Some(resolved_model) = resolved_model.filter(|value| !value.is_empty()) {
+                actual.resolved_model = Some(resolved_model);
+            }
+            actual.total_tokens = actual.total_tokens.saturating_add(total_tokens_delta);
+            if total_cost_usd_delta.is_finite() && total_cost_usd_delta > 0.0 {
+                actual.total_cost_usd += total_cost_usd_delta;
+            }
+        }
     }
 }
 
@@ -347,6 +386,7 @@ impl PtyManager {
             output_bytes: AtomicU64::new(0),
             trace_flushed: AtomicBool::new(false),
             last_activity_unix: AtomicU64::new(now_unix()),
+            actual_telemetry: Mutex::new(ActualTelemetry::default()),
         });
 
         spawn_reader_thread(session.clone())?;
@@ -519,6 +559,38 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_info_includes_accumulated_actual_telemetry() {
+        let manager = PtyManager::new(2);
+        let session_id = manager
+            .create_session(
+                "/bin/sh",
+                &[String::from("-lc"), String::from("printf ready")],
+                vec![],
+                None,
+                120,
+                36,
+                Some("shell".to_string()),
+            )
+            .expect("create session");
+        let session = manager.get_session(&session_id).expect("session");
+        session.record_actual_telemetry(
+            Some("proxy-trace-1".to_string()),
+            Some("anthropic/claude-sonnet-4-6".to_string()),
+            321,
+            0.0123,
+        );
+        let info = session.info();
+        assert_eq!(info.trace_session_id.as_deref(), Some("proxy-trace-1"));
+        assert_eq!(
+            info.resolved_model.as_deref(),
+            Some("anthropic/claude-sonnet-4-6")
+        );
+        assert_eq!(info.actual_total_tokens, Some(321));
+        assert_eq!(info.actual_total_cost_usd, Some(0.0123));
+        let _ = manager.destroy_session(&session_id);
+    }
 
     #[test]
     fn max_sessions_enforced() {
