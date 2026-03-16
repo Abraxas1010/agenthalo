@@ -6143,7 +6143,7 @@ impl NucleusDbMcpService {
                 trace_session_id: metadata.as_ref().and_then(|meta| meta.trace_session_id.clone()),
                 agent_home: metadata.as_ref().and_then(|meta| meta.agent_home.clone()),
                 identity_fingerprint: metadata.as_ref().map(|meta| meta.identity_fingerprint.clone()),
-                identity_digest: metadata.as_ref().map(|meta| meta.identity_fingerprint.clone()),
+                identity_digest: metadata.as_ref().map(|meta| meta.identity_fingerprint.clone()), // deprecated: use identity_fingerprint
             });
         }
         Ok(Json(OrchestratorListResponse { agents: views }))

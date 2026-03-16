@@ -839,8 +839,9 @@
         this.noticeEl.className = 'cockpit-notice-bar';
         return;
       }
+      const safeTone = ['info', 'success', 'warn'].includes(tone) ? tone : 'info';
       this.noticeEl.textContent = text;
-      this.noticeEl.className = `cockpit-notice-bar is-visible tone-${tone}`;
+      this.noticeEl.className = `cockpit-notice-bar is-visible tone-${safeTone}`;
       if (this.noticeTimer) clearTimeout(this.noticeTimer);
       this.noticeTimer = setTimeout(() => {
         if (!this.noticeEl) return;
@@ -1925,20 +1926,20 @@
         } else {
           entry.panel.el.remove();
         }
-        this.sessions.delete(sessionId);
-        const next = [...this.sessions.keys()][0] || null;
-        this.activeTab = next;
-        if (next) this.activateTab(next);
-        this.applyLayout();
-        if (options.notice) {
-          this.showNotice(options.notice.message, options.notice.tone || 'info');
-        }
-        return true;
       } catch (e) {
         console.error('Failed to detach cockpit panel', sessionId, e);
         this.showNotice(`Cockpit UI failed while closing ${sessionId}. Refreshing restores the server state.`, 'warn', 7000);
-        return false;
+      } finally {
+        this.sessions.delete(sessionId);
       }
+      const next = [...this.sessions.keys()][0] || null;
+      this.activeTab = next;
+      if (next) this.activateTab(next);
+      this.applyLayout();
+      if (options.notice) {
+        this.showNotice(options.notice.message, options.notice.tone || 'info');
+      }
+      return true;
     }
 
     async restartSession(sessionId) {
