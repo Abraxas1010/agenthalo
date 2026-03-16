@@ -3409,6 +3409,200 @@ tr.clickable { cursor: pointer; }
 
 .back-link:hover { text-decoration: underline; text-shadow: var(--glow-amber); }
 
+.session-overview-grid {
+  margin-bottom: 18px;
+}
+
+.session-agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.session-agent-card {
+  appearance: none;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  background: var(--bg-card);
+}
+
+.session-agent-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(255, 106, 0, 0.18), var(--glow-amber);
+}
+
+.session-agent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.session-agent-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.session-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  background: rgba(255, 106, 0, 0.08);
+  color: var(--text);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.session-agent-cta {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.session-agent-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.session-agent-accordion {
+  overflow: hidden;
+}
+
+.session-agent-accordion summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.session-agent-accordion summary::-webkit-details-marker {
+  display: none;
+}
+
+.session-agent-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.session-agent-summary-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-bright);
+}
+
+.session-agent-summary-sub {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+.session-agent-summary-metrics {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.session-agent-detail-body {
+  margin-top: 14px;
+}
+
+.session-trace-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.session-trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.session-trace-card {
+  border: 1px solid var(--border);
+  background: rgba(20, 34, 16, 0.45);
+  padding: 10px;
+}
+
+.session-trace-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.session-trace-ts,
+.session-trace-usage,
+.session-trace-file {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.session-trace-tool {
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.session-trace-block + .session-trace-block {
+  margin-top: 8px;
+}
+
+.session-trace-label {
+  margin-bottom: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.session-trace-block pre {
+  margin: 0;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(6, 10, 4, 0.8);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.session-raw-timeline {
+  margin-top: 12px;
+}
+
+.session-raw-summary {
+  cursor: pointer;
+  color: var(--text-bright);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 /* ================================================================
    TYPE BADGES
    ================================================================ */
@@ -3854,6 +4048,9 @@ input:focus, select:focus, textarea:focus {
   .nav-link { justify-content: center; padding: 12px 8px; }
   #content { margin-left: 60px; padding: 16px; }
   .card-grid { grid-template-columns: 1fr; }
+  .session-trace-grid { grid-template-columns: 1fr; }
+  .session-agent-summary { flex-direction: column; align-items: flex-start; }
+  .session-agent-summary-metrics { justify-content: flex-start; }
   .chart-row { grid-template-columns: 1fr; }
   .backend-comparison { grid-template-columns: 1fr; }
   .grant-form-grid { grid-template-columns: 1fr; }

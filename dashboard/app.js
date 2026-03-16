@@ -1500,6 +1500,7 @@ async function route() {
     "nucleusdb-docs",
     "agentpmt",
     "cockpit",
+    "sessions",
   ];
   const ss = await fetchSetupState();
   if (!ss.complete && !SETUP_EXEMPT_PAGES.includes(page)) {
@@ -1968,15 +1969,51 @@ initSSE();
 // PAGE: Sessions
 // =============================================================================
 async function renderSessions(sessionId) {
-  if (sessionId) return renderSessionDetail(sessionId);
+  if (sessionId) {
+    const parts = String(sessionId).split("/");
+    if (parts[0] === "agent" && parts[1]) {
+      return renderAgentSessions(decodeURIComponent(parts.slice(1).join("/")));
+    }
+    return renderSessionDetail(sessionId);
+  }
 
   content.innerHTML = '<div class="loading">Loading sessions...</div>';
   try {
     const data = await api("/sessions");
     const items = data.sessions || [];
+    const totals = summarizeSessionItems(items);
+    const agents = buildAgentSessionGroups(items);
 
     content.innerHTML = `
       <div class="page-title">Sessions</div>
+      <div class="card-grid session-overview-grid">
+        <div class="card">
+          <div class="card-label">Total Sessions</div>
+          <div class="card-value" style="font-size:18px">${fmtTokens(totals.sessions)}</div>
+          <div class="card-sub">${fmtTokens(totals.agents)} agents tracked</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Total Tokens</div>
+          <div class="card-value" style="font-size:18px">${fmtTokens(totals.tokens)}</div>
+          <div class="card-sub">In ${fmtTokens(totals.inputTokens)} / Out ${fmtTokens(totals.outputTokens)}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Estimated Cost</div>
+          <div class="card-value" style="font-size:18px">${fmtCost(totals.costUsd)}</div>
+          <div class="card-sub">${fmtTokens(totals.toolCalls)} tools across ${fmtTokens(totals.eventCount)} events</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Latest Activity</div>
+          <div class="card-value" style="font-size:14px">${totals.latestStartedAt ? fmtTime(totals.latestStartedAt) : "No sessions yet"}</div>
+          <div class="card-sub">${totals.latestAgent ? esc(totals.latestAgent) : "No agent history recorded"}</div>
+        </div>
+      </div>
+      <div class="section-header">Agents</div>
+      <div class="session-agent-grid">
+        ${agents.length
+          ? agents.map((group) => agentSessionCard(group)).join("")
+          : '<div class="card"><div class="card-label">No agent sessions yet</div><div class="card-sub">Launch an agent from Cockpit to begin recording trace history.</div></div>'}
+      </div>
       <div class="filter-bar">
         <input type="text" id="filter-agent" placeholder="Filter by agent..." oninput="filterSessions()">
         <input type="text" id="filter-model" placeholder="Filter by model..." oninput="filterSessions()">
@@ -2013,33 +2050,197 @@ function sessionRow(item) {
   </tr>`;
 }
 
-window.filterSessions = function () {
-  const agent = ($("#filter-agent")?.value || "").toLowerCase();
-  const model = ($("#filter-model")?.value || "").toLowerCase();
-  const items = window._sessionItems || [];
-  const filtered = items.filter((item) => {
-    const s = item.session;
-    if (agent && !s.agent.toLowerCase().includes(agent)) return false;
-    if (model && !(s.model || "").toLowerCase().includes(model)) return false;
-    return true;
-  });
-  const tbody = $("#sessions-tbody");
-  if (tbody) tbody.innerHTML = filtered.map(sessionRow).join("");
-};
+function summarizeSessionItems(items) {
+  const summary = (items || []).reduce(
+    (acc, item) => {
+      const ss = item.session || {};
+      const sm = item.summary || {};
+      acc.sessions += 1;
+      acc.agentsSet.add(ss.agent || "unknown");
+      acc.inputTokens += Number(sm.total_input_tokens || 0);
+      acc.outputTokens += Number(sm.total_output_tokens || 0);
+      acc.costUsd += Number(sm.estimated_cost_usd || 0);
+      acc.toolCalls += Number(sm.tool_calls || 0) + Number(sm.mcp_tool_calls || 0);
+      acc.eventCount += Number(sm.event_count || 0);
+      const startedAt = Number(ss.started_at || 0);
+      if (startedAt > acc.latestStartedAt) {
+        acc.latestStartedAt = startedAt;
+        acc.latestAgent = ss.agent || "unknown";
+      }
+      return acc;
+    },
+    {
+      sessions: 0,
+      agentsSet: new Set(),
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      toolCalls: 0,
+      eventCount: 0,
+      latestStartedAt: 0,
+      latestAgent: "",
+    },
+  );
+  summary.agents = summary.agentsSet.size;
+  return summary;
+}
 
-async function renderSessionDetail(id) {
-  content.innerHTML = '<div class="loading">Loading session...</div>';
+function buildAgentSessionGroups(items) {
+  const grouped = new Map();
+  (items || []).forEach((item) => {
+    const ss = item.session || {};
+    const sm = item.summary || {};
+    const key = ss.agent || "unknown";
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        agent: key,
+        sessions: [],
+        models: new Set(),
+        sessionCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        toolCalls: 0,
+        eventCount: 0,
+        lastStartedAt: 0,
+      });
+    }
+    const group = grouped.get(key);
+    group.sessions.push(item);
+    group.sessionCount += 1;
+    group.inputTokens += Number(sm.total_input_tokens || 0);
+    group.outputTokens += Number(sm.total_output_tokens || 0);
+    group.costUsd += Number(sm.estimated_cost_usd || 0);
+    group.toolCalls += Number(sm.tool_calls || 0) + Number(sm.mcp_tool_calls || 0);
+    group.eventCount += Number(sm.event_count || 0);
+    if (ss.model) group.models.add(ss.model);
+    const startedAt = Number(ss.started_at || 0);
+    if (startedAt > group.lastStartedAt) group.lastStartedAt = startedAt;
+  });
+  return [...grouped.values()]
+    .sort((a, b) => b.lastStartedAt - a.lastStartedAt)
+    .map((group) => ({
+      ...group,
+      models: [...group.models].sort(),
+      totalTokens: group.inputTokens + group.outputTokens,
+    }));
+}
+
+function agentSessionCard(group) {
+  return `
+    <button class="card session-agent-card" onclick="location.hash='#/sessions/agent/${encodeURIComponent(group.agent)}'">
+      <div class="card-label">Agent</div>
+      <div class="card-value" style="font-size:18px">${esc(group.agent)}</div>
+      <div class="card-sub">${fmtTokens(group.sessionCount)} sessions • ${fmtTokens(group.totalTokens)} tokens</div>
+      <div class="session-agent-meta">
+        <span>${fmtCost(group.costUsd)}</span>
+        <span>${fmtTokens(group.toolCalls)} tools</span>
+        <span>${group.lastStartedAt ? fmtTime(group.lastStartedAt) : "No activity"}</span>
+      </div>
+      <div class="session-agent-models">${group.models.length ? group.models.map((model) => `<span class="session-agent-chip">${esc(truncate(model, 28))}</span>`).join("") : '<span class="session-agent-chip">unknown model</span>'}</div>
+      <div class="session-agent-cta">Open agent sessions &rarr;</div>
+    </button>`;
+}
+
+async function renderAgentSessions(agent) {
+  content.innerHTML = '<div class="loading">Loading agent sessions...</div>';
   try {
-    const data = await api("/sessions/" + encodeURIComponent(id));
-    const ss = data.session,
-      sm = data.summary || {},
-      events = data.events || [];
-    const tokens = (sm.total_input_tokens || 0) + (sm.total_output_tokens || 0);
+    const data = await api("/sessions?agent=" + encodeURIComponent(agent));
+    const items = data.sessions || [];
+    const totals = summarizeSessionItems(items);
 
     content.innerHTML = `
       <a href="#/sessions" class="back-link">&larr; Back to Sessions</a>
-      <div class="page-title">${esc(truncate(ss.session_id, 32))} ${statusBadge(ss.status)}</div>
+      <div class="page-title">Agent Sessions: ${esc(agent)}</div>
+      <div class="card-grid session-overview-grid">
+        <div class="card">
+          <div class="card-label">Sessions</div>
+          <div class="card-value" style="font-size:18px">${fmtTokens(totals.sessions)}</div>
+          <div class="card-sub">${totals.latestStartedAt ? "Latest " + fmtTime(totals.latestStartedAt) : "No activity"}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Tokens</div>
+          <div class="card-value" style="font-size:18px">${fmtTokens(totals.inputTokens + totals.outputTokens)}</div>
+          <div class="card-sub">In ${fmtTokens(totals.inputTokens)} / Out ${fmtTokens(totals.outputTokens)}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Estimated Cost</div>
+          <div class="card-value" style="font-size:18px">${fmtCost(totals.costUsd)}</div>
+          <div class="card-sub">${fmtTokens(totals.toolCalls)} tools • ${fmtTokens(totals.eventCount)} events</div>
+        </div>
+      </div>
+      <div class="section-header">Session Trace Explorer</div>
+      <div class="session-agent-stack">
+        ${items.length ? items.map((item) => agentSessionAccordion(item)).join("") : '<div class="card"><div class="card-label">No sessions for this agent</div></div>'}
+      </div>
+    `;
+    window._agentSessionDetails = new Map();
+    $$(".session-agent-accordion").forEach((el) => {
+      el.addEventListener("toggle", () => {
+        if (el.open) loadAgentSessionDetail(el.dataset.sessionId);
+      });
+    });
+  } catch (e) {
+    content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
+  }
+}
 
+function agentSessionAccordion(item) {
+  const ss = item.session || {};
+  const sm = item.summary || {};
+  const totalTokens = Number(sm.total_input_tokens || 0) + Number(sm.total_output_tokens || 0);
+  return `
+    <details class="card session-agent-accordion" data-session-id="${esc(ss.session_id)}">
+      <summary class="session-agent-summary">
+        <div>
+          <div class="session-agent-summary-title">${esc(ss.model || "unknown")} ${statusBadge(ss.status)}</div>
+          <div class="session-agent-summary-sub">${esc(ss.session_id)} • ${fmtTime(ss.started_at)}</div>
+        </div>
+        <div class="session-agent-summary-metrics">
+          <span>${fmtTokens(totalTokens)} tokens</span>
+          <span>${fmtCost(sm.estimated_cost_usd)}</span>
+          <span>${fmtTokens(Number(sm.tool_calls || 0) + Number(sm.mcp_tool_calls || 0))} tools</span>
+        </div>
+      </summary>
+      <div class="session-agent-detail-body" id="agent-session-detail-${esc(ss.session_id)}">
+        <div class="loading">Loading session trace...</div>
+      </div>
+    </details>`;
+}
+
+async function loadAgentSessionDetail(sessionId) {
+  const target = document.getElementById(`agent-session-detail-${CSS.escape(sessionId)}`);
+  if (!target) return;
+  if (!window._agentSessionDetails) window._agentSessionDetails = new Map();
+  if (window._agentSessionDetails.has(sessionId)) {
+    target.innerHTML = window._agentSessionDetails.get(sessionId);
+    return;
+  }
+  target.innerHTML = '<div class="loading">Loading session trace...</div>';
+  try {
+    const data = await api("/sessions/" + encodeURIComponent(sessionId));
+    const html = renderSessionDetailSections(data, { embedded: true });
+    window._agentSessionDetails.set(sessionId, html);
+    target.innerHTML = html;
+  } catch (e) {
+    target.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderSessionDetailSections(data, options) {
+  const opts = options || {};
+  const ss = data.session || {};
+  const sm = data.summary || {};
+  const events = data.events || [];
+  const tokens = Number(sm.total_input_tokens || 0) + Number(sm.total_output_tokens || 0);
+  const transcriptEvents = events.filter((ev) =>
+    ["prompt_sent", "assistant", "thinking", "response_received", "system_message", "error"].includes(String(ev.event_type || "")),
+  );
+  const toolEvents = events.filter((ev) =>
+    ["tool_call", "tool_result", "mcp_tool_call", "mcp_tool_result", "bash_command", "file_change", "subagent_spawn"].includes(String(ev.event_type || "")),
+  );
+  return `
+    ${opts.embedded ? "" : `
       <div class="card-grid">
         <div class="card">
           <div class="card-label">Agent</div>
@@ -2064,27 +2265,118 @@ async function renderSessionDetail(id) {
           <div class="card-sub">MCP: ${sm.mcp_tool_calls || 0} | Errors: ${sm.errors || 0}</div>
         </div>
       </div>
-
       <div style="margin-bottom:12px;display:flex;gap:8px">
         <button class="btn" data-session-id="${encodeURIComponent(ss.session_id)}" onclick="exportSessionByButton(this)">Export JSON</button>
         <button class="btn btn-primary" data-session-id="${encodeURIComponent(ss.session_id)}" onclick="attestSessionByButton(this)">Attest</button>
       </div>
-
-      <div class="section-header">Event Timeline (${events.length} events)</div>
+    `}
+    <div class="session-trace-grid">
+      <div class="card">
+        <div class="card-label">Conversation History</div>
+        <div class="card-sub">Full prompt, assistant output, thinking traces, and errors.</div>
+        <div class="session-trace-list">
+          ${transcriptEvents.length ? transcriptEvents.map((ev) => traceEventCard(ev)).join("") : '<div class="muted">No conversation events recorded.</div>'}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Tool Activity</div>
+        <div class="card-sub">Tool calls, MCP usage, bash commands, file writes, and spawned subagents.</div>
+        <div class="session-trace-list">
+          ${toolEvents.length ? toolEvents.map((ev) => traceEventCard(ev)).join("") : '<div class="muted">No tool activity recorded.</div>'}
+        </div>
+      </div>
+    </div>
+    <details class="card session-raw-timeline" ${opts.embedded ? "" : "open"}>
+      <summary class="session-raw-summary">Raw Event Timeline (${events.length} events)</summary>
       <div class="event-timeline">
-        ${events
-          .map(
-            (ev) => `
+        ${events.map((ev) => `
           <div class="event-item">
             <span class="event-seq">#${ev.seq}</span>
             ${eventTypeBadge(ev.event_type)}
-            <span class="event-content">${esc(truncate(JSON.stringify(ev.content), 100))}</span>
-            ${ev.input_tokens ? `<span style="color:var(--text-dim);font-size:10px;margin-left:8px">in:${ev.input_tokens} out:${ev.output_tokens || 0}</span>` : ""}
-          </div>
-        `,
-          )
-          .join("")}
+            <span class="event-content">${esc(renderCompactEventLabel(ev))}</span>
+            ${(ev.input_tokens != null || ev.output_tokens != null) ? `<span style="color:var(--text-dim);font-size:10px;margin-left:8px">in:${fmtTokens(Number(ev.input_tokens || 0))} out:${fmtTokens(Number(ev.output_tokens || 0))}</span>` : ""}
+          </div>`).join("")}
       </div>
+    </details>
+  `;
+}
+
+function traceEventCard(ev) {
+  return `
+    <div class="session-trace-card">
+      <div class="session-trace-card-head">
+        <div>
+          ${eventTypeBadge(ev.event_type)}
+          <span class="session-trace-ts">${fmtTime(ev.timestamp)}</span>
+        </div>
+        <div class="session-trace-usage">
+          ${(ev.input_tokens != null || ev.output_tokens != null) ? `${fmtTokens(Number(ev.input_tokens || 0))} / ${fmtTokens(Number(ev.output_tokens || 0))}` : ""}
+        </div>
+      </div>
+      ${ev.tool_name ? `<div class="session-trace-tool">${esc(ev.tool_name)}</div>` : ""}
+      ${renderTraceValue("Content", ev.content)}
+      ${ev.tool_input != null ? renderTraceValue("Tool Input", ev.tool_input) : ""}
+      ${ev.tool_output != null ? renderTraceValue("Tool Output", ev.tool_output) : ""}
+      ${ev.file_path ? `<div class="session-trace-file">File: ${esc(ev.file_path)}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderTraceValue(label, value) {
+  const text = prettyTraceValue(value);
+  return `<div class="session-trace-block"><div class="session-trace-label">${esc(label)}</div><pre>${esc(text)}</pre></div>`;
+}
+
+function prettyTraceValue(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    if (typeof value.text === "string") return value.text;
+    if (typeof value.message === "string") return value.message;
+    if (typeof value.stderr === "string") return value.stderr;
+    if (typeof value.stdout === "string") return value.stdout;
+    if (typeof value.prompt === "string") return value.prompt;
+    return JSON.stringify(value, null, 2);
+  }
+  return String(value);
+}
+
+function renderCompactEventLabel(ev) {
+  const value = ev.content;
+  if (value == null) return "";
+  if (typeof value === "string") return truncate(value, 120);
+  if (typeof value === "object") {
+    const preferred = value.text || value.message || value.stderr || value.stdout || value.prompt || value.command || value.tool || value.path;
+    if (preferred) return truncate(String(preferred), 120);
+    return truncate(JSON.stringify(value), 120);
+  }
+  return truncate(String(value), 120);
+}
+
+window.filterSessions = function () {
+  const agent = ($("#filter-agent")?.value || "").toLowerCase();
+  const model = ($("#filter-model")?.value || "").toLowerCase();
+  const items = window._sessionItems || [];
+  const filtered = items.filter((item) => {
+    const s = item.session;
+    if (agent && !s.agent.toLowerCase().includes(agent)) return false;
+    if (model && !(s.model || "").toLowerCase().includes(model)) return false;
+    return true;
+  });
+  const tbody = $("#sessions-tbody");
+  if (tbody) tbody.innerHTML = filtered.map(sessionRow).join("");
+};
+
+async function renderSessionDetail(id) {
+  content.innerHTML = '<div class="loading">Loading session...</div>';
+  try {
+    const data = await api("/sessions/" + encodeURIComponent(id));
+    const ss = data.session;
+
+    content.innerHTML = `
+      <a href="#/sessions" class="back-link">&larr; Back to Sessions</a>
+      <div class="page-title">${esc(truncate(ss.session_id, 32))} ${statusBadge(ss.status)}</div>
+      ${renderSessionDetailSections(data)}
     `;
   } catch (e) {
     content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
