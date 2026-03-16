@@ -1398,65 +1398,19 @@ async function fetchSetupState(force) {
 }
 
 function updateNavLockState() {
-  if (!_setupState) return;
-  const complete = _setupState.complete;
-  const justUnlocked = _lastSetupComplete === false && complete === true;
-  const NAV_EXEMPT = [
-    "setup",
-    "overview",
-    "genesis",
-    "identification",
-    "communication",
-    "nucleusdb-docs",
-    "agentpmt",
-    "cockpit",
-  ];
+  // All nav items are always unlocked — CLI integration means
+  // setup is not a prerequisite for navigation.
   $$(".nav-link").forEach((a) => {
-    const page = a.dataset.page;
-    if (page === "setup") {
-      a.classList.remove("nav-locked");
-      a.classList.toggle("setup-incomplete", !complete);
-      a.classList.remove("nav-unlocked");
-    } else if (NAV_EXEMPT.includes(page)) {
-      // Documentation/setup-adjacent pages are always accessible
-      a.classList.remove("nav-locked");
-      a.classList.remove("setup-incomplete");
-    } else {
-      a.classList.toggle("nav-locked", !complete);
-      a.classList.remove("setup-incomplete");
-      if (!complete) a.classList.remove("nav-unlocked");
-    }
+    a.classList.remove("nav-locked");
+    a.classList.remove("setup-incomplete");
+    a.classList.remove("nav-unlocked");
   });
 
-  if (justUnlocked) {
-    $$(".nav-link").forEach((a) => {
-      if (a.dataset.page !== "setup") a.classList.add("nav-unlocked");
-    });
-    setTimeout(() => {
-      $$(".nav-link.nav-unlocked").forEach((a) =>
-        a.classList.remove("nav-unlocked"),
-      );
-    }, 900);
-  }
-
-  // Update progress indicator
+  // Hide the setup progress indicator
   const prog = document.getElementById("setup-progress");
-  if (prog) {
-    if (complete) {
-      prog.style.display = "none";
-    } else {
-      const walletDone =
-        _setupState.wallet !== undefined
-          ? _setupState.wallet
-          : _setupState.agentpmt;
-      const steps = [_setupState.identity, _setupState.llm, walletDone];
-      const done = steps.filter(Boolean).length;
-      prog.style.display = "block";
-      prog.innerHTML = `Setup: ${done}/${steps.length}
-        <div class="progress-bar"><div class="progress-fill" style="width:${Math.round((done / steps.length) * 100)}%"></div></div>`;
-    }
-  }
-  _lastSetupComplete = complete;
+  if (prog) prog.style.display = "none";
+
+  _lastSetupComplete = true;
 }
 
 // Invalidate setup cache (called after setup actions)
