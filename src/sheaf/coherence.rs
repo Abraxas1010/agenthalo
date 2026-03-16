@@ -56,7 +56,7 @@ pub fn verify_sheaf_coherence(_global: &State, pf: &SheafCoherenceProof) -> bool
     pf.coherent && pf.conflicts.is_empty()
 }
 
-/// Formal provenance for the sheaf-coherence and trace-topology layer.
+/// Formal provenance for the sheaf gluing-consistency and trace-topology layer.
 pub fn formal_provenance() -> Vec<FormalProvenance> {
     vec![
         (

@@ -199,7 +199,7 @@ An agent can attest a session on-chain with a single command (`agenthalo attest 
 
 ### What's Proved
 
-- **Sheaf coherence** — Local views of state compose into a globally consistent picture. If local sections agree on overlaps, they assemble into a unique global section. If they don't, someone's view is inconsistent — tamper detection built from pure mathematics.
+- **Sheaf gluing consistency** — Local views of state compose into a globally consistent picture. If local sections agree on overlaps, they assemble into a unique global section. If they don't, someone's view is inconsistent — tamper detection built from pure mathematics.
 - **Chain transport** — Round-trip contracts between different chain representations. Forward-backward transport composes to the identity — proved, not assumed.
 - **Gluing conditions** — Two chain-local sections can be glued when their projections to the shared space agree.
 - **Materialization functors** — The abstract protocol-to-vector relationship satisfies naturality.

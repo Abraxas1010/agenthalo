@@ -216,6 +216,7 @@ development escape-hatch sessions; the runtime emits a warning when you do.
 Validation and certificate generation:
 
 ```bash
+python3 scripts/check_theory_boundary.py               # verify the repository stays within the approved math boundary
 ./scripts/validate_formal_provenance.sh                # namespace-aware FQN resolution + commit-staleness check
 ./scripts/generate_proof_certificates.sh               # generate + sign + submit certificates
 cargo run --bin nucleusdb -- verify-certificate <file>  # verify a single certificate

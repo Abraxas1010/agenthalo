@@ -593,6 +593,7 @@ async fn api_containers_route_uses_local_stateful_service() {
         mesh_port: Some(3000),
         pid: None,
         log_path: None,
+        agent_home: None,
     };
     std::fs::write(
         &session_path,

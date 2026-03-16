@@ -7183,11 +7183,7 @@ mod tests {
             .expect("mesh_call");
         assert_eq!(response.auth_method, "bearer");
         assert_eq!(
-            response
-                .result
-                .get("structuredContent")
-                .and_then(|v| v.get("ok"))
-                .and_then(|v| v.as_bool()),
+            response.result.get("ok").and_then(|v| v.as_bool()),
             Some(true)
         );
 

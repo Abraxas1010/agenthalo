@@ -64,6 +64,7 @@ If dashboard assets change, rebuild the binary before claiming the frontend chan
 When editing `lean/NucleusDB/` or Rust provenance surfaces:
 
 ```bash
+python3 scripts/check_theory_boundary.py
 ./scripts/validate_formal_provenance.sh
 ./scripts/generate_proof_certificates.sh   # when theorem surfaces or gate requirements change
 (cd lean && lake build NucleusDB)

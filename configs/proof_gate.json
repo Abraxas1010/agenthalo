@@ -16,7 +16,7 @@
       {
         "tool_name": "nucleusdb_execute_sql",
         "required_theorem": "HeytingLean.NucleusDB.Sheaf.verifyCoherence_sound",
-        "description": "Sheaf coherence witnesses are accepted only when amalgamation holds",
+        "description": "Sheaf gluing witnesses are accepted only when local sections admit a global amalgamation",
         "enforced": true,
         "expected_statement_hash": "20db8f7e8909ecbff2c2f3d30665dee6f658667dee2eaf4122008d23d2e0068c",
         "expected_commit_hash": "ad1d2a187a82daa32df952a2597b3eaae3f7b274",

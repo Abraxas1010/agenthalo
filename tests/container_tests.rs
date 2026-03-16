@@ -201,6 +201,7 @@ async fn operator_subsidiary_list_filters_owned_sessions() {
                 mesh_port: Some(3000),
                 pid: None,
                 log_path: None,
+                agent_home: None,
             })
             .expect("encode session"),
         )

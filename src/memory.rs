@@ -498,7 +498,7 @@ fn is_heading_boundary(line: &str) -> bool {
 
 fn format_commit_error(err: CommitError) -> String {
     match err {
-        CommitError::SheafIncoherent => "sheaf coherence check failed".to_string(),
+        CommitError::SheafIncoherent => "sheaf gluing consistency check failed".to_string(),
         CommitError::WitnessQuorumFailed => "witness quorum check failed".to_string(),
         CommitError::EmptyWitnessSet => "witness set is empty".to_string(),
         CommitError::WitnessSigningFailed(e) => format!("witness signing failed: {e:?}"),

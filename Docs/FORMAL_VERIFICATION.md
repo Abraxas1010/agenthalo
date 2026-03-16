@@ -45,11 +45,11 @@ The proof gate is configured in `configs/proof_gate.json`.
 
 Current policy:
 
-- `enabled = false`
+- `enabled = true`
 - requirements are populated with exact theorem FQNs plus expected statement/commit hashes
-- signatures are required for every configured advisory certificate
-- enforcement remains disabled until certificate generation is part of operator workflow
-- dashboard/API results are simulated against the advisory configuration while enforcement is off
+- signatures are required for every configured certificate
+- enforcement blocks covered runtime surfaces when a required certificate is missing, stale, or invalid
+- the sheaf module names refer to category-theoretic gluing consistency for local sections, not a runtime persistence law
 
 ## Certificates
 
@@ -66,6 +66,7 @@ Important limitation:
 Generation and validation commands:
 
 ```bash
+python3 scripts/check_theory_boundary.py
 ./scripts/validate_formal_provenance.sh
 ./scripts/generate_proof_certificates.sh
 cargo run --bin nucleusdb -- verify-certificate ~/.nucleusdb/proof_certificates/<file>.lean4export
@@ -88,6 +89,7 @@ The helper scripts auto-discover the Heyting checkout from `HEYTING_ROOT`, `../h
 ## Operator Notes
 
 - Use the Heyting repo as read-only source of theorem truth.
+- Run `python3 scripts/check_theory_boundary.py` before shipping formal-surface changes.
 - Validate provenance before generating certificates.
 - Initialize local genesis material before generating certificates, because signing is mandatory for configured theorem requirements.
 - Prefer targeted Lean and Rust verification in worktrees; do not mutate the shared dirty checkout in place.
