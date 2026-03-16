@@ -124,6 +124,19 @@ ensure_dev_port_available() {
     return 1
 }
 
+wait_for_pid_exit() {
+    local pid="$1"
+    local label="$2"
+    for _ in $(seq 1 40); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    echo -e "${RED}${label} did not stop cleanly (pid ${pid}).${NC}"
+    return 1
+}
+
 start_background() {
     local pid_file="$1"
     local log_file="$2"
@@ -203,7 +216,7 @@ wipe_dev() {
     if [[ -n "$port_pid" ]] && [[ -f "/proc/${port_pid}/cmdline" ]] && tr '\0' ' ' <"/proc/${port_pid}/cmdline" | grep -q "agenthalo"; then
         echo "Stopping stale dev listener on :3100 (pid $port_pid)..."
         kill "$port_pid" 2>/dev/null || true
-        sleep 1
+        wait_for_pid_exit "$port_pid" "stale dev listener"
     fi
     rm -rf "$DEV_ROOT"
     rm -rf "$NATIVE_SESSION_ROOT"

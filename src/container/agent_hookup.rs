@@ -7,14 +7,14 @@ use crate::halo::local_models::{self, LocalBackendType, ServeRequest};
 use crate::halo::pricing;
 use crate::halo::proxy::{ChatCompletionRequest, Message};
 use crate::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
-use crate::halo::trace::{now_unix_secs, TraceWriter};
+use crate::halo::trace::{TraceWriter, now_unix_secs};
 use crate::halo::vault::Vault;
 use crate::orchestrator::agent_pool::{AgentPool, LaunchSpec};
 use crate::orchestrator::trace_bridge::collect_task_output;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -636,43 +636,41 @@ impl AgentHookup for CliAgentHookup {
                         message
                     };
                     self.trace.write_error("agent_exit", &message, false)?;
-                    return Err(message);
-                }
-                let file_answer = execution.answer_path.as_ref().and_then(|path| {
-                    std::fs::read_to_string(path).ok().and_then(|text| {
-                        let trimmed = text.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_string())
-                        }
-                    })
-                });
-                AgentResponse {
-                    content: file_answer
-                        .or_else(|| {
-                            outcome
-                        .answer
-                        .filter(|value| !value.trim().is_empty())
+                    Err(message)
+                } else {
+                    let file_answer = execution.answer_path.as_ref().and_then(|path| {
+                        std::fs::read_to_string(path).ok().and_then(|text| {
+                            let trimmed = text.trim();
+                            if trimmed.is_empty() {
+                                None
+                            } else {
+                                Some(trimmed.to_string())
+                            }
                         })
-                        .unwrap_or_else(|| outcome.output.trim().to_string()),
-                    model: self.model.clone().unwrap_or_else(|| self.cli_name.clone()),
-                    input_tokens: outcome.input_tokens,
-                    output_tokens: outcome.output_tokens,
-                    cost_usd: cost,
-                    tool_calls: Vec::new(),
-                    duration_ms: started.elapsed().as_millis() as u64,
+                    });
+                    Ok(AgentResponse {
+                        content: file_answer
+                            .or_else(|| outcome.answer.filter(|value| !value.trim().is_empty()))
+                            .unwrap_or_else(|| outcome.output.trim().to_string()),
+                        model: self.model.clone().unwrap_or_else(|| self.cli_name.clone()),
+                        input_tokens: outcome.input_tokens,
+                        output_tokens: outcome.output_tokens,
+                        cost_usd: cost,
+                        tool_calls: Vec::new(),
+                        duration_ms: started.elapsed().as_millis() as u64,
+                    })
                 }
             }
             Err(error) => {
                 self.agent_pool.complete_task(&agent_id, cost).await;
                 self.trace.write_error("task_execution", &error, true)?;
-                return Err(error);
+                Err(error)
             }
         };
         if let Some(path) = execution.answer_path.as_ref() {
             let _ = std::fs::remove_file(path);
         }
+        let result = result?;
         self.trace.write_response_received(&result)?;
         Ok(result)
     }
@@ -1027,11 +1025,7 @@ fn which_path(binary: &str) -> Option<String> {
         return None;
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn api_endpoint(provider: &str, base_url_override: Option<&str>) -> Result<String, String> {
@@ -1406,7 +1400,7 @@ fn api_cost_usd(model: &str, body: &Value) -> f64 {
 mod tests {
     use super::*;
     use crate::halo::trace::session_events;
-    use crate::test_support::{lock_env, EnvVarGuard, MockOpenAiServer};
+    use crate::test_support::{EnvVarGuard, MockOpenAiServer, lock_env};
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1897,10 +1891,12 @@ mod tests {
 
         let trace_id = hookup.trace_session_id().expect("trace session id");
         let events = session_events(hookup.trace_db_path(), &trace_id).expect("events");
-        assert!(events
-            .iter()
-            .any(|event| event.event_type == EventType::ToolCall
-                && event.tool_name.as_deref() == Some("nucleusdb_help")));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == EventType::ToolCall
+                    && event.tool_name.as_deref() == Some("nucleusdb_help"))
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -1,6 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+const GEMINI_DEFAULT_MODEL_ENV: &str = "AGENTHALO_GEMINI_DEFAULT_MODEL";
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DispatchMode {
@@ -87,7 +89,7 @@ impl ContainerHookupRequest {
     }
 }
 
-fn normalize_cli_model(cli_name: &str, model: Option<String>) -> Option<String> {
+pub(crate) fn normalize_cli_model(cli_name: &str, model: Option<String>) -> Option<String> {
     let explicit = model.and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -96,8 +98,88 @@ fn normalize_cli_model(cli_name: &str, model: Option<String>) -> Option<String> 
             Some(trimmed.to_string())
         }
     });
-    explicit.or_else(|| match cli_name.trim().to_ascii_lowercase().as_str() {
-        "gemini" => Some("gemini-2.5-flash".to_string()),
+    explicit.or_else(|| cli_default_model(cli_name))
+}
+
+fn cli_default_model(cli_name: &str) -> Option<String> {
+    match cli_name.trim().to_ascii_lowercase().as_str() {
+        "gemini" => std::env::var(GEMINI_DEFAULT_MODEL_ENV)
+            .ok()
+            .and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }),
         _ => None,
-    })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct EnvGuard {
+        prior: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(value: Option<&str>) -> Self {
+            let prior = std::env::var(GEMINI_DEFAULT_MODEL_ENV).ok();
+            match value {
+                Some(value) => unsafe { std::env::set_var(GEMINI_DEFAULT_MODEL_ENV, value) },
+                None => unsafe { std::env::remove_var(GEMINI_DEFAULT_MODEL_ENV) },
+            }
+            Self { prior }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.prior.as_deref() {
+                Some(value) => unsafe { std::env::set_var(GEMINI_DEFAULT_MODEL_ENV, value) },
+                None => unsafe { std::env::remove_var(GEMINI_DEFAULT_MODEL_ENV) },
+            }
+        }
+    }
+
+    #[test]
+    fn normalize_cli_model_uses_explicit_trimmed_value() {
+        let _lock = env_lock();
+        let _guard = EnvGuard::set(Some("gemini-2.5-flash"));
+        assert_eq!(
+            normalize_cli_model("gemini", Some(" gemini-2.5-pro ".to_string())),
+            Some("gemini-2.5-pro".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_cli_model_uses_env_default_for_gemini() {
+        let _lock = env_lock();
+        let _guard = EnvGuard::set(Some("gemini-2.5-flash"));
+        assert_eq!(
+            normalize_cli_model("gemini", None),
+            Some("gemini-2.5-flash".to_string())
+        );
+        assert_eq!(
+            normalize_cli_model("gemini", Some("   ".to_string())),
+            Some("gemini-2.5-flash".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_cli_model_returns_none_without_default_or_for_other_clis() {
+        let _lock = env_lock();
+        let _guard = EnvGuard::set(None);
+        assert_eq!(normalize_cli_model("gemini", None), None);
+        assert_eq!(normalize_cli_model("claude", None), None);
+    }
 }

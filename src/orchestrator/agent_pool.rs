@@ -1,5 +1,6 @@
 use crate::cockpit::pty_manager::PtyManager;
 use crate::halo::vault::Vault;
+use crate::orchestrator::dispatch::normalize_cli_model;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -92,6 +93,17 @@ pub struct AgentPool {
 
 const MAX_MANAGED_AGENTS: usize = 64;
 
+fn create_codex_answer_file(task_id: &str) -> Result<PathBuf, String> {
+    tempfile::Builder::new()
+        .prefix(&format!("agenthalo-codex-{task_id}-"))
+        .suffix(".txt")
+        .tempfile()
+        .map_err(|e| format!("create codex answer file: {e}"))?
+        .keep()
+        .map(|(_, path)| path)
+        .map_err(|e| format!("persist codex answer file: {}", e.error))
+}
+
 impl std::fmt::Debug for AgentPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentPool").finish_non_exhaustive()
@@ -150,12 +162,8 @@ impl AgentPool {
         );
         let env = resolve_env_vars(&spec.env, self.vault.as_ref())?;
         let (command, mut static_args, mut env_remove) = command_for_kind(&kind);
-        if let Some(model) = spec
-            .model
-            .as_ref()
-            .map(|m| m.trim())
-            .filter(|m| !m.is_empty())
-        {
+        let normalized_model = normalize_cli_model(&kind, spec.model.clone());
+        if let Some(model) = normalized_model.as_deref() {
             static_args.extend(model_args_for_kind(&kind, model));
         }
         let explicit_env_keys = BTreeSet::from_iter(env.iter().map(|(k, _)| k.as_str()));
@@ -173,7 +181,7 @@ impl AgentPool {
             status: AgentStatus::Idle,
             launched_at: crate::pod::now_unix(),
             timeout_secs: spec.timeout_secs.max(5),
-            model: spec.model.filter(|m| !m.trim().is_empty()),
+            model: normalized_model,
             working_dir: spec.working_dir.filter(|v| !v.trim().is_empty()),
             tasks_completed: 0,
             total_cost_usd: 0.0,
@@ -271,11 +279,7 @@ impl AgentPool {
             "claude" => args.push(prompt.to_string()),
             // Codex can emit the final assistant message to a file deterministically.
             "codex" => {
-                let last_message = std::env::temp_dir().join(format!(
-                    "agenthalo-codex-{}-{}.txt",
-                    task_id,
-                    &uuid::Uuid::new_v4().simple().to_string()[..8]
-                ));
+                let last_message = create_codex_answer_file(task_id)?;
                 args.push("--output-last-message".to_string());
                 args.push(last_message.display().to_string());
                 args.push(prompt.to_string());
@@ -301,7 +305,12 @@ impl AgentPool {
                 24,
                 Some(agent.agent_type.clone()),
             )
-            .map_err(|e| format!("start task PTY session failed: {e}"))?;
+            .map_err(|e| {
+                if let Some(path) = answer_path.as_ref() {
+                    let _ = std::fs::remove_file(path);
+                }
+                format!("start task PTY session failed: {e}")
+            })?;
         agent.pty_session_id = Some(session_id.clone());
         agent.status = AgentStatus::Busy {
             task_id: task_id.to_string(),
@@ -485,7 +494,6 @@ pub fn resolve_env_vars(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
-
     fn temp_path(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "orch_agent_pool_test_{}_{}_{}",
@@ -583,6 +591,51 @@ mod tests {
             model_args_for_kind("shell", "irrelevant"),
             Vec::<String>::new()
         );
+    }
+
+    #[tokio::test]
+    async fn launch_trims_normalized_cli_model() {
+        let pool = AgentPool::new(Arc::new(PtyManager::new(4)), None);
+        let agent = pool
+            .launch(LaunchSpec {
+                agent: "gemini".to_string(),
+                agent_name: "gem".to_string(),
+                working_dir: None,
+                env: BTreeMap::new(),
+                timeout_secs: 10,
+                model: Some(" gemini-2.5-pro ".to_string()),
+                trace: false,
+                capabilities: vec!["memory_read".to_string()],
+            })
+            .await
+            .expect("launch gemini agent");
+        assert_eq!(agent.model.as_deref(), Some("gemini-2.5-pro"));
+        assert!(
+            agent
+                .static_args
+                .windows(2)
+                .any(|window| { window[0] == "--model" && window[1] == "gemini-2.5-pro" })
+        );
+    }
+
+    #[test]
+    fn codex_answer_file_is_created_with_private_permissions() {
+        let answer_path = create_codex_answer_file("task-private-file").expect("answer path");
+        assert!(
+            answer_path.exists(),
+            "answer file should be created before launch"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&answer_path)
+                .expect("answer metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = std::fs::remove_file(answer_path);
     }
 
     #[test]
