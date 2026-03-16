@@ -1493,24 +1493,10 @@ async function route() {
   }
   if (overlay) overlay.style.display = "none";
 
-  // Fetch setup state and gate navigation.
-  // Documentation/setup-adjacent pages are always accessible — setup gate only blocks operational pages.
-  const SETUP_EXEMPT_PAGES = [
-    "setup",
-    "overview",
-    "genesis",
-    "identification",
-    "communication",
-    "nucleusdb-docs",
-    "agentpmt",
-    "cockpit",
-    "sessions",
-  ];
+  // Fetch setup state for auto-launch and page-local affordances.
+  // Global route blocking was regressing navigation back to Setup even though
+  // the underlying pages still render and perform their own readiness checks.
   const ss = await fetchSetupState();
-  if (!ss.complete && !SETUP_EXEMPT_PAGES.includes(page)) {
-    location.hash = "#/setup";
-    return;
-  }
   if (await maybeAutoLaunchAfterSetup(ss)) {
     return;
   }
