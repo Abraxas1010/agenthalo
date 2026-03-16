@@ -2228,10 +2228,27 @@ async function renderConfig() {
     }
 
     content.innerHTML = `
-      <div class="page-title">Configuration</div>
+      <div class="config-page">
+      <div class="page-title config-page-title">Configuration</div>
+      <div class="config-page-subtitle">Provider health, operator controls, model runtime, and ledger-adjacent infrastructure in one surface.</div>
+      <div class="config-quicknav">
+        <button class="config-quicknav-chip" data-target="config-auth">🔐 Auth</button>
+        <button class="config-quicknav-chip" data-target="config-security">🛡 Security</button>
+        <button class="config-quicknav-chip" data-target="config-agents">🤖 Agents</button>
+        <button class="config-quicknav-chip" data-target="config-services">🔑 Services</button>
+        <button class="config-quicknav-chip" data-target="config-models">🖥 Models</button>
+        <button class="config-quicknav-chip" data-target="config-paths">📁 Paths</button>
+      </div>
 
-      <div class="section-header">🔐 Authentication</div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <section id="config-auth" class="config-section-card">
+      <div class="config-section-heading">
+        <div class="config-section-icon">🔐</div>
+        <div>
+          <div class="config-section-title">Authentication</div>
+          <div class="config-section-kicker">Operator identity and dashboard access posture</div>
+        </div>
+      </div>
+      <div class="config-section-body">
         <div class="config-row">
           <div>
             <div class="config-label">Status</div>
@@ -2244,9 +2261,17 @@ async function renderConfig() {
           }
         </div>
       </div>
+      </section>
 
-      <div class="section-header">🛡 Crypto Lock</div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <section id="config-security" class="config-section-card">
+      <div class="config-section-heading">
+        <div class="config-section-icon">🛡</div>
+        <div>
+          <div class="config-section-title">Crypto Lock</div>
+          <div class="config-section-kicker">Session bootstrap mode, lock state, and active scopes</div>
+        </div>
+      </div>
+      <div class="config-section-body">
         <div class="config-row">
           <div>
             <div class="config-label">Session</div>
@@ -2267,9 +2292,17 @@ async function renderConfig() {
           </div>
         </div>
       </div>
+      </section>
 
-      <div class="section-header">🤖 Authorized Agents</div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <section id="config-agents" class="config-section-card">
+      <div class="config-section-heading">
+        <div class="config-section-icon">🤖</div>
+        <div>
+          <div class="config-section-title">Authorized Agents</div>
+          <div class="config-section-kicker">Scoped credentials, local wrappers, and runtime delegation</div>
+        </div>
+      </div>
+      <div class="config-section-body">
         <div class="config-row">
           <div>
             <div class="config-label">Agent Credentials</div>
@@ -2305,9 +2338,7 @@ async function renderConfig() {
         `
         }
       </div>
-
-      <div class="section-header">↪ Agent Wrapping</div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <div class="config-section-body" style="margin-top:12px">
         ${["claude", "codex", "gemini"]
           .map(
             (agent) => `
@@ -2326,9 +2357,17 @@ async function renderConfig() {
           <div class="config-desc">Shell RC: ${esc(cfg.wrapping.shell_rc)}</div>
         </div>
       </div>
+      </section>
 
-      <div class="section-header">💸 x402 Payments</div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <section id="config-payments" class="config-section-card">
+      <div class="config-section-heading">
+        <div class="config-section-icon">💸</div>
+        <div>
+          <div class="config-section-title">Payments</div>
+          <div class="config-section-kicker">Stablecoin settlement, tool budgets, and third-party execution</div>
+        </div>
+      </div>
+      <div class="config-section-body">
         <div class="config-row">
           <div>
             <div class="config-label">x402direct Integration</div>
@@ -2351,9 +2390,7 @@ async function renderConfig() {
           </div>
         </div>
       </div>
-
-      <div class="section-header">⚛ AgentPMT</div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <div class="config-section-body" style="margin-top:12px">
         <div class="config-row">
           <div>
             <div class="config-label">Tool Proxy</div>
@@ -2419,9 +2456,7 @@ async function renderConfig() {
             : ""
         }
       </div>
-
-      <div class="section-header">⛓ On-Chain</div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <div class="config-section-body" style="margin-top:12px">
         <div class="config-row">
           <div>
             <div class="config-label">Chain</div>
@@ -2435,9 +2470,7 @@ async function renderConfig() {
           </div>
         </div>
       </div>
-
-      <div class="section-header">🧩 Add-ons</div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <div class="config-section-body" style="margin-top:12px">
         <div class="config-row">
           <div>
             <div class="config-label">p2pclaw</div>
@@ -2455,9 +2488,17 @@ async function renderConfig() {
             ${cfg.addons.agentpmt_workflows ? "Enabled" : "Disabled"}</span>
         </div>
       </div>
+      </section>
 
-      <div class="section-header">🔑 API Keys &amp; Services</div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <section id="config-services" class="config-section-card">
+      <div class="config-section-heading">
+        <div class="config-section-icon">🔑</div>
+        <div>
+          <div class="config-section-title">API Keys &amp; Services</div>
+          <div class="config-section-kicker">Provider readiness, status indicators, and service controls</div>
+        </div>
+      </div>
+      <div class="config-section-body">
         ${
           cfg.vault?.available
             ? `
@@ -2489,7 +2530,7 @@ async function renderConfig() {
                       ? "Tooling"
                       : "";
               return `
-            <div class="config-row">
+            <div class="config-row config-provider-row">
               <div>
                 <div class="config-label">
                   ${esc(pi.name || k.provider)}
@@ -2520,16 +2561,36 @@ async function renderConfig() {
         `
         }
       </div>
+      </section>
 
-      <div class="section-header">📁 Paths</div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <section id="config-paths" class="config-section-card">
+      <div class="config-section-heading">
+        <div class="config-section-icon">📁</div>
+        <div>
+          <div class="config-section-title">Paths</div>
+          <div class="config-section-kicker">Filesystem anchors and local materialized state</div>
+        </div>
+      </div>
+      <div class="config-section-body">
         <div class="config-row"><div><div class="config-label">Home</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.home)}</div></div></div>
         <div class="config-row"><div><div class="config-label">Database</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.db)}</div></div></div>
         <div class="config-row"><div><div class="config-label">PQ Wallet</div><div class="config-desc">${cfg.pq_wallet ? "Present (ML-DSA-65)" : "Not created"}</div></div></div>
       </div>
+      </section>
+      </div>
     `;
 
     const autoOpenProvider = localStorage.getItem("halo_setup_open_provider");
+    content
+      .querySelectorAll(".config-quicknav-chip[data-target]")
+      .forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const target = content.querySelector(
+            `#${CSS.escape(btn.dataset.target || "")}`,
+          );
+          if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
     if (autoOpenProvider) {
       localStorage.removeItem("halo_setup_open_provider");
       const providerEntry = vaultKeys.find(
@@ -2559,7 +2620,15 @@ async function injectConfigModelsSection() {
     );
     const mount = document.createElement("div");
     mount.innerHTML = `
-      <div class="section-header">🖥 Local Models</div>
+      <section id="config-models" class="config-section-card">
+      <div class="config-section-heading">
+        <div class="config-section-icon">🖥</div>
+        <div>
+          <div class="config-section-title">Local Models</div>
+          <div class="config-section-kicker">Runtime inventory, backend status, and operator controls</div>
+        </div>
+      </div>
+      <div class="config-section-body">
       <div class="card-grid">
         <div class="card">
           <div class="card-label">Backend</div>
@@ -2577,17 +2646,37 @@ async function injectConfigModelsSection() {
           <div class="card-sub">${status?.huggingface_token_configured ? "HF token configured" : "HF token missing"}</div>
         </div>
       </div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+      <div style="border:1px solid var(--border);border-radius:var(--radius);margin-top:12px">
         <div class="config-row">
           <div>
             <div class="config-label">Model Operations</div>
-            <div class="config-desc">Serve, stop, pull, and remove models directly from Configuration.</div>
+            <div class="config-desc">Serve, stop, and credential local runtime operations from one table.</div>
           </div>
-          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <button class="btn btn-sm btn-primary" onclick="modelsServe('vllm')">Serve vLLM</button>
-            <button class="btn btn-sm" onclick="modelsStop('vllm')">Stop</button>
-            <button class="btn btn-sm" onclick="modelsLoginHuggingFace()">Set HF Token</button>
-          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="config-model-ops-table">
+            <thead><tr><th>Operation</th><th>Target</th><th>Purpose</th><th>Action</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Serve</td>
+                <td>vLLM</td>
+                <td>Launch the managed OpenAI-compatible local runtime.</td>
+                <td><button class="btn btn-sm btn-primary" onclick="modelsServe('vllm')">Serve vLLM</button></td>
+              </tr>
+              <tr>
+                <td>Stop</td>
+                <td>vLLM</td>
+                <td>Stop the managed runtime and release the bound port.</td>
+                <td><button class="btn btn-sm" onclick="modelsStop('vllm')">Stop Runtime</button></td>
+              </tr>
+              <tr>
+                <td>Credentials</td>
+                <td>Hugging Face</td>
+                <td>Persist the token used for gated or private model pulls.</td>
+                <td><button class="btn btn-sm" onclick="modelsLoginHuggingFace()">Set HF Token</button></td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
       <div style="border:1px solid var(--border);border-radius:var(--radius);margin-top:12px">
@@ -2623,6 +2712,8 @@ async function injectConfigModelsSection() {
           </table>
         </div>
       </div>
+      </div>
+      </section>
     `;
     content.appendChild(mount);
   } catch (_e) {

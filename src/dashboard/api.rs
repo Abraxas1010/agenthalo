@@ -2015,75 +2015,49 @@ fn extract_completion_text(response: &Value) -> String {
         .to_string()
 }
 
-const COCKPIT_SESSION_HEADER: &str = "x-agenthalo-cockpit-session";
-
-#[derive(Debug, Clone, Default)]
-struct CockpitTelemetryDelta {
-    resolved_model: Option<String>,
-    total_tokens: u64,
-    total_cost_usd: f64,
-}
-
-fn cockpit_session_from_headers(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(COCKPIT_SESSION_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn cockpit_telemetry_delta(
-    response: &Value,
-    request: &proxy::ChatCompletionRequest,
-) -> CockpitTelemetryDelta {
-    let prompt_tokens = response
-        .get("usage")
-        .and_then(|u| u.get("prompt_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or_else(|| estimate_message_tokens(&request.messages));
-    let completion_tokens = response
-        .get("usage")
-        .and_then(|u| u.get("completion_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or_else(|| estimate_text_tokens(&extract_completion_text(response)));
-    let resolved_model = response
-        .get("x_agenthalo")
-        .and_then(|v| v.get("model"))
-        .and_then(|v| v.as_str())
-        .or_else(|| response.get("model").and_then(|v| v.as_str()))
-        .map(str::to_string)
-        .or_else(|| Some(request.model.clone()));
-    let total_cost_usd = response
-        .get("x_agenthalo")
-        .and_then(|v| v.get("cost_usd"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    CockpitTelemetryDelta {
-        resolved_model,
-        total_tokens: prompt_tokens.saturating_add(completion_tokens),
-        total_cost_usd,
-    }
-}
-
-fn update_cockpit_proxy_telemetry(
+async fn trace_enriched_cockpit_sessions(
     state: &DashboardState,
-    cockpit_session_id: Option<&str>,
-    trace_session_id: Option<String>,
-    delta: &CockpitTelemetryDelta,
-) {
-    let Some(cockpit_session_id) = cockpit_session_id else {
-        return;
-    };
-    let Some(session) = state.pty_manager.get_session(cockpit_session_id) else {
-        return;
-    };
-    session.record_actual_telemetry(
-        trace_session_id,
-        delta.resolved_model.clone(),
-        delta.total_tokens,
-        delta.total_cost_usd,
-    );
+) -> Vec<crate::cockpit::session::SessionInfo> {
+    let mut sessions = state.pty_manager.list_sessions();
+    if sessions.is_empty() {
+        return sessions;
+    }
+
+    let _guard = state.db_lock.lock().await;
+    let trace_sessions = list_sessions(&state.db_path).unwrap_or_default();
+    let trace_models = trace_sessions
+        .into_iter()
+        .map(|meta| (meta.session_id, meta.model))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    for session in &mut sessions {
+        let summary = match session_summary(&state.db_path, &session.id) {
+            Ok(Some(summary)) => summary,
+            _ => continue,
+        };
+        let total_tokens = summary
+            .total_input_tokens
+            .saturating_add(summary.total_output_tokens);
+        if total_tokens == 0 && summary.estimated_cost_usd <= 0.0 && session.resolved_model.is_some() {
+            continue;
+        }
+        if session.trace_session_id.is_none() {
+            session.trace_session_id = Some(session.id.clone());
+        }
+        if session.resolved_model.is_none() {
+            session.resolved_model = trace_models
+                .get(&session.id)
+                .and_then(|model| model.clone());
+        }
+        if total_tokens > 0 {
+            session.actual_total_tokens = Some(total_tokens);
+        }
+        if summary.estimated_cost_usd > 0.0 {
+            session.actual_total_cost_usd = Some(summary.estimated_cost_usd);
+        }
+    }
+
+    sessions
 }
 
 async fn record_proxy_trace(
@@ -5264,11 +5238,8 @@ async fn api_addons_post(
     })))
 }
 
-fn proof_gate_mutable_config_path() -> std::path::PathBuf {
-    std::env::var("NUCLEUSDB_PROOF_GATE_CONFIG")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(crate::config::proof_gate_config_path)
+fn load_mutable_proof_gate_config() -> Result<(proof_gate::ProofGateConfig, std::path::PathBuf), String> {
+    proof_gate::load_gate_config_with_path()
 }
 
 fn sanitize_proof_gate_certificate_id(id: &str) -> Result<String, String> {
@@ -5427,10 +5398,9 @@ async fn api_proof_gate_toggle_master(
     Json(req): Json<ProofGateToggleMasterRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let mut cfg = proof_gate::load_gate_config()
+    let (mut cfg, path) = load_mutable_proof_gate_config()
         .map_err(|e| internal_err(format!("load proof gate config: {e}")))?;
     cfg.enabled = req.enabled;
-    let path = proof_gate_mutable_config_path();
     cfg.save(&path)
         .map_err(|e| internal_err(format!("save proof gate config {}: {e}", path.display())))?;
     Ok(Json(json!({
@@ -5446,7 +5416,7 @@ async fn api_proof_gate_toggle_requirement(
     Json(req): Json<ProofGateToggleRequirementRequest>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let mut cfg = proof_gate::load_gate_config()
+    let (mut cfg, path) = load_mutable_proof_gate_config()
         .map_err(|e| internal_err(format!("load proof gate config: {e}")))?;
     let mut updated = false;
     if let Some(items) = cfg.requirements.get_mut(req.tool_name.trim()) {
@@ -5464,7 +5434,6 @@ async fn api_proof_gate_toggle_requirement(
             "proof-gate requirement not found",
         ));
     }
-    let path = proof_gate_mutable_config_path();
     cfg.save(&path)
         .map_err(|e| internal_err(format!("save proof gate config {}: {e}", path.display())))?;
     Ok(Json(json!({
@@ -7499,7 +7468,7 @@ async fn api_cockpit_sessions(AxumState(state): AxumState<DashboardState>) -> Ap
     for handle in state.pty_manager.list_session_handles() {
         flush_cockpit_trace_if_done(&state, handle).await;
     }
-    let sessions = state.pty_manager.list_sessions();
+    let sessions = trace_enriched_cockpit_sessions(&state).await;
     Ok(Json(
         json!({ "sessions": sessions, "count": sessions.len() }),
     ))
@@ -7763,12 +7732,10 @@ async fn api_proxy_models(AxumState(state): AxumState<DashboardState>) -> ApiRes
 
 async fn api_proxy_chat(
     AxumState(state): AxumState<DashboardState>,
-    headers: HeaderMap,
     Json(req): Json<proxy::ChatCompletionRequest>,
 ) -> Result<Response, (StatusCode, Json<Value>)> {
     require_sensitive_access(&state)?;
     let vault = state.vault.clone();
-    let cockpit_session_id = cockpit_session_from_headers(&headers);
 
     if req.stream.unwrap_or(false) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
@@ -7777,7 +7744,6 @@ async fn api_proxy_chat(
         req_for_proxy.stream = Some(true);
         let req_for_trace = req.clone();
         let state_for_trace = state.clone();
-        let cockpit_session_for_trace = cockpit_session_id.clone();
         let proxy_runtime = state.proxy_governor.clone();
         let permit = proxy_runtime
             .try_acquire()
@@ -7810,19 +7776,9 @@ async fn api_proxy_chat(
         });
         tokio::spawn(async move {
             if let Ok(summary) = trace_rx.await {
-                let delta = cockpit_telemetry_delta(&summary, &req_for_trace);
-                match record_proxy_trace(&state_for_trace, &req_for_trace, &summary).await {
-                    Ok(trace_session_id) => {
-                        update_cockpit_proxy_telemetry(
-                            &state_for_trace,
-                            cockpit_session_for_trace.as_deref(),
-                            Some(trace_session_id),
-                            &delta,
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("warning: stream proxy trace write failed: {e}");
-                    }
+                if let Err(e) = record_proxy_trace(&state_for_trace, &req_for_trace, &summary).await
+                {
+                    eprintln!("warning: stream proxy trace write failed: {e}");
                 }
             }
         });
@@ -7849,17 +7805,8 @@ async fn api_proxy_chat(
         eprintln!("warning: proxy governor latency update failed: {e}");
     }
 
-    let delta = cockpit_telemetry_delta(&response, &req);
-    match record_proxy_trace(&state, &req, &response).await {
-        Ok(trace_session_id) => update_cockpit_proxy_telemetry(
-            &state,
-            cockpit_session_id.as_deref(),
-            Some(trace_session_id),
-            &delta,
-        ),
-        Err(e) => {
-            eprintln!("warning: proxy trace write failed: {e}");
-        }
+    if let Err(e) = record_proxy_trace(&state, &req, &response).await {
+        eprintln!("warning: proxy trace write failed: {e}");
     }
 
     Ok(Json(response).into_response())
@@ -7932,7 +7879,6 @@ async fn api_metered_proxy_chat(
         req_for_proxy.stream = Some(true);
         let req_for_trace = req.clone();
         let state_for_trace = state.clone();
-        let cockpit_session_for_trace = cockpit_session_from_headers(&headers);
         let proxy_runtime = state.proxy_governor.clone();
         let permit = proxy_runtime
             .try_acquire()
@@ -8005,19 +7951,9 @@ async fn api_metered_proxy_chat(
         });
         tokio::spawn(async move {
             if let Ok(summary) = trace_rx.await {
-                let delta = cockpit_telemetry_delta(&summary, &req_for_trace);
-                match record_proxy_trace(&state_for_trace, &req_for_trace, &summary).await {
-                    Ok(trace_session_id) => {
-                        update_cockpit_proxy_telemetry(
-                            &state_for_trace,
-                            cockpit_session_for_trace.as_deref(),
-                            Some(trace_session_id),
-                            &delta,
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("warning: metered stream proxy trace write failed: {e}");
-                    }
+                if let Err(e) = record_proxy_trace(&state_for_trace, &req_for_trace, &summary).await
+                {
+                    eprintln!("warning: metered stream proxy trace write failed: {e}");
                 }
             }
         });
@@ -8054,18 +7990,8 @@ async fn api_metered_proxy_chat(
         eprintln!("warning: metered proxy governor cost update failed: {e}");
     }
 
-    let cockpit_session_id = cockpit_session_from_headers(&headers);
-    let delta = cockpit_telemetry_delta(&result.body, &req);
-    match record_proxy_trace(&state, &req, &result.body).await {
-        Ok(trace_session_id) => update_cockpit_proxy_telemetry(
-            &state,
-            cockpit_session_id.as_deref(),
-            Some(trace_session_id),
-            &delta,
-        ),
-        Err(e) => {
-            eprintln!("warning: metered proxy trace write failed: {e}");
-        }
+    if let Err(e) = record_proxy_trace(&state, &req, &result.body).await {
+        eprintln!("warning: metered proxy trace write failed: {e}");
     }
 
     Ok(Json(result.body).into_response())

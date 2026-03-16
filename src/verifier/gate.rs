@@ -391,21 +391,25 @@ fn sign_certificate_text(body: &str, identity: &crate::did::DIDIdentity) -> Resu
     ))
 }
 
-pub fn load_gate_config() -> Result<ProofGateConfig, String> {
+pub fn load_gate_config_with_path() -> Result<(ProofGateConfig, PathBuf), String> {
     let env_path = std::env::var("NUCLEUSDB_PROOF_GATE_CONFIG")
         .ok()
         .map(PathBuf::from)
         .unwrap_or_else(crate::config::proof_gate_config_path);
     if env_path.exists() {
-        return ProofGateConfig::load(&env_path);
+        return ProofGateConfig::load(&env_path).map(|cfg| (cfg, env_path));
     }
 
     let repo_default = PathBuf::from("configs/proof_gate.json");
     if repo_default.exists() {
-        return ProofGateConfig::load(&repo_default);
+        return ProofGateConfig::load(&repo_default).map(|cfg| (cfg, repo_default));
     }
 
-    Ok(ProofGateConfig::default())
+    Ok((ProofGateConfig::default(), env_path))
+}
+
+pub fn load_gate_config() -> Result<ProofGateConfig, String> {
+    load_gate_config_with_path().map(|(cfg, _)| cfg)
 }
 
 pub fn verify_certificate(path: &Path) -> Result<VerificationResult, String> {

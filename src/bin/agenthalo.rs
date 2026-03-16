@@ -5207,22 +5207,26 @@ fn cmd_dashboard(args: &[String]) -> Result<(), String> {
     }
 
     config::ensure_halo_dir()?;
-    let inherited_bootstrap_mode = std::env::var("AGENTHALO_DASHBOARD_BOOTSTRAP_MODE")
-        .ok()
-        .map(|value| value.to_ascii_lowercase())
-        .filter(|value| matches!(value.as_str(), "required" | "optional" | "disabled"))
-        .unwrap_or_else(|| "disabled".to_string());
-    std::env::set_var(
-        "AGENTHALO_DASHBOARD_BOOTSTRAP_MODE",
-        if password_protected {
-            "required"
-        } else {
-            inherited_bootstrap_mode.as_str()
-        },
-    );
+    let bootstrap_mode = if password_protected {
+        nucleusdb::dashboard::DashboardBootstrapMode::Required
+    } else {
+        match std::env::var("AGENTHALO_DASHBOARD_BOOTSTRAP_MODE")
+            .ok()
+            .map(|value| value.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("required") => nucleusdb::dashboard::DashboardBootstrapMode::Required,
+            Some("optional") => nucleusdb::dashboard::DashboardBootstrapMode::Optional,
+            _ => nucleusdb::dashboard::DashboardBootstrapMode::Disabled,
+        }
+    };
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("create tokio runtime: {e}"))?;
-    rt.block_on(dashboard::serve(port, open_browser))
+    rt.block_on(dashboard::serve_with_bootstrap(
+        port,
+        open_browser,
+        bootstrap_mode,
+    ))
 }
 
 fn print_dashboard_usage() {

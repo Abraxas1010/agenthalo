@@ -288,7 +288,7 @@
         return acc + (actual > 0 ? actual : estimated);
       }, 0);
       const actualCount = list.filter((s) => Number(s.actual_total_tokens || 0) > 0).length;
-      const mode = actualCount > 0 ? `actual ${actualCount}/${sessions}` : 'estimated';
+      const mode = actualCount > 0 ? `traced ${actualCount}/${sessions}` : 'estimated';
       const setText = (id, text) => {
         const el = this.body.querySelector(id);
         if (el) el.textContent = text;

@@ -1627,6 +1627,60 @@ async fn cockpit_session_create_list_destroy_roundtrip() {
 }
 
 #[tokio::test]
+async fn cockpit_sessions_include_flushed_trace_totals() {
+    let (state, db_path) = test_state("cockpit_trace_totals");
+    let script_path = std::env::temp_dir().join(format!(
+        "cockpit_trace_totals_{}_{}.sh",
+        std::process::id(),
+        now_unix_secs()
+    ));
+    std::fs::write(&script_path, "#!/usr/bin/env bash\nprintf 'trace smoke'\n")
+        .expect("write shell script");
+    #[cfg(unix)]
+    {
+        let mut perms = std::fs::metadata(&script_path)
+            .expect("script metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms).expect("chmod script");
+    }
+
+    let (created, body) = api_post(
+        state.clone(),
+        "/cockpit/sessions",
+        json!({"command": "/bin/bash", "args": [script_path.display().to_string()], "cols": 80, "rows": 24}),
+    )
+    .await;
+    assert_eq!(created, StatusCode::OK, "create session should succeed: {body}");
+    let id = body["id"].as_str().expect("session id").to_string();
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let (status, payload) = api_get(state.clone(), "/cockpit/sessions").await;
+    assert_eq!(status, StatusCode::OK, "list sessions should succeed: {payload}");
+    let session = payload["sessions"]
+        .as_array()
+        .expect("sessions array")
+        .iter()
+        .find(|session| session["id"] == id)
+        .cloned()
+        .expect("session present");
+    assert_eq!(
+        session["trace_session_id"].as_str(),
+        Some(id.as_str()),
+        "flushed cockpit trace should reuse the cockpit session id: {session}"
+    );
+    assert!(
+        session["actual_total_tokens"].as_u64().unwrap_or(0) > 0,
+        "flushed cockpit trace should expose traced token totals: {session}"
+    );
+
+    let _ = api_delete(state.clone(), &format!("/cockpit/sessions/{id}")).await;
+    let _ = std::fs::remove_file(&script_path);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn cockpit_rejects_shell_dash_c_commands() {
     let (state, db_path) = test_state("cockpit_reject_shell_c");
     let (status, val) = api_post(

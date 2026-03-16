@@ -148,7 +148,23 @@ fn load_grants_into_store(
     Ok(count)
 }
 
-pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardState {
+fn bootstrap_mode_from_env() -> DashboardBootstrapMode {
+    match std::env::var("AGENTHALO_DASHBOARD_BOOTSTRAP_MODE")
+        .unwrap_or_else(|_| "disabled".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "required" => DashboardBootstrapMode::Required,
+        "optional" => DashboardBootstrapMode::Optional,
+        _ => DashboardBootstrapMode::Disabled,
+    }
+}
+
+pub fn build_state_with_bootstrap(
+    db_path: PathBuf,
+    credentials_path: PathBuf,
+    bootstrap_mode: DashboardBootstrapMode,
+) -> DashboardState {
     let grant_store = crate::pod::acl::GrantStore::shared();
     let grant_store_path = default_grant_store_path(&db_path);
     if let Err(e) = load_grants_into_store(&grant_store, &grant_store_path) {
@@ -206,16 +222,6 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
         }
         .expect("dashboard-local MCP service should initialize"),
     );
-    let bootstrap_mode = match std::env::var("AGENTHALO_DASHBOARD_BOOTSTRAP_MODE")
-        .unwrap_or_else(|_| "disabled".to_string())
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "required" => DashboardBootstrapMode::Required,
-        "optional" => DashboardBootstrapMode::Optional,
-        _ => DashboardBootstrapMode::Disabled,
-    };
-
     DashboardState {
         db_path,
         credentials_path,
@@ -242,6 +248,10 @@ pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardStat
     }
 }
 
+pub fn build_state(db_path: PathBuf, credentials_path: PathBuf) -> DashboardState {
+    build_state_with_bootstrap(db_path, credentials_path, bootstrap_mode_from_env())
+}
+
 /// Build the full axum Router with embedded assets + API routes.
 pub fn build_router(state: DashboardState) -> Router {
     let api_router = api::api_router(state.clone());
@@ -255,9 +265,18 @@ pub fn build_router(state: DashboardState) -> Router {
 
 /// Start the dashboard server and optionally open the browser.
 pub async fn serve(port: u16, open_browser: bool) -> Result<(), String> {
-    let state = build_state(
+    serve_with_bootstrap(port, open_browser, bootstrap_mode_from_env()).await
+}
+
+pub async fn serve_with_bootstrap(
+    port: u16,
+    open_browser: bool,
+    bootstrap_mode: DashboardBootstrapMode,
+) -> Result<(), String> {
+    let state = build_state_with_bootstrap(
         crate::halo::config::db_path(),
         crate::halo::config::credentials_path(),
+        bootstrap_mode,
     );
 
     // Reap expired scoped keys in the background.
