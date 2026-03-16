@@ -2444,10 +2444,15 @@ impl NucleusDbMcpService {
     ) -> Result<Arc<dyn AgentHookup>, String> {
         match hookup {
             ContainerHookupRequest::Cli { cli_name, model } => {
+                let normalized = ContainerHookupRequest::Cli {
+                    cli_name: cli_name.clone(),
+                    model: model.clone(),
+                }
+                .normalized();
                 Ok(Arc::new(CliAgentHookup::with_trace_path(
                     cli_name.clone(),
                     pty_manager,
-                    model.clone(),
+                    normalized.model(),
                     db_path,
                 )?))
             }

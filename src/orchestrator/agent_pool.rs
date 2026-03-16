@@ -2,6 +2,7 @@ use crate::cockpit::pty_manager::PtyManager;
 use crate::halo::vault::Vault;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -58,6 +59,7 @@ pub struct TaskExecution {
     pub session_id: String,
     pub timeout_secs: u64,
     pub trace_enabled: bool,
+    pub answer_path: Option<PathBuf>,
 }
 
 /// Per-instance budget controlling how many agents can be managed.
@@ -261,12 +263,24 @@ impl AgentPool {
             return Err(format!("agent {agent_id} is busy"));
         }
         let mut args = agent.static_args.clone();
+        let mut answer_path = None;
         match agent.agent_type.as_str() {
             // Shell: prompt is the command string after `sh -c`
             "shell" => args.push(prompt.to_string()),
             // Claude CLI: prompt is a positional argument (not a flag)
-            // Codex CLI: prompt is a positional argument after `exec`
-            "claude" | "codex" => args.push(prompt.to_string()),
+            "claude" => args.push(prompt.to_string()),
+            // Codex can emit the final assistant message to a file deterministically.
+            "codex" => {
+                let last_message = std::env::temp_dir().join(format!(
+                    "agenthalo-codex-{}-{}.txt",
+                    task_id,
+                    &uuid::Uuid::new_v4().simple().to_string()[..8]
+                ));
+                args.push("--output-last-message".to_string());
+                args.push(last_message.display().to_string());
+                args.push(prompt.to_string());
+                answer_path = Some(last_message);
+            }
             // Gemini CLI uses -p/--prompt flag
             "gemini" => {
                 args.push("--prompt".to_string());
@@ -299,6 +313,7 @@ impl AgentPool {
             session_id,
             timeout_secs: timeout_secs.unwrap_or(agent.timeout_secs).clamp(1, 3600),
             trace_enabled: agent.trace_enabled,
+            answer_path,
         })
     }
 
@@ -385,7 +400,15 @@ fn command_for_kind(kind: &str) -> (String, Vec<String>, Vec<String>) {
             ],
             vec!["CODEX_CLI".to_string()],
         ),
-        "gemini" => ("gemini".to_string(), vec!["--yolo".to_string()], Vec::new()),
+        "gemini" => (
+            "gemini".to_string(),
+            vec![
+                "--yolo".to_string(),
+                "--output-format".to_string(),
+                "stream-json".to_string(),
+            ],
+            Vec::new(),
+        ),
         _ => (
             "sh".to_string(),
             vec!["-c".to_string()],
@@ -526,6 +549,15 @@ mod tests {
         assert!(args.iter().any(|a| a == "--full-auto"));
         assert!(args.iter().any(|a| a == "--json"));
         assert!(args.iter().any(|a| a == "--skip-git-repo-check"));
+    }
+
+    #[test]
+    fn gemini_command_uses_stream_json_headless_mode() {
+        let (cmd, args, _) = command_for_kind("gemini");
+        assert_eq!(cmd, "gemini");
+        assert!(args.iter().any(|a| a == "--yolo"));
+        assert!(args.iter().any(|a| a == "--output-format"));
+        assert!(args.iter().any(|a| a == "stream-json"));
     }
 
     #[test]

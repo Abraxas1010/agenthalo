@@ -638,10 +638,23 @@ impl AgentHookup for CliAgentHookup {
                     self.trace.write_error("agent_exit", &message, false)?;
                     return Err(message);
                 }
+                let file_answer = execution.answer_path.as_ref().and_then(|path| {
+                    std::fs::read_to_string(path).ok().and_then(|text| {
+                        let trimmed = text.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        }
+                    })
+                });
                 AgentResponse {
-                    content: outcome
+                    content: file_answer
+                        .or_else(|| {
+                            outcome
                         .answer
                         .filter(|value| !value.trim().is_empty())
+                        })
                         .unwrap_or_else(|| outcome.output.trim().to_string()),
                     model: self.model.clone().unwrap_or_else(|| self.cli_name.clone()),
                     input_tokens: outcome.input_tokens,
@@ -657,6 +670,9 @@ impl AgentHookup for CliAgentHookup {
                 return Err(error);
             }
         };
+        if let Some(path) = execution.answer_path.as_ref() {
+            let _ = std::fs::remove_file(path);
+        }
         self.trace.write_response_received(&result)?;
         Ok(result)
     }

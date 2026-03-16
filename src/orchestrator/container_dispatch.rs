@@ -1,6 +1,6 @@
 use crate::container::agent_lock::ReusePolicy;
 use crate::container::launcher::{destroy_container, launch_container, MeshConfig, RunConfig};
-use crate::container::mesh::{call_remote_tool, mesh_registry_path, PeerRegistry};
+use crate::container::mesh::{call_remote_tool_with_timeout, mesh_registry_path, PeerRegistry};
 use crate::container::AgentResponse;
 use crate::container::{mesh_auth_token, DEFAULT_MESH_REGISTRY_VOLUME};
 use crate::orchestrator::dispatch::ContainerHookupRequest;
@@ -61,6 +61,7 @@ pub struct InitializedContainerAgent {
 pub struct ContainerPromptSpec {
     pub peer_agent_id: String,
     pub prompt: String,
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -159,10 +160,26 @@ impl MeshContainerDispatch {
         tool_name: &'static str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        self.call_remote_with_timeout(
+            peer_agent_id,
+            tool_name,
+            arguments,
+            Duration::from_secs(30),
+        )
+        .await
+    }
+
+    async fn call_remote_with_timeout(
+        &self,
+        peer_agent_id: &str,
+        tool_name: &'static str,
+        arguments: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
         let peer = self.find_peer(peer_agent_id).await?;
         let auth_token = mesh_auth_token();
         tokio::task::spawn_blocking(move || {
-            call_remote_tool(&peer, tool_name, arguments, auth_token.as_deref())
+            call_remote_tool_with_timeout(&peer, tool_name, arguments, auth_token.as_deref(), timeout)
         })
         .await
         .map_err(|e| format!("mesh remote call join failure: {e}"))?
@@ -262,10 +279,11 @@ impl ContainerDispatch for MeshContainerDispatch {
 
     async fn send_prompt(&self, spec: ContainerPromptSpec) -> Result<AgentResponse, String> {
         let value = self
-            .call_remote(
+            .call_remote_with_timeout(
                 &spec.peer_agent_id,
                 "nucleusdb_container_agent_prompt",
                 json!({ "prompt": spec.prompt }),
+                Duration::from_secs(spec.timeout_secs.clamp(5, 3600)),
             )
             .await?;
         serde_json::from_value(value).map_err(|e| format!("decode container prompt response: {e}"))

@@ -51,10 +51,22 @@ impl ContainerHookupRequest {
     pub fn infer_cli(agent: &str, model: Option<String>) -> Result<Self, String> {
         let cli_name = agent.trim().to_ascii_lowercase();
         match cli_name.as_str() {
-            "shell" | "claude" | "codex" | "gemini" => Ok(Self::Cli { cli_name, model }),
+            "shell" | "claude" | "codex" | "gemini" => {
+                Ok(Self::Cli { cli_name, model }.normalized())
+            }
             _ => Err(format!(
                 "container dispatch requires an explicit container_hookup for agent kind `{agent}`"
             )),
+        }
+    }
+
+    pub fn normalized(self) -> Self {
+        match self {
+            Self::Cli { cli_name, model } => Self::Cli {
+                cli_name: cli_name.clone(),
+                model: normalize_cli_model(&cli_name, model),
+            },
+            other => other,
         }
     }
 
@@ -73,4 +85,19 @@ impl ContainerHookupRequest {
             Self::LocalModel { model_id, .. } => Some(model_id.clone()),
         }
     }
+}
+
+fn normalize_cli_model(cli_name: &str, model: Option<String>) -> Option<String> {
+    let explicit = model.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    explicit.or_else(|| match cli_name.trim().to_ascii_lowercase().as_str() {
+        "gemini" => Some("gemini-2.5-flash".to_string()),
+        _ => None,
+    })
 }

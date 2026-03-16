@@ -651,6 +651,16 @@ impl Orchestrator {
 
         let result = match outcome {
             Ok(outcome) => {
+                let file_answer = execution.answer_path.as_ref().and_then(|path| {
+                    std::fs::read_to_string(path).ok().and_then(|text| {
+                        let trimmed = text.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        }
+                    })
+                });
                 let mut updated = task.clone();
                 if outcome.exit_code == 0 {
                     updated.mark_complete(
@@ -663,7 +673,7 @@ impl Orchestrator {
                         },
                         outcome.trace_session_id.clone(),
                     );
-                    updated.answer = outcome.answer.clone();
+                    updated.answer = file_answer.or(outcome.answer.clone());
                 } else {
                     updated.mark_failed(
                         format!("task exited with code {}", outcome.exit_code),
@@ -693,6 +703,9 @@ impl Orchestrator {
                         &memory_text,
                     )
                     .await;
+                if let Some(path) = execution.answer_path.as_ref() {
+                    let _ = std::fs::remove_file(path);
+                }
                 let _ = self.inner.pool.destroy_pty_session(&execution.session_id);
                 self.inner
                     .pool
@@ -732,6 +745,9 @@ impl Orchestrator {
                 let _ = self
                     .persist_memory_turn(&updated.agent_id, &updated.task_id, "system", &err)
                     .await;
+                if let Some(path) = execution.answer_path.as_ref() {
+                    let _ = std::fs::remove_file(path);
+                }
                 let _ = self.inner.pool.destroy_pty_session(&execution.session_id);
                 self.inner
                     .pool
@@ -774,7 +790,8 @@ impl Orchestrator {
         let hookup = match req.container_hookup.clone() {
             Some(hookup) => hookup,
             None => ContainerHookupRequest::infer_cli(&req.agent, req.model.clone())?,
-        };
+        }
+        .normalized();
         validate_capabilities(&req.capabilities)?;
         let kind = hookup.agent_type();
         let budget = self.inner.pool.budget().clone();
@@ -956,6 +973,7 @@ impl Orchestrator {
                 .send_prompt(ContainerPromptSpec {
                     peer_agent_id: session.peer_agent_id.clone(),
                     prompt: effective_prompt,
+                    timeout_secs,
                 }),
         )
         .await;

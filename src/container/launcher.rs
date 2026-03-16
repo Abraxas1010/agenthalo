@@ -130,7 +130,8 @@ fn now_unix_secs() -> u64 {
 fn make_session_id() -> String {
     let pid = std::process::id();
     let ts = now_unix_secs();
-    format!("sess-{ts}-{pid}")
+    let nonce = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    format!("sess-{ts}-{pid}-{nonce}")
 }
 
 fn run_dir() -> PathBuf {
@@ -487,5 +488,14 @@ mod tests {
             as_map.get("AGENTHALO_MCP_HOST").map(String::as_str),
             Some("10.0.0.9")
         );
+    }
+
+    #[test]
+    fn make_session_id_is_unique_across_rapid_calls() {
+        let first = make_session_id();
+        let second = make_session_id();
+        assert_ne!(first, second);
+        assert!(first.starts_with("sess-"));
+        assert!(second.starts_with("sess-"));
     }
 }

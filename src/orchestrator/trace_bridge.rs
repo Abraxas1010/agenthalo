@@ -277,6 +277,8 @@ fn strip_ansi_sequences(input: &str) -> String {
 fn extract_answer(agent_type: &str, output: &str, exit_code: i32) -> Option<String> {
     let parsed = match agent_type {
         "claude" => extract_claude_answer(output),
+        "codex" => extract_codex_answer(output),
+        "gemini" => extract_gemini_answer(output),
         _ => None,
     };
     if parsed.is_some() {
@@ -291,6 +293,105 @@ fn extract_answer(agent_type: &str, output: &str, exit_code: i32) -> Option<Stri
         .rev()
         .find(|line| !line.is_empty())
         .map(str::to_string)
+}
+
+fn extract_codex_answer(output: &str) -> Option<String> {
+    let mut last = None;
+    for value in json_values_from_output(output) {
+        collect_codex_text_candidates(&value, &mut last);
+    }
+    last
+}
+
+fn collect_codex_text_candidates(value: &serde_json::Value, last: &mut Option<String>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_codex_text_candidates(item, last);
+            }
+        }
+        _ => {
+            let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if event_type != "item.completed" && event_type != "item" {
+                return;
+            }
+            let Some(item) = value.get("item") else {
+                return;
+            };
+            let item_type = item
+                .get("type")
+                .or_else(|| item.get("kind"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if item_type != "agent_message" && item_type != "message" && item_type != "assistant" {
+                return;
+            }
+            if let Some(text) = item.get("text").and_then(as_non_empty_str) {
+                *last = Some(text.to_string());
+                return;
+            }
+            if let Some(text) = item
+                .get("content")
+                .and_then(extract_text_from_content)
+                .filter(|text| !text.trim().is_empty())
+            {
+                *last = Some(text);
+            }
+        }
+    }
+}
+
+fn extract_gemini_answer(output: &str) -> Option<String> {
+    let mut last = None;
+    for value in json_values_from_output(output) {
+        collect_gemini_text_candidates(&value, &mut last);
+    }
+    last
+}
+
+fn collect_gemini_text_candidates(value: &serde_json::Value, last: &mut Option<String>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_gemini_text_candidates(item, last);
+            }
+        }
+        _ => {
+            let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if event_type != "message" && event_type != "assistant" {
+                return;
+            }
+            let role = value.get("role").and_then(|v| v.as_str()).unwrap_or("");
+            if !role.is_empty() && role != "assistant" {
+                return;
+            }
+            if let Some(text) = value.get("content").and_then(as_non_empty_str) {
+                *last = Some(text.to_string());
+                return;
+            }
+            if let Some(text) = value
+                .get("content")
+                .and_then(extract_text_from_content)
+                .filter(|text| !text.trim().is_empty())
+            {
+                *last = Some(text);
+            }
+        }
+    }
+}
+
+fn json_values_from_output(output: &str) -> Vec<serde_json::Value> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return vec![value];
+    }
+    output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+        .collect()
 }
 
 fn extract_claude_answer(output: &str) -> Option<String> {
@@ -462,6 +563,22 @@ mod tests {
     fn extract_claude_answer_supports_json_array_payloads() {
         let output = r#"[{"type":"system","subtype":"init","cwd":"/tmp"},{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"4"}]}},{"type":"result","result":"4"}]"#;
         assert_eq!(extract_answer("claude", output, 0).as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn extract_codex_answer_prefers_agent_message_items() {
+        let output = r#"{"type":"thread.started","thread_id":"abc"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":1}}"#;
+        assert_eq!(extract_answer("codex", output, 0).as_deref(), Some("OK"));
+    }
+
+    #[test]
+    fn extract_gemini_answer_reads_assistant_message() {
+        let output = r#"{"type":"init","session_id":"s","model":"gemini-2.5-flash"}
+{"type":"message","role":"assistant","content":"OK","delta":true}
+{"type":"result","status":"success","stats":{"output_tokens":1}}"#;
+        assert_eq!(extract_answer("gemini", output, 0).as_deref(), Some("OK"));
     }
 
     #[test]

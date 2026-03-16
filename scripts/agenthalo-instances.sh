@@ -46,6 +46,13 @@ pid_running() {
     kill -0 "$pid" 2>/dev/null
 }
 
+listener_pid() {
+    local port="$1"
+    ss -ltnp "( sport = :${port} )" 2>/dev/null \
+        | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' \
+        | head -n1
+}
+
 read_pid() {
     cat "$1" 2>/dev/null || true
 }
@@ -94,6 +101,26 @@ wait_for_http() {
         sleep 0.25
     done
     echo -e "${RED}${label} did not become ready at ${url}${NC}"
+    return 1
+}
+
+ensure_dev_port_available() {
+    local port_pid
+    port_pid="$(listener_pid 3100)"
+    [[ -z "$port_pid" ]] && return 0
+    if [[ -f "/proc/${port_pid}/cmdline" ]] && tr '\0' ' ' <"/proc/${port_pid}/cmdline" | grep -q "agenthalo"; then
+        echo -e "${YELLOW}Stopping stale AgentHALO listener on :3100 (pid ${port_pid})...${NC}"
+        kill "$port_pid" 2>/dev/null || true
+        for _ in $(seq 1 40); do
+            if ! kill -0 "$port_pid" 2>/dev/null; then
+                return 0
+            fi
+            sleep 0.25
+        done
+        echo -e "${RED}Could not stop stale AgentHALO listener on :3100 (pid ${port_pid}).${NC}"
+        return 1
+    fi
+    echo -e "${RED}Port 3100 is already in use by pid ${port_pid}; refusing to start dev dashboard over a non-AgentHALO listener.${NC}"
     return 1
 }
 
@@ -171,6 +198,13 @@ list_instances() {
 wipe_dev() {
     echo -e "${YELLOW}Wiping ephemeral dev instance...${NC}"
     stop_pid_file "$DEV_PID" "dev dashboard"
+    local port_pid
+    port_pid="$(listener_pid 3100)"
+    if [[ -n "$port_pid" ]] && [[ -f "/proc/${port_pid}/cmdline" ]] && tr '\0' ' ' <"/proc/${port_pid}/cmdline" | grep -q "agenthalo"; then
+        echo "Stopping stale dev listener on :3100 (pid $port_pid)..."
+        kill "$port_pid" 2>/dev/null || true
+        sleep 1
+    fi
     rm -rf "$DEV_ROOT"
     rm -rf "$NATIVE_SESSION_ROOT"
     echo -e "${GREEN}Dev instance wiped.${NC}"
@@ -222,6 +256,7 @@ start_dev() {
     fi
 
     ensure_binary agenthalo
+    ensure_dev_port_available
     mkdir -p "$DEV_ROOT" "$DEV_HOME"
     echo "Starting dev/testing instance..."
     start_background \
@@ -235,6 +270,14 @@ start_dev() {
         --port 3100 \
         --no-open
     wait_for_http "http://127.0.0.1:3100/api/status" "Dev dashboard"
+    local dev_pid listener
+    dev_pid="$(read_pid "$DEV_PID")"
+    listener="$(listener_pid 3100)"
+    if [[ -z "$listener" || "$listener" != "$dev_pid" ]]; then
+        echo -e "${RED}Dev dashboard readiness check resolved to pid ${listener:-none}, expected ${dev_pid:-none}.${NC}"
+        echo -e "${RED}Refusing to treat a stale listener as a successful start.${NC}"
+        return 1
+    fi
     echo ""
     echo -e "${GREEN}Dev instance running natively.${NC}"
     echo "Password bootstrap mode: ${password_mode}"
