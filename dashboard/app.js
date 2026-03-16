@@ -4226,8 +4226,11 @@ async function renderSetup() {
         setTimeout(async () => {
           try {
             await fetchSetupState(true);
-            await renderSetup();
-            updateNavLockState();
+            const currentPage = (location.hash.replace("#/", "") || "setup").split("/")[0];
+            if (currentPage === "setup") {
+              await renderSetup();
+              updateNavLockState();
+            }
           } catch (_e) {
           } finally {
             window.__agenthaloSetupAutoRefreshPending = false;

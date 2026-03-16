@@ -4758,7 +4758,7 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
             peer_agent_id,
             trace_session_id,
             agent_home,
-            identity_digest,
+            identity_fingerprint,
         ) = orchestrator
             .container_agent_metadata(&a.agent_id)
             .await
@@ -4770,7 +4770,7 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
                     Some(meta.peer_agent_id),
                     meta.trace_session_id,
                     meta.agent_home,
-                    Some(meta.identity_digest),
+                    Some(meta.identity_fingerprint),
                 )
             })
             .unwrap_or((None, None, None, None, None, None, None));
@@ -4797,7 +4797,8 @@ async fn api_orch_agents(AxumState(state): AxumState<DashboardState>) -> ApiResu
             "peer_agent_id": peer_agent_id,
             "trace_session_id": trace_session_id,
             "agent_home": agent_home,
-            "identity_digest": identity_digest,
+            "identity_fingerprint": identity_fingerprint,
+            "identity_digest": identity_fingerprint,
         }));
     }
     Ok(Json(json!({
@@ -4915,7 +4916,8 @@ async fn api_orch_launch(
         "peer_agent_id": metadata.as_ref().map(|meta| meta.peer_agent_id.clone()),
         "trace_session_id": metadata.as_ref().and_then(|meta| meta.trace_session_id.clone()),
         "agent_home": metadata.as_ref().and_then(|meta| meta.agent_home.clone()),
-        "identity_digest": metadata.as_ref().map(|meta| meta.identity_digest.clone()),
+        "identity_fingerprint": metadata.as_ref().map(|meta| meta.identity_fingerprint.clone()),
+        "identity_digest": metadata.as_ref().map(|meta| meta.identity_fingerprint.clone()),
         "admission": admission,
     })))
 }

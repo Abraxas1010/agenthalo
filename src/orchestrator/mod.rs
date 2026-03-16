@@ -156,7 +156,7 @@ pub struct ContainerAgentMetadata {
     pub lock_state: String,
     pub trace_session_id: Option<String>,
     pub agent_home: Option<String>,
-    pub identity_digest: String,
+    pub identity_fingerprint: String,
 }
 
 const MAX_TASK_TIMEOUT_SECS: u64 = 3600;
@@ -168,7 +168,7 @@ const MEMORY_RECALL_DISTANCE_MAX: f64 = 0.45;
 const MEMORY_RECALL_TEXT_LIMIT: usize = 240;
 const MEMORY_META_SUFFIX: &str = ":meta";
 
-fn container_identity_digest(
+fn container_identity_fingerprint(
     agent_id: &str,
     launched_at: u64,
     session: &ContainerAgentSession,
@@ -1237,6 +1237,7 @@ impl Orchestrator {
                 .ok_or_else(|| {
                     format!("missing container session metadata for {}", req.agent_id)
                 })?;
+            let expected_session_id = session.session_id.clone();
             let deinit = if session.lock_state == "locked" {
                 Some(
                     self.inner
@@ -1258,6 +1259,17 @@ impl Orchestrator {
                     .await?;
             }
             if req.purge {
+                {
+                    let sessions = self.inner.container_sessions.lock().await;
+                    if let Some(meta) = sessions.get(&req.agent_id) {
+                        if meta.session_id != expected_session_id {
+                            return Err(format!(
+                                "container session metadata changed while stopping {}",
+                                req.agent_id
+                            ));
+                        }
+                    }
+                }
                 self.inner.container_sessions.lock().await.remove(&req.agent_id);
                 self.inner.container_agents.lock().await.remove(&req.agent_id);
                 return Ok(StopResult {
@@ -1271,6 +1283,12 @@ impl Orchestrator {
             {
                 let mut sessions = self.inner.container_sessions.lock().await;
                 if let Some(meta) = sessions.get_mut(&req.agent_id) {
+                    if meta.session_id != expected_session_id {
+                        return Err(format!(
+                            "container session metadata changed while stopping {}",
+                            req.agent_id
+                        ));
+                    }
                     meta.lock_state = deinit
                         .as_ref()
                         .map(|value| value.state.clone())
@@ -1345,7 +1363,7 @@ impl Orchestrator {
             lock_state: session.lock_state.clone(),
             trace_session_id: session.trace_session_id.clone(),
             agent_home: session.agent_home.clone(),
-            identity_digest: container_identity_digest(agent_id, agent.launched_at, &session),
+            identity_fingerprint: container_identity_fingerprint(agent_id, agent.launched_at, &session),
         })
     }
 

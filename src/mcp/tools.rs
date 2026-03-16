@@ -464,6 +464,7 @@ pub struct OrchestratorAgentView {
     pub peer_agent_id: Option<String>,
     pub trace_session_id: Option<String>,
     pub agent_home: Option<String>,
+    pub identity_fingerprint: Option<String>,
     pub identity_digest: Option<String>,
 }
 
@@ -6141,7 +6142,8 @@ impl NucleusDbMcpService {
                 peer_agent_id: metadata.as_ref().map(|meta| meta.peer_agent_id.clone()),
                 trace_session_id: metadata.as_ref().and_then(|meta| meta.trace_session_id.clone()),
                 agent_home: metadata.as_ref().and_then(|meta| meta.agent_home.clone()),
-                identity_digest: metadata.as_ref().map(|meta| meta.identity_digest.clone()),
+                identity_fingerprint: metadata.as_ref().map(|meta| meta.identity_fingerprint.clone()),
+                identity_digest: metadata.as_ref().map(|meta| meta.identity_fingerprint.clone()),
             });
         }
         Ok(Json(OrchestratorListResponse { agents: views }))

@@ -762,6 +762,8 @@
       this.topologyCanvasEl = null;
       this.topologyEmptyEl = null;
       this.topologyChart = null;
+      this.noticeEl = null;
+      this.noticeTimer = null;
     }
 
     mount(hostEl) {
@@ -778,6 +780,7 @@
       this.diversityCanvasEl = hostEl.querySelector('#cockpit-diversity-chart');
       this.topologyCanvasEl = hostEl.querySelector('#cockpit-topology-chart');
       this.topologyEmptyEl = hostEl.querySelector('#cockpit-topology-empty');
+      this.noticeEl = hostEl.querySelector('#cockpit-notice-bar');
       this.setMeshCollapsed(this.meshCollapsed);
       this.bindUi(hostEl);
       this.restoreSessions();
@@ -795,6 +798,7 @@
         <div class="cockpit-container">
           <div class="cockpit-toolbar" id="cockpit-toolbar">
             ${this.layoutOrder.map(k => `<button type="button" class="layout-btn ${this.layout === k ? 'active' : ''}" data-layout="${k}">${k}</button>`).join('')}
+            <div class="cockpit-notice-bar" id="cockpit-notice-bar" aria-live="polite"></div>
             <button type="button" class="btn btn-sm cockpit-new-btn" id="cockpit-new">+ New</button>
           </div>
           <div class="cockpit-main">
@@ -825,6 +829,24 @@
             </aside>
           </div>
         </div>`;
+    }
+
+    showNotice(message, tone = 'info', timeoutMs = 5000) {
+      if (!this.noticeEl) return;
+      const text = String(message || '').trim();
+      if (!text) {
+        this.noticeEl.textContent = '';
+        this.noticeEl.className = 'cockpit-notice-bar';
+        return;
+      }
+      this.noticeEl.textContent = text;
+      this.noticeEl.className = `cockpit-notice-bar is-visible tone-${tone}`;
+      if (this.noticeTimer) clearTimeout(this.noticeTimer);
+      this.noticeTimer = setTimeout(() => {
+        if (!this.noticeEl) return;
+        this.noticeEl.textContent = '';
+        this.noticeEl.className = 'cockpit-notice-bar';
+      }, timeoutMs);
     }
 
     bindUi(hostEl) {
@@ -1201,7 +1223,16 @@
       if (!res.ok) {
         throw await buildApiError(res, '/api/orchestrator/stop');
       }
-      this.detachSession(sessionId, true);
+      const detached = this.detachSession(sessionId, true, {
+        notice: {
+          tone: 'success',
+          message: `Agent ${agentId} reset. Launch a fresh lane when ready.`,
+        },
+      });
+      if (!detached) {
+        await this.restoreSessions();
+        this.showNotice(`Agent ${agentId} reset on the server. Cockpit refreshed to recover local state.`, 'warn', 7000);
+      }
     }
 
     async buildNewDropdownSections(context = {}) {
@@ -1231,7 +1262,7 @@
           items: persistentAgents.map((agent) => ({
             id: `attach:${agent.agent_id}`,
             label: agent.agent_name || agent.agent_id,
-            detail: `${agent.agent_type} · ${agent.status || 'idle'} · ${(agent.identity_digest || agent.agent_id || '').slice(0, 24)}`,
+            detail: `${agent.agent_type} · ${agent.status || 'idle'} · ${((agent.identity_fingerprint || agent.identity_digest || agent.agent_id || '')).slice(0, 24)}`,
             icon: agent.agent_type === 'claude' ? '⚡' : agent.agent_type === 'codex' ? '⌁' : agent.agent_type === 'gemini' ? '◇' : '▣',
             needsPreflight: false,
           })),
@@ -1268,25 +1299,58 @@
       const sections = await this.buildNewDropdownSections(context);
       const menu = document.createElement('div');
       menu.className = 'cockpit-new-dropdown';
-      menu.innerHTML = sections.map((section) => `
-        <div class="dropdown-section">
-          <div class="dropdown-section-title">${escapeHtml(section.title)}</div>
-          ${section.items.map((it) => `
-            <div class="dropdown-item" data-agent="${it.id}">
-              <span class="dropdown-icon">${it.icon || ''}</span>
-              <span class="dropdown-copy">
-                <span class="dropdown-label">${escapeHtml(it.label)}</span>
-                <span class="dropdown-detail">${escapeHtml(it.detail || '')}</span>
-              </span>
-              ${it.needsPreflight ? `<span class="dropdown-status loading" data-status-for="${it.id}">…</span>` : ''}
-            </div>
-          `).join('')}
-        </div>
-      `).join('') + `
-        <div class="dropdown-footnote">
-          Agent lanes use headless API dispatch. Shell and Custom PTY use interactive terminals.
-        </div>
-      `;
+      sections.forEach((section) => {
+        const sectionEl = document.createElement('div');
+        sectionEl.className = 'dropdown-section';
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'dropdown-section-title';
+        titleEl.textContent = String(section.title || '');
+        sectionEl.appendChild(titleEl);
+
+        section.items.forEach((item) => {
+          const itemEl = document.createElement('div');
+          itemEl.className = 'dropdown-item';
+          itemEl.dataset.agent = String(item.id || '');
+
+          const iconEl = document.createElement('span');
+          iconEl.className = 'dropdown-icon';
+          iconEl.textContent = String(item.icon || '');
+          itemEl.appendChild(iconEl);
+
+          const copyEl = document.createElement('span');
+          copyEl.className = 'dropdown-copy';
+
+          const labelEl = document.createElement('span');
+          labelEl.className = 'dropdown-label';
+          labelEl.textContent = String(item.label || '');
+          copyEl.appendChild(labelEl);
+
+          const detailEl = document.createElement('span');
+          detailEl.className = 'dropdown-detail';
+          detailEl.textContent = String(item.detail || '');
+          copyEl.appendChild(detailEl);
+
+          itemEl.appendChild(copyEl);
+
+          if (item.needsPreflight) {
+            const statusEl = document.createElement('span');
+            statusEl.className = 'dropdown-status loading';
+            statusEl.dataset.statusFor = String(item.id || '');
+            statusEl.textContent = '…';
+            itemEl.appendChild(statusEl);
+          }
+
+          sectionEl.appendChild(itemEl);
+        });
+
+        menu.appendChild(sectionEl);
+      });
+      const footnoteEl = document.createElement('div');
+      footnoteEl.className = 'dropdown-footnote';
+      footnoteEl.textContent =
+        'Agent lanes use headless API dispatch with isolated AgentHALO homes. Shell and Custom PTY use the host terminal environment.';
+      menu.appendChild(footnoteEl);
       menu.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         const item = ev.target.closest('[data-agent]');
@@ -1446,7 +1510,11 @@
       const panel = new CockpitPanel(panelId, 'chat', `${agent.agent_type}:${agent.agent_id.slice(0, 8)}`, this);
       panel.agentType = agent.agent_type;
       const tab = this.createTab(panelId, agent.agent_type || 'agent');
-      panel.el.querySelector('[data-action="close"]').addEventListener('click', () => this.detachSession(panelId, true));
+      const closeBtn = panel.el.querySelector('[data-action="close"]');
+      if (closeBtn) {
+        closeBtn.title = 'Close panel only (agent keeps running)';
+        closeBtn.addEventListener('click', () => this.closeChatPanel(panelId));
+      }
       panel.setResetAction(() => this.resetChatAgent(panelId));
       panel.attachChat(agent.agent_id, agent.agent_type, {
         history: this.buildChatHistory(tasks),
@@ -1470,6 +1538,19 @@
       }
       this.applyLayout();
       return panelId;
+    }
+
+    closeChatPanel(sessionId) {
+      const entry = this.sessions.get(sessionId);
+      if (!entry) return;
+      const agentId = entry.agentId || entry.panel?.agentId || sessionId;
+      const agentType = entry.panel?.agentType || 'agent';
+      this.detachSession(sessionId, true, {
+        notice: {
+          tone: 'info',
+          message: `${agentType} lane detached. Agent ${agentId} is still running. Reattach it from + New -> Existing Agents.`,
+        },
+      });
     }
 
     hideDropdown() {
@@ -1710,11 +1791,16 @@
         const entry = this.sessions.get(sessionId);
         const isChat = entry?.panel?.type === 'chat';
         showContextMenu(ev.clientX, ev.clientY, [
-          { label: isChat ? 'Close Panel' : 'Close', onClick: () => isChat ? this.detachSession(sessionId, true) : this.destroySession(sessionId) },
+          { label: isChat ? 'Close Panel (agent keeps running)' : 'Close', onClick: () => isChat ? this.closeChatPanel(sessionId) : this.destroySession(sessionId) },
           { label: 'Restart', onClick: () => this.restartSession(sessionId) },
           ...(isChat ? [{ label: 'Reset Agent', onClick: () => this.resetChatAgent(sessionId) }] : []),
           { label: 'Export', onClick: () => this.sessions.get(sessionId)?.panel?.exportLog() },
-          { label: 'Detach', onClick: () => this.detachSession(sessionId) },
+          { label: isChat ? 'Detach Panel (agent keeps running)' : 'Detach', onClick: () => isChat ? this.detachSession(sessionId, false, {
+            notice: {
+              tone: 'info',
+              message: `Panel detached. Agent ${entry?.agentId || sessionId} is still running in the background.`,
+            },
+          }) : this.detachSession(sessionId) },
         ]);
       });
       this.tabsEl.appendChild(tab);
@@ -1757,14 +1843,14 @@
         hint.className = 'cockpit-empty-hint';
         hint.innerHTML = `
           <div class="empty-hint-title">No active sessions.</div>
-          <div class="empty-hint-subtitle">Launch a new agent lane, attach an existing persistent agent, or open a shell terminal. Use <b>+ New</b> for additional panels.</div>
+          <div class="empty-hint-subtitle">Launch a new agent lane, attach an existing persistent agent, or open a shell terminal. Persistent agent lanes keep running after the panel closes and use isolated AgentHALO homes. Use <b>+ New</b> for additional panels.</div>
           <div class="empty-hint-actions">
             <button type="button" class="btn btn-sm btn-primary" data-launch-agent="claude">Start Claude</button>
             <button type="button" class="btn btn-sm" data-launch-agent="codex">Start Codex</button>
             <button type="button" class="btn btn-sm" data-launch-agent="gemini">Start Gemini</button>
             <button type="button" class="btn btn-sm" data-launch-agent="shell">Shell</button>
           </div>
-          <div class="empty-hint-note">Agent lanes use the orchestrator API with structured JSON I/O and persistent trace identity. Shell opens an interactive PTY terminal.</div>
+          <div class="empty-hint-note">Agent lanes use the orchestrator API with structured JSON I/O, persistent trace identity, and isolated AgentHALO homes. Shell opens an interactive PTY terminal on the host environment.</div>
         `;
         hint.querySelectorAll('[data-launch-agent]').forEach((btn) => {
           btn.addEventListener('click', async (ev) => {
@@ -1818,7 +1904,7 @@
     async destroySession(sessionId) {
       const entry = this.sessions.get(sessionId);
       if (entry && entry.panel.type === 'chat') {
-        this.detachSession(sessionId, true);
+        this.closeChatPanel(sessionId);
         return;
       }
       const res = await fetch(`/api/cockpit/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
@@ -1829,20 +1915,30 @@
       this.detachSession(sessionId, true);
     }
 
-    detachSession(sessionId, destroy = false) {
+    detachSession(sessionId, destroy = false, options = {}) {
       const entry = this.sessions.get(sessionId);
-      if (!entry) return;
-      entry.tab.remove();
-      if (destroy) {
-        entry.panel.destroy();
-      } else {
-        entry.panel.el.remove();
+      if (!entry) return false;
+      try {
+        entry.tab.remove();
+        if (destroy) {
+          entry.panel.destroy();
+        } else {
+          entry.panel.el.remove();
+        }
+        this.sessions.delete(sessionId);
+        const next = [...this.sessions.keys()][0] || null;
+        this.activeTab = next;
+        if (next) this.activateTab(next);
+        this.applyLayout();
+        if (options.notice) {
+          this.showNotice(options.notice.message, options.notice.tone || 'info');
+        }
+        return true;
+      } catch (e) {
+        console.error('Failed to detach cockpit panel', sessionId, e);
+        this.showNotice(`Cockpit UI failed while closing ${sessionId}. Refreshing restores the server state.`, 'warn', 7000);
+        return false;
       }
-      this.sessions.delete(sessionId);
-      const next = [...this.sessions.keys()][0] || null;
-      this.activeTab = next;
-      if (next) this.activateTab(next);
-      this.applyLayout();
     }
 
     async restartSession(sessionId) {

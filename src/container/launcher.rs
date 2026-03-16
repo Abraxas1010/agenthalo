@@ -152,12 +152,15 @@ fn direct_mcp_server_command(command: &[String]) -> bool {
         .unwrap_or(false)
 }
 
+/// Headless cockpit agent lanes run `agenthalo-mcp-server` under an isolated
+/// `AGENTHALO_HOME` so each persistent agent keeps its own lock/state material.
+/// Interactive PTY sessions intentionally inherit the host shell environment.
 fn apply_direct_mcp_defaults(
     session_id: &str,
     agent_id: &str,
     agent_home: &Path,
     env_vars: &mut Vec<(String, String)>,
-) -> bool {
+) {
     if !env_contains(env_vars, "AGENTHALO_HOME") {
         env_vars.push((
             "AGENTHALO_HOME".to_string(),
@@ -181,7 +184,6 @@ fn apply_direct_mcp_defaults(
             env_vars.push(("NUCLEUSDB_MESH_AUTH_TOKEN".to_string(), secret));
         }
     }
-    true
 }
 
 fn session_dir(session_id: &str) -> PathBuf {
@@ -452,6 +454,38 @@ mod tests {
         assert_eq!(
             as_map.get("AGENTHALO_MCP_HOST").map(String::as_str),
             Some("127.0.0.1")
+        );
+    }
+
+    #[test]
+    fn apply_direct_mcp_defaults_preserves_existing_values() {
+        let home = std::env::temp_dir().join("agenthalo-test-home");
+        let mut env_vars = vec![
+            ("AGENTHALO_HOME".to_string(), "/tmp/existing-home".to_string()),
+            (
+                "AGENTHALO_SESSION_ID".to_string(),
+                "existing-session".to_string(),
+            ),
+            ("AGENTHALO_AGENT_ID".to_string(), "existing-agent".to_string()),
+            ("AGENTHALO_MCP_HOST".to_string(), "10.0.0.9".to_string()),
+        ];
+        apply_direct_mcp_defaults("sess-123", "agent-456", &home, &mut env_vars);
+        let as_map = env_vars.into_iter().collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            as_map.get("AGENTHALO_HOME").map(String::as_str),
+            Some("/tmp/existing-home")
+        );
+        assert_eq!(
+            as_map.get("AGENTHALO_SESSION_ID").map(String::as_str),
+            Some("existing-session")
+        );
+        assert_eq!(
+            as_map.get("AGENTHALO_AGENT_ID").map(String::as_str),
+            Some("existing-agent")
+        );
+        assert_eq!(
+            as_map.get("AGENTHALO_MCP_HOST").map(String::as_str),
+            Some("10.0.0.9")
         );
     }
 }
