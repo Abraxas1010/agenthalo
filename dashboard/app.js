@@ -744,13 +744,11 @@ async function renderOverviewOperationalSummary() {
     '<div class="loading">Loading operational overview...</div>';
   content.appendChild(mount);
   try {
-    const [status, sessions, costs] = await Promise.all([
+    const [status, sessions] = await Promise.all([
       api("/status"),
       api("/sessions?limit=5"),
-      api("/costs?monthly=true"),
     ]);
     const recentSessions = (sessions.sessions || []).slice(0, 5);
-    const monthly = Array.isArray(costs.buckets) ? costs.buckets : [];
     mount.innerHTML = `
       <div class="section-header">Operational Overview</div>
       <div class="card-grid">
@@ -760,14 +758,19 @@ async function renderOverviewOperationalSummary() {
           <div class="card-sub">Cockpit, orchestration, and deploy activity</div>
         </div>
         <div class="card">
-          <div class="card-label">Total Cost</div>
-          <div class="card-value">${fmtCost(Number(status.total_cost_usd || 0))}</div>
-          <div class="card-sub">${fmtTokens(Number(status.total_tokens || 0))} tokens tracked</div>
+          <div class="card-label">Tracked Tokens</div>
+          <div class="card-value">${fmtTokens(Number(status.total_tokens || 0))}</div>
+          <div class="card-sub">Aggregate session token history</div>
         </div>
         <div class="card">
-          <div class="card-label">Monthly Cost</div>
-          <div class="card-value">${fmtCost(monthly.reduce((sum, bucket) => sum + Number(bucket.cost_usd || 0), 0))}</div>
-          <div class="card-sub">${monthly.length} bucket${monthly.length === 1 ? "" : "s"} in current window</div>
+          <div class="card-label">Active Wrappers</div>
+          <div class="card-value">${Object.values(status.wrapping || {}).filter(Boolean).length}</div>
+          <div class="card-sub">Claude, Codex, Gemini wrapper lanes currently engaged</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Governor Stability</div>
+          <div class="card-value">${Number(status.governors?.stable || 0)}/${Number(status.governors?.total || 0)}</div>
+          <div class="card-sub">${Number(status.governors?.oscillating || 0)} oscillating • ${Number(status.governors?.gain_violated || 0)} gain violations</div>
         </div>
       </div>
       <div class="section-header">Recent Sessions</div>
@@ -775,17 +778,18 @@ async function renderOverviewOperationalSummary() {
         recentSessions.length
           ? `
         <div class="table-wrap"><table>
-          <thead><tr><th>Session</th><th>Agent</th><th>Model</th><th>Cost</th><th>Status</th></tr></thead>
+          <thead><tr><th>Session</th><th>Agent</th><th>Model</th><th>Tokens</th><th>Status</th></tr></thead>
           <tbody>
             ${recentSessions
               .map((item) => {
                 const ss = item.session;
                 const sm = item.summary || {};
+                const totalTokens = Number(sm.total_input_tokens || 0) + Number(sm.total_output_tokens || 0);
                 return `<tr class="clickable" onclick="location.hash='#/sessions/${encodeURIComponent(ss.session_id)}'">
                 <td style="font-size:11px">${esc(truncate(ss.session_id, 24))}</td>
-                <td>${esc(ss.agent)}</td>
+                <td>${esc(displaySessionAgentName(ss.agent))}</td>
                 <td>${esc(truncate(ss.model || "unknown", 20))}</td>
-                <td>${fmtCost(Number(sm.estimated_cost_usd || 0))}</td>
+                <td>${fmtTokens(totalTokens)}</td>
                 <td>${statusBadge(ss.status)}</td>
               </tr>`;
               })
@@ -1998,14 +2002,14 @@ async function renderSessions(sessionId) {
           <div class="card-sub">In ${fmtTokens(totals.inputTokens)} / Out ${fmtTokens(totals.outputTokens)}</div>
         </div>
         <div class="card">
-          <div class="card-label">Estimated Cost</div>
-          <div class="card-value" style="font-size:18px">${fmtCost(totals.costUsd)}</div>
-          <div class="card-sub">${fmtTokens(totals.toolCalls)} tools across ${fmtTokens(totals.eventCount)} events</div>
+          <div class="card-label">Tool Activity</div>
+          <div class="card-value" style="font-size:18px">${fmtTokens(totals.toolCalls)}</div>
+          <div class="card-sub">${fmtTokens(totals.eventCount)} trace events recorded</div>
         </div>
         <div class="card">
           <div class="card-label">Latest Activity</div>
           <div class="card-value" style="font-size:14px">${totals.latestStartedAt ? fmtTime(totals.latestStartedAt) : "No sessions yet"}</div>
-          <div class="card-sub">${totals.latestAgent ? esc(totals.latestAgent) : "No agent history recorded"}</div>
+          <div class="card-sub">${totals.latestAgent ? esc(displaySessionAgentName(totals.latestAgent)) : "No agent history recorded"}</div>
         </div>
       </div>
       <div class="section-header">Agents</div>
@@ -2020,7 +2024,7 @@ async function renderSessions(sessionId) {
         <span style="color:var(--text-muted);font-size:12px">${items.length} sessions</span>
       </div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Session ID</th><th>Agent</th><th>Model</th><th>Tokens</th><th>Cost</th><th>Duration</th><th>Started</th><th>Status</th></tr></thead>
+        <thead><tr><th>Session ID</th><th>Agent</th><th>Model</th><th>Tokens</th><th>Tools</th><th>Duration</th><th>Started</th><th>Status</th></tr></thead>
         <tbody id="sessions-tbody">
           ${items.map((item) => sessionRow(item)).join("")}
         </tbody>
@@ -2037,17 +2041,27 @@ function sessionRow(item) {
   const ss = item.session,
     sm = item.summary || {};
   const tokens = (sm.total_input_tokens || 0) + (sm.total_output_tokens || 0);
+  const tools = Number(sm.tool_calls || 0) + Number(sm.mcp_tool_calls || 0);
   return `<tr class="clickable session-row" data-agent="${esc(ss.agent)}" data-model="${esc(ss.model || "")}"
     onclick="location.hash='#/sessions/${encodeURIComponent(ss.session_id)}'">
     <td style="font-size:11px">${esc(truncate(ss.session_id, 28))}</td>
-    <td>${esc(ss.agent)}</td>
+    <td>${esc(displaySessionAgentName(ss.agent))}</td>
     <td>${esc(truncate(ss.model || "unknown", 22))}</td>
     <td>${fmtTokens(tokens)}</td>
-    <td>${fmtCost(sm.estimated_cost_usd)}</td>
+    <td>${fmtTokens(tools)}</td>
     <td>${fmtDuration(sm.duration_secs)}</td>
     <td style="font-size:11px">${fmtTime(ss.started_at)}</td>
     <td>${statusBadge(ss.status)}</td>
   </tr>`;
+}
+
+function isSystemSessionAgent(agent) {
+  const normalized = String(agent || "").trim().toLowerCase();
+  return normalized === "genesis";
+}
+
+function displaySessionAgentName(agent) {
+  return isSystemSessionAgent(agent) ? "System / Genesis" : String(agent || "unknown");
 }
 
 function summarizeSessionItems(items) {
@@ -2056,14 +2070,15 @@ function summarizeSessionItems(items) {
       const ss = item.session || {};
       const sm = item.summary || {};
       acc.sessions += 1;
-      acc.agentsSet.add(ss.agent || "unknown");
+      if (!isSystemSessionAgent(ss.agent)) {
+        acc.agentsSet.add(ss.agent || "unknown");
+      }
       acc.inputTokens += Number(sm.total_input_tokens || 0);
       acc.outputTokens += Number(sm.total_output_tokens || 0);
-      acc.costUsd += Number(sm.estimated_cost_usd || 0);
       acc.toolCalls += Number(sm.tool_calls || 0) + Number(sm.mcp_tool_calls || 0);
       acc.eventCount += Number(sm.event_count || 0);
       const startedAt = Number(ss.started_at || 0);
-      if (startedAt > acc.latestStartedAt) {
+      if (!isSystemSessionAgent(ss.agent) && startedAt > acc.latestStartedAt) {
         acc.latestStartedAt = startedAt;
         acc.latestAgent = ss.agent || "unknown";
       }
@@ -2074,7 +2089,6 @@ function summarizeSessionItems(items) {
       agentsSet: new Set(),
       inputTokens: 0,
       outputTokens: 0,
-      costUsd: 0,
       toolCalls: 0,
       eventCount: 0,
       latestStartedAt: 0,
@@ -2090,6 +2104,7 @@ function buildAgentSessionGroups(items) {
   (items || []).forEach((item) => {
     const ss = item.session || {};
     const sm = item.summary || {};
+    if (isSystemSessionAgent(ss.agent)) return;
     const key = ss.agent || "unknown";
     if (!grouped.has(key)) {
       grouped.set(key, {
@@ -2099,7 +2114,6 @@ function buildAgentSessionGroups(items) {
         sessionCount: 0,
         inputTokens: 0,
         outputTokens: 0,
-        costUsd: 0,
         toolCalls: 0,
         eventCount: 0,
         lastStartedAt: 0,
@@ -2110,7 +2124,6 @@ function buildAgentSessionGroups(items) {
     group.sessionCount += 1;
     group.inputTokens += Number(sm.total_input_tokens || 0);
     group.outputTokens += Number(sm.total_output_tokens || 0);
-    group.costUsd += Number(sm.estimated_cost_usd || 0);
     group.toolCalls += Number(sm.tool_calls || 0) + Number(sm.mcp_tool_calls || 0);
     group.eventCount += Number(sm.event_count || 0);
     if (ss.model) group.models.add(ss.model);
@@ -2133,8 +2146,8 @@ function agentSessionCard(group) {
       <div class="card-value" style="font-size:18px">${esc(group.agent)}</div>
       <div class="card-sub">${fmtTokens(group.sessionCount)} sessions • ${fmtTokens(group.totalTokens)} tokens</div>
       <div class="session-agent-meta">
-        <span>${fmtCost(group.costUsd)}</span>
         <span>${fmtTokens(group.toolCalls)} tools</span>
+        <span>${fmtTokens(group.eventCount)} events</span>
         <span>${group.lastStartedAt ? fmtTime(group.lastStartedAt) : "No activity"}</span>
       </div>
       <div class="session-agent-models">${group.models.length ? group.models.map((model) => `<span class="session-agent-chip">${esc(truncate(model, 28))}</span>`).join("") : '<span class="session-agent-chip">unknown model</span>'}</div>
@@ -2143,6 +2156,10 @@ function agentSessionCard(group) {
 }
 
 async function renderAgentSessions(agent) {
+  if (isSystemSessionAgent(agent)) {
+    location.hash = "#/sessions";
+    return;
+  }
   content.innerHTML = '<div class="loading">Loading agent sessions...</div>';
   try {
     const data = await api("/sessions?agent=" + encodeURIComponent(agent));
@@ -2164,9 +2181,9 @@ async function renderAgentSessions(agent) {
           <div class="card-sub">In ${fmtTokens(totals.inputTokens)} / Out ${fmtTokens(totals.outputTokens)}</div>
         </div>
         <div class="card">
-          <div class="card-label">Estimated Cost</div>
-          <div class="card-value" style="font-size:18px">${fmtCost(totals.costUsd)}</div>
-          <div class="card-sub">${fmtTokens(totals.toolCalls)} tools • ${fmtTokens(totals.eventCount)} events</div>
+          <div class="card-label">Tool Activity</div>
+          <div class="card-value" style="font-size:18px">${fmtTokens(totals.toolCalls)}</div>
+          <div class="card-sub">${fmtTokens(totals.eventCount)} trace events</div>
         </div>
       </div>
       <div class="section-header">Session Trace Explorer</div>
@@ -2189,6 +2206,7 @@ function agentSessionAccordion(item) {
   const ss = item.session || {};
   const sm = item.summary || {};
   const totalTokens = Number(sm.total_input_tokens || 0) + Number(sm.total_output_tokens || 0);
+  const toolCount = Number(sm.tool_calls || 0) + Number(sm.mcp_tool_calls || 0);
   return `
     <details class="card session-agent-accordion" data-session-id="${esc(ss.session_id)}">
       <summary class="session-agent-summary">
@@ -2198,8 +2216,8 @@ function agentSessionAccordion(item) {
         </div>
         <div class="session-agent-summary-metrics">
           <span>${fmtTokens(totalTokens)} tokens</span>
-          <span>${fmtCost(sm.estimated_cost_usd)}</span>
-          <span>${fmtTokens(Number(sm.tool_calls || 0) + Number(sm.mcp_tool_calls || 0))} tools</span>
+          <span>${fmtTokens(toolCount)} tools</span>
+          <span>${fmtDuration(sm.duration_secs)}</span>
         </div>
       </summary>
       <div class="session-agent-detail-body" id="agent-session-detail-${esc(ss.session_id)}">
@@ -2244,7 +2262,7 @@ function renderSessionDetailSections(data, options) {
       <div class="card-grid">
         <div class="card">
           <div class="card-label">Agent</div>
-          <div class="card-value" style="font-size:16px">${esc(ss.agent)}</div>
+          <div class="card-value" style="font-size:16px">${esc(displaySessionAgentName(ss.agent))}</div>
           <div class="card-sub">${esc(ss.model || "unknown")}</div>
         </div>
         <div class="card">
@@ -2253,8 +2271,8 @@ function renderSessionDetailSections(data, options) {
           <div class="card-sub">In: ${fmtTokens(sm.total_input_tokens)} / Out: ${fmtTokens(sm.total_output_tokens)}</div>
         </div>
         <div class="card">
-          <div class="card-label">Cost</div>
-          <div class="card-value" style="font-size:16px">${fmtCost(sm.estimated_cost_usd)}</div>
+          <div class="card-label">Duration</div>
+          <div class="card-value" style="font-size:16px">${fmtDuration(sm.duration_secs)}</div>
           <div class="card-sub">${fmtDuration(sm.duration_secs)}</div>
         </div>
         <div class="card">
