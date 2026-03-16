@@ -2238,6 +2238,8 @@ async function renderConfig() {
         <button class="config-quicknav-chip" data-target="config-services">🔑 Services</button>
         <button class="config-quicknav-chip" data-target="config-models">🖥 Models</button>
         <button class="config-quicknav-chip" data-target="config-paths">📁 Paths</button>
+        <button class="config-quicknav-chip" data-target="config-integrations">🔌 Integrations</button>
+        <button class="config-quicknav-chip" data-target="config-funding">💰 Funding</button>
       </div>
 
       <section id="config-auth" class="config-section-card">
@@ -2575,6 +2577,60 @@ async function renderConfig() {
         <div class="config-row"><div><div class="config-label">Home</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.home)}</div></div></div>
         <div class="config-row"><div><div class="config-label">Database</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.db)}</div></div></div>
         <div class="config-row"><div><div class="config-label">PQ Wallet</div><div class="config-desc">${cfg.pq_wallet ? "Present (ML-DSA-65)" : "Not created"}</div></div></div>
+      </div>
+      </section>
+
+      <section id="config-integrations" class="config-section-card">
+      <div class="config-section-heading">
+        <div class="config-section-icon">🔌</div>
+        <div>
+          <div class="config-section-title">Optional Integrations</div>
+          <div class="config-section-kicker">Storage, direct LLM keys, and additional tooling</div>
+        </div>
+      </div>
+      <div class="config-section-body">
+        ${(() => {
+          const optLLM = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "llm");
+          const optStorage = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "storage");
+          const optTooling = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "tooling");
+          const keyStatus = {};
+          vaultKeys.forEach(k => { keyStatus[String(k.provider || "").toLowerCase()] = k; });
+          function ps(provider) { const v = keyStatus[provider]; if (!v) return { configured: false, tested: false }; return { configured: !!v.configured, tested: !!v.tested }; }
+          function sb(provider) { const s = ps(provider); if (s.tested) return '<span class="badge badge-ok">Verified</span>'; if (s.configured) return '<span class="badge badge-warn">Configured</span>'; return '<span class="badge badge-muted">Not configured</span>'; }
+          function pc(provider) { const info = PROVIDER_INFO[provider] || { name: provider, envVar: providerDefaultEnv(provider), keyUrl: "#", description: "" }; const s = ps(provider); const dl = info.keyUrl && info.keyUrl !== "#" ? '<a class="btn btn-sm" href="' + esc(info.keyUrl) + '" target="_blank" rel="noopener noreferrer">Get Key</a>' : ""; return '<div class="config-row" style="flex-wrap:wrap"><div style="flex:1;min-width:180px"><div class="config-label">' + esc(info.name) + '</div><div class="config-desc" style="font-size:10px">' + esc(info.envVar) + '</div>' + (info.description ? '<div class="config-desc">' + esc(info.description) + '</div>' : '') + '</div><div style="display:flex;gap:6px;align-items:center">' + sb(provider) + dl + '<button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="' + esc(provider) + '">Set Key</button>' + (s.configured ? '<button class="btn btn-sm setup-provider-test-btn" data-provider="' + esc(provider) + '">Test</button>' : '') + (s.configured ? '<button class="btn btn-sm setup-provider-disconnect-btn" data-provider="' + esc(provider) + '" title="Remove this key">Disconnect</button>' : '') + '</div></div>'; }
+          let html = "";
+          if (optStorage.length) { html += '<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px">Immutable Storage</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">IPFS-based storage for agent traces and attestations.</div>' + optStorage.map(p => pc(p)).join(""); }
+          if (optLLM.length) { html += '<div style="font-size:13px;font-weight:700;color:var(--accent);margin-top:14px;margin-bottom:6px">Direct LLM Keys</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Operator-side diagnostics and fallback.</div>' + optLLM.map(p => pc(p)).join(""); }
+          if (optTooling.length) { html += '<div style="font-size:13px;font-weight:700;color:var(--accent);margin-top:14px;margin-bottom:6px">Additional Tools</div>' + optTooling.map(p => pc(p)).join(""); }
+          return html;
+        })()}
+      </div>
+      </section>
+
+      <section id="config-funding" class="config-section-card">
+      <div class="config-section-heading">
+        <div class="config-section-icon">💰</div>
+        <div>
+          <div class="config-section-title">Funding &amp; Monetization</div>
+          <div class="config-section-kicker">Verified channels for customer balance top-ups</div>
+        </div>
+      </div>
+      <div class="config-section-body">
+        <div class="config-row">
+          <div>
+            <div class="config-label">AgentPMT Token Purchase</div>
+            <div class="config-desc">Customers buy tokens at AgentPMT.com. Signed receipts verified via HMAC-SHA256.</div>
+          </div>
+        </div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">x402direct (USDC on Base L2)</div>
+            <div class="config-desc">Direct USDC stablecoin payment. Transaction hash verified on-chain.</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;line-height:1.5;padding:0 4px">
+          All tools, workflows, and agent configurations are accessible exclusively through AgentPMT MCP.
+        </div>
       </div>
       </section>
       </div>
@@ -3167,74 +3223,16 @@ async function renderSetup() {
 
     <!-- SECTION 1: Identity -->
     <div class="setup-card-v2 ${identityCardClass}" id="setup-identity">
-      <div class="identity-instruct-overlay" aria-hidden="true">
-        <img class="identity-security-badge" id="identity-security-badge" src="${securityTierImageByKey[initialSecurityTier]}" alt="Current security state" onerror="this.style.display='none'">
-        <img class="identity-instruct-img" src="img/agenthaloinstruct_cutout.png" alt="" onerror="this.style.display='none'">
-        <div class="identity-instruct-note">The more you know about me, and I know about you, the easier it is to keep me under control.</div>
+      <div class="proof-lattice-hero" id="proof-lattice-hero">
+        <canvas id="proof-lattice-canvas"></canvas>
+        <div class="proof-lattice-status" id="proof-lattice-status">Initializing proof lattice...</div>
       </div>
       <div class="card-header">
         <img src="img/agenthalodl.png" alt="My Identity" style="width:100%;height:auto;display:block;border-radius:6px">
       </div>
 
-      <div class="identity-subsection" id="identity-profile">
-        <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px">
-          Your Profile
-        </div>
-        <div class="identity-profile-row">
-          <div class="avatar-preview" id="avatar-preview">${esc(initials)}</div>
-          <div class="identity-profile-fields">
-            <input type="text" id="profile-name-input" class="setup-input ${hasSavedProfileName ? "profile-name-locked" : ""}"
-                   placeholder="What do you want to name me?"
-                   value="${esc(savedProfile.display_name || "")}" maxlength="64"
-                   ${hasSavedProfileName ? 'readonly data-locked="true"' : ""}>
-            <button class="btn btn-primary btn-sm" id="profile-save-btn"
-                    style="border-radius:6px;padding:8px 16px">${hasSavedProfileName ? "Rename Key" : "Save Name"}</button>
-          </div>
-        </div>
-      </div>
 
-      <div class="identity-safety-intent-label" id="safety-intent-label"
-           style="${hideSafetyUI ? "display:none" : ""}">Select One Option</div>
-      <div class="identity-security-tier-shell ${showLowSafetyTierOption ? "" : "two-options"}" id="safety-tier-shell" aria-label="Identity safety tier"
-           style="${hideSafetyUI ? "display:none" : ""}">
-        <button type="button" class="security-tier-btn tier-safe ${initialSecurityTier === "max-safe" ? "is-selected" : ""}" data-tier="max-safe">
-          As Safe As Possible
-        </button>
-        <button type="button" class="security-tier-btn tier-caution ${initialSecurityTier === "less-safe" ? "is-selected" : ""}" data-tier="less-safe">
-          A Little Rebellious
-        </button>
-      </div>
-      <div class="identity-tier-control-row">
-        <div id="identity-tier-status" class="identity-tier-status" aria-live="polite"></div>
-        ${
-          hideSafetyUI
-            ? `<button type="button" class="btn btn-sm" id="identity-rescan-btn"
-            style="border-radius:6px;padding:6px 14px;font-size:12px;margin-top:6px;background:var(--card-bg);border:1px solid var(--border);color:var(--text-muted)">
-            Rescan Identity</button>`
-            : ""
-        }
-      </div>
 
-      <div class="anon-mode-shell ${identityCfg.anonymous_mode ? "is-active" : ""}" id="anon-mode-shell"
-           style="${!identityCfg.anonymous_mode && identityConfigured ? "display:none" : ""}">
-        <div class="anon-mode-avatar-wrap" aria-hidden="true">
-          <img class="anon-mode-avatar anon-avatar-open" src="img/agenthalohiding_mode.png" alt="" onerror="this.style.display='none'">
-          <img class="anon-mode-avatar anon-avatar-hidden" src="img/agenthalohidden_mode.png" alt="" onerror="this.style.display='none'">
-        </div>
-        <div class="anon-mode-copy">
-          <div class="anon-mode-title">Total Anonymous Mode</div>
-          <p class="anon-mode-desc">
-            No device identifiers, no network identifiers. Each session gets a random ephemeral ID.
-          </p>
-        </div>
-        <div class="anonymous-launch-wrap">
-          <img class="anonymous-launch-ninja" src="img/agenthaloninja.png" alt="" onerror="this.style.display='none'">
-          <button class="anonymous-launch-btn ${identityCfg.anonymous_mode ? "is-armed" : ""}" type="button" id="anonymous-mode-launch-btn" aria-pressed="${identityCfg.anonymous_mode ? "true" : "false"}">
-            ${identityCfg.anonymous_mode ? "Disengage" : "Engage"}
-          </button>
-        </div>
-        <input type="checkbox" id="anonymous-mode-check" class="anon-mode-hidden-checkbox" ${identityCfg.anonymous_mode ? "checked" : ""}>
-      </div>
 
       <div class="identity-tech-options-title" id="tech-options-title">Individual Technical Options</div>
 
@@ -3672,88 +3670,194 @@ async function renderSetup() {
       }
     </div>
 
-    <!-- SECTION 5: Dashboard Unlocked -->
-    <div class="setup-card-v2 ${c3c}" id="setup-unlocked">
-      <div class="card-header">
-        <div class="card-icon">&#127919;</div>
-        <div>
-          <div class="card-title">
-            ${allDone ? "Dashboard Unlocked!" : "Almost There"}
-            ${allDone ? '<span class="setup-inline-status status-done">&#10003; Done</span>' : ""}
-          </div>
-          <div class="card-desc">${allDone ? "All systems go. Explore your dashboard." : "Complete the steps above to unlock everything."}</div>
-        </div>
-      </div>
-      ${
-        allDone
-          ? `
-        <div class="setup-unlocked-actions">
-          <a class="btn btn-primary" href="#/overview" style="border-radius:6px">Explore Overview</a>
-          <a class="btn" href="#/cockpit" style="border-radius:6px">Open Cockpit</a>
-        </div>
-      `
-          : `
-        <p style="color:var(--text-dim);font-size:13px;line-height:1.6;margin-top:4px">
-          Finish identity, choose your model path, and connect a wallet to unlock the full dashboard.
-        </p>
-      `
-      }
-    </div>
 
-    <!-- Optional Integrations -->
-    <details class="setup-optional-section">
-      <summary>Optional Integrations (${optionalStorage.length + optionalLLM.length + optionalTooling.length} services)</summary>
-      <div class="optional-body">
-        <div style="margin-top:12px">
-          <div style="font-size:14px;font-weight:700;color:var(--accent);margin-bottom:6px">Immutable Storage</div>
-          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.5">
-            IPFS-based storage for agent traces, attestations, and customer data.
-          </div>
-          ${optionalStorage.map((p) => providerCard(p)).join("")}
-        </div>
-        <div style="margin-top:18px">
-          <div style="font-size:14px;font-weight:700;color:var(--accent);margin-bottom:6px">Direct LLM Keys</div>
-          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.5">
-            Operator-side diagnostics and fallback. Customer traffic uses OpenRouter.
-          </div>
-          ${optionalLLM.map((p) => providerCard(p)).join("")}
-        </div>
-        <div style="margin-top:18px">
-          <div style="font-size:14px;font-weight:700;color:var(--accent);margin-bottom:6px">Additional Tools</div>
-          ${optionalTooling.map((p) => providerCard(p)).join("")}
-        </div>
-      </div>
-    </details>
-
-    <!-- Funding & Monetization -->
-    <div class="setup-card-v2" style="margin-top:20px;border-color:rgba(255,106,0,0.25)">
-      <div class="card-header">
-        <div class="card-icon">&#128176;</div>
-        <div>
-          <div class="card-title">Funding &amp; Monetization</div>
-          <div class="card-desc">Two verified channels for customer balance top-ups</div>
-        </div>
-      </div>
-      <div class="setup-funding-channel">
-        <div class="channel-icon">&#127968;</div>
-        <div>
-          <div class="channel-name">AgentPMT Token Purchase</div>
-          <div class="channel-desc">Customers buy tokens at AgentPMT.com. Signed receipts verified via HMAC-SHA256.</div>
-        </div>
-      </div>
-      <div class="setup-funding-channel">
-        <div class="channel-icon">&#9939;</div>
-        <div>
-          <div class="channel-name">x402direct (USDC on Base L2)</div>
-          <div class="channel-desc">Direct USDC stablecoin payment. Transaction hash verified on-chain.</div>
-        </div>
-      </div>
-      <p style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.5">
-        All tools, workflows, and agent configurations are accessible exclusively through AgentPMT MCP.
-      </p>
-    </div>
   </div>
   `;
+
+  // ---- Proof lattice canvas animation ----
+  (async () => {
+    const latticeCanvas = document.getElementById("proof-lattice-canvas");
+    const latticeStatus = document.getElementById("proof-lattice-status");
+    if (!latticeCanvas) return;
+    const ctx2d = latticeCanvas.getContext("2d");
+    if (!ctx2d) return;
+
+    let gateData = null;
+    try {
+      const payload = await api("/proof-gate/status");
+      gateData = payload;
+    } catch (_e) {}
+
+    const reqs = (gateData && gateData.requirements) || [];
+    const totalMet = reqs.filter(r => r.met).length;
+    const totalReqs = reqs.length || 14;
+
+    if (latticeStatus) {
+      latticeStatus.innerHTML = totalMet + "/" + totalReqs + " proofs verified";
+      latticeStatus.style.color = totalMet === totalReqs ? "var(--green)" : "var(--yellow)";
+    }
+
+    // Node positions in a lattice layout
+    const nodes = [];
+    const count = Math.max(totalReqs, 14);
+    const cols = Math.ceil(Math.sqrt(count * 1.8));
+    const rows = Math.ceil(count / cols);
+    for (let i = 0; i < count; i++) {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const met = reqs[i] ? reqs[i].met : false;
+      nodes.push({
+        x: (col + 0.5) / cols,
+        y: (row + 0.5) / rows,
+        met: met,
+        name: reqs[i] ? (reqs[i].tool_name || "") : "",
+        phase: Math.random() * Math.PI * 2,
+        fireTime: -1,
+      });
+    }
+
+    // Edges: connect neighboring nodes
+    const edges = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      if (col + 1 < cols && i + 1 < nodes.length) edges.push([i, i + 1]);
+      if (i + cols < nodes.length) edges.push([i, i + cols]);
+      if (col + 1 < cols && i + cols + 1 < nodes.length) edges.push([i, i + cols + 1]);
+    }
+
+    let animFrame = 0;
+    let elapsed = 0;
+    let lastTime = performance.now();
+
+    function resize() {
+      const hero = document.getElementById("proof-lattice-hero");
+      if (!hero) return;
+      const w = hero.clientWidth || 400;
+      const h = 200;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      latticeCanvas.width = w * dpr;
+      latticeCanvas.height = h * dpr;
+      latticeCanvas.style.width = w + "px";
+      latticeCanvas.style.height = h + "px";
+      ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    resize();
+    window.addEventListener("resize", resize);
+
+    function draw() {
+      const now = performance.now();
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+      elapsed += dt;
+
+      const w = latticeCanvas.width / (Math.min(window.devicePixelRatio || 1, 2));
+      const h = latticeCanvas.height / (Math.min(window.devicePixelRatio || 1, 2));
+      const pad = 28;
+      const iw = w - pad * 2;
+      const ih = h - pad * 2;
+
+      ctx2d.clearRect(0, 0, w, h);
+
+      // Random neural firing
+      if (Math.random() < 0.06) {
+        const idx = Math.floor(Math.random() * nodes.length);
+        nodes[idx].fireTime = elapsed;
+      }
+
+      // Draw edges
+      for (const [a, b] of edges) {
+        const na = nodes[a], nb = nodes[b];
+        const ax = pad + na.x * iw, ay = pad + na.y * ih;
+        const bx = pad + nb.x * iw, by = pad + nb.y * ih;
+        const firing = (elapsed - na.fireTime < 0.4 || elapsed - nb.fireTime < 0.4);
+        const pulse = Math.sin(elapsed * 2.5 + a * 0.5) * 0.3 + 0.5;
+        ctx2d.beginPath();
+        ctx2d.moveTo(ax, ay);
+        ctx2d.lineTo(bx, by);
+        if (firing) {
+          ctx2d.strokeStyle = "rgba(74,222,128," + (0.6 + pulse * 0.4) + ")";
+          ctx2d.lineWidth = 1.5;
+        } else {
+          ctx2d.strokeStyle = "rgba(34,197,94," + (0.12 + pulse * 0.08) + ")";
+          ctx2d.lineWidth = 0.8;
+        }
+        ctx2d.stroke();
+      }
+
+      // Draw nodes
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i];
+        const x = pad + n.x * iw;
+        const y = pad + n.y * ih;
+        const pulse = Math.sin(elapsed * 2.0 + n.phase) * 0.5 + 0.5;
+        const firing = elapsed - n.fireTime < 0.4;
+        const fireIntensity = firing ? Math.max(0, 1 - (elapsed - n.fireTime) / 0.4) : 0;
+
+        // Glow
+        if (n.met || firing) {
+          const glowR = 8 + pulse * 4 + fireIntensity * 12;
+          const grad = ctx2d.createRadialGradient(x, y, 0, x, y, glowR);
+          if (firing) {
+            grad.addColorStop(0, "rgba(187,247,208," + (0.7 * fireIntensity) + ")");
+            grad.addColorStop(1, "rgba(34,197,94,0)");
+          } else {
+            grad.addColorStop(0, "rgba(74,222,128," + (0.25 + pulse * 0.15) + ")");
+            grad.addColorStop(1, "rgba(34,197,94,0)");
+          }
+          ctx2d.beginPath();
+          ctx2d.arc(x, y, glowR, 0, Math.PI * 2);
+          ctx2d.fillStyle = grad;
+          ctx2d.fill();
+        }
+
+        // Node circle
+        const r = n.met ? 3.5 + pulse * 1 : 2.5;
+        ctx2d.beginPath();
+        ctx2d.arc(x, y, r + fireIntensity * 3, 0, Math.PI * 2);
+        if (firing) {
+          ctx2d.fillStyle = "rgba(220,252,231," + (0.9 + fireIntensity * 0.1) + ")";
+        } else if (n.met) {
+          ctx2d.fillStyle = "rgba(74,222,128," + (0.7 + pulse * 0.3) + ")";
+        } else {
+          ctx2d.fillStyle = "rgba(100,116,139," + (0.3 + pulse * 0.2) + ")";
+        }
+        ctx2d.fill();
+      }
+
+      animFrame = requestAnimationFrame(draw);
+    }
+    animFrame = requestAnimationFrame(draw);
+
+    // Cleanup on page navigation
+    const observer = new MutationObserver(() => {
+      if (!document.getElementById("proof-lattice-canvas")) {
+        cancelAnimationFrame(animFrame);
+        observer.disconnect();
+      }
+    });
+    observer.observe(content, { childList: true });
+  })();
+
+  // ---- Auto-detect and apply identity (always run everything available) ----
+  (async () => {
+    try {
+      const idStatus = await api("/identity/status");
+      if (!idStatus.device_configured) {
+        try { await apiPost("/identity/device", { enable: true, components: true, browser: true }); } catch (_e) {}
+      }
+      if (!idStatus.network_configured) {
+        try { await apiPost("/identity/network", { share_local_ip: true, share_mac: true }); } catch (_e) {}
+      }
+      // Auto-apply max-safe tier if not yet configured
+      try {
+        const tier = await api("/identity/tier");
+        if (!tier.configured) {
+          await apiPost("/identity/tier", { tier: "max-safe", applied_by: "auto_setup" });
+        }
+      } catch (_e) {}
+    } catch (_e) {}
+  })();
 
   // ---- Populate configured identity displays ----
   if (identityCfg.device_configured && !identityCfg.anonymous_mode) {
