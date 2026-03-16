@@ -204,7 +204,6 @@ impl ContainerDispatch for MeshContainerDispatch {
                 image,
                 agent_id: peer_agent_id.clone(),
                 command: vec!["agenthalo-mcp-server".to_string()],
-                use_gvisor: false,
                 host_sock: None,
                 env_vars,
                 mesh: Some(MeshConfig {

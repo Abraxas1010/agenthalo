@@ -98,7 +98,6 @@ pub struct PreflightResult {
     pub cli_path: Option<String>,
     pub keys_configured: bool,
     pub missing_keys: Vec<String>,
-    pub docker_available: bool,
     pub native_supported: bool,
     pub ready: bool,
     pub install_hint: Option<String>,
@@ -112,8 +111,6 @@ pub struct PreflightResult {
 pub struct LaunchRequest {
     pub agent_id: String,
     pub mode: String,
-    #[serde(default)]
-    pub container: bool,
     pub working_dir: Option<String>,
     #[serde(default)]
     pub admission_mode: Option<String>,
@@ -251,7 +248,6 @@ pub fn preflight(
         } else {
             missing_keys
         },
-        docker_available: false,
         native_supported: true,
         ready: cli_installed && keys_configured && admission_allowed,
         install_hint: agent.install_hint.map(|s| s.to_string()),
@@ -327,12 +323,6 @@ pub fn launch(
         .map(|s| (*s).to_string())
         .collect();
     let pty_working_dir = route_working_dir(agent.id, req.working_dir.as_deref(), &mut args);
-
-    if req.container {
-        return Err(
-            "Docker launch mode has been removed. Launch AgentHALO sessions natively.".to_string(),
-        );
-    }
 
     let id = pty_manager.create_session(
         &command,

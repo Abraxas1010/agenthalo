@@ -947,8 +947,6 @@ pub struct ContainerLaunchRequest {
     pub agent_id: String,
     /// Runtime command args.
     pub command: Vec<String>,
-    /// If true, request gVisor (`runsc`) runtime.
-    pub runtime_runsc: Option<bool>,
     /// Optional host socket path override for sidecar communication.
     pub host_sock: Option<String>,
     /// Optional environment variables injected into the container.
@@ -1011,7 +1009,6 @@ pub struct DeployPreflightToolRequest {
 pub struct DeployLaunchToolRequest {
     pub agent_id: String,
     pub mode: String,
-    pub container: Option<bool>,
     pub working_dir: Option<String>,
     pub admission_mode: Option<String>,
 }
@@ -1132,7 +1129,6 @@ pub struct SubsidiaryProvisionRequest {
     pub agent_id: String,
     #[serde(default)]
     pub command: Vec<String>,
-    pub runtime_runsc: Option<bool>,
     pub host_sock: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -3341,7 +3337,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "nucleusdb_container_launch",
-        description = "Launch a monitored container session. Supports mesh networking and env injection. Example: {\"image\":\"nucleusdb-agent:latest\",\"agent_id\":\"agent-a\",\"command\":[\"/bin/sh\",\"-lc\",\"echo hello\"],\"env\":{\"AGENTHALO_MCP_SECRET\":\"...\"},\"mesh\":{\"enabled\":true,\"mcp_port\":8420,\"registry_volume\":\"/tmp/nucleusdb-mesh\"}}"
+        description = "Launch a monitored native session. Supports mesh networking and env injection. Example: {\"image\":\"nucleusdb-agent:latest\",\"agent_id\":\"agent-a\",\"command\":[\"/bin/sh\",\"-lc\",\"echo hello\"],\"env\":{\"AGENTHALO_MCP_SECRET\":\"...\"},\"mesh\":{\"enabled\":true,\"mcp_port\":8420,\"registry_volume\":\"/tmp/nucleusdb-mesh\"}}"
     )]
     pub async fn container_launch(
         &self,
@@ -3406,7 +3402,6 @@ impl NucleusDbMcpService {
             image: req.image.clone(),
             agent_id: req.agent_id.clone(),
             command,
-            use_gvisor: req.runtime_runsc.unwrap_or(false),
             host_sock,
             env_vars,
             mesh,
@@ -3491,7 +3486,6 @@ impl NucleusDbMcpService {
             } else {
                 req.command
             },
-            use_gvisor: req.runtime_runsc.unwrap_or(false),
             host_sock,
             env_vars,
             mesh,
@@ -3561,7 +3555,6 @@ impl NucleusDbMcpService {
                 image: req.image,
                 agent_id: req.agent_id,
                 command: req.command,
-                runtime_runsc: req.runtime_runsc,
                 host_sock: req.host_sock,
                 env: req.env,
                 mesh: req.mesh,
@@ -4121,7 +4114,7 @@ impl NucleusDbMcpService {
 
     #[tool(
         name = "agenthalo_deploy_launch",
-        description = "Launch a cockpit-managed agent session with AETHER admission control. Example: {\"agent_id\":\"codex\",\"mode\":\"terminal\",\"container\":true,\"admission_mode\":\"block\"}"
+        description = "Launch a cockpit-managed agent session with AETHER admission control. Example: {\"agent_id\":\"codex\",\"mode\":\"terminal\",\"admission_mode\":\"block\"}"
     )]
     pub async fn deploy_launch(
         &self,
@@ -4132,7 +4125,6 @@ impl NucleusDbMcpService {
             &deploy::LaunchRequest {
                 agent_id: req.agent_id,
                 mode: req.mode,
-                container: req.container.unwrap_or(false),
                 working_dir: req.working_dir,
                 admission_mode: req.admission_mode,
             },
@@ -6708,7 +6700,6 @@ mod tests {
             "image": "nucleusdb-mcp:latest",
             "agent_id": "agent-qa",
             "command": ["/bin/sh", "-lc", "echo ready"],
-            "runtime_runsc": true,
             "host_sock": "/tmp/agent-qa.sock",
             "env": {
                 "AGENTHALO_MCP_SECRET": "secret",
@@ -6931,6 +6922,7 @@ mod tests {
     async fn container_list_uses_mesh_auth_token_for_lock_status() {
         let _env_guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let _secret = EnvVarRestore::set("AGENTHALO_MCP_SECRET", "mesh-secret");
+        let _mesh_secret = EnvVarRestore::unset("NUCLEUSDB_MESH_AUTH_TOKEN");
         let registry_dir = tempfile::tempdir().expect("tempdir");
         let registry_path = registry_dir.path().join("peers.json");
         let _registry = EnvVarRestore::set(

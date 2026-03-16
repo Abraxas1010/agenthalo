@@ -852,7 +852,6 @@ fn cmd_deploy(args: &[String]) -> Result<(), String> {
                 serde_json::json!({
                     "agent_id": agent_id,
                     "mode": mode,
-                    "container": false,
                     "working_dir": working_dir,
                     "admission_mode": admission_mode,
                 }),

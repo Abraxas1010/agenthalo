@@ -1613,7 +1613,6 @@ async fn mcp(
                             "image": {"type": "string"},
                             "agent_id": {"type": "string"},
                             "command": {"type": "array", "items": {"type": "string"}, "default": []},
-                            "runtime_runsc": {"type": "boolean", "default": false},
                             "host_sock": {"type": "string"},
                             "env": {"type": "object", "additionalProperties": {"type": "string"}},
                             "mesh": {
@@ -1638,7 +1637,6 @@ async fn mcp(
                             "image": {"type": "string"},
                             "agent_id": {"type": "string"},
                             "command": {"type": "array", "items": {"type": "string"}, "default": []},
-                            "runtime_runsc": {"type": "boolean", "default": false},
                             "host_sock": {"type": "string"},
                             "env": {"type": "object", "additionalProperties": {"type": "string"}},
                             "mesh": {
@@ -1730,7 +1728,6 @@ async fn mcp(
                             "image": {"type": "string"},
                             "agent_id": {"type": "string"},
                             "command": {"type": "array", "items": {"type": "string"}},
-                            "runtime_runsc": {"type": "boolean"},
                             "host_sock": {"type": "string"},
                             "env": {"type": "object"},
                             "mesh": {"type": "object"},
@@ -7153,7 +7150,6 @@ fn tool_nucleusdb_container_launch(arguments: Value) -> Result<Value, String> {
         image: req.image,
         agent_id: req.agent_id,
         command,
-        use_gvisor: req.runtime_runsc.unwrap_or(false),
         host_sock,
         env_vars,
         mesh,

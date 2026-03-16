@@ -693,8 +693,6 @@ struct DashboardContainerProvisionRequest {
     #[serde(default)]
     command: Option<Vec<String>>,
     #[serde(default)]
-    runtime_runsc: Option<bool>,
-    #[serde(default)]
     admission_mode: Option<String>,
 }
 
@@ -2420,7 +2418,6 @@ async fn api_containers_provision(
             "image": image,
             "agent_id": agent_id,
             "command": req.command.unwrap_or_else(|| vec!["agenthalo-mcp-server".to_string()]),
-            "runtime_runsc": req.runtime_runsc,
             "env": {},
             "mesh": {
                 "enabled": true

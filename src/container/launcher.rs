@@ -95,7 +95,6 @@ pub struct RunConfig {
     pub image: String,
     pub agent_id: String,
     pub command: Vec<String>,
-    pub use_gvisor: bool,
     pub host_sock: Option<PathBuf>,
     #[serde(default)]
     pub env_vars: Vec<(String, String)>,
@@ -192,7 +191,6 @@ fn metadata_path(session_id: &str) -> PathBuf {
 }
 
 pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
-    let _ = cfg.use_gvisor;
     let session_id = make_session_id();
     let dir = session_dir(&session_id);
     std::fs::create_dir_all(&dir)
