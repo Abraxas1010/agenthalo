@@ -257,11 +257,13 @@ The bot keeps the database in append-only mode. A delete event does not remove t
 
 ## Deployment Surfaces
 
-- `deploy/nucleusdb-discord.service`
-- `deploy/nucleusdb-mcp.service`
-- `deploy/nucleusdb-dashboard.service`
+- `deploy/agenthalo-discord.service`
+- `deploy/agenthalo-mcp.service`
+- `deploy/agenthalo-dashboard.service`
+- `deploy/agenthalo-p2p-bridge.service`
 - `scripts/agenthalo-instances.sh`
 - `deploy/entrypoint.sh`
+- `Docs/container_operator_security.md`
 
 The intended production shape is one shared database file with multiple cooperating processes:
 
@@ -270,9 +272,11 @@ The intended production shape is one shared database file with multiple cooperat
 - REST API
 - Dashboard
 
+For operator/subsidiary isolation and shared-registry risks in native deployments, see [container_operator_security.md](container_operator_security.md).
+
 ## Formal Layer
 
-`lean/NucleusDB/` contains 148 local Lean 4 mirror modules. Runtime-critical theorems are mirrored locally and linked back to the canonical [Heyting](https://github.com/Abraxas1010/heyting) proofs through dual provenance strings exposed from Rust.
+`lean/NucleusDB/` contains the local Lean 4 mirror modules for runtime-critical theorem surfaces. They are linked back to the canonical [Heyting](https://github.com/Abraxas1010/heyting) proofs through dual provenance strings exposed from Rust.
 
 ### Provenance Surfaces
 

@@ -1,0 +1,27 @@
+[Unit]
+Description=AgentHALO P2PCLAW Bridge Worker
+After=network-online.target agenthalo-dashboard.service
+Wants=network-online.target agenthalo-dashboard.service
+
+[Service]
+Type=simple
+User=agenthalo
+Group=agenthalo
+WorkingDirectory=/opt/agenthalo
+Environment=AGENTHALO_HOME=/var/lib/agenthalo
+Environment=NUCLEUSDB_HOME=/var/lib/agenthalo
+EnvironmentFile=-/etc/agenthalo/discord.env
+EnvironmentFile=-/etc/agenthalo/p2pclaw.env
+ExecStart=/usr/bin/env agenthalo p2pclaw bridge run-loop --live --heartbeat --tau-sync
+Restart=on-failure
+RestartSec=15s
+TimeoutStopSec=30s
+MemoryMax=512M
+CPUQuota=25%
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/agenthalo /etc/agenthalo
+
+[Install]
+WantedBy=multi-user.target

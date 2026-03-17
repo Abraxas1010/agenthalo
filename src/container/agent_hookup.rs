@@ -7,14 +7,14 @@ use crate::halo::local_models::{self, LocalBackendType, ServeRequest};
 use crate::halo::pricing;
 use crate::halo::proxy::{ChatCompletionRequest, Message};
 use crate::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
-use crate::halo::trace::{TraceWriter, now_unix_secs};
+use crate::halo::trace::{now_unix_secs, TraceWriter};
 use crate::halo::vault::Vault;
 use crate::orchestrator::agent_pool::{AgentPool, LaunchSpec};
 use crate::orchestrator::trace_bridge::collect_task_output;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -1025,7 +1025,11 @@ fn which_path(binary: &str) -> Option<String> {
         return None;
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() { None } else { Some(value) }
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn api_endpoint(provider: &str, base_url_override: Option<&str>) -> Result<String, String> {
@@ -1400,7 +1404,7 @@ fn api_cost_usd(model: &str, body: &Value) -> f64 {
 mod tests {
     use super::*;
     use crate::halo::trace::session_events;
-    use crate::test_support::{EnvVarGuard, MockOpenAiServer, lock_env};
+    use crate::test_support::{lock_env, EnvVarGuard, MockOpenAiServer};
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1891,12 +1895,10 @@ mod tests {
 
         let trace_id = hookup.trace_session_id().expect("trace session id");
         let events = session_events(hookup.trace_db_path(), &trace_id).expect("events");
-        assert!(
-            events
-                .iter()
-                .any(|event| event.event_type == EventType::ToolCall
-                    && event.tool_name.as_deref() == Some("nucleusdb_help"))
-        );
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == EventType::ToolCall
+                && event.tool_name.as_deref() == Some("nucleusdb_help")));
     }
 
     #[tokio::test(flavor = "current_thread")]

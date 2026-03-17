@@ -160,13 +160,8 @@ impl MeshContainerDispatch {
         tool_name: &'static str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        self.call_remote_with_timeout(
-            peer_agent_id,
-            tool_name,
-            arguments,
-            Duration::from_secs(30),
-        )
-        .await
+        self.call_remote_with_timeout(peer_agent_id, tool_name, arguments, Duration::from_secs(30))
+            .await
     }
 
     async fn call_remote_with_timeout(
@@ -179,7 +174,13 @@ impl MeshContainerDispatch {
         let peer = self.find_peer(peer_agent_id).await?;
         let auth_token = mesh_auth_token();
         tokio::task::spawn_blocking(move || {
-            call_remote_tool_with_timeout(&peer, tool_name, arguments, auth_token.as_deref(), timeout)
+            call_remote_tool_with_timeout(
+                &peer,
+                tool_name,
+                arguments,
+                auth_token.as_deref(),
+                timeout,
+            )
         })
         .await
         .map_err(|e| format!("mesh remote call join failure: {e}"))?

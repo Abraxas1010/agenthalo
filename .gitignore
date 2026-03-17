@@ -5,6 +5,7 @@
 /artifacts/*.wal
 /artifacts/**/*.jsonl
 /artifacts/**/*.tmp
+/contracts/artifacts/ops/multichain_sepolia/mock_e2e_*.json
 
 # Generated living_agent data (grid cells, embeddings, SNS snapshots)
 /artifacts/living_agent/

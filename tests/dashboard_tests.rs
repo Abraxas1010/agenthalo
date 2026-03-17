@@ -1656,13 +1656,21 @@ async fn cockpit_sessions_include_flushed_trace_totals() {
         json!({"command": "/bin/bash", "args": [script_path.display().to_string()], "cols": 80, "rows": 24}),
     )
     .await;
-    assert_eq!(created, StatusCode::OK, "create session should succeed: {body}");
+    assert_eq!(
+        created,
+        StatusCode::OK,
+        "create session should succeed: {body}"
+    );
     let id = body["id"].as_str().expect("session id").to_string();
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let (status, payload) = api_get(state.clone(), "/cockpit/sessions").await;
-    assert_eq!(status, StatusCode::OK, "list sessions should succeed: {payload}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "list sessions should succeed: {payload}"
+    );
     let session = payload["sessions"]
         .as_array()
         .expect("sessions array")

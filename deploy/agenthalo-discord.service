@@ -1,0 +1,25 @@
+[Unit]
+Description=AgentHALO Discord Immutable Record Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agenthalo
+Group=agenthalo
+Environment=AGENTHALO_HOME=/var/lib/agenthalo
+Environment=NUCLEUSDB_HOME=/var/lib/agenthalo
+EnvironmentFile=/etc/agenthalo/discord.env
+ExecStart=/usr/local/bin/nucleusdb-discord
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/agenthalo /etc/agenthalo
+PrivateTmp=true
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

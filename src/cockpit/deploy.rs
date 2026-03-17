@@ -529,8 +529,8 @@ fn which_command(command: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cli_authenticated, cli_session_env, inspect_binary_topology, preflight,
-        route_working_dir, StoredTopoRecord,
+        cli_authenticated, cli_session_env, inspect_binary_topology, preflight, route_working_dir,
+        StoredTopoRecord,
     };
     use crate::halo::admission::AdmissionMode;
     use crate::halo::governor::GovernorConfig;

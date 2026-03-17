@@ -1112,5 +1112,5 @@ rm ~/.agenthalo/traces.ndb
 ---
 
 <p align="center">
-  <sub>AgentHALO is part of <a href="../README.md">NucleusDB</a> by <strong>Apoth3osis</strong></sub>
+  <sub>AgentHALO is built by <strong>Apoth3osis</strong>. Project overview: <a href="../README.md">README</a></sub>
 </p>

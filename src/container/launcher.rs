@@ -236,9 +236,7 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
     let dir = session_dir(&session_id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("failed to create run dir {}: {e}", dir.display()))?;
-    let host_sock = cfg
-        .host_sock
-        .unwrap_or_else(|| dir.join("agenthalo.sock"));
+    let host_sock = cfg.host_sock.unwrap_or_else(|| dir.join("agenthalo.sock"));
     let log_path = dir.join("process.log");
 
     let mut env_vars = cfg.env_vars.clone();
@@ -265,10 +263,7 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
                 "NUCLEUSDB_MESH_PORT".to_string(),
                 mesh_cfg.mcp_port.to_string(),
             ));
-            env_vars.push((
-                "NUCLEUSDB_MESH_AGENT_ID".to_string(),
-                cfg.agent_id.clone(),
-            ));
+            env_vars.push(("NUCLEUSDB_MESH_AGENT_ID".to_string(), cfg.agent_id.clone()));
             env_vars.push((
                 "AGENTHALO_MCP_PORT".to_string(),
                 mesh_cfg.mcp_port.to_string(),
@@ -316,9 +311,12 @@ pub fn launch_container(cfg: RunConfig) -> Result<SessionInfo, String> {
         cmd.process_group(0);
     }
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to start native session `{}`: {e}", program.display()))?;
+    let child = cmd.spawn().map_err(|e| {
+        format!(
+            "failed to start native session `{}`: {e}",
+            program.display()
+        )
+    })?;
 
     let info = SessionInfo {
         session_id: session_id.clone(),
@@ -439,7 +437,9 @@ mod tests {
         let mut env_vars = Vec::new();
         let home = std::env::temp_dir().join("agenthalo-test-home");
         apply_direct_mcp_defaults("sess-123", "agent-456", &home, &mut env_vars);
-        let as_map = env_vars.into_iter().collect::<std::collections::BTreeMap<_, _>>();
+        let as_map = env_vars
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
         assert_eq!(
             as_map.get("AGENTHALO_HOME").map(String::as_str),
             Some(home.to_string_lossy().as_ref())
@@ -462,16 +462,24 @@ mod tests {
     fn apply_direct_mcp_defaults_preserves_existing_values() {
         let home = std::env::temp_dir().join("agenthalo-test-home");
         let mut env_vars = vec![
-            ("AGENTHALO_HOME".to_string(), "/tmp/existing-home".to_string()),
+            (
+                "AGENTHALO_HOME".to_string(),
+                "/tmp/existing-home".to_string(),
+            ),
             (
                 "AGENTHALO_SESSION_ID".to_string(),
                 "existing-session".to_string(),
             ),
-            ("AGENTHALO_AGENT_ID".to_string(), "existing-agent".to_string()),
+            (
+                "AGENTHALO_AGENT_ID".to_string(),
+                "existing-agent".to_string(),
+            ),
             ("AGENTHALO_MCP_HOST".to_string(), "10.0.0.9".to_string()),
         ];
         apply_direct_mcp_defaults("sess-123", "agent-456", &home, &mut env_vars);
-        let as_map = env_vars.into_iter().collect::<std::collections::BTreeMap<_, _>>();
+        let as_map = env_vars
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
         assert_eq!(
             as_map.get("AGENTHALO_HOME").map(String::as_str),
             Some("/tmp/existing-home")

@@ -266,7 +266,7 @@ python3 scripts/check_theory_boundary.py               # verify approved math bo
 cargo run --bin nucleusdb -- verify-certificate <file>  # verify a certificate
 ```
 
-Local Lean mirrors: `lean/NucleusDB/` (148 files, self-contained).
+Local Lean mirrors: `lean/NucleusDB/` (self-contained).
 
 Full details: [Docs/FORMAL_VERIFICATION.md](Docs/FORMAL_VERIFICATION.md).
 
@@ -294,6 +294,7 @@ Full details: [Docs/FORMAL_VERIFICATION.md](Docs/FORMAL_VERIFICATION.md).
 - Argon2-based password-derived master keys
 - Ed25519-signed formal provenance certificates (enforced by default)
 - ZK compute: RISC Zero guests for range proofs, set membership, secure aggregation, algorithm compliance
+- Native operator/subsidiary orchestration guidance: [Docs/container_operator_security.md](Docs/container_operator_security.md)
 
 ## Architecture
 

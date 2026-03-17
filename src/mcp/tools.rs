@@ -1667,7 +1667,7 @@ impl ServerHandler for NucleusDbMcpService {
                         .to_string(),
                 ),
                 icons: None,
-                website_url: Some("https://github.com/Abraxas1010/nucleusdb".to_string()),
+                website_url: Some("https://github.com/Abraxas1010/agenthalo".to_string()),
             },
             instructions: Some(
                 "Use nucleusdb_help first to discover SQL syntax, backend ids, and safe defaults."
@@ -6145,10 +6145,16 @@ impl NucleusDbMcpService {
                 container_id: metadata.as_ref().map(|meta| meta.container_id.clone()),
                 lock_state: metadata.as_ref().map(|meta| meta.lock_state.clone()),
                 peer_agent_id: metadata.as_ref().map(|meta| meta.peer_agent_id.clone()),
-                trace_session_id: metadata.as_ref().and_then(|meta| meta.trace_session_id.clone()),
+                trace_session_id: metadata
+                    .as_ref()
+                    .and_then(|meta| meta.trace_session_id.clone()),
                 agent_home: metadata.as_ref().and_then(|meta| meta.agent_home.clone()),
-                identity_fingerprint: metadata.as_ref().map(|meta| meta.identity_fingerprint.clone()),
-                identity_digest: metadata.as_ref().map(|meta| meta.identity_fingerprint.clone()), // deprecated: use identity_fingerprint
+                identity_fingerprint: metadata
+                    .as_ref()
+                    .map(|meta| meta.identity_fingerprint.clone()),
+                identity_digest: metadata
+                    .as_ref()
+                    .map(|meta| meta.identity_fingerprint.clone()), // deprecated: use identity_fingerprint
             });
         }
         Ok(Json(OrchestratorListResponse { agents: views }))

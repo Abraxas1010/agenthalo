@@ -1288,8 +1288,16 @@ impl Orchestrator {
                         }
                     }
                 }
-                self.inner.container_sessions.lock().await.remove(&req.agent_id);
-                self.inner.container_agents.lock().await.remove(&req.agent_id);
+                self.inner
+                    .container_sessions
+                    .lock()
+                    .await
+                    .remove(&req.agent_id);
+                self.inner
+                    .container_agents
+                    .lock()
+                    .await
+                    .remove(&req.agent_id);
                 return Ok(StopResult {
                     agent_id: req.agent_id,
                     status: "reset".to_string(),
@@ -1356,10 +1364,7 @@ impl Orchestrator {
         self.inner.pool.current_session_for_agent(agent_id).await
     }
 
-    pub async fn container_agent_metadata(
-        &self,
-        agent_id: &str,
-    ) -> Option<ContainerAgentMetadata> {
+    pub async fn container_agent_metadata(&self, agent_id: &str) -> Option<ContainerAgentMetadata> {
         let session = self
             .inner
             .container_sessions
@@ -1381,7 +1386,11 @@ impl Orchestrator {
             lock_state: session.lock_state.clone(),
             trace_session_id: session.trace_session_id.clone(),
             agent_home: session.agent_home.clone(),
-            identity_fingerprint: container_identity_fingerprint(agent_id, agent.launched_at, &session),
+            identity_fingerprint: container_identity_fingerprint(
+                agent_id,
+                agent.launched_at,
+                &session,
+            ),
         })
     }
 
@@ -1972,14 +1981,15 @@ mod tests {
             .expect("purge container agent");
         assert_eq!(stopped.status, "reset");
         assert!(stopped.purged);
-        assert!(orchestrator.container_agent_metadata(&agent.agent_id).await.is_none());
-        assert!(
-            orchestrator
-                .list_agents()
-                .await
-                .into_iter()
-                .all(|candidate| candidate.agent_id != agent.agent_id)
-        );
+        assert!(orchestrator
+            .container_agent_metadata(&agent.agent_id)
+            .await
+            .is_none());
+        assert!(orchestrator
+            .list_agents()
+            .await
+            .into_iter()
+            .all(|candidate| candidate.agent_id != agent.agent_id));
     }
 
     #[tokio::test]

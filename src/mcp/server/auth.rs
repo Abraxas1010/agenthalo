@@ -520,13 +520,13 @@ where
         ))?;
 
     let signing_message = cab_signing_message(&cab).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    let signature_ok = verify_cab_signature(&agent_address, &signing_message, signature)
-    .map_err(|e| {
-        (
-            StatusCode::UNAUTHORIZED,
-            format!("invalid cab signature: {e}"),
-        )
-    })?;
+    let signature_ok =
+        verify_cab_signature(&agent_address, &signing_message, signature).map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                format!("invalid cab signature: {e}"),
+            )
+        })?;
     if !signature_ok {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -761,7 +761,10 @@ fn verify_cab_signature(
     #[cfg(not(test))]
     {
         let _ = (agent_address, message, signature);
-        Err("CAB bearer-token verification is unavailable in standalone NucleusDB; use JWT auth".to_string())
+        Err(
+            "CAB bearer-token verification is unavailable in standalone NucleusDB; use JWT auth"
+                .to_string(),
+        )
     }
 }
 

@@ -610,12 +610,10 @@ mod tests {
             .await
             .expect("launch gemini agent");
         assert_eq!(agent.model.as_deref(), Some("gemini-2.5-pro"));
-        assert!(
-            agent
-                .static_args
-                .windows(2)
-                .any(|window| { window[0] == "--model" && window[1] == "gemini-2.5-pro" })
-        );
+        assert!(agent
+            .static_args
+            .windows(2)
+            .any(|window| { window[0] == "--model" && window[1] == "gemini-2.5-pro" }));
     }
 
     #[test]

@@ -231,7 +231,6 @@ impl PtySession {
     fn touch_activity(&self) {
         self.last_activity_unix.store(now_unix(), Ordering::Relaxed);
     }
-
 }
 
 impl PtyManager {

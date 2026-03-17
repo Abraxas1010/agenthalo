@@ -1,27 +1,26 @@
-# Contributing to NucleusDB
+# Contributing to AgentHALO
 
 ## Scope
 
-This repository is the standalone NucleusDB product. Contributions should strengthen one of these surfaces:
+This repository is the live AgentHALO platform. Contributions should strengthen one of these surfaces:
 
-- verifiable database core
-- SQL and typed-value execution
-- append-only / monotone-seal behavior
-- Discord recording
-- MCP server
-- dashboard and deployment surfaces
-- Lean formal NucleusDB proofs
+- AgentHALO CLI, dashboard, cockpit, and MCP operator surfaces
+- NucleusDB core, SQL execution, append-only records, and verification
+- agent lifecycle orchestration, native session management, and mesh/comms
+- identity, wallet, attestation, trust, and post-quantum crypto flows
+- Discord recording, AgentPMT, P2PCLAW, and deployment surfaces
+- local Lean mirror proofs under `lean/NucleusDB/`
 
-Do not reintroduce HALO orchestration, wallet routing, cockpit terminal management, or mesh-specific agent infrastructure into this repo unless there is an explicit project decision to expand scope.
+Do not narrow the repository back to a standalone NucleusDB-only product unless there is an explicit project decision to do so.
 
 ## Development
 
 ```bash
-cargo check --bin nucleusdb --bin nucleusdb-mcp --bin nucleusdb-discord --bin nucleusdb-server --bin nucleusdb-tui
+cargo check --bin agenthalo --bin agenthalo-mcp-server --bin nucleusdb --bin nucleusdb-mcp --bin nucleusdb-discord --bin nucleusdb-server --bin nucleusdb-tui
 cargo test
 ```
 
-If you change dashboard assets, rebuild before claiming the frontend changed.
+If you change dashboard assets, rebuild `agenthalo` before claiming the frontend changed.
 
 ## Pull Requests
 

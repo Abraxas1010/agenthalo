@@ -356,7 +356,9 @@ impl ProofGateConfig {
 }
 
 fn local_did_identity() -> Option<crate::halo::did::DIDIdentity> {
-    let seed = crate::halo::genesis_seed::load_seed_bytes().ok().flatten()?;
+    let seed = crate::halo::genesis_seed::load_seed_bytes()
+        .ok()
+        .flatten()?;
     crate::halo::did::did_from_genesis_seed(&seed).ok()
 }
 

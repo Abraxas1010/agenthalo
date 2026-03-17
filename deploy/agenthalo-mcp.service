@@ -1,0 +1,24 @@
+[Unit]
+Description=AgentHALO MCP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agenthalo
+Group=agenthalo
+Environment=AGENTHALO_HOME=/var/lib/agenthalo
+Environment=NUCLEUSDB_HOME=/var/lib/agenthalo
+Environment=AGENTHALO_MCP_HOST=127.0.0.1
+Environment=AGENTHALO_MCP_PORT=3000
+EnvironmentFile=-/etc/agenthalo/discord.env
+ExecStart=/usr/local/bin/agenthalo-mcp-server
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/agenthalo /etc/agenthalo
+
+[Install]
+WantedBy=multi-user.target

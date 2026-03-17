@@ -4901,7 +4901,9 @@ async fn api_orch_launch(
         })
         .await
         .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let metadata = orchestrator.container_agent_metadata(&launched.agent_id).await;
+    let metadata = orchestrator
+        .container_agent_metadata(&launched.agent_id)
+        .await;
     Ok(Json(json!({
         "agent_id": launched.agent_id,
         "status": "idle",

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract proof-graph data from NucleusDB/AgentHALO Lean 4 files.
 
-Produces a JSON file suitable for the interactive proof-explorer visualization.
+Produces a JSON file suitable for the dashboard proof-lattice visualization.
 Extracts: theorems, lemmas, defs, structures, instances, examples, axioms.
 Computes: family (directory), kind, dependencies (import edges), 3D layout.
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 from collections import defaultdict
 
 LEAN_ROOT = Path(__file__).resolve().parent.parent / "lean"
-OUT = Path(__file__).resolve().parent.parent / "docs" / "proof-lattice.json"
+OUT = Path(__file__).resolve().parent.parent / "dashboard" / "proof-lattice.json"
 
 # Patterns for declarations
 DECL_RE = re.compile(

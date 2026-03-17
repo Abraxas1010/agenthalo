@@ -1,13 +1,15 @@
-# Native Operator Security Notes
+# AgentHALO Native Operator Security Notes
 
-Native AgentHALO sessions support operator -> subsidiary orchestration.
-That pattern has two security-sensitive deployment surfaces:
+AgentHALO's cockpit and native orchestration stack support operator -> subsidiary
+session management. That remains an active product surface, and it has two
+security-sensitive deployment concerns:
 
 ## Native Process Control
 
-If an operator account can launch or signal local AgentHALO processes, it can
-start, stop, or inspect subsidiary sessions. Treat the operator surface as
-host-equivalent power.
+If an operator account can launch or signal local AgentHALO processes through
+the dashboard, MCP bridge, or local CLI surfaces, it can start, stop, or
+inspect subsidiary sessions. Treat operator-capable access as host-equivalent
+power.
 
 Guidance:
 
