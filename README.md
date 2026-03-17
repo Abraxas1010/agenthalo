@@ -5,312 +5,408 @@
 ---
 
 <p align="center">
-  <img src="assets/nucleus_db_logo.png" alt="NucleusDB" width="300"/>
+  <img src="assets/agent_halo_logo.png" alt="Agent H.A.L.O." width="300"/>
 </p>
 
 <p align="center">
-  <strong>NucleusDB</strong> — Verifiable Database Engine<br>
-  <em>Every write is a cryptographic commitment. Every query comes with a proof. Append-only mode makes deletion mathematically visible.</em>
+  <strong>Agent H.A.L.O.</strong> — Human-AI Agent Lifecycle Orchestrator<br>
+  <em>Sovereign identity, post-quantum communication, tamper-proof observability, and verifiable storage for AI agents.</em>
 </p>
 
 [![License: Apoth3osis License Stack v1](https://img.shields.io/badge/License-Apoth3osis%20License%20Stack%20v1-blue.svg)](LICENSE.md)
 ![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)
 ![Lean 4](https://img.shields.io/badge/Lean%204-formal%20proofs-blue.svg)
 
-[Quick Start](#quick-start) · [Discord Bot](#discord-bot) · [SQL Interface](#sql-interface) · [MCP Server](#mcp-server) · [Dashboard](#dashboard) · [Formal Verification](#formal-verification) · [Architecture](#architecture) · [Security](#security)
+[Overview](#overview) · [Quick Start](#quick-start) · [Platform Components](#platform-components) · [NucleusDB](#nucleusdb) · [AgentPMT](#agentpmt) · [P2PCLAW](#p2pclaw) · [Security](#security) · [Formal Verification](#formal-verification) · [Architecture](#architecture)
 
-<sub>Part of the <a href="https://www.apoth3osis.io/projects"><strong>MENTAT</strong></a> stack — Layer 1 foundation. Also powers <a href="https://github.com/Abraxas1010/agenthalo">Agent H.A.L.O.</a>.</sub>
+<sub>Part of the <a href="https://www.apoth3osis.io/projects"><strong>MENTAT</strong></a> stack — Layer 1 foundation.</sub>
 
 ---
 
-## What Is NucleusDB
+## Overview
 
-NucleusDB is a verifiable database with three properties that are usually split across separate systems:
+Agent H.A.L.O. is a sovereign agent platform. It gives AI agents a cryptographic identity, quantum-resistant communication, and tamper-proof observability — all running locally on your machine.
 
-- a mutable working database with SQL, typed values, blob storage, vector search, and multi-tenant HTTP access
-- a proof surface where exact queries come with commitment proofs
-- an immutable append-only mode with monotone seal chaining for audit logs and permanent records
+**Identity.** Each agent derives a DID (Decentralized Identifier) from a genesis seed ceremony. The DID document carries Ed25519, X25519, ML-KEM-768, and ML-DSA-65 public keys — classical and post-quantum cryptography side by side.
 
-This standalone repository extracts that core from AgentHALO and ships a first concrete application on top of it: a Discord recorder that stores every message, edit, and delete event as append-only database entries.
+**Observability.** AgentHALO wraps AI coding agent CLIs (Claude Code, Codex, Gemini) and records every event — thoughts, tool calls, file edits, token counts, and costs — into a local NucleusDB trace store. Every trace event is content-addressed with a SHA-512 Merkle proof. If any event is modified after the fact, the proof chain breaks.
+
+**Communication.** Agents exchange DIDComm v2 encrypted messages using a hybrid KEM (X25519 + ML-KEM-768) resistant to both classical and quantum adversaries. Messages route over a libp2p P2P mesh or through the Nym mixnet for network-layer anonymity.
+
+**Economics.** Agents hold an EVM wallet (secp256k1, derived via BIP-32) for on-chain operations. EVM transaction signing is gated by DIDComm-verified dual-signature authorization (Ed25519 + ML-DSA-65), creating a two-cryptosystem barrier.
+
+**Key properties:**
+
+- **Zero telemetry.** Nothing leaves your machine. No analytics, no tracking, no phone-home.
+- **Zero config.** `agenthalo run claude` auto-injects the right flags for structured output.
+- **Tamper-evident.** Content-addressed storage in NucleusDB with Merkle proofs (SHA-512).
+- **Post-quantum.** Hybrid KEM (X25519 + ML-KEM-768) for DIDComm, ML-DSA-65 for signatures, HKDF-SHA-512 for key derivation.
+- **Sovereign identity.** DID-based identity with dual classical/PQ key pairs, genesis seed ceremony, and append-only identity ledger.
+- **Agent-native.** Parses each agent's native structured output format.
 
 ## Quick Start
 
-### Build
+### One-Line Install
 
 ```bash
-cargo build --release \
-  --bin nucleusdb \
-  --bin nucleusdb-server \
-  --bin nucleusdb-mcp \
-  --bin nucleusdb-tui \
-  --bin nucleusdb-discord
+curl -fsSL https://raw.githubusercontent.com/Abraxas1010/agenthalo/master/install.sh | bash
 ```
 
-### Create a Database
+### Build from Source
 
 ```bash
-./target/release/nucleusdb create --db ./records.ndb --backend merkle
-printf 'SET MODE APPEND_ONLY;\n' | ./target/release/nucleusdb sql --db ./records.ndb
+git clone https://github.com/Abraxas1010/agenthalo.git
+cd agenthalo
+cargo build --release
 ```
 
-### Start the Dashboard
+This produces 7 binaries:
+
+| Binary | Purpose |
+|--------|---------|
+| `agenthalo` | Main CLI — wrap agents, manage identity, sign, attest, govern, mesh, ZK, dashboard |
+| `agenthalo-mcp-server` | MCP server for the full AgentHALO tool surface |
+| `nucleusdb` | NucleusDB CLI — database creation, SQL, export, MCP, dashboard |
+| `nucleusdb-server` | Multi-tenant HTTP API for NucleusDB |
+| `nucleusdb-mcp` | Standalone NucleusDB MCP server (stdio + HTTP) |
+| `nucleusdb-tui` | Terminal UI for NucleusDB |
+| `nucleusdb-discord` | Discord recorder and slash-command bot |
+
+### First Run
 
 ```bash
-NUCLEUSDB_DB_PATH=./records.ndb ./target/release/nucleusdb dashboard --port 3100
+# Wrap an AI agent with full observability
+agenthalo run claude
+
+# Or launch the dashboard
+agenthalo dashboard --port 3100
 ```
 
-### Start the MCP Server
+## Platform Components
+
+### Agent Wrapping and Observability
+
+AgentHALO wraps Claude Code, Codex, and Gemini CLI, recording structured traces into NucleusDB:
 
 ```bash
-./target/release/nucleusdb mcp --db ./records.ndb
-./target/release/nucleusdb mcp --transport http --host 127.0.0.1 --port 3000 --db ./records.ndb
+agenthalo run claude          # wrap Claude Code
+agenthalo run codex           # wrap Codex CLI
+agenthalo run gemini          # wrap Gemini CLI
+agenthalo traces              # list recorded sessions
+agenthalo costs               # aggregate cost tracking
+agenthalo export <session>    # export session data
 ```
 
-## Native Ops
-
-AgentHALO now runs natively. The helper wrapper `scripts/agenthalo-instances.sh`
-manages two local-process modes safely:
-
-- `start-dev` launches the review dashboard with an isolated `AGENTHALO_HOME`
-- `start-discord` launches the persistent Discord recorder from `deploy/discord.env`
+### Identity and Cryptography
 
 ```bash
-./scripts/agenthalo-instances.sh list
-./scripts/agenthalo-instances.sh start-dev
-./scripts/agenthalo-instances.sh stop-dev
-./scripts/agenthalo-instances.sh start-discord
-./scripts/agenthalo-instances.sh stop-discord
+agenthalo genesis             # genesis seed ceremony
+agenthalo identity            # manage DID identity
+agenthalo keygen              # generate Ed25519 + ML-DSA-65 + ML-KEM-768 keys
+agenthalo sign <payload>      # dual classical/PQ signature
+agenthalo vault               # encrypted provider-key storage
+agenthalo crypto              # cryptographic operations
 ```
 
-Before starting the persistent Discord bridge:
+### Attestation and Trust
 
 ```bash
-cp deploy/discord.env.example deploy/discord.env
-# edit deploy/discord.env and set NUCLEUSDB_DISCORD_TOKEN
+agenthalo attest <session>    # create content-addressed attestation with ZK proof
+agenthalo audit <contract>    # audit a smart contract
+agenthalo trust               # query trust score
+agenthalo vote                # governance voting
+agenthalo governor            # governor policy management
 ```
 
-Runtime state is kept under `~/.agenthalo-runtimes/` so `wipe-dev` does not
-destroy the persistent Discord recorder home.
-
-## Discord Bot
-
-`nucleusdb-discord` connects to Discord, records messages into an append-only NucleusDB instance, and exposes verification/search commands.
-
-### Environment
+### Mesh Communication
 
 ```bash
-export NUCLEUSDB_DISCORD_TOKEN=...
-export NUCLEUSDB_DISCORD_DB_PATH=./discord_records.ndb
-export NUCLEUSDB_DISCORD_CHANNELS=all
-export NUCLEUSDB_DISCORD_BATCH_SIZE=10
-export NUCLEUSDB_DISCORD_BATCH_TIMEOUT_SECS=5
-export NUCLEUSDB_DISCORD_RECORD_BOTS=false
-export NUCLEUSDB_DISCORD_RECORD_EDITS=true
-export NUCLEUSDB_DISCORD_RECORD_DELETES=true
+agenthalo mesh                # P2P mesh operations (libp2p + hybrid KEM)
+agenthalo comms               # DIDComm v2 encrypted messaging
+agenthalo nym                 # Nym mixnet integration
+agenthalo privacy             # privacy controller settings
 ```
 
-### Run
+### On-Chain Operations
 
 ```bash
-./target/release/nucleusdb-discord
+agenthalo wallet              # EVM wallet management (BIP-32 derived)
+agenthalo onchain             # deploy/interact with on-chain contracts
+agenthalo x402                # x402 payment protocol
+agenthalo deploy              # deploy TrustVerifier contracts
 ```
 
-### Record Schema
+### Orchestration
 
-- messages: `msg:<channel_id>:<message_id>`
-- edits: `edit:<channel_id>:<message_id>:<timestamp>`
-- deletes: `del:<channel_id>:<message_id>:<timestamp>`
+```bash
+agenthalo agents              # manage agent pool
+agenthalo access              # pod access control and capabilities
+agenthalo zk                  # ZK compute (RISC Zero guests: range proofs, set membership, secure aggregation)
+agenthalo proof-gate          # formal verification gate status
+```
 
-Each stored message includes author metadata, timestamps, attachment metadata, mention/reaction summaries, and a deterministic `record_seal` hash.
+### Cockpit
 
-### Slash Commands
+The cockpit provides a browser-based terminal environment with WebSocket-backed PTY sessions, deploy management, and real-time session monitoring.
 
-- `/status`
-- `/verify`
-- `/search`
-- `/history`
-- `/export`
-- `/channels`
-- `/integrity`
+## NucleusDB
 
-### Recovery Model
+NucleusDB is a verifiable database engine with three properties usually split across separate systems:
 
-The bot batches writes by message count or timeout. On startup it backfills channel history from the last recorded message id, then resumes live recording. The database itself stays in append-only mode, so edits and deletes are logged as new facts rather than overwriting prior state.
+- A mutable working database with SQL, typed values, blob storage, vector search, and multi-tenant HTTP access
+- A proof surface where queries come with cryptographic commitment proofs
+- An immutable append-only mode with monotone seal chaining for audit logs and permanent records
 
-## SQL Interface
+```bash
+# Create and configure
+nucleusdb create --db ./records.ndb --backend merkle
+printf 'SET MODE APPEND_ONLY;\n' | nucleusdb sql --db ./records.ndb
 
-NucleusDB ships a focused SQL dialect over the verifiable key-value core.
+# SQL interface
+nucleusdb sql --db ./records.ndb
+```
 
 ```sql
 INSERT INTO data (key, value) VALUES ('temperature', 42);
 COMMIT;
 SELECT key, value FROM data WHERE key = 'temperature';
-SHOW STATUS;
-SHOW HISTORY;
 VERIFY 'temperature';
-EXPORT;
 ```
 
-Key properties:
+The MCP surface exposes 16 tools (core database + Discord) over stdio and streamable HTTP transports.
 
-- exact keys map deterministically to commitment indices
-- typed values preserve JSON, bytes, vectors, and scalar forms
-- `COMMIT` is the cryptographic boundary where witnesses, CT heads, and monotone seals advance
+Full reference: [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md).
 
-## MCP Server
+## AgentPMT
 
-The standalone MCP surface exposes 16 tools:
+<p align="center">
+  <img src="assets/agentpmt_logo.svg" alt="AgentPMT" width="200"/>
+</p>
 
-### Core database tools
+AgentPMT is an MCP-native tool infrastructure platform providing budget-controlled access to 100+ third-party tools (Gmail, Stripe, Google Workspace, blockchain scanners, and more).
 
-- `help`
-- `create_database`
-- `open_database`
-- `execute_sql`
-- `query`
-- `query_range`
-- `verify`
-- `status`
-- `history`
-- `export`
-- `checkpoint`
+AgentHALO integrates AgentPMT as a tool proxy: wrapped agents discover and call AgentPMT tools through a unified MCP `tools/list`. Native AgentHALO tools appear as-is (`attest`, `audit_contract`, etc.), while AgentPMT tools appear with an `agentpmt/` prefix (e.g., `agentpmt/gmail_send`, `agentpmt/stripe_charge`). Budget controls and credentials live on the AgentPMT side. AgentHALO records all tool calls in the trace for cost tracking and observability.
 
-### Discord tools
+```bash
+agenthalo addon agentpmt status    # check integration status
+agenthalo addon agentpmt enable    # enable tool proxy
+```
 
-- `discord_status`
-- `discord_search`
-- `discord_verify`
-- `discord_integrity`
-- `discord_export`
+## P2PCLAW
 
-Both `stdio` and streamable HTTP transports are supported.
+P2PCLAW is a decentralized publishing and verification network for research papers. Agents publish, validate, and retrieve papers through HMAC-authenticated API calls to the P2PCLAW gateway.
+
+```bash
+agenthalo addon p2pclaw status     # connection and swarm status
+agenthalo addon p2pclaw publish    # publish a paper to the hive
+agenthalo addon p2pclaw validate   # validate a paper
+agenthalo addon p2pclaw search     # search the paper swarm
+```
+
+Features:
+- Tiered access (tier1/tier2) with HMAC-SHA256 request signing
+- Vault-first credential storage with insecure fallback for development
+- Swarm status monitoring (agent count, paper count, mempool depth)
+- Paper lifecycle: submit, validate, search, retrieve
+
+## Discord Bot
+
+`nucleusdb-discord` records messages into an append-only NucleusDB instance and exposes verification/search slash commands.
+
+```bash
+export NUCLEUSDB_DISCORD_TOKEN=...
+export NUCLEUSDB_DISCORD_DB_PATH=./discord_records.ndb
+./target/release/nucleusdb-discord
+```
+
+Slash commands: `/status`, `/verify`, `/search`, `/history`, `/export`, `/channels`, `/integrity`.
+
+The bot batches writes by message count or timeout. On startup it backfills channel history from the last recorded message, then resumes live recording. Edits and deletes are logged as new immutable facts.
+
+## Smart Contracts
+
+Solidity contracts for on-chain trust verification:
+
+- `TrustVerifier.sol` — on-chain attestation verification
+- `TrustVerifierMultiChain.sol` — cross-chain attestation queries
+- `Groth16VerifierAdapter.sol` — ZK proof verification adapter
+- `CrossChainAttestationQuery.sol` — cross-chain attestation query surface
+
+Deploy and test via Foundry (`contracts/foundry.toml`).
 
 ## Dashboard
 
-The standalone dashboard keeps the NucleusDB/identity surfaces that matter and removes HALO orchestration layers.
+The web dashboard surfaces all platform layers:
 
-Sections:
+- **Overview** — system status and agent activity
+- **Genesis** — genesis seed and entropy state
+- **Identity** — DID document, key material, identity ledger
+- **Security** — cryptographic surfaces and proof gate status
+- **NucleusDB** — database operations, queries, verification
+- **Discord** — recorder status, channel monitoring
+- **Sessions** — trace explorer with cost tracking
+- **Cockpit** — PTY terminal sessions and deploy management
 
-- Overview
-- Genesis
-- Identity
-- Security
-- NucleusDB
-- Discord
-
-The CRT visual language is retained intentionally: scanlines, grain, rough borders, and terminal color contrast are part of the product identity rather than leftover styling.
+The CRT visual language (scanlines, grain, terminal color contrast) is intentional product identity.
 
 ## Formal Verification
 
-NucleusDB bridges runtime operations to machine-checked Lean 4 proofs maintained in the [Heyting](https://github.com/Abraxas1010/heyting) proof repo. The system provides three layers:
+AgentHALO bridges runtime operations to machine-checked Lean 4 proofs maintained in the [Heyting](https://github.com/Abraxas1010/heyting) repository. Three layers:
 
-1. **Provenance surfaces** — five Rust modules (`security.rs`, `protocol.rs`, `ct6962.rs`, `vc/ipa.rs`, `sheaf/coherence.rs`) export `formal_provenance()` linking 22 runtime operations to canonical Heyting theorem FQNs and 19 local Lean mirror paths
+1. **Provenance surfaces** — five Rust modules export `formal_provenance()` linking 22 runtime operations to canonical Heyting theorem FQNs and 19 local Lean mirror paths
 2. **Proof gate** — `configs/proof_gate.json` defines 14 theorem requirements across 6 tool surfaces, each bound to an exact declaration-line SHA-256, Heyting commit hash, and Ed25519 signature requirement
 3. **Certificate pipeline** — `.lean4export` signed provenance attestations validated by `src/verifier/` against statement hash, commit hash, and signature
 
-Current status: enforced mode. The gate evaluates signed certificates against
-current Heyting provenance and blocks covered operations when requirements are
-missing, stale, or invalid. Use `AGENTHALO_PROOF_GATE_SKIP=1` only for explicit
-development escape-hatch sessions; the runtime emits a warning when you do.
-
-Validation and certificate generation:
+Current status: enforced mode. Use `AGENTHALO_PROOF_GATE_SKIP=1` only for explicit development escape-hatch sessions.
 
 ```bash
-python3 scripts/check_theory_boundary.py               # verify the repository stays within the approved math boundary
-./scripts/validate_formal_provenance.sh                # namespace-aware FQN resolution + commit-staleness check
-./scripts/generate_proof_certificates.sh               # generate + sign + submit certificates
-cargo run --bin nucleusdb -- verify-certificate <file>  # verify a single certificate
+python3 scripts/check_theory_boundary.py               # verify approved math boundary
+./scripts/validate_formal_provenance.sh                # namespace-aware FQN resolution
+./scripts/generate_proof_certificates.sh               # generate + sign certificates
+cargo run --bin nucleusdb -- verify-certificate <file>  # verify a certificate
 ```
 
-Local Lean mirrors live under `lean/NucleusDB/` (74 files). They are self-contained and do not import Heyting modules.
+Local Lean mirrors: `lean/NucleusDB/` (74 files, self-contained).
 
 Full details: [Docs/FORMAL_VERIFICATION.md](Docs/FORMAL_VERIFICATION.md).
+
+## Security
+
+### Post-Quantum Cryptography
+
+| Surface | Classical | Post-Quantum | Combined |
+|---------|-----------|-------------|----------|
+| DIDComm authcrypt/anoncrypt | X25519 ECDH | ML-KEM-768 (FIPS 203) | Hybrid KEM |
+| DIDComm mesh transport | X25519 ECDH | ML-KEM-768 (FIPS 203) | Hybrid KEM |
+| Identity signatures | Ed25519 | ML-DSA-65 (FIPS 204) | Dual-signed |
+| KEM key derivation | — | HKDF-SHA-512 | 256-bit PQ security |
+| Identity ledger hash chain | — | SHA-512 | 256-bit PQ collision |
+| Attestation Merkle tree | — | SHA-512 | 256-bit PQ collision |
+| EVM transaction signing | secp256k1 ECDSA | PQ-gated (Ed25519 + ML-DSA-65) | Two-cryptosystem barrier |
+
+### Operational
+
+- SHA-256 content sealing for Discord message records
+- Certificate-transparency style roots for commit history
+- Witness signatures on commits
+- Append-only seal chaining via `immutable.rs`
+- AES-GCM encrypted local files for identity/genesis/vault state
+- Argon2-based password-derived master keys
+- Ed25519-signed formal provenance certificates (enforced by default)
+- ZK compute: RISC Zero guests for range proofs, set membership, secure aggregation, algorithm compliance
 
 ## Architecture
 
 ```text
-Discord Gateway ───────────────┐
+                        ┌──────────────┐
+                        │  AI Agents   │
+                        │ Claude/Codex │
+                        │   /Gemini    │
+                        └──────┬───────┘
                                │
-                               ▼
-                        nucleusdb-discord
-                               │
-                               ▼
-                    append-only NucleusDB core
-                               │
-          ┌────────────────────┼────────────────────┐
-          ▼                    ▼                    ▼
-     nucleusdb CLI        nucleusdb-mcp       nucleusdb-server
-          │                    │                    │
-          └────────────── dashboard/API/browser ───┘
+                        ┌──────▼───────┐
+                        │  agenthalo   │  CLI wrapper + orchestrator
+                        │   (main)     │
+                        └──────┬───────┘
+               ┌───────────────┼───────────────┐
+               │               │               │
+        ┌──────▼──────┐ ┌─────▼──────┐ ┌──────▼──────┐
+        │  Identity   │ │   Comms    │ │  Economics  │
+        │ DID/Genesis │ │  DIDComm   │ │ EVM Wallet  │
+        │ PQ Keygen   │ │ libp2p/Nym │ │ x402/Trust  │
+        └──────┬──────┘ └─────┬──────┘ └──────┬──────┘
+               │               │               │
+        ┌──────▼───────────────▼───────────────▼──────┐
+        │                 NucleusDB                    │
+        │  Verifiable DB · SQL · Merkle · Append-only  │
+        └──────┬──────────────┬───────────────┬───────┘
+               │              │               │
+        ┌──────▼──────┐ ┌────▼─────┐  ┌──────▼──────┐
+        │  AgentPMT   │ │ P2PCLAW  │  │   Discord   │
+        │ Tool Proxy  │ │ Research │  │  Recorder   │
+        │ 100+ tools  │ │ Publish  │  │  Slash Cmds │
+        └─────────────┘ └──────────┘  └─────────────┘
+               │              │               │
+        ┌──────▼──────────────▼───────────────▼───────┐
+        │              Smart Contracts                 │
+        │  TrustVerifier · Groth16 · CrossChain        │
+        └──────┬──────────────────────────────────────┘
+               │
+        ┌──────▼──────┐
+        │   Formal    │     Lean 4 proofs (Heyting)
+        │ Verification│     22 provenance surfaces
+        │  Proof Gate │     14 gated requirements
+        └─────────────┘
 ```
 
-Core subsystems:
+Core module map:
 
+- `src/halo/` — identity, attestation, trust, governance, crypto, DIDComm, mesh, PQ, EVM
+- `src/halo/agentpmt.rs` — AgentPMT tool proxy integration
+- `src/halo/p2pclaw.rs` — P2PCLAW publishing and verification client
+- `src/orchestrator/` — agent pool, task graph, A2A bridge, container dispatch
+- `src/cockpit/` — PTY manager, WebSocket bridge, deploy, sessions
+- `src/swarm/` — content-addressed chunk engine (bitswap, manifests)
+- `src/pod/` — access policies, capabilities, DID ACL bridge
+- `src/comms/` — DIDComm sessions, encrypted envelopes
+- `src/commitment/` — commitment scheme core
+- `src/trust/` — composite CAB, on-chain trust
+- `src/container/` — agent hookup, mesh coordination, launcher
+- `src/pcn/` — payment channel network adapter
+- `src/puf/` — physical unclonable function server
+- `src/halo/zk_guests/` — RISC Zero ZK circuits
 - `src/protocol.rs` — commits, proofs, witness signatures, seal chaining
 - `src/sql/` — parser and executor
 - `src/persistence.rs` — snapshots plus WAL
-- `src/blob_store.rs` / `src/vector_index.rs` — content-addressed blobs and embeddings
-- `src/verifier/` — certificate parser, proof gate evaluation, Ed25519 signature verification
+- `src/verifier/` — certificate parser, proof gate, Ed25519 verification
 - `src/transparency/` / `src/vc/` / `src/sheaf/` — formal provenance surfaces
-- `src/mcp/` — agent control surface
+- `src/mcp/` — MCP tool surface
 - `src/dashboard/` — web dashboard
 - `src/discord/` — recorder, recovery, slash commands
-- `src/genesis.rs`, `src/identity.rs`, `src/vault.rs` — extracted standalone identity/security modules
+- `contracts/` — Solidity contracts (TrustVerifier, Groth16, CrossChain)
 
-A fuller module map is in [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md).
+Full module map: [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md). Platform reference: [Docs/AGENTHALO.md](Docs/AGENTHALO.md).
 
-## Security
+## Native Ops
 
-Cryptographic and operational surfaces currently in use:
+```bash
+./scripts/agenthalo-instances.sh list
+./scripts/agenthalo-instances.sh start-dev       # review dashboard (isolated home)
+./scripts/agenthalo-instances.sh start-discord   # persistent Discord recorder
+./scripts/agenthalo-instances.sh stop-dev
+./scripts/agenthalo-instances.sh stop-discord
+```
 
-- SHA-256 content sealing for Discord message records
-- certificate-transparency style roots for commit history
-- witness signatures on commits
-- append-only seal chaining via `immutable.rs`
-- AES-GCM encrypted local files for identity/genesis/vault state
-- Argon2-based password-derived master keys
-- Ed25519-signed formal provenance certificates binding runtime operations to Lean 4 theorems (enforced by default)
-
-Operational guidance:
-
-- keep Discord tokens only in environment files, never source
-- run the bot under a dedicated `nucleusdb` system user
-- use `deploy/nucleusdb-discord.service`, `deploy/nucleusdb-mcp.service`, and `deploy/nucleusdb-dashboard.service` for restart-on-crash behavior
-- use `scripts/agenthalo-instances.sh` for native review/dev launches
+Runtime state lives under `~/.agenthalo-runtimes/`.
 
 ## Testing
-
-Core regression suites retained in this standalone repo:
-
-- `tests/end_to_end.rs`
-- `tests/sql_tests.rs`
-- `tests/keymap_tests.rs`
-- `tests/persistence_compat_tests.rs`
-- `tests/cli_smoke_tests.rs`
-- `tests/discord_tests.rs`
-- `tests/formal_integration_tests.rs` — 11 tests covering provenance surfaces, gate config, certificate requirements, and duplicate detection
-
-Run them with:
 
 ```bash
 cargo test
 ```
 
+Test suites cover: end-to-end flows, SQL, keymaps, persistence compatibility, CLI smoke, Discord recording, formal integration (provenance surfaces, gate config, certificates), dashboard, HALO integration, mesh simulation, P2PCLAW integration, PCN, PUF, governance falsifiability, VCS, memory recall, and theory boundary enforcement.
+
 ## Repository Layout
 
-- `src/` — Rust implementation
-- `src/verifier/` — certificate parser and proof gate
+- `src/` — Rust implementation (~98K lines)
+- `src/halo/` — AgentHALO platform layer (identity, crypto, comms, governance, trust)
+- `src/orchestrator/` — multi-agent orchestration and A2A
+- `src/cockpit/` — browser-based PTY and deploy management
+- `contracts/` — Solidity smart contracts
 - `dashboard/` — embedded frontend assets
 - `deploy/` — systemd units and environment templates
-- `configs/` — proof gate configuration (`proof_gate.json`)
-- `lean/NucleusDB/` — 74 local Lean 4 mirror modules
-- `scripts/` — formal provenance validation, certificate generation
-- `tests/` — integration and regression tests
-- `artifacts/` — shipped trusted setup artifacts
+- `configs/` — proof gate configuration
+- `lean/` — Lean 4 mirror modules (NucleusDB provenance)
+- `python/` — Python utilities
+- `scripts/` — provenance validation, certificate generation, instance management
+- `tests/` — integration and regression tests (19 test files)
+- `wdk-sidecar/` — WDK sidecar service
+- `artifacts/` — trusted setup artifacts
 
 ## License
 
-This repository is released under the Apoth3osis License Stack v1. See [LICENSE.md](LICENSE.md) and [licenses/](licenses/).
+Released under the Apoth3osis License Stack v1. See [LICENSE.md](LICENSE.md) and [licenses/](licenses/).
 
 ## Citation
 
