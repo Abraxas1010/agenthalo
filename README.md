@@ -266,7 +266,7 @@ python3 scripts/check_theory_boundary.py               # verify approved math bo
 cargo run --bin nucleusdb -- verify-certificate <file>  # verify a certificate
 ```
 
-Local Lean mirrors: `lean/NucleusDB/` (74 files, self-contained).
+Local Lean mirrors: `lean/NucleusDB/` (148 files, self-contained).
 
 Full details: [Docs/FORMAL_VERIFICATION.md](Docs/FORMAL_VERIFICATION.md).
 

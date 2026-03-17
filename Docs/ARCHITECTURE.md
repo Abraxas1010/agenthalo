@@ -1,34 +1,208 @@
-# NucleusDB Architecture
+# Agent H.A.L.O. Architecture
 
 ## Binaries
 
-- `nucleusdb` — CLI for creation, SQL, export, MCP launch, and dashboard launch
-- `nucleusdb-server` — multi-tenant HTTP API
-- `nucleusdb-mcp` — MCP stdio/HTTP server
-- `nucleusdb-tui` — terminal UI
-- `nucleusdb-discord` — Discord recorder and slash-command bot
+| Binary | Source | Purpose |
+|--------|--------|---------|
+| `agenthalo` | `src/bin/agenthalo.rs` | Main CLI — agent wrapping, identity, attestation, trust, governance, mesh, ZK, dashboard |
+| `agenthalo-mcp-server` | `src/bin/agenthalo_mcp_server.rs` | MCP server for the full AgentHALO tool surface |
+| `nucleusdb` | `src/bin/nucleusdb.rs` | NucleusDB CLI — database creation, SQL, export, MCP, dashboard |
+| `nucleusdb-server` | `src/bin/nucleusdb_server.rs` | Multi-tenant HTTP API for NucleusDB |
+| `nucleusdb-mcp` | `src/bin/nucleusdb_mcp.rs` | Standalone NucleusDB MCP server (stdio + HTTP) |
+| `nucleusdb-tui` | `src/bin/nucleusdb_tui.rs` | Terminal UI for NucleusDB |
+| `nucleusdb-discord` | `src/bin/nucleusdb_discord.rs` | Discord recorder and slash-command bot |
 
-## Core Data Flow
+## Platform Data Flow
 
 ```text
-client / bot / MCP tool
-        │
-        ▼
-  NucleusDb protocol layer
-        │
-        ├─ keymap / state / typed values
-        ├─ blob store / vector index
-        ├─ SQL executor
-        ├─ witness signatures
-        ├─ transparency roots
-        └─ immutable monotone seals
+                        ┌──────────────┐
+                        │  AI Agents   │
+                        │ Claude/Codex │
+                        │   /Gemini    │
+                        └──────┬───────┘
+                               │  agenthalo run <agent>
+                        ┌──────▼───────┐
+                        │  AgentHALO   │  CLI wrapper + orchestrator
+                        │   runner     │
+                        └──────┬───────┘
+               ┌───────────────┼───────────────┐
+               │               │               │
+        ┌──────▼──────┐ ┌─────▼──────┐ ┌──────▼──────┐
+        │  Identity   │ │   Comms    │ │  Economics  │
+        │ DID/Genesis │ │  DIDComm   │ │ EVM Wallet  │
+        │ PQ Keygen   │ │ libp2p/Nym │ │ x402/Trust  │
+        └──────┬──────┘ └─────┬──────┘ └──────┬──────┘
+               │               │               │
+        ┌──────▼───────────────▼───────────────▼──────┐
+        │                 NucleusDB                    │
+        │  Verifiable DB · SQL · Merkle · Append-only  │
+        └──────┬──────────────┬───────────────┬───────┘
+               │              │               │
+        ┌──────▼──────┐ ┌────▼─────┐  ┌──────▼──────┐
+        │  AgentPMT   │ │ P2PCLAW  │  │   Discord   │
+        │ Tool Proxy  │ │ Research │  │  Recorder   │
+        │ 100+ tools  │ │ Publish  │  │  Slash Cmds │
+        └─────────────┘ └──────────┘  └─────────────┘
 ```
 
 ## Modules
 
-### Database core
+### HALO platform layer (`src/halo/`)
 
-- `src/protocol.rs` — commits, proofs, typed-value helpers
+#### Identity and cryptography
+
+- `src/halo/genesis_seed.rs` / `src/halo/genesis_entropy.rs` — genesis seed ceremony and entropy harvest
+- `src/halo/did.rs` — DID derivation from genesis seed
+- `src/halo/identity.rs` / `src/halo/identity_ledger.rs` — identity state and append-only ledger
+- `src/halo/pq.rs` — post-quantum keygen (ML-KEM-768, ML-DSA-65) and wallet key identity
+- `src/halo/hybrid_kem.rs` — hybrid X25519 + ML-KEM-768 KEM
+- `src/halo/evm_wallet.rs` / `src/halo/evm_gate.rs` — BIP-32 EVM wallet and PQ-gated signing
+- `src/halo/password.rs` / `src/halo/encrypted_file.rs` / `src/halo/crypto_scope.rs` — password-derived encryption
+- `src/halo/vault.rs` — encrypted provider-key storage (AES-GCM + Argon2)
+- `src/halo/hash.rs` — content hashing
+
+#### Agent wrapping and observability
+
+- `src/halo/runner.rs` — agent CLI wrapper (Claude, Codex, Gemini)
+- `src/halo/detect.rs` — agent type detection
+- `src/halo/trace.rs` — trace writer (content-addressed, SHA-512 Merkle)
+- `src/halo/schema.rs` — session metadata and status types
+- `src/halo/wrap.rs` / `src/halo/viewer.rs` — session wrapping and trace viewing
+- `src/halo/metrics/` — observability metrics
+
+#### Attestation and trust
+
+- `src/halo/attest.rs` — content-addressed attestation with optional ZK proof
+- `src/halo/audit.rs` — smart contract auditing
+- `src/halo/trust.rs` / `src/halo/trust_score.rs` — trust score queries
+- `src/halo/evidence.rs` — evidence collection
+- `src/halo/circuit.rs` / `src/halo/circuit_policy.rs` — attestation ZK circuits (Groth16)
+- `src/halo/topo_signature.rs` / `src/halo/trace_topology.rs` — topological trace signatures
+
+#### Communication
+
+- `src/halo/didcomm.rs` / `src/halo/didcomm_handler.rs` — DIDComm v2 encrypted messaging (hybrid KEM)
+- `src/halo/p2p_node.rs` / `src/halo/p2p_discovery.rs` — libp2p mesh node and peer discovery
+- `src/halo/nym.rs` / `src/halo/nym_native.rs` — Nym mixnet integration
+- `src/halo/privacy_controller.rs` — privacy controller settings
+- `src/halo/eclipse_detector.rs` — eclipse attack detection
+- `src/halo/capability_beacon.rs` — capability advertisement over mesh
+
+#### Governance and economics
+
+- `src/halo/governor.rs` / `src/halo/governor_registry.rs` / `src/halo/governor_telemetry.rs` — governor policy, registry, telemetry
+- `src/halo/funding.rs` / `src/halo/x402.rs` — funding and x402 payment protocol
+- `src/halo/onchain.rs` — on-chain contract deployment and interaction
+- `src/halo/pricing.rs` — pricing models
+- `src/halo/auth.rs` / `src/halo/agent_auth.rs` / `src/halo/api_keys.rs` — authentication and API keys
+- `src/halo/admission.rs` — agent admission control
+
+#### Integrations
+
+- `src/halo/agentpmt.rs` — AgentPMT tool proxy (100+ third-party tools via MCP)
+- `src/halo/p2pclaw.rs` / `src/halo/p2pclaw_verify.rs` — P2PCLAW publishing and verification client
+- `src/halo/addons.rs` — addon management (AgentPMT, P2PCLAW)
+- `src/halo/local_models.rs` — local model management
+- `src/halo/pinata.rs` — IPFS pinning via Pinata
+- `src/halo/wdk_proxy.rs` — WDK sidecar proxy
+- `src/halo/a2a_bridge.rs` — A2A protocol bridge
+
+#### Capabilities and credentials
+
+- `src/halo/capability_spec.rs` / `src/halo/capability_task.rs` / `src/halo/capability_verification.rs` — capability specification and verification
+- `src/halo/capability_erc8004.rs` — ERC-8004 capability tokens
+- `src/halo/zk_credential.rs` — ZK credential proofs
+- `src/halo/zk_compute.rs` — ZK compute dispatch
+- `src/halo/public_input_schema.rs` — public input schemas for ZK circuits
+- `src/halo/discovery_candidates.rs` — discovery candidate management
+
+#### ZK guests (`src/halo/zk_guests/`)
+
+- `range_proof.rs` — ZK range proofs (RISC Zero)
+- `set_membership.rs` — ZK set membership
+- `secure_aggregation.rs` — ZK secure aggregation
+- `algorithm_compliance.rs` — ZK algorithm compliance checks
+
+#### Other HALO modules
+
+- `src/halo/config.rs` — HALO configuration
+- `src/halo/startup.rs` — startup sequence
+- `src/halo/session_manager.rs` — session management
+- `src/halo/migration.rs` — data migration
+- `src/halo/profile.rs` — agent profile
+- `src/halo/proxy.rs` — reverse proxy
+- `src/halo/uncertainty.rs` — uncertainty quantification
+- `src/halo/chebyshev_evictor.rs` — Chebyshev-based cache eviction
+- `src/halo/twine_anchor.rs` — Twine anchor integration
+- `src/halo/policy_registry.rs` — policy registry
+- `src/halo/http_client.rs` — HTTP client utilities
+- `src/halo/util.rs` — general utilities
+- `src/halo/adapters/` — agent-specific adapters
+
+### Orchestration (`src/orchestrator/`)
+
+- `src/orchestrator/dispatch.rs` / `src/orchestrator/container_dispatch.rs` — task dispatch and container-based dispatch
+- `src/orchestrator/agent_pool.rs` — agent pool management
+- `src/orchestrator/task.rs` / `src/orchestrator/task_graph.rs` — task definition and DAG execution
+- `src/orchestrator/subsidiary_registry.rs` — subsidiary agent registry
+- `src/orchestrator/a2a.rs` — A2A protocol handler
+- `src/orchestrator/trace_bridge.rs` — trace bridge to observability
+
+### Cockpit (`src/cockpit/`)
+
+- `src/cockpit/pty_manager.rs` — PTY session management
+- `src/cockpit/ws_bridge.rs` — WebSocket bridge for browser terminals
+- `src/cockpit/session.rs` — cockpit session state
+- `src/cockpit/deploy.rs` — deploy management
+
+### Container (`src/container/`)
+
+- `src/container/launcher.rs` — container lifecycle management
+- `src/container/agent_hookup.rs` — agent-to-container hookup
+- `src/container/mesh.rs` / `src/container/mesh_init.rs` — container mesh networking
+- `src/container/coordination.rs` — multi-container coordination
+- `src/container/agent_lock.rs` — agent locking
+
+### Swarm (`src/swarm/`)
+
+- `src/swarm/chunk_engine.rs` / `src/swarm/chunk_store.rs` — content-addressed chunk storage
+- `src/swarm/bitswap.rs` — bitswap protocol for chunk exchange
+- `src/swarm/manifest.rs` — swarm manifest management
+- `src/swarm/config.rs` / `src/swarm/types.rs` — configuration and types
+
+### Pod (`src/pod/`)
+
+- `src/pod/access_policy.rs` / `src/pod/acl.rs` — access control policies and ACLs
+- `src/pod/capability.rs` — pod capabilities
+- `src/pod/did_acl_bridge.rs` — DID-to-ACL bridge
+- `src/pod/discovery.rs` — pod discovery
+- `src/pod/envelope.rs` / `src/pod/identity_share.rs` — encrypted envelopes and identity sharing
+
+### Communication (`src/comms/`)
+
+- `src/comms/didcomm.rs` — DIDComm message handling
+- `src/comms/envelope.rs` — encrypted envelope format
+- `src/comms/session.rs` — communication sessions
+
+### Trust (`src/trust/`)
+
+- `src/trust/composite_cab.rs` — composite CAB (Capability-Attestation-Binding) trust
+- `src/trust/onchain.rs` — on-chain trust verification
+
+### Other platform modules
+
+- `src/commitment/` — commitment scheme core
+- `src/pcn/` — payment channel network adapter
+- `src/puf/` — physical unclonable function server
+- `src/materialize.rs` — materialized view support
+- `src/embeddings.rs` — embedding storage
+- `src/memory.rs` — memory/recall subsystem
+- `src/license.rs` — license enforcement (CAB)
+- `src/config.rs` — global configuration
+
+### NucleusDB core
+
+- `src/protocol.rs` — commits, proofs, typed-value helpers, witness signatures, seal chaining
 - `src/state.rs` — in-memory state and deltas
 - `src/keymap.rs` — deterministic key-to-index mapping
 - `src/persistence.rs` — snapshot plus WAL persistence
@@ -53,20 +227,23 @@ client / bot / MCP tool
 - `src/sheaf/coherence.rs` — sheaf coherence and trace topology provenance
 - `scripts/formal_provenance_resolver.py` — namespace-aware Lean FQN resolution and commit-staleness detection
 
-### Identity and local security
-
-- `src/genesis.rs` — entropy harvest and genesis-seed persistence
-- `src/did.rs` — DID derivation from genesis seed
-- `src/identity.rs` / `src/identity_ledger.rs` — identity state and anchor integration
-- `src/password.rs` / `src/encrypted_file.rs` / `src/crypto_scope.rs` — password-derived file encryption
-- `src/vault.rs` — encrypted provider-key storage
-
 ### Product surfaces
 
 - `src/discord/` — Discord recorder, slash commands, backfill, status sidecar
-- `src/mcp/` — 16-tool MCP surface over NucleusDB and Discord records
-- `src/dashboard/` — stripped standalone dashboard with Overview, Genesis, Identity, Security, NucleusDB, Discord
-- `src/tui/` — terminal UI over the same database
+- `src/mcp/` — MCP tool surfaces (NucleusDB + AgentHALO)
+- `src/dashboard/` — web dashboard (Overview, Genesis, Identity, Security, NucleusDB, Discord, Sessions, Cockpit)
+- `src/tui/` — terminal UI
+- `src/cli/` — CLI command implementations
+
+### Smart contracts (`contracts/`)
+
+- `TrustVerifier.sol` — on-chain attestation verification
+- `TrustVerifierMultiChain.sol` — cross-chain attestation queries
+- `Groth16VerifierAdapter.sol` — ZK proof verification adapter
+- `CrossChainAttestationQuery.sol` — cross-chain attestation query surface
+- `circuits/trust_attestation.circom` — Circom circuit for trust attestation proofs
+- `mocks/` — mock contracts for testing
+- `test/` — Foundry test suites
 
 ## Discord Recording Model
 
@@ -91,11 +268,11 @@ The intended production shape is one shared database file with multiple cooperat
 - Discord bot
 - MCP server
 - REST API
-- dashboard
+- Dashboard
 
 ## Formal Layer
 
-`lean/NucleusDB/` contains 74 local Lean 4 mirror modules. Runtime-critical theorems are mirrored locally and linked back to the canonical [Heyting](https://github.com/Abraxas1010/heyting) proofs through dual provenance strings exposed from Rust.
+`lean/NucleusDB/` contains 148 local Lean 4 mirror modules. Runtime-critical theorems are mirrored locally and linked back to the canonical [Heyting](https://github.com/Abraxas1010/heyting) proofs through dual provenance strings exposed from Rust.
 
 ### Provenance Surfaces
 
@@ -107,7 +284,7 @@ Five Rust modules export `formal_provenance()` with 22 unique canonical theorem 
 - `src/sheaf/coherence.rs` — 4 entries (sheaf coherence, trace topology, component counting)
 - `src/protocol.rs` — 2 entries (core nucleus steps, commit certificate verification)
 
-These surfaces feed the advisory proof gate (`configs/proof_gate.json`), the verifier pipeline under `src/verifier/`, the dashboard endpoint `/api/formal-proofs`, and integration tests in `tests/formal_integration_tests.rs`.
+These surfaces feed the proof gate (`configs/proof_gate.json`), the verifier pipeline under `src/verifier/`, the dashboard endpoint `/api/formal-proofs`, and integration tests in `tests/formal_integration_tests.rs`.
 
 ### Verifier Pipeline
 
