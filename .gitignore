@@ -6,6 +6,9 @@
 /artifacts/**/*.jsonl
 /artifacts/**/*.tmp
 
+# Generated living_agent data (grid cells, embeddings, SNS snapshots)
+/artifacts/living_agent/
+
 # Keep deterministic setup fixture tracked
 !/artifacts/
 !/artifacts/.gitkeep
