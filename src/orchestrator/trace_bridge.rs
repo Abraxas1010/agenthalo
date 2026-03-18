@@ -227,6 +227,65 @@ pub async fn collect_task_output(
     })
 }
 
+/// Record an interactive PTY session to the trace database.
+///
+/// Unlike `collect_task_output`, this does NOT impose a timeout or terminate the
+/// session — it runs until the session ends naturally (user exits, process dies).
+/// Designed to be spawned as a background tokio task for cockpit-launched agents.
+pub async fn record_interactive_session(
+    session: Arc<PtySession>,
+    agent_type: &str,
+    trace_db_path: &Path,
+    trace_session_id: &str,
+) -> Result<(), String> {
+    let mut bridge = TraceBridge::new(
+        agent_type,
+        trace_db_path,
+        trace_session_id,
+        "cockpit interactive session",
+        true,
+    )?;
+    let mut rx = session.subscribe_output();
+    let initial_output = session.snapshot_output();
+    if !initial_output.is_empty() {
+        let _ = bridge.process_bytes(&initial_output);
+    }
+    loop {
+        match session.status() {
+            crate::cockpit::session::SessionStatus::Done { .. } => break,
+            crate::cockpit::session::SessionStatus::Error { .. } => break,
+            _ => {}
+        }
+        if session.poll_exit_status().is_some() {
+            break;
+        }
+        match tokio::time::timeout(std::time::Duration::from_millis(250), rx.recv()).await {
+            Ok(Ok(SessionEvent::Output(bytes))) => {
+                let _ = bridge.process_bytes(&bytes);
+            }
+            Ok(Ok(SessionEvent::Status(crate::cockpit::session::SessionStatus::Done { .. }))) => {
+                break;
+            }
+            Ok(Ok(SessionEvent::Status(crate::cockpit::session::SessionStatus::Error { .. }))) => {
+                break;
+            }
+            Ok(Ok(SessionEvent::Status(_))) => {}
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(broadcast::error::RecvError::Closed)) => break,
+            Err(_) => {} // timeout, loop again
+        }
+    }
+    let exit_code = session.poll_exit_status().unwrap_or(1);
+    let final_status = if exit_code == 0 {
+        HaloSessionStatus::Completed
+    } else {
+        HaloSessionStatus::Failed
+    };
+    bridge.finalize(final_status)?;
+    session.mark_trace_flushed();
+    Ok(())
+}
+
 fn strip_ansi_sequences(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

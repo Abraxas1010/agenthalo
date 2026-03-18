@@ -7983,6 +7983,26 @@ async fn api_deploy_launch(
         Some(&state.governor_registry),
     )
     .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+
+    // Spawn background trace recording for this cockpit PTY session.
+    if let Some(session) = state.pty_manager.get_session(&result.session_id) {
+        let db_path = state.db_path.clone();
+        let agent_type = req.agent_id.clone();
+        let trace_sid = format!("cockpit-{}", result.session_id);
+        tokio::spawn(async move {
+            if let Err(e) = crate::orchestrator::trace_bridge::record_interactive_session(
+                session,
+                &agent_type,
+                &db_path,
+                &trace_sid,
+            )
+            .await
+            {
+                tracing::warn!("cockpit trace recording failed: {e}");
+            }
+        });
+    }
+
     Ok(Json(json!(result)))
 }
 
