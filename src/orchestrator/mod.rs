@@ -253,6 +253,7 @@ impl Orchestrator {
                         agent_name: req.agent_name,
                         working_dir: req.working_dir,
                         env: req.env,
+                        extra_args: vec![],
                         timeout_secs: req.timeout_secs.clamp(5, MAX_TASK_TIMEOUT_SECS),
                         model: req.model,
                         trace: req.trace,

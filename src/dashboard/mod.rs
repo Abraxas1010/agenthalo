@@ -314,6 +314,9 @@ pub async fn serve_with_bootstrap(
         format!("http://{host}:{port}")
     };
 
+    // Ensure Claude/Codex/Gemini have global MCP configs for auto-discovery.
+    crate::container::agent_hookup::ensure_global_agent_mcp_configs();
+
     println!("Agent H.A.L.O. Dashboard");
     println!("  URL: {url}");
     println!("  Press Ctrl+C to stop");

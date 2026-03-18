@@ -106,6 +106,11 @@ impl McpInjection {
         let config_dir = tempfile::tempdir().map_err(|e| format!("create MCP config dir: {e}"))?;
         let working_dir = config_dir.path().to_path_buf();
 
+        // Create a .git marker so CLI tools (Claude, Codex) detect this as a
+        // project root and discover MCP configs (.mcp.json, .codex/config.toml).
+        std::fs::create_dir_all(working_dir.join(".git"))
+            .map_err(|e| format!("create .git marker in config dir: {e}"))?;
+
         // Resolve the stdio bridge script path (lives in the repo's scripts/ dir)
         let bridge_script = Self::resolve_bridge_script()?;
 
@@ -139,15 +144,10 @@ impl McpInjection {
         std::fs::write(
             codex_dir.join("config.toml"),
             format!(
-                "[[mcp_servers]]\n\
-name = \"agenthalo\"\n\
+                "[mcp_servers.agenthalo]\n\
 command = \"python3\"\n\
 args = [\"{bridge_script}\"]\n\
-\n\
-[mcp_servers.env]\n\
-AGENTHALO_MCP_PORT = \"{port}\"\n\
-AGENTHALO_MCP_SECRET = \"{secret}\"\n\
-AGENTHALO_MCP_BRIDGE_AUTO_START = \"0\"\n"
+env = {{ AGENTHALO_MCP_PORT = \"{port}\", AGENTHALO_MCP_SECRET = \"{secret}\", AGENTHALO_MCP_BRIDGE_AUTO_START = \"0\" }}\n"
             ),
         )
         .map_err(|e| format!("write Codex MCP config: {e}"))?;
@@ -220,8 +220,9 @@ AGENTHALO_MCP_BRIDGE_AUTO_START = \"0\"\n"
             .to_string()
     }
 
-    fn env_vars(&self) -> [(String, String); 4] {
+    fn env_vars(&self) -> [(String, String); 5] {
         let rpc_endpoint = format!("{}/mcp", self.endpoint.trim_end_matches('/'));
+        let port = Self::extract_port(&self.endpoint);
         [
             ("AGENTHALO_MCP_ENDPOINT".to_string(), rpc_endpoint.clone()),
             (
@@ -229,11 +230,110 @@ AGENTHALO_MCP_BRIDGE_AUTO_START = \"0\"\n"
                 rpc_endpoint,
             ),
             ("AGENTHALO_MCP_SECRET".to_string(), self.secret.clone()),
+            // Port env var enables the stdio bridge to connect without auto-discovery.
+            ("AGENTHALO_MCP_PORT".to_string(), port),
             (
                 "AGENTHALO_ORCHESTRATOR_PROXY_VIA_MCP".to_string(),
                 "1".to_string(),
             ),
         ]
+    }
+}
+
+/// Ensure all three agent CLIs (Claude, Codex, Gemini) have global MCP configs
+/// pointing at the agenthalo stdio bridge. Safe to call on every startup —
+/// only writes configs that are missing or stale.
+pub fn ensure_global_agent_mcp_configs() {
+    let bridge = McpInjection::resolve_bridge_script().unwrap_or_default();
+    if bridge.is_empty() {
+        eprintln!("[mcp-config] bridge script not found, skipping global agent config");
+        return;
+    }
+
+    // Claude: ~/.claude.json  (user-scoped mcpServers)
+    if let Some(home) = dirs::home_dir() {
+        let claude_config = home.join(".claude.json");
+        ensure_claude_global_mcp(&claude_config, &bridge);
+        let codex_config = home.join(".codex/config.toml");
+        ensure_codex_global_mcp(&codex_config, &bridge);
+        let gemini_config = home.join(".gemini/settings.json");
+        ensure_gemini_global_mcp(&gemini_config, &bridge);
+    }
+}
+
+fn ensure_claude_global_mcp(path: &Path, bridge: &str) {
+    let mut doc: Value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}));
+
+    let servers = doc
+        .as_object_mut()
+        .unwrap()
+        .entry("mcpServers")
+        .or_insert_with(|| json!({}));
+    if servers.get("agenthalo").is_some() {
+        return; // already configured
+    }
+    servers.as_object_mut().unwrap().insert(
+        "agenthalo".to_string(),
+        json!({
+            "type": "stdio",
+            "command": "python3",
+            "args": [bridge],
+            "env": { "AGENTHALO_MCP_BRIDGE_AUTO_START": "0" }
+        }),
+    );
+    if let Ok(content) = serde_json::to_string_pretty(&doc) {
+        let _ = std::fs::write(path, content);
+    }
+}
+
+fn ensure_codex_global_mcp(path: &Path, bridge: &str) {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    if content.contains("[mcp_servers.agenthalo]") {
+        return; // already configured
+    }
+    // Append agenthalo server block to the file
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let block = format!(
+        "\n# Agent H.A.L.O. MCP bridge — auto-discovers running agenthalo-mcp-server.\n\
+         [mcp_servers.agenthalo]\n\
+         command = \"python3\"\n\
+         args = [\"{bridge}\"]\n\
+         env = {{ AGENTHALO_MCP_BRIDGE_AUTO_START = \"0\" }}\n"
+    );
+    let mut full = content;
+    full.push_str(&block);
+    let _ = std::fs::write(path, full);
+}
+
+fn ensure_gemini_global_mcp(path: &Path, bridge: &str) {
+    let mut doc: Value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}));
+
+    let servers = doc
+        .as_object_mut()
+        .unwrap()
+        .entry("mcpServers")
+        .or_insert_with(|| json!({}));
+    if servers.get("agenthalo").is_some() {
+        return; // already configured
+    }
+    servers.as_object_mut().unwrap().insert(
+        "agenthalo".to_string(),
+        json!({
+            "command": "python3",
+            "args": [bridge],
+            "env": { "AGENTHALO_MCP_BRIDGE_AUTO_START": "0" }
+        }),
+    );
+    if let Ok(content) = serde_json::to_string_pretty(&doc) {
+        let _ = std::fs::write(path, content);
     }
 }
 
@@ -607,6 +707,7 @@ impl AgentHookup for CliAgentHookup {
         for (key, value) in mcp.env_vars() {
             env.insert(key, value);
         }
+        let extra_args = vec![];
         let managed = self
             .agent_pool
             .launch(LaunchSpec {
@@ -614,6 +715,7 @@ impl AgentHookup for CliAgentHookup {
                 agent_name: format!("{}-container-hookup", self.cli_name),
                 working_dir: Some(mcp.working_dir.display().to_string()),
                 env,
+                extra_args,
                 timeout_secs: self.timeout_secs,
                 model: self.model.clone(),
                 trace: false,
@@ -1832,16 +1934,25 @@ mod tests {
         hookup.start(&mut lock).await.expect("start");
 
         let working_dir = hookup.mcp_working_dir().expect("mcp working dir");
-        let endpoint = format!("{}/mcp", mcp.base_url);
+        // The bridge-based configs embed port and secret separately, not the full endpoint URL.
+        let port = mcp
+            .base_url
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .trim_end_matches('/');
         let claude = std::fs::read_to_string(working_dir.join(".mcp.json")).expect("claude config");
         let codex =
             std::fs::read_to_string(working_dir.join(".codex/config.toml")).expect("codex config");
         let gemini = std::fs::read_to_string(working_dir.join(".gemini/settings.json"))
             .expect("gemini config");
-        assert!(claude.contains(&endpoint));
-        assert!(claude.contains("bridge-secret"));
-        assert!(codex.contains(&endpoint));
-        assert!(gemini.contains(&endpoint));
+        assert!(claude.contains(port), "claude config missing port");
+        assert!(claude.contains("bridge-secret"), "claude config missing secret");
+        assert!(codex.contains(port), "codex config missing port");
+        assert!(codex.contains("bridge-secret"), "codex config missing secret");
+        assert!(codex.contains("[mcp_servers.agenthalo]"), "codex config missing named table");
+        assert!(gemini.contains(port), "gemini config missing port");
+        assert!(gemini.contains("bridge-secret"), "gemini config missing secret");
 
         hookup.stop().await.expect("stop");
         assert!(

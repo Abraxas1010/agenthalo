@@ -46,6 +46,8 @@ pub struct LaunchSpec {
     pub agent_name: String,
     pub working_dir: Option<String>,
     pub env: BTreeMap<String, String>,
+    /// Extra CLI arguments appended after the static args (e.g., `--mcp-config`).
+    pub extra_args: Vec<String>,
     pub timeout_secs: u64,
     pub model: Option<String>,
     pub trace: bool,
@@ -166,6 +168,7 @@ impl AgentPool {
         if let Some(model) = normalized_model.as_deref() {
             static_args.extend(model_args_for_kind(&kind, model));
         }
+        static_args.extend(spec.extra_args);
         let explicit_env_keys = BTreeSet::from_iter(env.iter().map(|(k, _)| k.as_str()));
         env_remove.retain(|key| !explicit_env_keys.contains(key.as_str()));
         let managed = ManagedAgent {
@@ -602,6 +605,7 @@ mod tests {
                 agent_name: "gem".to_string(),
                 working_dir: None,
                 env: BTreeMap::new(),
+                extra_args: vec![],
                 timeout_secs: 10,
                 model: Some(" gemini-2.5-pro ".to_string()),
                 trace: false,
@@ -682,6 +686,7 @@ mod tests {
                 agent_name: format!("a{idx}"),
                 working_dir: None,
                 env: BTreeMap::new(),
+                extra_args: vec![],
                 timeout_secs: 10,
                 model: None,
                 trace: false,
@@ -696,6 +701,7 @@ mod tests {
                 agent_name: "overflow".to_string(),
                 working_dir: None,
                 env: BTreeMap::new(),
+                extra_args: vec![],
                 timeout_secs: 10,
                 model: None,
                 trace: false,
@@ -722,6 +728,7 @@ mod tests {
             agent_name: "first".to_string(),
             working_dir: None,
             env: BTreeMap::new(),
+            extra_args: vec![],
             timeout_secs: 10,
             model: None,
             trace: false,
@@ -736,6 +743,7 @@ mod tests {
                 agent_name: "second".to_string(),
                 working_dir: None,
                 env: BTreeMap::new(),
+                extra_args: vec![],
                 timeout_secs: 10,
                 model: None,
                 trace: false,
@@ -763,6 +771,7 @@ mod tests {
                 agent_name: "not-allowed".to_string(),
                 working_dir: None,
                 env: BTreeMap::new(),
+                extra_args: vec![],
                 timeout_secs: 10,
                 model: None,
                 trace: false,
@@ -790,6 +799,7 @@ mod tests {
                 agent_name: "first".to_string(),
                 working_dir: None,
                 env: BTreeMap::new(),
+                extra_args: vec![],
                 timeout_secs: 10,
                 model: None,
                 trace: false,
@@ -803,6 +813,7 @@ mod tests {
                 agent_name: "second".to_string(),
                 working_dir: None,
                 env: BTreeMap::new(),
+                extra_args: vec![],
                 timeout_secs: 10,
                 model: None,
                 trace: false,
