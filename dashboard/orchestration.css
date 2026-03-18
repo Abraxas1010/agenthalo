@@ -112,8 +112,10 @@
 
 .orch-canvas-wrap canvas {
   display: block;
-  width: 100% !important;
-  height: 100% !important;
+  /* Do NOT set CSS width/height — LiteGraph reads the canvas element's
+     width/height attributes for coordinate calculations.  CSS forcing
+     a different display size breaks link-drawing hit testing. The
+     ResizeObserver in orchestration.js keeps the buffer in sync. */
 }
 
 /* ── Side panel (templates + info) ───────────────────── */

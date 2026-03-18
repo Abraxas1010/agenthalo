@@ -96,12 +96,37 @@
     }
   };
 
+  HaloAgentNode.prototype.onPropertyChanged = function (name, value) {
+    if (name === 'agent_type') {
+      var models = MODELS_BY_TYPE[value] || ALL_MODELS;
+      // Update the model widget dropdown values
+      if (this.widgets) {
+        for (var i = 0; i < this.widgets.length; i++) {
+          var w = this.widgets[i];
+          if (w.name === 'model' && w.options) {
+            w.options.values = models;
+            // Reset model if current value is not in the new list
+            if (models.indexOf(this.properties.model) < 0) {
+              this.properties.model = models[0] || '';
+              w.value = this.properties.model;
+            }
+          }
+        }
+      }
+      this.setDirtyCanvas(true);
+    }
+  };
+
   HaloAgentNode.prototype.getExtraMenuOptions = function () {
     var node = this;
     return [
       { content: 'Set Agent Type', has_submenu: true, callback: function () {},
         submenu: { options: AGENT_TYPES.map(function (t) {
-          return { content: t, callback: function () { node.properties.agent_type = t; node.setDirtyCanvas(true); } };
+          return { content: t, callback: function () {
+            node.properties.agent_type = t;
+            if (node.onPropertyChanged) node.onPropertyChanged('agent_type', t);
+            node.setDirtyCanvas(true);
+          }};
         })}
       }
     ];
@@ -664,10 +689,14 @@
     var wrap = document.getElementById('orch-canvas-wrap');
     if (!__canvasEl || !wrap) return;
 
-    // Size canvas to container
+    // Size canvas buffer AND display to container dimensions
     var rect = wrap.getBoundingClientRect();
-    __canvasEl.width = rect.width || 800;
-    __canvasEl.height = rect.height || 600;
+    var initW = Math.round(rect.width) || 800;
+    var initH = Math.round(rect.height) || 600;
+    __canvasEl.width = initW;
+    __canvasEl.height = initH;
+    __canvasEl.style.width = initW + 'px';
+    __canvasEl.style.height = initH + 'px';
 
     __canvas = new LGraphCanvas(__canvasEl, __graph);
     __canvas.background_image = null;
@@ -682,13 +711,21 @@
 
     __graph.start();
 
-    // Resize observer
+    // Resize observer — keep canvas buffer dimensions in sync with container.
+    // CSS must NOT set width/height on the canvas, or LiteGraph coordinate
+    // calculations (link hit-testing, node dragging) will be off.
     __resizeObs = new ResizeObserver(function () {
-      if (!__canvasEl || !wrap) return;
+      if (!__canvasEl || !wrap || !__canvas) return;
       var r = wrap.getBoundingClientRect();
-      __canvasEl.width = r.width;
-      __canvasEl.height = r.height;
-      __canvas.resize();
+      var w = Math.round(r.width) || 800;
+      var h = Math.round(r.height) || 600;
+      if (__canvasEl.width !== w || __canvasEl.height !== h) {
+        __canvasEl.width = w;
+        __canvasEl.height = h;
+        __canvasEl.style.width = w + 'px';
+        __canvasEl.style.height = h + 'px';
+        __canvas.resize();
+      }
     });
     __resizeObs.observe(wrap);
 
