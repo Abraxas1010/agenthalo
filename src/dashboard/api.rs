@@ -3838,9 +3838,12 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
     };
 
     // Recovery path: if the seed exists but the ledger has no genesis entry
-    // (e.g., ledger was deleted), re-create the completed entry from the
-    // existing seed hash instead of re-harvesting (which would fail with
-    // GENESIS_SEED_MISMATCH since entropy sources differ each time).
+    // (e.g., ledger was deleted), run a FULL entropy harvest for provenance
+    // (CURBy, NIST, drand, OS) and re-create the completed entry using the
+    // EXISTING sealed seed hash. We harvest real sources to maintain the
+    // cryptographic provenance chain — the harvest source records prove that
+    // real entropy beacons were consulted, even though the sealed seed's
+    // combined entropy was from the original ceremony.
     if latest_genesis.is_none() && crate::halo::genesis_seed::seed_exists() {
         let genesis_key = get_scope_key_bytes(&state, CryptoScope::Genesis)
             .ok()
@@ -3850,23 +3853,90 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                 .ok()
                 .flatten();
         if let Some(hash) = existing_hash {
+            // Run full entropy harvest for provenance attestation
+            let recovery_harvest =
+                tokio::task::spawn_blocking(crate::halo::genesis_entropy::harvest_entropy)
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok());
+
+            let (sources, failed_sources, sources_count, curby_pulse_id, duration_ms) =
+                match &recovery_harvest {
+                    Some(h) => (
+                        serde_json::to_value(&h.sources).unwrap_or(Value::Null),
+                        serde_json::to_value(&h.failed_sources).unwrap_or(Value::Null),
+                        h.sources_count,
+                        h.curby_pulse_id,
+                        h.duration_ms,
+                    ),
+                    None => (Value::Null, Value::Null, 0, None, 0),
+                };
+
             let payload = serde_json::json!({
                 "combined_entropy_sha256": hash,
                 "recovery": true,
+                "recovery_harvest": recovery_harvest.is_some(),
+                "sources": sources,
+                "failed_sources": failed_sources,
                 "policy": {
-                    "actual_sources": 1,
-                    "required_sources": 1,
+                    "min_sources": 2,
+                    "actual_sources": sources_count,
                 },
+                "curby_pulse_id": curby_pulse_id,
+                "drand_normalization": "sha512",
+                "duration_ms": duration_ms,
             });
-            match crate::halo::identity_ledger::append_genesis_event("completed", payload) {
+
+            let sign_key = get_scope_key_bytes(&state, CryptoScope::Sign)
+                .ok()
+                .flatten();
+            match crate::halo::identity_ledger::append_genesis_event_with_sign_key(
+                "completed",
+                payload,
+                sign_key.as_ref(),
+            ) {
                 Ok(entry) => {
+                    // Perform sovereign binding ceremony with existing seed
+                    let seed_bytes = crate::halo::genesis_seed::load_seed_bytes()
+                        .ok()
+                        .flatten();
+                    let sovereign = match seed_bytes {
+                        Some(ref seed) => {
+                            match crate::halo::twine_anchor::perform_sovereign_binding_ceremony(
+                                seed,
+                                &hash,
+                                curby_pulse_id,
+                                entry.timestamp,
+                            ) {
+                                Ok(r) => json!({
+                                    "attestation_sha256": r.attestation_sha256,
+                                    "binding_sha256": r.binding_sha256,
+                                    "did_subject": r.did_subject,
+                                    "evm_address": r.evm_address,
+                                }),
+                                Err(e) => {
+                                    eprintln!(
+                                        "warning: sovereign binding recovery failed (non-fatal): {e}"
+                                    );
+                                    Value::Null
+                                }
+                            }
+                        }
+                        None => Value::Null,
+                    };
+
                     return Ok(Json(json!({
                         "success": true,
                         "completed": true,
                         "recovered": true,
-                        "sources_count": 1,
+                        "sources_count": sources_count,
+                        "curby_pulse_id": curby_pulse_id,
                         "combined_entropy_sha256": hash,
                         "genesis_entropy_sha256": entry.genesis_entropy_sha256,
+                        "ledger_seq": entry.seq,
+                        "ledger_entry_hash": entry.entry_hash,
+                        "ledger_signed": entry.signature.is_some(),
+                        "sovereign_binding": sovereign,
                     })));
                 }
                 Err(e) => {

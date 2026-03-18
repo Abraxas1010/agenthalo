@@ -1524,14 +1524,29 @@ async function route() {
     }
   }
 
-  // Genesis ceremony: always show the visual ceremony if genesis hasn't been done yet.
-  // The ceremony handles the harvest POST + staged animation so the user sees
-  // entropy sources being gathered and combined.
+  // Genesis check: if genesis is not completed, attempt silent recovery
+  // (the harvest endpoint handles seed-exists recovery with full CURBy/twine
+  // provenance). Only show the visual ceremony for truly first-time genesis
+  // (no sealed seed exists yet).
   let genesisOk = await fetchGenesisStatus();
   if (!genesisOk) {
-    if (overlay) overlay.style.display = "";
-    showGenesisCeremony();
-    return;
+    // Try silent recovery first — POST harvest will re-seal if seed exists
+    try {
+      const recoveryResult = await apiPost("/genesis/harvest", {});
+      if (recoveryResult && recoveryResult.success) {
+        _genesisComplete = true;
+        _genesisStatusFetchedAt = Date.now();
+        genesisOk = true;
+      }
+    } catch (_e) {
+      // Silent recovery failed — check if this is truly first-time genesis
+      // (no seed file exists) or a transient error
+    }
+    if (!genesisOk) {
+      if (overlay) overlay.style.display = "";
+      showGenesisCeremony();
+      return;
+    }
   }
   if (overlay) overlay.style.display = "none";
 
