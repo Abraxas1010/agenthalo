@@ -105,16 +105,22 @@ impl McpInjection {
         let (endpoint, secret) = mcp_bridge::running_session_endpoint()?;
         let config_dir = tempfile::tempdir().map_err(|e| format!("create MCP config dir: {e}"))?;
         let working_dir = config_dir.path().to_path_buf();
-        let rpc_url = format!("{}/mcp", endpoint.trim_end_matches('/'));
-        let auth_header = format!("Bearer {secret}");
 
+        // Resolve the stdio bridge script path (lives in the repo's scripts/ dir)
+        let bridge_script = Self::resolve_bridge_script()?;
+
+        // Use stdio bridge for all agents — it auto-discovers the running
+        // MCP server's port and secret from /proc/<pid>/environ, so no
+        // hardcoded credentials leak into config files.
         let claude_config = json!({
             "mcpServers": {
                 "agenthalo": {
-                    "type": "sse",
-                    "url": rpc_url,
-                    "headers": {
-                        "Authorization": auth_header
+                    "command": "python3",
+                    "args": [bridge_script],
+                    "env": {
+                        "AGENTHALO_MCP_PORT": Self::extract_port(&endpoint),
+                        "AGENTHALO_MCP_SECRET": secret,
+                        "AGENTHALO_MCP_BRIDGE_AUTO_START": "0"
                     }
                 }
             }
@@ -129,13 +135,19 @@ impl McpInjection {
         let codex_dir = working_dir.join(".codex");
         std::fs::create_dir_all(&codex_dir)
             .map_err(|e| format!("create Codex MCP config dir {}: {e}", codex_dir.display()))?;
+        let port = Self::extract_port(&endpoint);
         std::fs::write(
             codex_dir.join("config.toml"),
             format!(
-                "[mcp_servers.agenthalo]\n\
-type = \"sse\"\n\
-url = \"{rpc_url}\"\n\
-headers = {{ Authorization = \"{auth_header}\" }}\n"
+                "[[mcp_servers]]\n\
+name = \"agenthalo\"\n\
+command = \"python3\"\n\
+args = [\"{bridge_script}\"]\n\
+\n\
+[mcp_servers.env]\n\
+AGENTHALO_MCP_PORT = \"{port}\"\n\
+AGENTHALO_MCP_SECRET = \"{secret}\"\n\
+AGENTHALO_MCP_BRIDGE_AUTO_START = \"0\"\n"
             ),
         )
         .map_err(|e| format!("write Codex MCP config: {e}"))?;
@@ -146,10 +158,12 @@ headers = {{ Authorization = \"{auth_header}\" }}\n"
         let gemini_config = json!({
             "mcpServers": {
                 "agenthalo": {
-                    "type": "sse",
-                    "url": rpc_url,
-                    "headers": {
-                        "Authorization": auth_header
+                    "command": "python3",
+                    "args": [bridge_script],
+                    "env": {
+                        "AGENTHALO_MCP_PORT": port,
+                        "AGENTHALO_MCP_SECRET": secret,
+                        "AGENTHALO_MCP_BRIDGE_AUTO_START": "0"
                     }
                 }
             }
@@ -167,6 +181,43 @@ headers = {{ Authorization = \"{auth_header}\" }}\n"
             endpoint,
             secret,
         })
+    }
+
+    fn resolve_bridge_script() -> Result<String, String> {
+        // Look for the bridge script in common locations
+        let candidates = [
+            // Relative to binary
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("../../scripts/mcp_stdio_bridge.py"))),
+            // AGENTHALO_HOME
+            std::env::var("AGENTHALO_HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join("scripts/mcp_stdio_bridge.py")),
+            // Common dev location
+            Some(std::path::PathBuf::from(
+                "/home/abraxas/Work/agenthalo/scripts/mcp_stdio_bridge.py",
+            )),
+        ];
+        for candidate in candidates.iter().flatten() {
+            let resolved = candidate
+                .canonicalize()
+                .unwrap_or_else(|_| candidate.clone());
+            if resolved.exists() {
+                return Ok(resolved.display().to_string());
+            }
+        }
+        Err("mcp_stdio_bridge.py not found".to_string())
+    }
+
+    fn extract_port(endpoint: &str) -> String {
+        // Extract port from "http://127.0.0.1:PORT" URL
+        endpoint
+            .rsplit(':')
+            .next()
+            .unwrap_or("8390")
+            .trim_end_matches('/')
+            .to_string()
     }
 
     fn env_vars(&self) -> [(String, String); 4] {
