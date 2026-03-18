@@ -471,6 +471,12 @@ struct P2PClawListQuery {
     since: Option<u64>,
 }
 
+#[derive(Deserialize, Default)]
+struct WorkflowInstancesQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
 #[derive(Deserialize)]
 struct P2PClawPublishRequest {
     title: String,
@@ -10519,6 +10525,13 @@ async fn api_workflow_get(Path(id): Path<String>) -> ApiResult {
 async fn api_workflow_create(Json(body): Json<Value>) -> ApiResult {
     let wf: crate::orchestrator::workflow::WorkflowDefinition =
         serde_json::from_value(body).map_err(|e| internal_err(format!("invalid workflow: {e}")))?;
+    let warnings = crate::orchestrator::workflow::validate_graph(&wf);
+    if !warnings.is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("graph validation: {}", warnings.join("; ")),
+        ));
+    }
     let saved =
         crate::orchestrator::workflow::save_workflow(wf).map_err(|e| internal_err(e))?;
     let val = serde_json::to_value(&saved).map_err(|e| internal_err(e.to_string()))?;
@@ -10529,6 +10542,13 @@ async fn api_workflow_update(Path(id): Path<String>, Json(body): Json<Value>) ->
     let mut wf: crate::orchestrator::workflow::WorkflowDefinition =
         serde_json::from_value(body).map_err(|e| internal_err(format!("invalid workflow: {e}")))?;
     wf.workflow_id = id;
+    let warnings = crate::orchestrator::workflow::validate_graph(&wf);
+    if !warnings.is_empty() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("graph validation: {}", warnings.join("; ")),
+        ));
+    }
     let saved =
         crate::orchestrator::workflow::save_workflow(wf).map_err(|e| internal_err(e))?;
     let val = serde_json::to_value(&saved).map_err(|e| internal_err(e.to_string()))?;
@@ -10602,9 +10622,16 @@ async fn api_workflow_status(Path(id): Path<String>) -> ApiResult {
     }
 }
 
-async fn api_workflow_instances_list() -> ApiResult {
-    let instances = crate::orchestrator::workflow::list_workflow_instances();
-    let summaries: Vec<Value> = instances
+async fn api_workflow_instances_list(
+    Query(query): Query<WorkflowInstancesQuery>,
+) -> ApiResult {
+    let all_instances = crate::orchestrator::workflow::list_workflow_instances();
+    let total = all_instances.len();
+    let offset = query.offset.unwrap_or(0).min(total);
+    let limit = query.limit.unwrap_or(50).max(1).min(200);
+    let page = &all_instances[offset..total.min(offset + limit)];
+
+    let summaries: Vec<Value> = page
         .iter()
         .map(|inst| {
             json!({
@@ -10613,13 +10640,20 @@ async fn api_workflow_instances_list() -> ApiResult {
                 "status": inst.status,
                 "started_at": inst.started_at,
                 "completed_at": inst.completed_at,
-                "events": inst.events,
+                "events_count": inst.events.len(),
+                "events": inst.events.iter().take(50).collect::<Vec<_>>(),
                 "role_bindings": inst.role_bindings,
                 "iteration_counts": inst.iteration_counts,
             })
         })
         .collect();
-    Ok(Json(json!({ "ok": true, "instances": summaries })))
+    Ok(Json(json!({
+        "ok": true,
+        "instances": summaries,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    })))
 }
 
 async fn api_workflow_stop(Path(id): Path<String>) -> ApiResult {

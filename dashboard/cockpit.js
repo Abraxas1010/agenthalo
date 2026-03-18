@@ -773,9 +773,11 @@
       this.noticeTimer = null;
 
       // Agent lettering system — letters are permanent per session (H4)
+      // Restore from sessionStorage on page reload (F6 fix)
       this.nextLetterIndex = 0;
       this.agentLetters = new Map(); // sessionId → letter
       this.agentColors = new Map();  // sessionId → CSS class
+      this._restoreLetterState();
 
       // Workflow sidebar state
       this.wfSidebarEl = null;
@@ -796,7 +798,32 @@
       const suffix = idx < 26 ? '' : String(Math.floor(idx / 26));
       const letter = String.fromCharCode(65 + (idx % 26)) + suffix;
       this.agentLetters.set(sessionId, letter);
+      this._persistLetterState();
       return letter;
+    }
+
+    _persistLetterState() {
+      try {
+        const data = {
+          nextLetterIndex: this.nextLetterIndex,
+          letters: Array.from(this.agentLetters.entries()),
+        };
+        sessionStorage.setItem('halo_agent_letters', JSON.stringify(data));
+      } catch (_) { /* storage full or unavailable — non-critical */ }
+    }
+
+    _restoreLetterState() {
+      try {
+        const raw = sessionStorage.getItem('halo_agent_letters');
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        if (typeof data.nextLetterIndex === 'number') {
+          this.nextLetterIndex = data.nextLetterIndex;
+        }
+        if (Array.isArray(data.letters)) {
+          this.agentLetters = new Map(data.letters);
+        }
+      } catch (_) { /* corrupt data — start fresh */ }
     }
 
     getAgentColorClass(agentType) {

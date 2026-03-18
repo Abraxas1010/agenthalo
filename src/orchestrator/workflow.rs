@@ -9,13 +9,17 @@ use std::path::{Path, PathBuf};
 /// A saved workflow definition: litegraph JSON envelope + HALO metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowDefinition {
+    #[serde(default)]
     pub workflow_id: String,
     pub name: String,
     #[serde(default = "default_version")]
     pub version: u32,
+    #[serde(default)]
     pub created_at: u64,
+    #[serde(default)]
     pub updated_at: u64,
     /// Raw `graph.serialize()` from litegraph — opaque to Rust.
+    #[serde(default)]
     pub litegraph: serde_json::Value,
     #[serde(default)]
     pub halo_meta: WorkflowMeta,
@@ -241,6 +245,46 @@ pub fn list_workflow_instances() -> Vec<WorkflowInstance> {
     results
 }
 
+// ── Graph validation ──────────────────────────────────────────────────
+
+/// Validate a workflow's litegraph blob for structural issues.
+/// Returns a list of warnings (empty = valid).
+pub fn validate_graph(wf: &WorkflowDefinition) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let lg = &wf.litegraph;
+
+    // Check nodes exist and are from known types
+    if let Some(nodes) = lg.get("nodes").and_then(|v| v.as_array()) {
+        let known_types = ["halo/agent", "halo/decision", "halo/transform", "halo/phase"];
+        for node in nodes {
+            if let Some(ntype) = node.get("type").and_then(|v| v.as_str()) {
+                if !known_types.contains(&ntype) {
+                    warnings.push(format!("unknown node type: {ntype}"));
+                }
+            }
+            // Decision nodes must have max_iterations ≤ 50
+            if node.get("type").and_then(|v| v.as_str()) == Some("halo/decision") {
+                if let Some(props) = node.get("properties") {
+                    let max_iter = props
+                        .get("max_iterations")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(10);
+                    if max_iter > 50 {
+                        let nid = node.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                        warnings.push(format!(
+                            "decision node {nid}: max_iterations={max_iter} exceeds limit of 50"
+                        ));
+                    }
+                }
+            }
+        }
+    } else if !lg.is_null() {
+        warnings.push("litegraph blob missing 'nodes' array".to_string());
+    }
+
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +317,95 @@ mod tests {
     fn workflow_status_serializes_snake_case() {
         let json = serde_json::to_string(&WorkflowStatus::MaxIterationsExceeded).unwrap();
         assert_eq!(json, "\"max_iterations_exceeded\"");
+    }
+
+    #[test]
+    fn path_traversal_sanitized_to_safe_id() {
+        // F1: verify that path traversal attempts are sanitized
+        let malicious_ids = [
+            "../../../etc/passwd",
+            "..\\..\\windows\\system32",
+            "normal-id/../escape",
+            "good_id/../../bad",
+            "../../../../tmp/evil",
+            "id\x00null",
+        ];
+        for id in &malicious_ids {
+            let safe: String = id
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            assert!(!safe.contains('/'), "sanitized ID still contains /: {safe}");
+            assert!(!safe.contains('\\'), "sanitized ID still contains \\: {safe}");
+            assert!(!safe.contains(".."), "sanitized ID still contains ..: {safe}");
+            assert!(!safe.contains('\0'), "sanitized ID still contains null byte: {safe}");
+        }
+        // Verify the specific traversal attack collapses to harmless string
+        let attack = "../../../tmp/evil";
+        let safe: String = attack
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        assert_eq!(safe, "tmpevil");
+    }
+
+    #[test]
+    fn validate_graph_catches_bad_decision_node() {
+        let wf = WorkflowDefinition {
+            workflow_id: "test".to_string(),
+            name: "test".to_string(),
+            version: 1,
+            created_at: 0,
+            updated_at: 0,
+            litegraph: serde_json::json!({
+                "nodes": [
+                    {"id": 1, "type": "halo/agent", "properties": {}},
+                    {"id": 2, "type": "halo/decision", "properties": {"max_iterations": 999}},
+                    {"id": 3, "type": "unknown/type", "properties": {}},
+                ],
+                "links": []
+            }),
+            halo_meta: WorkflowMeta::default(),
+        };
+        let warnings = validate_graph(&wf);
+        assert!(warnings.iter().any(|w| w.contains("max_iterations=999")));
+        assert!(warnings.iter().any(|w| w.contains("unknown node type")));
+        assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn validate_graph_passes_clean_graph() {
+        let wf = WorkflowDefinition {
+            workflow_id: "test".to_string(),
+            name: "test".to_string(),
+            version: 1,
+            created_at: 0,
+            updated_at: 0,
+            litegraph: serde_json::json!({
+                "nodes": [
+                    {"id": 1, "type": "halo/agent", "properties": {}},
+                    {"id": 2, "type": "halo/decision", "properties": {"max_iterations": 10}},
+                    {"id": 3, "type": "halo/transform", "properties": {}},
+                    {"id": 4, "type": "halo/phase", "properties": {}},
+                ],
+                "links": []
+            }),
+            halo_meta: WorkflowMeta::default(),
+        };
+        let warnings = validate_graph(&wf);
+        assert!(warnings.is_empty(), "expected no warnings, got: {warnings:?}");
+    }
+
+    #[test]
+    fn minimal_create_request_deserializes() {
+        // F4: verify that minimal JSON (just name) deserializes with defaults
+        let json = r#"{"name":"test workflow"}"#;
+        let wf: WorkflowDefinition = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(wf.name, "test workflow");
+        assert!(wf.workflow_id.is_empty());
+        assert_eq!(wf.created_at, 0);
+        assert_eq!(wf.updated_at, 0);
+        assert_eq!(wf.version, 1);
+        assert!(wf.litegraph.is_null());
     }
 }

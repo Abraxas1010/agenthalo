@@ -1,0 +1,12 @@
+litegraph.js vendoring provenance
+==================================
+
+Library:   litegraph.js (https://github.com/jagenjo/litegraph.js)
+Version:   0.4 (LiteGraph.VERSION in source)
+License:   MIT
+Vendored:  2026-03-18
+Source:    jagenjo/litegraph.js master branch (no tagged release)
+SHA-256:   a53f4a5bfb85520ce11a652c4e883757f477cc62873c1438e0ade330106a24e4  litegraph.js
+
+To update: download latest from upstream, replace litegraph.js + litegraph.css,
+update this file, then `touch src/dashboard/assets.rs && cargo build --release`.
