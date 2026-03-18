@@ -167,6 +167,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/mcp/tools/{name}", get(api_mcp_tool_detail))
         .route("/mcp/invoke", post(api_mcp_invoke))
         .route("/mcp/categories", get(api_mcp_categories))
+        .route("/mcp/usage-stats", get(api_mcp_usage_stats))
         // Config
         .route("/config", get(api_config))
         .route("/config/wrap", post(api_config_wrap))
@@ -6344,6 +6345,126 @@ async fn api_mcp_categories(AxumState(state): AxumState<DashboardState>) -> ApiR
         "count": categories.len(),
         "categories": categories
     })))
+}
+
+/// Aggregate MCP/tool usage statistics from the trace store, grouped by agent.
+async fn api_mcp_usage_stats(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let db_path = state.db_path.clone();
+    let _lock = state.db_lock.lock().await;
+    let stats = tokio::task::spawn_blocking(move || compute_tool_usage_stats(&db_path))
+        .await
+        .map_err(|e| internal_err(format!("usage stats task: {e}")))?
+        .map_err(|e| internal_err(e))?;
+    Ok(Json(stats))
+}
+
+fn compute_tool_usage_stats(
+    db_path: &std::path::Path,
+) -> Result<serde_json::Value, String> {
+    use crate::halo::schema::EventType;
+    use crate::halo::trace::{list_sessions, session_events, session_summary};
+    use std::collections::HashMap;
+
+    let sessions = list_sessions(db_path)?;
+
+    #[derive(Default)]
+    struct AgentStats {
+        call_count: u64,
+        mcp_call_count: u64,
+        tool_freq: HashMap<String, u64>,
+        sessions: u64,
+        total_tokens_in: u64,
+        total_tokens_out: u64,
+        total_cost: f64,
+        first_seen: u64,
+        last_seen: u64,
+    }
+
+    let mut by_agent: HashMap<String, AgentStats> = HashMap::new();
+    let mut global_tool_freq: HashMap<String, u64> = HashMap::new();
+    let mut total_tool_calls: u64 = 0;
+    let mut total_mcp_calls: u64 = 0;
+
+    for session in &sessions {
+        let agent_id = if session.agent.is_empty() {
+            "unknown".to_string()
+        } else {
+            session.agent.clone()
+        };
+        let stats = by_agent.entry(agent_id).or_default();
+        stats.sessions += 1;
+        if stats.first_seen == 0 || session.started_at < stats.first_seen {
+            stats.first_seen = session.started_at;
+        }
+        if session.started_at > stats.last_seen {
+            stats.last_seen = session.started_at;
+        }
+
+        if let Ok(Some(summary)) = session_summary(db_path, &session.session_id) {
+            stats.call_count += summary.tool_calls;
+            stats.mcp_call_count += summary.mcp_tool_calls;
+            stats.total_tokens_in += summary.total_input_tokens;
+            stats.total_tokens_out += summary.total_output_tokens;
+            stats.total_cost += summary.estimated_cost_usd;
+            total_tool_calls += summary.tool_calls;
+            total_mcp_calls += summary.mcp_tool_calls;
+        }
+
+        // Get per-tool breakdown from events
+        if let Ok(events) = session_events(db_path, &session.session_id) {
+            for ev in &events {
+                let is_tool = matches!(
+                    ev.event_type,
+                    EventType::ToolCall | EventType::McpToolCall | EventType::BashCommand
+                );
+                if is_tool {
+                    if let Some(name) = &ev.tool_name {
+                        *stats.tool_freq.entry(name.clone()).or_insert(0) += 1;
+                        *global_tool_freq.entry(name.clone()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let agents: Vec<serde_json::Value> = {
+        let mut items: Vec<_> = by_agent.into_iter().collect();
+        items.sort_by(|a, b| b.1.call_count.cmp(&a.1.call_count));
+        items
+            .into_iter()
+            .map(|(agent_id, s)| {
+                let mut top_tools: Vec<_> = s.tool_freq.into_iter().collect();
+                top_tools.sort_by(|a, b| b.1.cmp(&a.1));
+                top_tools.truncate(20);
+                json!({
+                    "agent_id": agent_id,
+                    "sessions": s.sessions,
+                    "tool_calls": s.call_count,
+                    "mcp_tool_calls": s.mcp_call_count,
+                    "total_input_tokens": s.total_tokens_in,
+                    "total_output_tokens": s.total_tokens_out,
+                    "estimated_cost_usd": (s.total_cost * 100.0).round() / 100.0,
+                    "first_seen": s.first_seen,
+                    "last_seen": s.last_seen,
+                    "top_tools": top_tools.into_iter().map(|(name, count)| json!({"name": name, "count": count})).collect::<Vec<_>>(),
+                })
+            })
+            .collect()
+    };
+
+    let mut global_top: Vec<_> = global_tool_freq.into_iter().collect();
+    global_top.sort_by(|a, b| b.1.cmp(&a.1));
+    global_top.truncate(30);
+
+    Ok(json!({
+        "ok": true,
+        "total_sessions": sessions.len(),
+        "total_tool_calls": total_tool_calls,
+        "total_mcp_calls": total_mcp_calls,
+        "agents": agents,
+        "top_tools": global_top.into_iter().map(|(name, count)| json!({"name": name, "count": count})).collect::<Vec<serde_json::Value>>(),
+    }))
 }
 
 async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {

@@ -138,6 +138,161 @@ function __mcpBindSearchShortcut() {
   });
 }
 
+// --- Usage Stats State ---
+const __mcpUsageState = {
+  data: null,
+  loading: false,
+  expanded: false,
+  selectedAgent: null,
+};
+
+async function __mcpLoadUsageStats() {
+  if (__mcpUsageState.loading) return;
+  __mcpUsageState.loading = true;
+  try {
+    const api = window.api;
+    if (typeof api !== 'function') return;
+    __mcpUsageState.data = await api('/mcp/usage-stats');
+  } catch (_e) {
+    __mcpUsageState.data = null;
+  } finally {
+    __mcpUsageState.loading = false;
+  }
+}
+
+function __mcpFmtTime(unix) {
+  if (!unix) return 'Never';
+  return new Date(unix * 1000).toLocaleString();
+}
+
+function __mcpRenderUsageStats() {
+  const data = __mcpUsageState.data;
+  if (!data || !data.ok) {
+    return `<div class="card" style="margin-bottom:12px">
+      <div class="card-label">Tool Usage Statistics</div>
+      <div class="card-sub" style="color:var(--text-dim)">No usage data available yet. Launch agents from the Cockpit to generate trace data.</div>
+    </div>`;
+  }
+
+  const expanded = __mcpUsageState.expanded;
+  const agents = Array.isArray(data.agents) ? data.agents : [];
+  const topTools = Array.isArray(data.top_tools) ? data.top_tools : [];
+  const selected = __mcpUsageState.selectedAgent;
+  const selectedData = selected ? agents.find(a => a.agent_id === selected) : null;
+
+  // Summary cards
+  const summaryHtml = `
+    <div class="mcp-usage-summary">
+      <div class="mcp-usage-stat"><span class="mcp-usage-stat-value">${Number(data.total_sessions || 0)}</span><span class="mcp-usage-stat-label">Sessions</span></div>
+      <div class="mcp-usage-stat"><span class="mcp-usage-stat-value">${Number(data.total_tool_calls || 0)}</span><span class="mcp-usage-stat-label">Tool Calls</span></div>
+      <div class="mcp-usage-stat"><span class="mcp-usage-stat-value">${Number(data.total_mcp_calls || 0)}</span><span class="mcp-usage-stat-label">MCP Calls</span></div>
+      <div class="mcp-usage-stat"><span class="mcp-usage-stat-value">${agents.length}</span><span class="mcp-usage-stat-label">Agents</span></div>
+    </div>`;
+
+  // Agent cards
+  const agentCardsHtml = agents.map(a => {
+    const isSelected = selected === a.agent_id;
+    const totalCalls = Number(a.tool_calls || 0) + Number(a.mcp_tool_calls || 0);
+    const cost = Number(a.estimated_cost_usd || 0);
+    return `
+      <div class="mcp-usage-agent-card${isSelected ? ' is-selected' : ''}" data-usage-agent="${__mcpEsc(a.agent_id)}">
+        <div class="mcp-usage-agent-name">${__mcpEsc(a.agent_id)}</div>
+        <div class="mcp-usage-agent-row">
+          <span>${Number(a.sessions || 0)} sessions</span>
+          <span>${totalCalls} calls</span>
+          <span>$${cost.toFixed(2)}</span>
+        </div>
+        <div class="mcp-usage-agent-bar">
+          <div class="mcp-usage-agent-bar-fill" style="width:${data.total_tool_calls ? Math.round((totalCalls / (Number(data.total_tool_calls) + Number(data.total_mcp_calls))) * 100) : 0}%"></div>
+        </div>
+        <div class="mcp-usage-agent-meta">Last: ${__mcpFmtTime(a.last_seen)}</div>
+      </div>`;
+  }).join('');
+
+  // Detail panel for selected agent
+  let detailHtml = '';
+  if (selectedData) {
+    const tools = Array.isArray(selectedData.top_tools) ? selectedData.top_tools : [];
+    detailHtml = `
+      <div class="mcp-usage-detail">
+        <div class="mcp-usage-detail-header">
+          <strong>${__mcpEsc(selectedData.agent_id)}</strong>
+          <button class="btn btn-sm" data-usage-close>✕</button>
+        </div>
+        <div class="mcp-usage-detail-stats">
+          <div><span>Sessions</span><strong>${Number(selectedData.sessions || 0)}</strong></div>
+          <div><span>Tool Calls</span><strong>${Number(selectedData.tool_calls || 0)}</strong></div>
+          <div><span>MCP Calls</span><strong>${Number(selectedData.mcp_tool_calls || 0)}</strong></div>
+          <div><span>Input Tokens</span><strong>${Number(selectedData.total_input_tokens || 0).toLocaleString()}</strong></div>
+          <div><span>Output Tokens</span><strong>${Number(selectedData.total_output_tokens || 0).toLocaleString()}</strong></div>
+          <div><span>Est. Cost</span><strong>$${Number(selectedData.estimated_cost_usd || 0).toFixed(2)}</strong></div>
+        </div>
+        ${tools.length ? `
+          <div class="card-label" style="margin-top:12px;font-size:11px">Top Tools</div>
+          <div class="mcp-usage-tool-list">
+            ${tools.map(t => `
+              <div class="mcp-usage-tool-row">
+                <span class="mcp-usage-tool-name">${__mcpEsc(t.name)}</span>
+                <span class="mcp-usage-tool-count">${Number(t.count)}</span>
+              </div>`).join('')}
+          </div>` : ''}
+      </div>`;
+  }
+
+  // Global top tools
+  const globalToolsHtml = topTools.length ? `
+    <div class="mcp-usage-global-tools">
+      <div class="card-label" style="font-size:11px">Most Used Tools (All Agents)</div>
+      <div class="mcp-usage-tool-list">
+        ${topTools.slice(0, 15).map(t => `
+          <div class="mcp-usage-tool-row">
+            <span class="mcp-usage-tool-name">${__mcpEsc(t.name)}</span>
+            <span class="mcp-usage-tool-count">${Number(t.count)}</span>
+          </div>`).join('')}
+      </div>
+    </div>` : '';
+
+  return `
+    <div class="card mcp-usage-section" style="margin-bottom:12px">
+      <div class="mcp-usage-header" id="mcp-usage-toggle">
+        <div class="card-label">Tool Usage Statistics</div>
+        <button class="btn btn-sm">${expanded ? '▲ Collapse' : '▼ Expand'}</button>
+      </div>
+      ${expanded ? `
+        ${summaryHtml}
+        <div class="mcp-usage-body">
+          <div class="mcp-usage-agents">${agentCardsHtml || '<div class="card-sub">No agent data yet.</div>'}</div>
+          <div class="mcp-usage-right">
+            ${detailHtml || globalToolsHtml || '<div class="card-sub">Click an agent to see details.</div>'}
+          </div>
+        </div>
+      ` : summaryHtml}
+    </div>`;
+}
+
+function __mcpBindUsageEvents() {
+  const toggle = document.querySelector('#mcp-usage-toggle');
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      __mcpUsageState.expanded = !__mcpUsageState.expanded;
+      window.renderMcpToolsPage(__mcpState.category === 'all' ? '' : __mcpState.category);
+    });
+  }
+  document.querySelectorAll('[data-usage-agent]').forEach(card => {
+    card.addEventListener('click', () => {
+      __mcpUsageState.selectedAgent = card.dataset.usageAgent || null;
+      window.renderMcpToolsPage(__mcpState.category === 'all' ? '' : __mcpState.category);
+    });
+  });
+  document.querySelectorAll('[data-usage-close]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      __mcpUsageState.selectedAgent = null;
+      window.renderMcpToolsPage(__mcpState.category === 'all' ? '' : __mcpState.category);
+    });
+  });
+}
+
 window.renderMcpToolsPage = async function renderMcpToolsPage(arg) {
   const content = document.querySelector('#content');
   const api = window.api;
@@ -149,6 +304,17 @@ window.renderMcpToolsPage = async function renderMcpToolsPage(arg) {
 
   content.innerHTML = '<div class="loading">Loading MCP tool catalog...</div>';
   __mcpBindSearchShortcut();
+
+  // Load usage stats in parallel (non-blocking)
+  if (!__mcpUsageState.data && !__mcpUsageState.loading) {
+    __mcpLoadUsageStats().then(() => {
+      const usageEl = document.querySelector('#mcp-usage-slot');
+      if (usageEl) {
+        usageEl.innerHTML = __mcpRenderUsageStats();
+        __mcpBindUsageEvents();
+      }
+    });
+  }
 
   try {
     const [catalogRes, categoriesRes] = await Promise.all([
@@ -260,6 +426,7 @@ window.renderMcpToolsPage = async function renderMcpToolsPage(arg) {
               <a class="btn" href="#/p2pclaw">Open P2PCLAW</a>
             </div>
           </section>
+          <div id="mcp-usage-slot">${__mcpUsageState.data ? __mcpRenderUsageStats() : ''}</div>
           <section class="mcp-layout">
             <div class="mcp-card-grid">${cards || '<div class="card"><div class="card-label">No matching tools</div></div>'}</div>
             <div class="mcp-detail-panel">${invokePanel}</div>
@@ -267,6 +434,8 @@ window.renderMcpToolsPage = async function renderMcpToolsPage(arg) {
         </section>
       </div>
     `;
+
+    __mcpBindUsageEvents();
 
     document.querySelectorAll('[data-mcp-category]').forEach((button) => {
       button.addEventListener('click', () => {
