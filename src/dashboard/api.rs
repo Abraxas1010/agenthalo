@@ -3837,6 +3837,46 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
         }
     };
 
+    // Recovery path: if the seed exists but the ledger has no genesis entry
+    // (e.g., ledger was deleted), re-create the completed entry from the
+    // existing seed hash instead of re-harvesting (which would fail with
+    // GENESIS_SEED_MISMATCH since entropy sources differ each time).
+    if latest_genesis.is_none() && crate::halo::genesis_seed::seed_exists() {
+        let genesis_key = get_scope_key_bytes(&state, CryptoScope::Genesis)
+            .ok()
+            .flatten();
+        let existing_hash =
+            crate::halo::genesis_seed::load_seed_sha256_prefer_v2(genesis_key.as_ref())
+                .ok()
+                .flatten();
+        if let Some(hash) = existing_hash {
+            let payload = serde_json::json!({
+                "combined_entropy_sha256": hash,
+                "recovery": true,
+                "policy": {
+                    "actual_sources": 1,
+                    "required_sources": 1,
+                },
+            });
+            match crate::halo::identity_ledger::append_genesis_event("completed", payload) {
+                Ok(entry) => {
+                    return Ok(Json(json!({
+                        "success": true,
+                        "completed": true,
+                        "recovered": true,
+                        "sources_count": 1,
+                        "combined_entropy_sha256": hash,
+                        "genesis_entropy_sha256": entry.genesis_entropy_sha256,
+                    })));
+                }
+                Err(e) => {
+                    eprintln!("warning: genesis ledger recovery failed: {e}");
+                    // Fall through to normal harvest path
+                }
+            }
+        }
+    }
+
     if let Some(latest) = latest_genesis {
         if genesis_is_completed_status(&latest.status) {
             let sovereign = match crate::halo::genesis_seed::load_seed_bytes() {
