@@ -81,45 +81,179 @@ function renderMcpToolsPageRoute() {
 
 async function renderAgentPmt() {
   const content = $("#content");
+
+  // Show loading state while checking credentials
+  content.innerHTML = `
+    <div style="display:flex;flex-direction:column;height:100%;padding:0">
+      <div style="display:flex;align-items:center;justify-content:center;height:100%">
+        <div style="text-align:center">
+          <div style="font-size:14px;color:var(--text-dim)">Checking AgentPMT credentials...</div>
+        </div>
+      </div>
+    </div>`;
+
+  // Auto-check and enable credentials from vault/env
+  let credCheck = null;
+  try {
+    credCheck = await apiPost("/agentpmt/credential-check", {});
+  } catch (_e) {}
+
   let cfg = null;
   try {
     cfg = await api("/config");
   } catch (_e) {}
   const walletStatus = (cfg && cfg.wallet_status) || {};
-  const agentpmtConnected = !!walletStatus.agentpmt_connected;
+  const agentpmtConnected =
+    !!walletStatus.agentpmt_connected ||
+    (credCheck && credCheck.connected);
+  const toolCount =
+    (credCheck && credCheck.tool_count) ||
+    (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) ||
+    0;
+  const autoEnabled = credCheck && credCheck.auto_enabled;
 
-  content.innerHTML = `
-    <div style="display:flex;flex-direction:column;height:100%;padding:0">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border);flex-shrink:0">
-        <div style="display:flex;align-items:center;gap:12px">
-          <img src="img/agentpmt-192.png" alt="AgentPMT" style="height:32px;width:32px;border-radius:6px" onerror="this.style.display='none'">
-          <div>
-            <div style="font-size:18px;font-weight:700">AgentPMT Dashboard</div>
-            <div style="font-size:12px;color:var(--text-dim)">Manage your agents, tools, wallets, and budget</div>
+  // Build iframe URL — include token hint if available
+  const iframeBase = "https://www.agentpmt.com/embed/dashboard";
+  const iframeParams = new URLSearchParams({ theme: "dark" });
+  if (credCheck && credCheck.bearer_available && credCheck.endpoint) {
+    iframeParams.set("endpoint", credCheck.endpoint);
+  }
+  const iframeSrc = `${iframeBase}?${iframeParams.toString()}`;
+
+  if (agentpmtConnected) {
+    // Connected: show full dashboard with iframe
+    content.innerHTML = `
+      <div style="display:flex;flex-direction:column;height:100%;padding:0">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border);flex-shrink:0">
+          <div style="display:flex;align-items:center;gap:12px">
+            <img src="img/agentpmt-192.png" alt="AgentPMT" style="height:32px;width:32px;border-radius:6px" onerror="this.style.display='none'">
+            <div>
+              <div style="font-size:18px;font-weight:700">AgentPMT Dashboard</div>
+              <div style="font-size:12px;color:var(--text-dim)">Manage your agents, tools, wallets, and budget</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="color:var(--green);font-size:13px">&#10003; Connected${toolCount > 0 ? " &mdash; " + toolCount + " tools" : ""}${autoEnabled ? " (auto-detected)" : ""}</span>
+            <a class="btn btn-sm" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" style="font-size:12px">
+              Open in New Tab &#8599;
+            </a>
+            <button class="btn btn-sm" id="agentpmt-disconnect-btn" style="border-color:var(--red);color:var(--red);font-size:11px">Disconnect</button>
           </div>
         </div>
-        <div style="display:flex;align-items:center;gap:10px">
-          ${
-            agentpmtConnected
-              ? '<span style="color:var(--green);font-size:13px">&#10003; Connected</span>'
-              : '<span style="color:var(--text-dim);font-size:13px">Not connected</span>'
-          }
-          <a class="btn btn-sm" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" style="font-size:12px">
-            Open in New Tab &#8599;
-          </a>
+        <div style="flex:1;min-height:0">
+          <iframe
+            id="agentpmt-iframe"
+            src="${esc(iframeSrc)}"
+            title="AgentPMT Dashboard"
+            style="width:100%;height:100%;border:none;display:block"
+            allow="storage-access"
+            loading="lazy"
+          ></iframe>
         </div>
-      </div>
-      <div style="flex:1;min-height:0">
-        <iframe
-          src="https://www.agentpmt.com/embed/dashboard?theme=dark"
-          title="AgentPMT Dashboard"
-          style="width:100%;height:100%;border:none;display:block"
-          allow="storage-access"
-          loading="lazy"
-        ></iframe>
-      </div>
-    </div>
-  `;
+      </div>`;
+
+    // Disconnect handler
+    const disconnectBtn = document.getElementById("agentpmt-disconnect-btn");
+    if (disconnectBtn) {
+      disconnectBtn.addEventListener("click", async () => {
+        if (!confirm("Disconnect AgentPMT? This removes stored credentials.")) return;
+        disconnectBtn.disabled = true;
+        disconnectBtn.textContent = "Disconnecting...";
+        try {
+          await apiPost("/agentpmt/disconnect", {});
+          window._invalidateSetupState && window._invalidateSetupState();
+          await renderAgentPmt();
+        } catch (e) {
+          alert("Disconnect failed: " + (e.message || e));
+          disconnectBtn.disabled = false;
+          disconnectBtn.textContent = "Disconnect";
+        }
+      });
+    }
+  } else {
+    // Not connected: show setup flow
+    content.innerHTML = `
+      <div style="display:flex;flex-direction:column;height:100%;padding:0">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border);flex-shrink:0">
+          <div style="display:flex;align-items:center;gap:12px">
+            <img src="img/agentpmt-192.png" alt="AgentPMT" style="height:32px;width:32px;border-radius:6px" onerror="this.style.display='none'">
+            <div>
+              <div style="font-size:18px;font-weight:700">AgentPMT Dashboard</div>
+              <div style="font-size:12px;color:var(--text-dim)">Manage your agents, tools, wallets, and budget</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="color:var(--text-dim);font-size:13px">Not connected</span>
+            <a class="btn btn-sm" href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" style="font-size:12px">
+              Open in New Tab &#8599;
+            </a>
+          </div>
+        </div>
+        <div style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px">
+          <div style="max-width:480px;text-align:center">
+            <div style="font-size:48px;margin-bottom:16px">&#9883;</div>
+            <h2 style="margin-bottom:12px;color:var(--text)">Connect to AgentPMT</h2>
+            <p style="color:var(--text-dim);font-size:14px;line-height:1.6;margin-bottom:24px">
+              AgentPMT provides 100+ third-party tools, budget controls, and agent workflows.
+              Enter your API key to connect. Credentials are stored in the encrypted vault
+              and persist across containers.
+            </p>
+            <div style="display:flex;flex-direction:column;gap:12px;align-items:center">
+              <div style="display:flex;gap:8px;width:100%;max-width:360px">
+                <input type="password" id="agentpmt-key-input" placeholder="AgentPMT API Key or Bearer Token"
+                  style="flex:1;padding:10px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:13px">
+                <button class="btn btn-primary" id="agentpmt-connect-btn" style="padding:10px 20px;font-size:13px;border-radius:6px;white-space:nowrap">Connect</button>
+              </div>
+              <div id="agentpmt-connect-status" style="font-size:12px;min-height:20px"></div>
+              <div style="margin-top:8px;font-size:12px;color:var(--text-dim)">
+                Get your API key at <a href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" style="color:var(--green)">agentpmt.com</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    // Connect handler
+    const connectBtn = document.getElementById("agentpmt-connect-btn");
+    const keyInput = document.getElementById("agentpmt-key-input");
+    const statusEl = document.getElementById("agentpmt-connect-status");
+    if (connectBtn && keyInput) {
+      const doConnect = async () => {
+        const key = keyInput.value.trim();
+        if (!key) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Please enter an API key</span>';
+          return;
+        }
+        connectBtn.disabled = true;
+        connectBtn.textContent = "Connecting...";
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Storing credentials and connecting...</span>';
+        try {
+          // Store key in vault
+          await apiPost("/vault/keys/agentpmt", { key: key, env_var: "AGENTPMT_API_KEY" });
+          // Enable AgentPMT
+          await apiPost("/agentpmt/enable", {});
+          // Verify connection
+          const check = await apiPost("/agentpmt/credential-check", {});
+          if (check && check.connected) {
+            if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Connected! Loading dashboard...</span>';
+            window._invalidateSetupState && window._invalidateSetupState();
+            setTimeout(() => renderAgentPmt(), 500);
+          } else {
+            // Token stored but couldn't verify — might still work
+            if (statusEl) statusEl.innerHTML = '<span style="color:var(--yellow)">Key saved. Could not verify connection — the dashboard may still work.</span>';
+            window._invalidateSetupState && window._invalidateSetupState();
+            setTimeout(() => renderAgentPmt(), 1500);
+          }
+        } catch (e) {
+          connectBtn.disabled = false;
+          connectBtn.textContent = "Connect";
+          if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
+        }
+      };
+      connectBtn.addEventListener("click", doConnect);
+      keyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") doConnect(); });
+    }
+  }
 }
 
 // -- Routing ------------------------------------------------------------------
@@ -5186,6 +5320,22 @@ async function renderSetup() {
       });
     }
   })();
+
+  // Auto-check AgentPMT credentials from vault on setup page load
+  if (!agentpmtConnected) {
+    (async () => {
+      try {
+        const credCheck = await apiPost("/agentpmt/credential-check", {});
+        if (credCheck && credCheck.credentials_found && credCheck.connected) {
+          // Credentials found in vault — refresh the setup page to show connected state
+          window._invalidateSetupState && window._invalidateSetupState();
+          await fetchSetupState(true);
+          await renderSetup();
+          updateNavLockState();
+        }
+      } catch (_e) { /* silent — just a check */ }
+    })();
+  }
 
   const setupNowBtn = document.getElementById("setup-agentpmt-setup-now");
   if (setupNowBtn) {

@@ -232,6 +232,10 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/agentpmt/enable", post(api_agentpmt_enable))
         .route("/agentpmt/disconnect", post(api_agentpmt_disconnect))
         .route(
+            "/agentpmt/credential-check",
+            post(api_agentpmt_credential_check),
+        )
+        .route(
             "/agentpmt/anonymous-wallet",
             post(api_agentpmt_anonymous_wallet),
         )
@@ -6452,6 +6456,74 @@ async fn api_agentpmt_disconnect(AxumState(state): AxumState<DashboardState>) ->
     // Disable config and clear catalog
     agentpmt::disconnect().map_err(internal_err)?;
     Ok(Json(json!({ "ok": true, "disconnected": true })))
+}
+
+/// Check if AgentPMT credentials exist in the vault and auto-enable if found.
+///
+/// This supports credential persistence across containers: if a previous
+/// session stored the AgentPMT bearer token in the vault, this endpoint
+/// detects it and auto-enables the AgentPMT config so the dashboard
+/// shows "connected" without requiring manual re-login.
+async fn api_agentpmt_credential_check(
+    AxumState(state): AxumState<DashboardState>,
+) -> ApiResult {
+    // Try all vault sources (v1 wallet-derived + v2 scope-key-derived)
+    let token = state
+        .vault
+        .as_ref()
+        .and_then(|v| v.get_key("agentpmt").ok())
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| {
+            configured_vault(&state)
+                .ok()
+                .and_then(|v| v.get_key("agentpmt").ok())
+                .filter(|k| !k.trim().is_empty())
+        });
+
+    // Also check env var fallback
+    let has_env_token = std::env::var("AGENTPMT_BEARER_TOKEN")
+        .or_else(|_| std::env::var("AGENTPMT_API_KEY"))
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_some();
+
+    let has_token = token.is_some() || has_env_token;
+
+    if !has_token {
+        return Ok(Json(json!({
+            "ok": true,
+            "credentials_found": false,
+            "auto_enabled": false,
+            "connected": false,
+        })));
+    }
+
+    // Credentials exist — auto-enable if not already
+    let mut cfg = agentpmt::load_or_default();
+    let was_enabled = cfg.enabled;
+    if !cfg.enabled {
+        cfg.enabled = true;
+        cfg.updated_at = chrono::Utc::now().timestamp() as u64;
+        let path = agentpmt::agentpmt_config_path();
+        let _ = agentpmt::save_config(&path, &cfg);
+    }
+
+    // Check connection status
+    let pmt_auth = agentpmt::has_bearer_token();
+    let (connected, tool_count) = resolve_agentpmt_setup_status(&cfg, pmt_auth);
+
+    // Return token for iframe injection (only the bearer format, not raw key)
+    let bearer = agentpmt::resolved_bearer_token(&cfg);
+
+    Ok(Json(json!({
+        "ok": true,
+        "credentials_found": true,
+        "auto_enabled": !was_enabled,
+        "connected": connected,
+        "tool_count": tool_count,
+        "bearer_available": bearer.is_some(),
+        "endpoint": agentpmt::resolved_mcp_endpoint(&cfg),
+    })))
 }
 
 #[derive(Deserialize)]
