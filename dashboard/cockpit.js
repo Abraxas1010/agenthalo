@@ -1346,14 +1346,22 @@
         if (curVal && workflows.some((w) => w.workflow_id === curVal)) {
           selectEl.value = curVal;
         }
-      } catch (_e) {}
+      } catch (e) {
+        console.warn('[Cockpit] Failed to load workflows:', e);
+      }
     }
 
     async _seedBuiltinWorkflows() {
-      // Seed 3 built-in template workflows so cockpit dropdown has content on fresh start
+      // Guard: only one tab seeds at a time (sessionStorage is per-tab, use localStorage for cross-tab)
+      const SEED_KEY = 'halo_wf_seed_lock';
+      const lockTs = localStorage.getItem(SEED_KEY);
+      if (lockTs && Date.now() - Number(lockTs) < 30000) return; // another tab seeding within 30s
+      localStorage.setItem(SEED_KEY, String(Date.now()));
+
       const templates = [
         {
           name: 'Proof + Hostile Audit Loop',
+          workflow_id: 'builtin-proof-audit-loop',
           litegraph: {
             nodes: [
               { id: 1, type: 'halo/agent', pos: [100, 200], size: [240, 110], properties: { role_name: 'Prover', agent_type: 'codex', model: 'codex-5.4-high', skill_ref: 'formal-proof', prompt_template: 'Continue proving the current phase. Address all audit findings.', timeout_secs: 600 } },
@@ -1368,6 +1376,7 @@
         },
         {
           name: 'Translation Verification',
+          workflow_id: 'builtin-translation-verify',
           litegraph: {
             nodes: [
               { id: 1, type: 'halo/agent', pos: [100, 200], size: [240, 110], properties: { role_name: 'Translator', agent_type: 'claude', model: 'claude-opus-4-6', skill_ref: 'meta-translation', prompt_template: 'Translate the given Lean code to Coq.', timeout_secs: 600 } },
@@ -1381,6 +1390,7 @@
         },
         {
           name: 'Paper Formalization Pipeline',
+          workflow_id: 'builtin-paper-formalization',
           litegraph: {
             nodes: [
               { id: 1, type: 'halo/phase', pos: [60, 80], size: [220, 80], properties: { phase_name: 'Phase 1: Extract', phase_number: 1, description: 'Extract proof obligations from paper' } },
@@ -1395,14 +1405,26 @@
           halo_meta: { description: 'Extract obligations from paper, plan formalization, prove, then audit.', max_iterations: 10, role_definitions: {} },
         },
       ];
+
+      let seeded = 0;
+      let errors = [];
       for (const t of templates) {
         try {
-          await fetch('/api/workflows', {
+          const res = await fetch('/api/workflows', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: t.name, workflow_id: '', created_at: 0, updated_at: 0, version: 1, litegraph: t.litegraph, halo_meta: t.halo_meta }),
+            body: JSON.stringify({ name: t.name, workflow_id: t.workflow_id, created_at: 0, updated_at: 0, version: 1, litegraph: t.litegraph, halo_meta: t.halo_meta }),
           });
-        } catch (_e) {}
+          if (res.ok) seeded++;
+          else if (res.status === 409) { /* duplicate — already exists, fine */ }
+          else errors.push(`${t.name}: HTTP ${res.status}`);
+        } catch (e) {
+          errors.push(`${t.name}: ${e.message}`);
+        }
+      }
+      localStorage.removeItem(SEED_KEY);
+      if (errors.length > 0 && seeded === 0) {
+        console.warn('[Cockpit] Failed to seed built-in workflows:', errors);
       }
     }
 
