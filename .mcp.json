@@ -2,7 +2,7 @@
   "mcpServers": {
     "agenthalo": {
       "command": "python3",
-      "args": ["scripts/mcp_stdio_bridge.py"],
+      "args": ["/home/abraxas/Work/agenthalo/scripts/mcp_stdio_bridge.py"],
       "env": {
         "AGENTHALO_MCP_BRIDGE_AUTO_START": "1"
       }
