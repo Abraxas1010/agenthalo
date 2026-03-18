@@ -430,7 +430,7 @@ async function renderProofGate() {
 
 async function renderP2PClawPage() {
   clearP2PClawTimers();
-  content.innerHTML = '<div class="loading">Loading P2PCLAW hive...</div>';
+  content.innerHTML = '<div class="loading" style="color:#9a9490;font-family:\'JetBrains Mono\',monospace">Connecting to research hive...</div>';
   const fmtWhen = (ts) =>
     ts ? new Date(Number(ts) * 1000).toLocaleString() : "Never";
   const safeList = (value) => (Array.isArray(value) ? value : []);
@@ -475,193 +475,334 @@ async function renderP2PClawPage() {
       try {
         const reg = await apiPost("/p2pclaw/auto-register", {});
         if (reg && reg.registered) {
-          // Re-render with the new identity-based config
           return renderP2PClawPage();
         }
         if (reg && reg.already_configured) {
           config.agent_id = reg.agent_id;
           config.agent_name = reg.agent_name;
         }
-      } catch (_e) {
-        // Auto-register failed (no identity yet) — continue with defaults
-      }
+      } catch (_e) {}
     }
 
+    const embedUrl = (config.endpoint_url || "https://p2pclaw.com").replace(/\/+$/, "");
+
     content.innerHTML = `
-      <div class="page-title" style="color:#ff4e1a">P2PCLAW Research Hive</div>
-      <p class="muted">> silicon / carbon coordination surface for the live research hive</p>
-      <section class="card" style="border-color:#ff4e1a;background:linear-gradient(180deg,rgba(255,78,26,0.08),rgba(8,10,8,0.92))">
-        <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap">
-          <div style="display:grid;gap:8px">
-            <div style="font-size:20px;color:${connectionLive ? "var(--green)" : "var(--text-dim)"}">
-              ${connectionLive ? "● CONNECTED" : "○ DISCONNECTED"}
+      <div class="p2p-hybrid">
+        <!-- Main embed area -->
+        <div class="p2p-embed" id="p2p-embed-area">
+          <iframe src="${esc(embedUrl)}/app/dashboard" id="p2p-iframe" allow="clipboard-write"></iframe>
+        </div>
+
+        <!-- Side panel — HALO controls -->
+        <div class="p2p-panel">
+          <div class="p2p-panel-header">
+            <div class="p2p-panel-title">HALO Controls</div>
+            <div class="p2p-panel-status">
+              <div class="p2p-status-dot ${connectionLive ? "live" : "off"}"></div>
+              <span class="p2p-status-label">${connectionLive ? "Live" : "Offline"}</span>
+              <label class="p2p-switch">
+                <input type="checkbox" id="p2pclaw-enabled-toggle" ${enabled ? "checked" : ""}>
+                <span class="p2p-slider"></span>
+              </label>
             </div>
-            <div class="config-desc">Peer count ${Number(swarm.agents || 0)} · agent ${esc(String(config.agent_id || "agenthalo"))}</div>
-            <div class="config-desc">Mode: silicon agent / carbon human</div>
           </div>
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <span class="badge ${enabled ? "badge-ok" : "badge-muted"}">${enabled ? "ENABLED" : "DISABLED"}</span>
-            <label class="switch">
-              <input type="checkbox" id="p2pclaw-enabled-toggle" ${enabled ? "checked" : ""}>
-              <span class="slider"></span>
-            </label>
-            <button class="btn btn-sm" id="p2pclaw-refresh">Refresh</button>
-          </div>
-        </div>
-        ${
-          statusErr
-            ? `<div class="networking-msg err" style="margin-top:12px">${esc(String(statusErr.message || statusErr))}</div>`
-            : ""
-        }
-      </section>
-      <section class="card" style="margin-top:16px">
-        <div class="section-header" style="color:#ff4e1a">Agent Briefing</div>
-        <pre id="p2pclaw-briefing" class="network-briefing" style="min-height:180px;border-color:#69311d">${esc(String(briefingText))}</pre>
-      </section>
-      <section class="card" style="margin-top:16px">
-        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
-          <div class="section-header" style="color:#ff4e1a">Papers</div>
-          <div style="display:flex;gap:8px">
-            <button class="btn btn-sm ${_p2pclawPaperTab === "published" ? "btn-primary" : ""}" data-p2-tab="published">> Published</button>
-            <button class="btn btn-sm ${_p2pclawPaperTab === "mempool" ? "btn-primary" : ""}" data-p2-tab="mempool">> Mempool</button>
-          </div>
-        </div>
-        <div class="table-wrap" style="margin-top:12px">
-          <table>
-            <thead><tr><th>Title</th><th>Author</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>
-            <tbody>
-              ${
-                activePapers.length
-                  ? activePapers
-                      .map((paper) => {
-                        const paperId = paper.paper_id || paper.id || "";
-                        return `<tr>
-                          <td>${esc(String(paper.title || paperId || "untitled"))}</td>
-                          <td>${esc(String(paper.author || paper.agentId || "unknown"))}</td>
-                          <td>${esc(String(paper.status || (_p2pclawPaperTab === "mempool" ? "pending" : "published")))}</td>
-                          <td>${fmtWhen(paper.timestamp)}</td>
-                          <td style="display:flex;gap:6px;flex-wrap:wrap">
-                            ${
-                              _p2pclawPaperTab === "mempool"
-                                ? `<button class="btn btn-sm" data-p2-validate="${esc(String(paperId))}" data-p2-approve="1">Validate</button>`
-                                : `<button class="btn btn-sm" data-p2-verify="${esc(String(paperId))}" data-p2-title="${esc(String(paper.title || ""))}" data-p2-content="${esc(String(paper.extra?.content || paper.content || ""))}">Verify</button>`
-                            }
-                          </td>
-                        </tr>`;
-                      })
-                      .join("")
-                  : '<tr><td colspan="5" class="muted">No papers available on this tab.</td></tr>'
-              }
-            </tbody>
-          </table>
-        </div>
-      </section>
-      <section class="card" style="margin-top:16px">
-        <div class="section-header" style="color:#ff4e1a">Publish</div>
-        <div class="network-form-row"><label>Title</label><input class="input" id="p2-publish-title" placeholder="Research note title"></div>
-        <div class="network-form-row"><label>Abstract</label><textarea class="input" id="p2-publish-abstract" rows="3" placeholder="Abstract"></textarea></div>
-        <div class="network-form-row"><label>Content</label><textarea class="input" id="p2-publish-content" rows="8" placeholder="Paper body, markdown, or extracted notes"></textarea></div>
-        <div class="network-form-row"><label>Category</label><input class="input" id="p2-publish-category" placeholder="systems / proofs / markets"></div>
-        <div class="network-form-actions">
-          <button class="btn btn-primary" id="p2-publish-submit">Publish Paper</button>
-        </div>
-        <div id="p2-publish-msg" class="networking-msg"></div>
-      </section>
-      <section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-top:16px">
-        <div class="card">
-          <div class="section-header" style="color:#ff4e1a">Investigation Wheel</div>
-          <div class="network-form-row"><label>> Search wheel</label><input class="input" id="p2-wheel-query" placeholder="enter hypothesis, theorem, or paper id"></div>
-          <div class="network-form-actions"><button class="btn btn-sm" id="p2-wheel-search">Search</button></div>
-          <pre id="p2-wheel-result" class="network-briefing" style="min-height:120px">Awaiting query.</pre>
-          <div class="card-sub">Active investigations</div>
-          <div style="display:grid;gap:8px;margin-top:8px">
-            ${
-              investigations.length
-                ? investigations
-                    .map(
-                      (it) => `<div style="border:1px solid var(--border);border-radius:8px;padding:10px">
-                        <div style="font-family:var(--mono)">${esc(String(it.title || it.id || "untitled"))}</div>
-                        <div class="config-desc">${esc(String(it.status || "open"))}</div>
-                      </div>`,
+
+          <div class="p2p-panel-body">
+            <!-- Stats -->
+            <div class="p2p-section">
+              <div class="p2p-section-header" data-p2-toggle="stats">
+                <span class="p2p-section-label">Status</span>
+                <span class="p2p-section-arrow">&#9662;</span>
+              </div>
+              <div class="p2p-section-content">
+                <div class="p2p-stats-row">
+                  <div class="p2p-stat">
+                    <span class="p2p-stat-value">${Number(swarm.agents || 0)}</span>
+                    <span class="p2p-stat-label">Peers</span>
+                  </div>
+                  <div class="p2p-stat">
+                    <span class="p2p-stat-value">${papers.length}</span>
+                    <span class="p2p-stat-label">Papers</span>
+                  </div>
+                  <div class="p2p-stat">
+                    <span class="p2p-stat-value">${mempool.length}</span>
+                    <span class="p2p-stat-label">Mempool</span>
+                  </div>
+                  <div class="p2p-stat">
+                    <span class="p2p-stat-value">${investigations.length}</span>
+                    <span class="p2p-stat-label">Investigations</span>
+                  </div>
+                </div>
+                <div style="margin-top:10px;font-size:11px;color:#9a9490;font-family:'JetBrains Mono',monospace">
+                  Agent: ${esc(String(config.agent_id || "agenthalo"))} · ${esc(String(config.agent_name || "AgentHALO"))}
+                </div>
+                ${statusErr ? `<div class="p2p-msg err" style="margin-top:8px">${esc(String(statusErr.message || statusErr))}</div>` : ""}
+              </div>
+            </div>
+
+            <!-- Briefing -->
+            <div class="p2p-section">
+              <div class="p2p-section-header" data-p2-toggle="briefing">
+                <span class="p2p-section-label">Briefing</span>
+                <span class="p2p-section-arrow">&#9662;</span>
+              </div>
+              <div class="p2p-section-content">
+                <pre class="p2p-log" id="p2pclaw-briefing" style="max-height:180px">${esc(String(briefingText))}</pre>
+              </div>
+            </div>
+
+            <!-- Papers -->
+            <div class="p2p-section">
+              <div class="p2p-section-header" data-p2-toggle="papers">
+                <span class="p2p-section-label">Papers</span>
+                <span class="p2p-section-arrow">&#9662;</span>
+              </div>
+              <div class="p2p-section-content">
+                <div class="p2p-tab-bar">
+                  <button class="p2p-tab ${_p2pclawPaperTab === "published" ? "active" : ""}" data-p2-tab="published">Published</button>
+                  <button class="p2p-tab ${_p2pclawPaperTab === "mempool" ? "active" : ""}" data-p2-tab="mempool">Mempool</button>
+                </div>
+                <table class="p2p-papers-table">
+                  <thead><tr><th>Title</th><th>Status</th><th></th></tr></thead>
+                  <tbody>
+                    ${activePapers.length
+                      ? activePapers.map((paper) => {
+                          const paperId = paper.paper_id || paper.id || "";
+                          return `<tr>
+                            <td title="${esc(String(paper.title || paperId || "untitled"))}">${esc(String(paper.title || paperId || "untitled"))}</td>
+                            <td>${esc(String(paper.status || (_p2pclawPaperTab === "mempool" ? "pending" : "published")))}</td>
+                            <td>
+                              ${_p2pclawPaperTab === "mempool"
+                                ? `<button class="p2p-btn p2p-btn-sm" data-p2-validate="${esc(String(paperId))}" data-p2-approve="1">Validate</button>`
+                                : `<button class="p2p-btn p2p-btn-sm" data-p2-verify="${esc(String(paperId))}" data-p2-title="${esc(String(paper.title || ""))}" data-p2-content="${esc(String(paper.extra?.content || paper.content || ""))}">Verify</button>`
+                              }
+                            </td>
+                          </tr>`;
+                        }).join("")
+                      : `<tr><td colspan="3" style="color:#6a6560;padding:12px 8px">No papers on this tab.</td></tr>`
+                    }
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Publish -->
+            <div class="p2p-section collapsed">
+              <div class="p2p-section-header" data-p2-toggle="publish">
+                <span class="p2p-section-label">Publish</span>
+                <span class="p2p-section-arrow">&#9662;</span>
+              </div>
+              <div class="p2p-section-content">
+                <div class="p2p-field">
+                  <label class="p2p-label">Title</label>
+                  <input class="p2p-input" id="p2-publish-title" placeholder="Research note title">
+                </div>
+                <div class="p2p-field">
+                  <label class="p2p-label">Abstract</label>
+                  <textarea class="p2p-input" id="p2-publish-abstract" rows="2" placeholder="Abstract"></textarea>
+                </div>
+                <div class="p2p-field">
+                  <label class="p2p-label">Content</label>
+                  <textarea class="p2p-input" id="p2-publish-content" rows="5" placeholder="Paper body, markdown, or extracted notes"></textarea>
+                </div>
+                <div class="p2p-field">
+                  <label class="p2p-label">Category</label>
+                  <input class="p2p-input" id="p2-publish-category" placeholder="systems / proofs / markets">
+                </div>
+                <div class="p2p-actions">
+                  <button class="p2p-btn p2p-btn-primary" id="p2-publish-submit">Publish</button>
+                </div>
+                <div class="p2p-msg" id="p2-publish-msg"></div>
+              </div>
+            </div>
+
+            <!-- Investigation Wheel -->
+            <div class="p2p-section collapsed">
+              <div class="p2p-section-header" data-p2-toggle="wheel">
+                <span class="p2p-section-label">Investigation Wheel</span>
+                <span class="p2p-section-arrow">&#9662;</span>
+              </div>
+              <div class="p2p-section-content">
+                <div class="p2p-field">
+                  <label class="p2p-label">Search</label>
+                  <input class="p2p-input" id="p2-wheel-query" placeholder="hypothesis, theorem, or paper id">
+                </div>
+                <div class="p2p-actions">
+                  <button class="p2p-btn p2p-btn-sm" id="p2-wheel-search">Search</button>
+                </div>
+                <pre class="p2p-log" id="p2-wheel-result" style="max-height:140px">Awaiting query.</pre>
+                ${investigations.length
+                  ? `<div style="margin-top:10px;font-size:10px;color:#6a6560;text-transform:uppercase;letter-spacing:0.5px">Active</div>
+                     ${investigations.map((it) => `<div style="margin-top:6px;padding:8px 10px;background:#0c0c0d;border:1px solid #2c2c30;border-radius:4px">
+                       <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#f5f0eb">${esc(String(it.title || it.id || "untitled"))}</div>
+                       <div style="font-size:10px;color:#6a6560;margin-top:2px">${esc(String(it.status || "open"))}</div>
+                     </div>`).join("")}`
+                  : ""
+                }
+              </div>
+            </div>
+
+            <!-- Chat -->
+            <div class="p2p-section collapsed">
+              <div class="p2p-section-header" data-p2-toggle="chat">
+                <span class="p2p-section-label">Hive Chat</span>
+                <span class="p2p-section-arrow">&#9662;</span>
+              </div>
+              <div class="p2p-section-content">
+                <div class="p2p-field">
+                  <textarea class="p2p-input" id="p2-chat-message" rows="3" placeholder="Ask the hive a question"></textarea>
+                </div>
+                <div class="p2p-actions">
+                  <button class="p2p-btn p2p-btn-sm" id="p2-chat-send">Send</button>
+                </div>
+                <pre class="p2p-log" id="p2-chat-events" style="max-height:200px">${esc(
+                  events
+                    .map((event) =>
+                      `[${fmtWhen(event.timestamp)}] ${event.kind || "event"} ${JSON.stringify(event.extra || {})}`,
                     )
-                    .join("")
-                : '<div class="muted">No investigations reported.</div>'
-            }
+                    .join("\n") || "No hive events yet.",
+                )}</pre>
+              </div>
+            </div>
+
+            <!-- Configuration -->
+            <div class="p2p-section collapsed">
+              <div class="p2p-section-header" data-p2-toggle="config">
+                <span class="p2p-section-label">Configuration</span>
+                <span class="p2p-section-arrow">&#9662;</span>
+              </div>
+              <div class="p2p-section-content">
+                <div class="p2p-field">
+                  <label class="p2p-label">Endpoint</label>
+                  <input class="p2p-input" id="p2-endpoint-url" value="${esc(String(config.endpoint_url || "https://p2pclaw.com"))}">
+                </div>
+                <div class="p2p-field">
+                  <label class="p2p-label">Agent Name</label>
+                  <input class="p2p-input" id="p2-agent-name" value="${esc(String(config.agent_name || "AgentHALO"))}">
+                </div>
+                <div class="p2p-field">
+                  <label class="p2p-label">Agent ID</label>
+                  <input class="p2p-input" id="p2-agent-id" value="${esc(String(config.agent_id || "agenthalo"))}">
+                </div>
+                <div class="p2p-field">
+                  <label class="p2p-label">HMAC Secret</label>
+                  <input class="p2p-input" id="p2-auth-secret" type="password" placeholder="optional shared secret">
+                </div>
+                <div class="p2p-field">
+                  <label class="p2p-label">Tier</label>
+                  <div class="p2p-tier-row">
+                    <label class="p2p-tier-opt"><input type="radio" name="p2-tier" value="tier1" ${String(config.tier || "tier1") === "tier1" ? "checked" : ""}> Tier 1</label>
+                    <label class="p2p-tier-opt"><input type="radio" name="p2-tier" value="tier2" ${String(config.tier || "tier1") === "tier2" ? "checked" : ""}> Tier 2</label>
+                  </div>
+                </div>
+                <div class="p2p-actions">
+                  <button class="p2p-btn p2p-btn-sm" id="p2-test-btn">Test</button>
+                  <button class="p2p-btn p2p-btn-primary" id="p2-save-btn">Save</button>
+                </div>
+                <div class="p2p-msg" id="p2-config-msg"></div>
+              </div>
+            </div>
+
+            <!-- Navigate embed -->
+            <div class="p2p-section" style="border-bottom:none">
+              <div class="p2p-section-header" data-p2-toggle="nav">
+                <span class="p2p-section-label">Navigate</span>
+                <span class="p2p-section-arrow">&#9662;</span>
+              </div>
+              <div class="p2p-section-content">
+                <div class="p2p-actions" style="flex-wrap:wrap;margin-top:0">
+                  <button class="p2p-btn p2p-btn-sm" data-p2-nav="/app/dashboard">Dashboard</button>
+                  <button class="p2p-btn p2p-btn-sm" data-p2-nav="/app/network">Network Map</button>
+                  <button class="p2p-btn p2p-btn-sm" data-p2-nav="/app/papers">Papers</button>
+                  <button class="p2p-btn p2p-btn-sm" data-p2-nav="/app/mempool">Mempool</button>
+                  <button class="p2p-btn p2p-btn-sm" data-p2-nav="/app/agents">Agents</button>
+                </div>
+                <div class="p2p-actions" style="margin-top:8px">
+                  <button class="p2p-btn p2p-btn-sm" id="p2pclaw-refresh">Refresh</button>
+                  <a href="${esc(embedUrl)}" target="_blank" rel="noopener" class="p2p-btn p2p-btn-sm" style="text-decoration:none;text-align:center">Open in Tab</a>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="card">
-          <div class="section-header" style="color:#ff4e1a">Chat</div>
-          <div class="network-form-row"><label>> Send message</label><textarea class="input" id="p2-chat-message" rows="4" placeholder="Ask the hive a question"></textarea></div>
-          <div class="network-form-actions"><button class="btn btn-sm" id="p2-chat-send">Send</button></div>
-          <pre id="p2-chat-events" class="network-briefing" style="min-height:220px">${esc(
-            events
-              .map((event) =>
-                `[${fmtWhen(event.timestamp)}] ${event.kind || "event"} ${JSON.stringify(event.extra || {})}`,
-              )
-              .join("\n") || "No hive events yet.",
-          )}</pre>
-        </div>
-      </section>
-      <section class="card" style="margin-top:16px">
-        <div class="section-header" style="color:#ff4e1a">Configuration</div>
-        <div class="network-form-row"><label>Endpoint</label><input class="input" id="p2-endpoint-url" value="${esc(String(config.endpoint_url || "https://p2pclaw.com"))}"></div>
-        <div class="network-form-row"><label>Agent Name</label><input class="input" id="p2-agent-name" value="${esc(String(config.agent_name || "AgentHALO"))}"></div>
-        <div class="network-form-row"><label>Agent ID</label><input class="input" id="p2-agent-id" value="${esc(String(config.agent_id || "agenthalo"))}"></div>
-        <div class="network-form-row"><label>HMAC Secret</label><input class="input" id="p2-auth-secret" type="password" placeholder="optional shared secret"></div>
-        <div class="network-form-row"><label>Tier</label><div class="network-tier-row">
-          <label><input type="radio" name="p2-tier" value="tier1" ${String(config.tier || "tier1") === "tier1" ? "checked" : ""}> Tier 1</label>
-          <label><input type="radio" name="p2-tier" value="tier2" ${String(config.tier || "tier1") === "tier2" ? "checked" : ""}> Tier 2</label>
-        </div></div>
-        <div class="network-form-actions">
-          <button class="btn btn-sm" id="p2-test-btn">Test Connection</button>
-          <button class="btn btn-primary" id="p2-save-btn">Save Config</button>
-        </div>
-        <div id="p2-config-msg" class="networking-msg"></div>
-      </section>
+      </div>
     `;
 
-    const setConfigMsg = (text, ok) => {
-      const msg = $("#p2-config-msg");
+    // === Event Handlers ===
+
+    const setMsg = (id, text, ok) => {
+      const msg = $(`#${id}`);
       if (!msg) return;
       msg.textContent = text || "";
-      msg.classList.toggle("ok", !!ok);
-      msg.classList.toggle("err", !!text && !ok);
-    };
-    const setPublishMsg = (text, ok) => {
-      const msg = $("#p2-publish-msg");
-      if (!msg) return;
-      msg.textContent = text || "";
-      msg.classList.toggle("ok", !!ok);
-      msg.classList.toggle("err", !!text && !ok);
+      msg.className = "p2p-msg" + (text ? (ok ? " ok" : " err") : "");
     };
 
+    // Collapsible sections
+    $$("[data-p2-toggle]").forEach((hdr) =>
+      hdr.addEventListener("click", () => {
+        hdr.closest(".p2p-section")?.classList.toggle("collapsed");
+      }),
+    );
+
+    // Enable/disable toggle
     $("#p2pclaw-enabled-toggle")?.addEventListener("change", async (ev) => {
       const enabling = !!ev.currentTarget.checked;
       await apiPost("/addons", { name: "p2pclaw", enabled: enabling });
       if (enabling) {
-        // Auto-register with agent identity when enabling P2PCLAW
         window._p2pclawAutoRegisterAttempted = false;
-        try {
-          await apiPost("/p2pclaw/auto-register", {});
-        } catch (_e) { /* identity may not be available yet */ }
+        try { await apiPost("/p2pclaw/auto-register", {}); } catch (_e) {}
       }
       await renderP2PClawPage();
     });
+
+    // Placeholder enable/retry buttons
+    $("#p2p-enable-btn")?.addEventListener("click", async () => {
+      await apiPost("/addons", { name: "p2pclaw", enabled: true });
+      window._p2pclawAutoRegisterAttempted = false;
+      try { await apiPost("/p2pclaw/auto-register", {}); } catch (_e) {}
+      await renderP2PClawPage();
+    });
+    $("#p2p-retry-btn")?.addEventListener("click", () => renderP2PClawPage());
+
+    // Refresh
     $("#p2pclaw-refresh")?.addEventListener("click", () => renderP2PClawPage());
+
+    // Navigate embed iframe
+    $$("[data-p2-nav]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const iframe = $("#p2p-iframe");
+        const path = btn.dataset.p2Nav || "/app/dashboard";
+        if (iframe) {
+          iframe.src = `${embedUrl}${path}`;
+        } else {
+          // Not yet enabled — enable and load
+          const area = $("#p2p-embed-area");
+          if (area) {
+            area.innerHTML = `<iframe src="${esc(embedUrl)}${esc(path)}" id="p2p-iframe" allow="clipboard-write" style="width:100%;height:100%;border:none;background:#0c0c0d"></iframe>`;
+          }
+        }
+      }),
+    );
+
+    // Paper tabs
     $$("[data-p2-tab]").forEach((btn) =>
       btn.addEventListener("click", () => {
         _p2pclawPaperTab = btn.dataset.p2Tab || "published";
         renderP2PClawPage();
       }),
     );
+
+    // Test connection
     $("#p2-test-btn")?.addEventListener("click", async () => {
       try {
         await api("/p2pclaw/status");
-        setConfigMsg("Connection successful.", true);
+        setMsg("p2-config-msg", "Connection successful.", true);
       } catch (e) {
-        setConfigMsg(String((e && e.message) || e), false);
+        setMsg("p2-config-msg", String((e && e.message) || e), false);
       }
     });
+
+    // Save config
     $("#p2-save-btn")?.addEventListener("click", async () => {
       const payload = {
         endpoint_url: ($("#p2-endpoint-url")?.value || "").trim(),
@@ -673,7 +814,7 @@ async function renderP2PClawPage() {
       if (authSecret) payload.auth_secret = authSecret;
       try {
         const res = await apiPost("/p2pclaw/configure", payload);
-        setConfigMsg(
+        setMsg("p2-config-msg",
           authSecret
             ? `Saved. Secret ${res.auth_in_vault ? "stored in vault." : "stored via insecure fallback."}`
             : "Saved.",
@@ -681,9 +822,11 @@ async function renderP2PClawPage() {
         );
         await renderP2PClawPage();
       } catch (e) {
-        setConfigMsg(String((e && e.message) || e), false);
+        setMsg("p2-config-msg", String((e && e.message) || e), false);
       }
     });
+
+    // Publish
     $("#p2-publish-submit")?.addEventListener("click", async () => {
       const title = ($("#p2-publish-title")?.value || "").trim();
       const abstractText = ($("#p2-publish-abstract")?.value || "").trim();
@@ -693,23 +836,17 @@ async function renderP2PClawPage() {
         abstractText ? `Abstract:\n${abstractText}` : "",
         category ? `Category: ${category}` : "",
         body,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      ].filter(Boolean).join("\n\n");
       try {
-        const result = await apiPost("/p2pclaw/papers/publish", {
-          title,
-          content: contentText,
-        });
-        setPublishMsg(
-          `Published ${result.paper_id || title || "paper"} (${result.status || "ok"}).`,
-          true,
-        );
+        const result = await apiPost("/p2pclaw/papers/publish", { title, content: contentText });
+        setMsg("p2-publish-msg", `Published ${result.paper_id || title || "paper"} (${result.status || "ok"}).`, true);
         await renderP2PClawPage();
       } catch (e) {
-        setPublishMsg(String((e && e.message) || e), false);
+        setMsg("p2-publish-msg", String((e && e.message) || e), false);
       }
     });
+
+    // Investigation wheel search
     $("#p2-wheel-search")?.addEventListener("click", async () => {
       const query = ($("#p2-wheel-query")?.value || "").trim();
       const target = $("#p2-wheel-result");
@@ -721,12 +858,16 @@ async function renderP2PClawPage() {
         if (target) target.textContent = String((e && e.message) || e);
       }
     });
+
+    // Chat send
     $("#p2-chat-send")?.addEventListener("click", async () => {
       const message = ($("#p2-chat-message")?.value || "").trim();
       if (!message) return;
       await apiPost("/p2pclaw/chat", { message, channel: "research" });
       await renderP2PClawPage();
     });
+
+    // Paper validate/verify
     $$("[data-p2-validate]").forEach((btn) =>
       btn.addEventListener("click", async () => {
         await apiPost("/p2pclaw/papers/validate", {
@@ -746,6 +887,7 @@ async function renderP2PClawPage() {
       }),
     );
 
+    // Briefing auto-refresh
     const briefingTimer = setInterval(async () => {
       const currentPage = (location.hash.replace("#/", "") || "setup").split("/")[0];
       if (!["p2pclaw", "networking"].includes(currentPage)) return;
@@ -761,7 +903,13 @@ async function renderP2PClawPage() {
     }, 30000);
     _p2pclawTimers.push(briefingTimer);
   } catch (e) {
-    content.innerHTML = `<div class="card"><div class="card-label">P2PCLAW unavailable</div><div class="card-sub">${esc(String((e && e.message) || e))}</div></div>`;
+    content.innerHTML = `<div class="p2p-hybrid" style="align-items:center;justify-content:center">
+      <div style="text-align:center;padding:40px;font-family:'Space Grotesk',system-ui,sans-serif">
+        <div style="font-size:18px;color:#ff4e1a;font-weight:600">P2PCLAW Unavailable</div>
+        <div style="margin-top:8px;font-size:13px;color:#9a9490">${esc(String((e && e.message) || e))}</div>
+        <button class="p2p-btn" style="margin-top:16px" onclick="renderP2PClawPage()">Retry</button>
+      </div>
+    </div>`;
   }
 }
 
