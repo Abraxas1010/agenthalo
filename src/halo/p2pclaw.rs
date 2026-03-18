@@ -227,6 +227,116 @@ pub fn load_or_default() -> P2PClawConfig {
     load_config().unwrap_or_default()
 }
 
+/// Result of auto-registration from agent identity.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct AutoRegisterResult {
+    pub registered: bool,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub source: String,
+    pub already_configured: bool,
+}
+
+/// Automatically configure P2PCLAW from the agent's existing identity.
+///
+/// Reads the identity config (EVM address, DID) and user profile to populate
+/// `agent_id` and `agent_name`. If a P2PCLAW config already exists with a
+/// non-default agent_id, returns `already_configured: true` without overwriting.
+///
+/// This enables zero-touch P2PCLAW registration once identity is established.
+pub fn auto_register_from_identity() -> Result<AutoRegisterResult, String> {
+    use crate::halo::identity;
+    use crate::halo::profile;
+
+    let identity_cfg = identity::load();
+    let profile = profile::load();
+
+    // Derive agent_id: prefer EVM address, then DID-derived short ID
+    let evm_address = identity_cfg
+        .agent_address
+        .as_ref()
+        .map(|a| a.evm_address.clone())
+        .filter(|s| !s.trim().is_empty());
+
+    let agent_id = if let Some(ref addr) = evm_address {
+        addr.clone()
+    } else {
+        // No EVM address — cannot auto-register without stable identity
+        return Err(
+            "No agent identity available for P2PCLAW registration. \
+             Complete identity setup first."
+                .to_string(),
+        );
+    };
+
+    // Derive agent_name: prefer profile display_name, fall back to truncated address
+    let agent_name = profile
+        .display_name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| {
+            if agent_id.len() > 10 {
+                format!("AgentHALO-{}", &agent_id[agent_id.len() - 8..])
+            } else {
+                "AgentHALO".to_string()
+            }
+        });
+
+    // Check if P2PCLAW is already configured with a real (non-default) agent_id
+    let existing = load_disk_config_optional()?;
+    if let Some(ref disk) = existing {
+        let existing_id = disk.agent_id.trim();
+        if !existing_id.is_empty()
+            && existing_id != "agenthalo"
+            && existing_id != P2PClawConfig::default().agent_id
+        {
+            return Ok(AutoRegisterResult {
+                registered: false,
+                agent_id: existing_id.to_string(),
+                agent_name: disk.agent_name.clone(),
+                source: "existing".to_string(),
+                already_configured: true,
+            });
+        }
+    }
+
+    // Build and save the new config, preserving endpoint/tier/auth from any existing config
+    let base = existing
+        .map(|d| P2PClawConfig::from(d))
+        .unwrap_or_default();
+    let mut cfg = P2PClawConfig {
+        endpoint_url: base.endpoint_url,
+        agent_id: agent_id.clone(),
+        agent_name: agent_name.clone(),
+        auth_configured: base.auth_configured,
+        tier: base.tier,
+        last_connected_at: base.last_connected_at,
+    };
+
+    save_config(&cfg)?;
+
+    // Enable the P2PCLAW addon
+    let _ = crate::halo::addons::set_enabled("p2pclaw", true);
+
+    // Try to ping the server to verify connectivity (non-fatal)
+    match ping(&cfg) {
+        Ok(_) => {
+            cfg.last_connected_at = now_unix_ms() / 1000;
+            let _ = save_config(&cfg);
+        }
+        Err(_) => {
+            // Connection failed — config is saved, agent can retry later
+        }
+    }
+
+    Ok(AutoRegisterResult {
+        registered: true,
+        agent_id,
+        agent_name,
+        source: evm_address.map(|_| "evm_address").unwrap_or("default").to_string(),
+        already_configured: false,
+    })
+}
+
 pub fn save_config(cfg: &P2PClawConfig) -> Result<(), String> {
     validate_endpoint(&cfg.endpoint_url)?;
     let insecure = load_disk_config_optional()?.and_then(|disk| disk.auth_secret_insecure);

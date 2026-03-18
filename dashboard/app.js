@@ -433,7 +433,7 @@ async function renderP2PClawPage() {
 
     const statusErr = statusRes && statusRes.error;
     const status = statusErr ? null : statusRes;
-    const config = (status && status.config) || {
+    let config = (status && status.config) || {
       endpoint_url: "https://p2pclaw.com",
       agent_id: "agenthalo",
       agent_name: "AgentHALO",
@@ -450,8 +450,27 @@ async function renderP2PClawPage() {
       (briefingRes && briefingRes.briefing_markdown) ||
       (briefingRes && briefingRes.error && String(briefingRes.error.message || briefingRes.error)) ||
       "No briefing yet.";
-    const enabled = !!(addons && addons.addons && addons.addons.p2pclaw_enabled);
-    const connectionLive = !statusErr;
+    let enabled = !!(addons && addons.addons && addons.addons.p2pclaw_enabled);
+    let connectionLive = !statusErr;
+
+    // Auto-register from agent identity if P2PCLAW is unconfigured or using defaults
+    const needsAutoRegister = statusErr || config.agent_id === "agenthalo";
+    if (needsAutoRegister && !window._p2pclawAutoRegisterAttempted) {
+      window._p2pclawAutoRegisterAttempted = true;
+      try {
+        const reg = await apiPost("/p2pclaw/auto-register", {});
+        if (reg && reg.registered) {
+          // Re-render with the new identity-based config
+          return renderP2PClawPage();
+        }
+        if (reg && reg.already_configured) {
+          config.agent_id = reg.agent_id;
+          config.agent_name = reg.agent_name;
+        }
+      } catch (_e) {
+        // Auto-register failed (no identity yet) — continue with defaults
+      }
+    }
 
     content.innerHTML = `
       <div class="page-title" style="color:#ff4e1a">P2PCLAW Research Hive</div>
@@ -602,7 +621,15 @@ async function renderP2PClawPage() {
     };
 
     $("#p2pclaw-enabled-toggle")?.addEventListener("change", async (ev) => {
-      await apiPost("/addons", { name: "p2pclaw", enabled: !!ev.currentTarget.checked });
+      const enabling = !!ev.currentTarget.checked;
+      await apiPost("/addons", { name: "p2pclaw", enabled: enabling });
+      if (enabling) {
+        // Auto-register with agent identity when enabling P2PCLAW
+        window._p2pclawAutoRegisterAttempted = false;
+        try {
+          await apiPost("/p2pclaw/auto-register", {});
+        } catch (_e) { /* identity may not be available yet */ }
+      }
       await renderP2PClawPage();
     });
     $("#p2pclaw-refresh")?.addEventListener("click", () => renderP2PClawPage());
@@ -2476,6 +2503,29 @@ async function renderConfig() {
         (e && e.message) || "failed to load AgentPMT tool catalog",
       );
     }
+    // Identity data for config page
+    let identityCfgForConfig = {};
+    let profileForConfig = {};
+    let tierCfgForConfig = {};
+    let genesisForConfig = {};
+    try { identityCfgForConfig = await api("/identity/status") || {}; } catch (_e) {}
+    try { profileForConfig = await api("/profile") || {}; } catch (_e) {}
+    try { tierCfgForConfig = await api("/identity/tier") || {}; } catch (_e) {}
+    try { genesisForConfig = await api("/genesis/status") || {}; } catch (_e) {}
+
+    const cfgDeviceOk = !!identityCfgForConfig.device_configured;
+    const cfgNetworkOk = !!identityCfgForConfig.network_configured;
+    const cfgAgentAddr = cfg.wallet_status && cfg.wallet_status.agentaddress_address;
+    const cfgAgentOk = !!(cfg.wallet_status && cfg.wallet_status.agentaddress_connected);
+    const cfgDidUri = genesisForConfig.did_uri || "";
+    const cfgSeedHash = String(genesisForConfig.seed_hash_sha256 || "").slice(0, 24);
+    const cfgGenesisComplete = !!genesisForConfig.completed;
+    const cfgTier = String(tierCfgForConfig.tier || identityCfgForConfig.security_tier || "").trim();
+    const cfgProfileName = String(profileForConfig.display_name || "").trim();
+    const cfgEntropySources = Array.isArray(genesisForConfig.summary && genesisForConfig.summary.sources) ? genesisForConfig.summary.sources : [];
+    const cfgCombinedEntropy = String(genesisForConfig.combined_entropy_sha256 || "").slice(0, 24);
+    const cfgLedgerSigned = !!identityCfgForConfig.identity_ledger_fully_signed;
+    const cfgLedgerEntries = identityCfgForConfig.identity_ledger_entry_count || 0;
 
     content.innerHTML = `
       <div class="config-page">
@@ -2483,6 +2533,7 @@ async function renderConfig() {
       <div class="config-page-subtitle">Provider health, operator controls, model runtime, and ledger-adjacent infrastructure in one surface.</div>
       <div class="config-quicknav">
         <button class="config-quicknav-chip" data-target="config-auth">🔐 Auth</button>
+        <button class="config-quicknav-chip" data-target="config-identity">🪪 Identity</button>
         <button class="config-quicknav-chip" data-target="config-security">🛡 Security</button>
         <button class="config-quicknav-chip" data-target="config-agents">🤖 Agents</button>
         <button class="config-quicknav-chip" data-target="config-services">🔑 Services</button>
@@ -2511,6 +2562,99 @@ async function renderConfig() {
               ? '<span class="badge badge-ok">Authenticated</span>'
               : '<span class="badge badge-warn">Not Authenticated</span>'
           }
+        </div>
+      </div>
+      </section>
+
+      <section id="config-identity" class="config-section-card">
+      <div class="config-section-heading">
+        <div class="config-section-icon">🪪</div>
+        <div>
+          <div class="config-section-title">Identity</div>
+          <div class="config-section-kicker">Device anchors, network identity, agent address, genesis provenance, and DID</div>
+        </div>
+      </div>
+      <div class="config-section-body">
+        <div class="config-row">
+          <div>
+            <div class="config-label">Profile</div>
+            <div class="config-desc">${cfgProfileName ? esc(cfgProfileName) : "Not set"}</div>
+          </div>
+          <span class="badge ${cfgProfileName ? "badge-ok" : "badge-muted"}">${cfgProfileName ? "Set" : "Unset"}</span>
+        </div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">Security Tier</div>
+            <div class="config-desc">${cfgTier ? esc(cfgTier) : "Not configured"}</div>
+          </div>
+          <span class="badge ${cfgTier ? "badge-ok" : "badge-muted"}">${cfgTier || "—"}</span>
+        </div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">Device Identity</div>
+            <div class="config-desc">${cfgDeviceOk ? "Verified — hardware fingerprint collected" : "Not configured"}</div>
+          </div>
+          <span class="badge ${cfgDeviceOk ? "badge-ok" : "badge-warn"}">${cfgDeviceOk ? "Complete" : "Pending"}</span>
+        </div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">Network Identity</div>
+            <div class="config-desc">${cfgNetworkOk ? "Verified — network anchors collected" : "Not configured"}</div>
+          </div>
+          <span class="badge ${cfgNetworkOk ? "badge-ok" : "badge-warn"}">${cfgNetworkOk ? "Complete" : "Pending"}</span>
+        </div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">Agent Address (EVM)</div>
+            <div class="config-desc" style="font-size:10px">${cfgAgentAddr ? esc(String(cfgAgentAddr)) : "Not generated"}</div>
+          </div>
+          <span class="badge ${cfgAgentOk ? "badge-ok" : "badge-warn"}">${cfgAgentOk ? "Active" : "Pending"}</span>
+        </div>
+      </div>
+      <div class="config-section-body" style="margin-top:12px">
+        <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px">Genesis Provenance</div>
+        <div class="config-row">
+          <div>
+            <div class="config-label">Genesis Ceremony</div>
+            <div class="config-desc">${cfgGenesisComplete ? "Completed" : "Not completed"}</div>
+          </div>
+          <span class="badge ${cfgGenesisComplete ? "badge-ok" : "badge-warn"}">${cfgGenesisComplete ? "Done" : "Pending"}</span>
+        </div>
+        ${cfgSeedHash ? `
+        <div class="config-row">
+          <div>
+            <div class="config-label">Seed Hash (SHA-256)</div>
+            <div class="config-desc" style="font-size:10px;font-family:monospace">${esc(cfgSeedHash)}...</div>
+          </div>
+        </div>` : ""}
+        ${cfgDidUri ? `
+        <div class="config-row">
+          <div>
+            <div class="config-label">DID URI</div>
+            <div class="config-desc" style="font-size:10px;font-family:monospace;word-break:break-all">${esc(cfgDidUri)}</div>
+          </div>
+        </div>` : ""}
+        ${cfgCombinedEntropy ? `
+        <div class="config-row">
+          <div>
+            <div class="config-label">Combined Entropy</div>
+            <div class="config-desc" style="font-size:10px;font-family:monospace">${esc(cfgCombinedEntropy)}...</div>
+          </div>
+        </div>` : ""}
+        ${cfgEntropySources.length ? cfgEntropySources.map(s => `
+        <div class="config-row">
+          <div>
+            <div class="config-label">${esc(String(s.name || s.source || "Source"))}</div>
+            <div class="config-desc" style="font-size:10px;font-family:monospace">${esc(String(s.detail || s.pulse_id || s.round || s.id || ""))}</div>
+          </div>
+          <span class="badge badge-ok">Collected</span>
+        </div>`).join("") : ""}
+        <div class="config-row">
+          <div>
+            <div class="config-label">Identity Ledger</div>
+            <div class="config-desc">${cfgLedgerSigned ? cfgLedgerEntries + " entries, fully signed" : cfgLedgerEntries > 0 ? cfgLedgerEntries + " entries" : "Empty"}</div>
+          </div>
+          <span class="badge ${cfgLedgerSigned ? "badge-ok" : cfgLedgerEntries > 0 ? "badge-warn" : "badge-muted"}">${cfgLedgerSigned ? "Signed" : "—"}</span>
         </div>
       </div>
       </section>
@@ -3221,7 +3365,7 @@ window.toggleSetupSection = function toggleSetupSection(id) {
 };
 
 window.goSetupStep = function goSetupStep(step) {
-  _setupV3WizardStep = Math.max(1, Math.min(5, step));
+  _setupV3WizardStep = Math.max(1, Math.min(4, step));
   const steps = document.querySelectorAll(".wizard-step");
   steps.forEach((el) => {
     el.classList.toggle("active", el.dataset.step === String(_setupV3WizardStep));
@@ -3249,7 +3393,7 @@ function updateSetupCompletion(sectionStates) {
   const doneCount = Object.values(sectionStates).filter(Boolean).length;
   const total = Object.keys(sectionStates).length;
   // Update completion bar segments
-  const names = ["cli", "identity", "llm", "wallet", "technical"];
+  const names = ["cli", "llm", "wallet", "technical"];
   names.forEach((name) => {
     const seg = document.querySelector(`.completion-seg[data-section="${name}"]`);
     if (seg) {
@@ -3585,7 +3729,6 @@ async function renderSetup() {
   // ---- Build section state for completion bar ----
   const _sectionStates = {
     cli: false,     // updated after CLI detection
-    identity: identityDone,
     llm: step2Done,
     wallet: walletComplete,
     technical: false, // manual configure
@@ -3932,14 +4075,13 @@ async function renderSetup() {
   // ---- Decide which sections to auto-expand ----
   const _autoExpand = {
     cli: true,  // always show CLIs on load
-    identity: !identityDone,
     llm: !step2Done,
     wallet: !walletComplete,
     technical: false,
   };
 
   if (showWizard) {
-    // ---- WIZARD VIEW ----
+    // ---- WIZARD VIEW (4 steps: Welcome, LLM, Wallet, Review) ----
     content.innerHTML = `
     <div class="wizard-wrap setup-v3">
       <div class="wizard-spine">
@@ -3950,8 +4092,6 @@ async function renderSetup() {
         <div class="wizard-spine-dot" data-step="3" onclick="goSetupStep(3)">3</div>
         <div class="wizard-spine-line" data-after="3"></div>
         <div class="wizard-spine-dot" data-step="4" onclick="goSetupStep(4)">4</div>
-        <div class="wizard-spine-line" data-after="4"></div>
-        <div class="wizard-spine-dot" data-step="5" onclick="goSetupStep(5)">5</div>
       </div>
       <div class="wizard-skip"><a onclick="skipToSetupPower()">I know what I'm doing &rarr; Skip to power view</a></div>
 
@@ -3973,54 +4113,41 @@ async function renderSetup() {
             <div class="opt-card-desc">Connect to an existing agent configuration</div>
           </div>
         </div>
-        <div class="info-banner green">&#9432; Configuration is always available from the sidebar after setup.</div>
+        <div class="info-banner green">&#9432; Identity and advanced settings are available from <a href="#/config" style="color:var(--halo-green)">Configuration</a>.</div>
         <div class="wizard-nav">
           <div></div>
           <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(2)">GET STARTED</button>
         </div>
       </div>
 
-      <!-- Step 2: Identity -->
+      <!-- Step 2: LLM Provider -->
       <div class="wizard-step" data-step="2">
-        <div class="wizard-hal">
-          <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
-          <div class="wizard-hal-bubble">Let's establish your identity. This anchors trust for everything that follows.</div>
-        </div>
-        ${_identityBodyHtml}
-        <div class="wizard-nav">
-          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(1)">BACK</button>
-          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(3)">CONTINUE</button>
-        </div>
-      </div>
-
-      <!-- Step 3: LLM Provider -->
-      <div class="wizard-step" data-step="3">
         <div class="wizard-hal">
           <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
           <div class="wizard-hal-bubble">Your agents need language model access. Choose how they should connect.</div>
         </div>
         ${_llmBodyHtml}
         <div class="wizard-nav">
-          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(2)">BACK</button>
-          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(4)">CONTINUE</button>
+          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(1)">BACK</button>
+          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(3)">CONTINUE</button>
         </div>
       </div>
 
-      <!-- Step 4: Wallet -->
-      <div class="wizard-step" data-step="4">
+      <!-- Step 3: Wallet -->
+      <div class="wizard-step" data-step="3">
         <div class="wizard-hal">
           <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
           <div class="wizard-hal-bubble">Your wallet was auto-derived from your Genesis identity. Here's the status.</div>
         </div>
         ${_walletBodyHtml}
         <div class="wizard-nav">
-          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(3)">BACK</button>
-          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(5)">CONTINUE</button>
+          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(2)">BACK</button>
+          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(4)">CONTINUE</button>
         </div>
       </div>
 
-      <!-- Step 5: Review -->
-      <div class="wizard-step" data-step="5">
+      <!-- Step 4: Review -->
+      <div class="wizard-step" data-step="4">
         <div class="wizard-hal">
           <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
           <div class="wizard-hal-bubble">All set. Let's build.</div>
@@ -4035,19 +4162,15 @@ async function renderSetup() {
             <div class="value">${step2Done ? "Configured" : "Not set"}</div>
           </div>
           <div class="wizard-review-card">
-            <div class="label">Identity</div>
-            <div class="value">${identityDone ? "Complete" : "Pending"}</div>
-          </div>
-          <div class="wizard-review-card">
             <div class="label">Wallet</div>
             <div class="value">${hasAnyWallet ? esc(agentaddressAddress ? agentaddressAddress.slice(0, 10) + "..." : "Bound") : "Not bound"}</div>
           </div>
         </div>
         <div class="initiate-wrap" style="border:none;padding-top:16px">
-          <button class="init-btn" id="setup-initiate-btn" onclick="location.hash='#/overview'">INITIATE</button>
+          <button class="init-btn" id="setup-initiate-btn" onclick="location.hash='#/agentpmt'">INITIATE</button>
         </div>
         <div class="wizard-nav" style="border:none">
-          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(4)">BACK</button>
+          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(3)">BACK</button>
           <div></div>
         </div>
       </div>
@@ -4075,7 +4198,6 @@ async function renderSetup() {
       <!-- Completion Bar -->
       <div class="completion-bar" id="setup-completion-bar">
         <div class="completion-seg${_sectionStates.cli ? " done" : ""}" data-section="cli"></div>
-        <div class="completion-seg${_sectionStates.identity ? " done" : ""}" data-section="identity"></div>
         <div class="completion-seg${_sectionStates.llm ? " done" : ""}" data-section="llm"></div>
         <div class="completion-seg${_sectionStates.wallet ? " done" : ""}" data-section="wallet"></div>
         <div class="completion-seg" data-section="technical"></div>
@@ -4092,19 +4214,7 @@ async function renderSetup() {
         <div class="sec-body" id="body-cli">${_cliBodyHtml}</div>
       </div>
 
-      <!-- Section 2: Identity -->
-      <div class="section${_autoExpand.identity ? " open" : ""}" id="s-identity">
-        <div class="sec-head" onclick="toggleSetupSection('identity')">
-          <span class="arrow">&#x25B6;</span>
-          <span class="sec-title">IDENTITY</span>
-          <div class="sec-summary" id="sec-summary-identity">
-            ${setupV3SectionSummaryHtml("identity", { deviceDone: !!identityCfg.device_configured, networkDone: !!identityCfg.network_configured, agentDone: !!agentaddressConnected })}
-          </div>
-        </div>
-        <div class="sec-body" id="body-identity">${_identityBodyHtml}</div>
-      </div>
-
-      <!-- Section 3: LLM Provider -->
+      <!-- Section 2: LLM Provider -->
       <div class="section${_autoExpand.llm ? " open" : ""}" id="s-llm">
         <div class="sec-head" onclick="toggleSetupSection('llm')">
           <span class="arrow">&#x25B6;</span>
@@ -4142,7 +4252,7 @@ async function renderSetup() {
 
       <!-- INITIATE Button -->
       <div class="initiate-wrap">
-        <button class="init-btn" id="setup-initiate-btn" onclick="location.hash='#/overview'">INITIATE</button>
+        <button class="init-btn" id="setup-initiate-btn" onclick="location.hash='#/agentpmt'">INITIATE</button>
       </div>
     </div>`;
 

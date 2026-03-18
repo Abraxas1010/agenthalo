@@ -134,6 +134,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/orchestrator/stop", post(api_orch_stop))
         .route("/orchestrator/agents/{id}/ws", get(ws_orch_agent_output))
         .route("/addons", get(api_addons_get).post(api_addons_post))
+        .route("/p2pclaw/auto-register", post(api_p2pclaw_auto_register))
         .route("/p2pclaw/configure", post(api_p2pclaw_configure))
         .route("/p2pclaw/status", get(api_p2pclaw_status))
         .route("/p2pclaw/briefing", get(api_p2pclaw_briefing))
@@ -5625,6 +5626,22 @@ async fn api_proof_gate_delete_certificate(
         "ok": true,
         "id": cert_id,
         "status": proof_gate_dashboard_payload().map_err(|e| internal_err(format!("proof gate refresh: {e}")))?,
+    })))
+}
+
+async fn api_p2pclaw_auto_register(
+    AxumState(state): AxumState<DashboardState>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let result = p2pclaw::auto_register_from_identity()
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
+    Ok(Json(json!({
+        "ok": true,
+        "registered": result.registered,
+        "agent_id": result.agent_id,
+        "agent_name": result.agent_name,
+        "source": result.source,
+        "already_configured": result.already_configured,
     })))
 }
 
