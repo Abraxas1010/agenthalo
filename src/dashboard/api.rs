@@ -539,6 +539,14 @@ struct McpToolsQuery {
 }
 
 #[derive(Deserialize)]
+struct McpUsageStatsQuery {
+    #[serde(default)]
+    include_calls: Option<bool>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
 struct McpInvokeRequest {
     tool: String,
     #[serde(default)]
@@ -6365,11 +6373,19 @@ async fn api_mcp_categories(AxumState(state): AxumState<DashboardState>) -> ApiR
 }
 
 /// Aggregate MCP/tool usage statistics from the trace store, grouped by agent.
-async fn api_mcp_usage_stats(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+async fn api_mcp_usage_stats(
+    AxumState(state): AxumState<DashboardState>,
+    Query(query): Query<McpUsageStatsQuery>,
+) -> ApiResult {
     require_sensitive_access(&state)?;
     let db_path = state.db_path.clone();
+    let include_calls = query.include_calls.unwrap_or(false);
+    let call_limit = query.limit.unwrap_or(100).min(500);
     let _lock = state.db_lock.lock().await;
-    let stats = tokio::task::spawn_blocking(move || compute_tool_usage_stats(&db_path))
+    let stats =
+        tokio::task::spawn_blocking(move || {
+            compute_tool_usage_stats(&db_path, include_calls, call_limit)
+        })
         .await
         .map_err(|e| internal_err(format!("usage stats task: {e}")))?
         .map_err(|e| internal_err(e))?;
@@ -6378,6 +6394,8 @@ async fn api_mcp_usage_stats(AxumState(state): AxumState<DashboardState>) -> Api
 
 fn compute_tool_usage_stats(
     db_path: &std::path::Path,
+    include_calls: bool,
+    call_limit: usize,
 ) -> Result<serde_json::Value, String> {
     use crate::halo::schema::EventType;
     use crate::halo::trace::{list_sessions, session_events, session_summary};
@@ -6402,6 +6420,7 @@ fn compute_tool_usage_stats(
     let mut global_tool_freq: HashMap<String, u64> = HashMap::new();
     let mut total_tool_calls: u64 = 0;
     let mut total_mcp_calls: u64 = 0;
+    let mut recent_calls: Vec<serde_json::Value> = Vec::new();
 
     for session in &sessions {
         let agent_id = if session.agent.is_empty() {
@@ -6409,7 +6428,7 @@ fn compute_tool_usage_stats(
         } else {
             session.agent.clone()
         };
-        let stats = by_agent.entry(agent_id).or_default();
+        let stats = by_agent.entry(agent_id.clone()).or_default();
         stats.sessions += 1;
         if stats.first_seen == 0 || session.started_at < stats.first_seen {
             stats.first_seen = session.started_at;
@@ -6440,9 +6459,32 @@ fn compute_tool_usage_stats(
                         *stats.tool_freq.entry(name.clone()).or_insert(0) += 1;
                         *global_tool_freq.entry(name.clone()).or_insert(0) += 1;
                     }
+                    if include_calls {
+                        let success = !ev
+                            .content
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| !s.is_empty());
+                        recent_calls.push(json!({
+                            "timestamp": ev.timestamp,
+                            "agent": &agent_id,
+                            "tool": ev.tool_name.as_deref().unwrap_or("unknown"),
+                            "event_type": format!("{:?}", ev.event_type),
+                            "success": success,
+                        }));
+                    }
                 }
             }
         }
+    }
+
+    if include_calls {
+        recent_calls.sort_by(|a, b| {
+            let ta = a.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
+            let tb = b.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
+            tb.cmp(&ta)
+        });
+        recent_calls.truncate(call_limit);
     }
 
     let agents: Vec<serde_json::Value> = {
@@ -6474,14 +6516,18 @@ fn compute_tool_usage_stats(
     global_top.sort_by(|a, b| b.1.cmp(&a.1));
     global_top.truncate(30);
 
-    Ok(json!({
+    let mut result = json!({
         "ok": true,
         "total_sessions": sessions.len(),
         "total_tool_calls": total_tool_calls,
         "total_mcp_calls": total_mcp_calls,
         "agents": agents,
         "top_tools": global_top.into_iter().map(|(name, count)| json!({"name": name, "count": count})).collect::<Vec<serde_json::Value>>(),
-    }))
+    });
+    if include_calls {
+        result["recent_calls"] = json!(recent_calls);
+    }
+    Ok(result)
 }
 
 async fn api_config(AxumState(state): AxumState<DashboardState>) -> ApiResult {

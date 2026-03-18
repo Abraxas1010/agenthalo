@@ -6684,6 +6684,52 @@ input:focus, select:focus, textarea:focus {
   }
 }
 
+/* ---- MCP Tree Layout ---- */
+.mcp-tree { overflow-y: auto; max-height: calc(100vh - 260px); }
+.mcp-tree-provider { margin-bottom: 4px; }
+.mcp-tree-provider > summary {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 8px; cursor: pointer; font-weight: 600;
+  color: var(--accent); font-size: 13px; letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+.mcp-tree-provider > summary strong { color: var(--text-dim); font-size: 11px; }
+.mcp-tree-cat { margin-left: 8px; }
+.mcp-tree-cat > summary {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 6px; cursor: pointer; font-size: 12px;
+  color: var(--text-muted);
+}
+.mcp-tree-cat > summary strong { color: var(--text-dim); font-size: 10px; }
+.mcp-tree-tools { display: flex; flex-direction: column; }
+.mcp-tree-tool {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  padding: 3px 6px 3px 16px; cursor: pointer; font-size: 11px;
+  font-family: var(--mono); color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mcp-tree-tool:hover { color: var(--text); background: var(--bg-hover); }
+.mcp-tree-tool.is-active { color: var(--accent); background: var(--bg-hover); }
+
+/* ---- MCP Call Timeline ---- */
+.mcp-timeline { margin-top: 8px; max-height: 320px; overflow-y: auto; }
+.mcp-timeline-table {
+  width: 100%; border-collapse: collapse; font-size: 11px;
+  font-family: var(--mono);
+}
+.mcp-timeline-table th {
+  text-align: left; padding: 4px 8px; color: var(--text-dim);
+  border-bottom: 1px solid var(--border); font-weight: 600;
+  text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px;
+}
+.mcp-timeline-table td {
+  padding: 3px 8px; border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.mcp-timeline-tool { color: var(--text); }
+.badge-ok { background: rgba(0, 255, 65, 0.15); color: var(--green); }
+.badge-err { background: rgba(255, 48, 48, 0.15); color: var(--red); }
+
 /* ================================================================
    P2PCLAW Hybrid Layout — Embedded iframe + side control panel
    ================================================================
