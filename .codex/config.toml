@@ -1,0 +1,10 @@
+# Codex CLI MCP server configuration for Agent H.A.L.O.
+# Uses stdio bridge to auto-discover running agenthalo-mcp-server.
+
+[[mcp_servers]]
+name = "agenthalo"
+command = "python3"
+args = ["scripts/mcp_stdio_bridge.py"]
+
+[mcp_servers.env]
+AGENTHALO_MCP_BRIDGE_AUTO_START = "1"
