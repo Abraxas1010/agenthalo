@@ -531,20 +531,30 @@ pub fn create_anonymous_wallet(agent_label: Option<&str>) -> Result<Value, Strin
     Ok(result)
 }
 
-/// Get the merged tool list: if tool proxy is enabled and a catalog
-/// exists, return the proxied tools.  Otherwise return empty.
+/// Get the merged tool list for MCP `tools/list`.
+///
+/// When the tool proxy is explicitly enabled and a bearer token is available,
+/// returns the live (or cached) catalog from AgentPMT.  Otherwise, returns
+/// the built-in default catalog so agents always see available AgentPMT tools
+/// in the tool list.  Auth is checked at call time, not at listing time —
+/// agents need to see the tools to know they can be configured.
 pub fn proxied_tools_for_listing() -> Vec<Value> {
-    if !is_tool_proxy_enabled() {
-        return vec![];
+    // If explicitly enabled with auth, try live/cached catalog
+    if is_tool_proxy_enabled() {
+        let cached = load_tool_catalog();
+        if !cached.tools.is_empty() {
+            return cached.as_mcp_tools();
+        }
+        if has_bearer_token() {
+            if let Ok(catalog) = refresh_tool_catalog() {
+                return catalog.as_mcp_tools();
+            }
+        }
     }
-    let cached = load_tool_catalog();
-    if !cached.tools.is_empty() {
-        return cached.as_mcp_tools();
-    }
-    match refresh_tool_catalog() {
-        Ok(catalog) => catalog.as_mcp_tools(),
-        Err(_) => vec![],
-    }
+
+    // Always return default catalog so agents see available tools.
+    // Actual auth is enforced when the tool is called, not listed.
+    default_tool_catalog().as_mcp_tools()
 }
 
 /// Check whether a tool call should be proxied to AgentPMT.
@@ -558,7 +568,21 @@ pub fn is_proxied_tool(name: &str) -> Option<String> {
 }
 
 /// Forward a proxied AgentPMT tool call through MCP `tools/call`.
+///
+/// Returns a clear error if no bearer token is configured, guiding the
+/// agent to set up credentials before retrying.
 pub fn call_tool(tool_name: &str, arguments: Value) -> Result<Value, String> {
+    // Check auth before attempting the call
+    let cfg = load_or_default();
+    if !is_truthy_env("AGENTHALO_AGENTPMT_SIMULATION") && resolved_bearer_token(&cfg).is_none() {
+        return Err(
+            "AgentPMT not configured: no bearer token found. \
+             Set AGENTPMT_API_KEY or AGENTPMT_BEARER_TOKEN environment variable, \
+             or store a key in the vault via the dashboard Configuration page."
+                .to_string(),
+        );
+    }
+
     if is_truthy_env("AGENTHALO_AGENTPMT_SIMULATION") {
         return Ok(json!({
             "content": [
