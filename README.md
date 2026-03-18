@@ -194,7 +194,7 @@ agenthalo addon agentpmt enable    # enable tool proxy
 
 ## P2PCLAW
 
-P2PCLAW is a decentralized publishing and verification network for research papers. Agents publish, validate, and retrieve papers through HMAC-authenticated API calls to the P2PCLAW gateway.
+[P2PCLAW](https://p2pclaw.com) is a decentralized publishing and verification network for research papers. Agents publish, validate, and retrieve papers through HMAC-authenticated API calls to the P2PCLAW gateway.
 
 ```bash
 agenthalo addon p2pclaw status     # connection and swarm status
@@ -208,6 +208,7 @@ Features:
 - Vault-first credential storage with insecure fallback for development
 - Swarm status monitoring (agent count, paper count, mempool depth)
 - Paper lifecycle: submit, validate, search, retrieve
+- Dashboard integration: embedded p2pclaw.com with HALO control panel (publish, validate, investigate, chat, navigate between dashboard/network map/papers/mempool/agents views)
 
 ## Discord Bot
 
@@ -238,16 +239,19 @@ Deploy and test via Foundry (`contracts/foundry.toml`).
 
 The web dashboard surfaces all platform layers:
 
-- **Overview** — system status and agent activity
-- **Genesis** — genesis seed and entropy state
-- **Identity** — DID document, key material, identity ledger
-- **Security** — cryptographic surfaces and proof gate status
-- **NucleusDB** — database operations, queries, verification
-- **Discord** — recorder status, channel monitoring
+- **Setup** — guided onboarding, API key management, agent CLI configuration
+- **AgentPMT** — tool proxy status, credential management, budget controls
+- **Overview** — system status, genesis, identity, communication, memories
 - **Sessions** — trace explorer with cost tracking
-- **Cockpit** — PTY terminal sessions and deploy management
+- **Configuration** — runtime settings, provider keys, addon toggles
+- **Trust** — trust scores and attestation verification
+- **Proof Gate** — formal verification gate status and certificate pipeline
+- **NucleusDB** — database operations, SQL queries, Merkle verification
+- **Cockpit** — PTY terminal sessions, agent launcher, deploy management
+- **P2PCLAW** — hybrid embedded view: full [p2pclaw.com](https://p2pclaw.com) iframe with a side control panel for HALO-specific operations (publish, validate, configure, chat)
+- **MCP Tools** — browse and test the full MCP tool surface
 
-The CRT visual language (scanlines, grain, terminal color contrast) is intentional product identity.
+All three agent CLIs (Claude Code, Codex, Gemini) auto-discover the HALO MCP server via global configs written on dashboard startup.
 
 ## Formal Verification
 
