@@ -3208,6 +3208,122 @@ function providerDefaultEnv(provider) {
   );
 }
 
+// ========================================================================
+// SETUP V3 — Dual-mode helpers (wizard + dashboard)
+// ========================================================================
+
+let _setupV3WizardStep = 1;
+
+window.toggleSetupSection = function toggleSetupSection(id) {
+  const section = document.getElementById("s-" + id);
+  if (!section) return;
+  section.classList.toggle("open");
+};
+
+window.goSetupStep = function goSetupStep(step) {
+  _setupV3WizardStep = Math.max(1, Math.min(5, step));
+  const steps = document.querySelectorAll(".wizard-step");
+  steps.forEach((el) => {
+    el.classList.toggle("active", el.dataset.step === String(_setupV3WizardStep));
+  });
+  // Update spine dots
+  document.querySelectorAll(".wizard-spine-dot").forEach((dot) => {
+    const n = Number(dot.dataset.step);
+    dot.classList.remove("active", "done");
+    if (n === _setupV3WizardStep) dot.classList.add("active");
+    else if (n < _setupV3WizardStep) dot.classList.add("done");
+  });
+  // Update spine lines
+  document.querySelectorAll(".wizard-spine-line").forEach((line) => {
+    const after = Number(line.dataset.after);
+    line.classList.toggle("filled", after < _setupV3WizardStep);
+  });
+};
+
+window.skipToSetupPower = function skipToSetupPower() {
+  try { localStorage.setItem("halo_setup_mode", "power"); } catch (_e) {}
+  renderSetup();
+};
+
+function updateSetupCompletion(sectionStates) {
+  const doneCount = Object.values(sectionStates).filter(Boolean).length;
+  const total = Object.keys(sectionStates).length;
+  // Update completion bar segments
+  const names = ["cli", "identity", "llm", "wallet", "technical"];
+  names.forEach((name) => {
+    const seg = document.querySelector(`.completion-seg[data-section="${name}"]`);
+    if (seg) {
+      seg.classList.remove("done", "partial");
+      if (sectionStates[name] === true) seg.classList.add("done");
+      else if (sectionStates[name] === "partial") seg.classList.add("partial");
+    }
+  });
+  // Update label
+  const label = document.getElementById("completion-label");
+  if (label) label.textContent = `${doneCount}/${total}`;
+  // Update Hal subtitle
+  const sub = document.getElementById("halo-topbar-sub");
+  if (sub) {
+    if (doneCount === total) {
+      sub.textContent = "All systems nominal. Ready to initiate.";
+    } else if (doneCount > 0) {
+      sub.textContent = `Everything's looking good. ${doneCount} of ${total} sections complete.`;
+    } else {
+      sub.textContent = "Let's get set up.";
+    }
+  }
+  // Update overall dot
+  const dot = document.getElementById("halo-overall-dot");
+  if (dot) {
+    dot.classList.remove("g", "a", "r");
+    if (doneCount === total) dot.classList.add("g");
+    else if (doneCount > 0) dot.classList.add("a");
+  }
+  // Update INITIATE button — only needs a CLI authenticated or local model
+  const btn = document.getElementById("setup-initiate-btn");
+  if (btn) {
+    const ready = !!(sectionStates.cli || sectionStates.llm);
+    btn.disabled = !ready;
+    if (!ready) btn.title = "Authenticate at least one CLI or configure a local model";
+    else btn.title = "";
+  }
+}
+
+function setupV3SectionSummaryHtml(id, state) {
+  switch (id) {
+    case "cli": {
+      const c = state.cliConnected || 0;
+      const p = state.cliPending || 0;
+      let pills = "";
+      if (c > 0) pills += `<span class="pill ok">${c} connected</span>`;
+      if (p > 0) pills += `<span class="pill warn">${p} pending</span>`;
+      if (!c && !p) pills = '<span class="pill off">detecting</span>';
+      return pills;
+    }
+    case "identity": {
+      const anchors = (state.deviceDone ? 1 : 0) + (state.networkDone ? 1 : 0) + (state.agentDone ? 1 : 0);
+      return `<span class="pill ${anchors === 3 ? "ok" : anchors > 0 ? "warn" : "off"}">${anchors}/3 anchors</span>`;
+    }
+    case "llm":
+      return state.llmDone
+        ? `<span class="pill ok">${state.llmLabel || "configured"}</span>`
+        : '<span class="pill warn">configure</span>';
+    case "wallet": {
+      let pills = "";
+      pills += state.walletBound
+        ? '<span class="pill ok">bound</span>'
+        : '<span class="pill off">not bound</span>';
+      return pills;
+    }
+    case "technical":
+      return '<span class="pill off">configure</span>';
+    default:
+      return "";
+  }
+}
+
+// ========================================================================
+
 async function renderSetup() {
   const ctx = consumeSetupContext();
 
@@ -3461,284 +3577,24 @@ async function renderSetup() {
     );
   })();
 
-  content.innerHTML = `
-  <div class="setup-page-wrap">
+  // ---- Determine setup mode: wizard vs dashboard ----
+  const hasValidIdentity = identityDone || localIdentityDone;
+  const savedSetupMode = (() => { try { return localStorage.getItem("halo_setup_mode"); } catch (_e) { return null; } })();
+  const showWizard = !hasValidIdentity && savedSetupMode !== "power";
 
-    <!-- Hero -->
-    <div class="setup-hero">
-      <img class="setup-hero-img" src="img/agenthalo_ready.png" alt="Agent H.A.L.O." onerror="this.style.display='none'">
-      <h1>Welcome, my name is Agent H.A.L.O., but you can just call me Hal :)</h1>
-      <p>Let's get everything properly set up for you. Then, we can build something amazing together!</p>
-    </div>
+  // ---- Build section state for completion bar ----
+  const _sectionStates = {
+    cli: false,     // updated after CLI detection
+    identity: identityDone,
+    llm: step2Done,
+    wallet: walletComplete,
+    technical: false, // manual configure
+  };
 
-    <!-- SECTION 1: Identity -->
-    <div class="setup-card-v2 ${identityCardClass}" id="setup-identity">
-      <div class="proof-lattice-wrap" id="proof-lattice-wrap">
-        <div class="proof-lattice-hero" id="proof-lattice-hero">
-          <div id="proof-lattice-three"></div>
-          <div class="proof-lattice-status" id="proof-lattice-status">Initializing proof lattice...</div>
-        </div>
-        <div class="proof-lattice-sidebar" id="proof-lattice-sidebar">
-          <div class="pls-header">Proof Families</div>
-          <div class="pls-families" id="pls-families"></div>
-          <div class="pls-divider"></div>
-          <div class="pls-header">Stats</div>
-          <div class="pls-stats" id="pls-stats"><span class="pls-muted">Loading...</span></div>
-          <div class="pls-divider"></div>
-          <div class="pls-header">Selected Node</div>
-          <div class="pls-selected" id="pls-selected"><span class="pls-muted">Click a node to inspect</span></div>
-        </div>
-      </div>
+  // ---- Reusable HTML blocks ----
 
-      <div class="identity-tech-options-title" id="tech-options-title">Individual Technical Options</div>
-
-      <details class="setup-alt-path" id="setup-device-details" style="margin-top:12px">
-        <summary>Device Identity ${identityCfg.device_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ""}</summary>
-        <div class="alt-body">
-          <div class="device-fingerprint-layout">
-            <div class="device-fingerprint-main" id="device-main-content">
-              ${
-                identityCfg.anonymous_mode
-                  ? `
-              <div style="text-align:center;padding:20px 0">
-                <img src="img/agenthaloanonymous.png" alt="Anonymous mode" style="max-width:160px;border-radius:12px;margin-bottom:10px" onerror="this.style.display='none'">
-                <p style="font-size:12px;color:var(--text-dim)">Anonymous mode active &mdash; device identity disabled.</p>
-              </div>
-              `
-                  : identityCfg.device_configured
-                    ? `
-              <div id="device-configured-display">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-                  <span style="font-size:18px;color:var(--green)">&#9432;</span>
-                  <span style="font-size:13px;color:var(--green);font-weight:700">Device Identity Verified</span>
-                </div>
-                <div id="device-scan-summary" style="font-size:12px;color:var(--text-muted);line-height:1.8">
-                  Loading device details...
-                </div>
-                <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
-              </div>
-              `
-                    : `
-              <div id="device-manual-setup">
-                <div class="identity-option-checklist">
-                  <label class="identity-option-check"><input type="checkbox" id="tier-device-enable"> Enable device identity</label>
-                  <label class="identity-option-check"><input type="checkbox" id="tier-device-components"> Include hardware components</label>
-                  <label class="identity-option-check"><input type="checkbox" id="tier-device-browser"> Include browser fingerprint</label>
-                </div>
-                <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">
-                  Scan your device for unique hardware identifiers. This strengthens your
-                  identity for trust scoring. All data stays local.
-                </p>
-                <button class="btn btn-primary btn-sm" id="device-scan-btn"
-                        style="border-radius:6px;padding:8px 16px;margin-bottom:12px">
-                  Scan Device
-                </button>
-                <div id="device-scan-results" style="display:none;width:100%;max-width:460px">
-                  <div id="device-components-list"></div>
-                  <div id="device-entropy-bar" style="margin:12px 0"></div>
-                  <button class="btn btn-primary btn-sm" id="device-save-btn"
-                          style="border-radius:6px;padding:8px 16px">
-                    Save Device Identity
-                  </button>
-                </div>
-                <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
-              </div>
-              `
-              }
-            </div>
-            <div class="device-fingerprint-visual">
-              <img src="img/agenthalofingerprint_panel.png" alt="Device identity visual" onerror="this.style.display='none'">
-            </div>
-          </div>
-        </div>
-      </details>
-
-      <details class="setup-alt-path" id="setup-network-details" style="margin-top:12px">
-        <summary>Network Identity ${identityCfg.network_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ""}</summary>
-        <div class="alt-body">
-          <div class="network-identity-layout">
-            <div class="network-identity-main" id="network-main-content">
-              ${
-                identityCfg.anonymous_mode
-                  ? `
-              <div style="text-align:center;padding:20px 0">
-                <img src="img/agenthaloanon.png" alt="Anonymous mode" style="max-width:160px;border-radius:12px;margin-bottom:10px" onerror="this.style.display='none'">
-                <p style="font-size:12px;color:var(--text-dim)">Anonymous mode active &mdash; network identity disabled.</p>
-              </div>
-              `
-                  : identityCfg.network_configured
-                    ? `
-              <div id="network-configured-display">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-                  <span style="font-size:18px;color:var(--green)">&#9432;</span>
-                  <span style="font-size:13px;color:var(--green);font-weight:700">Network Identity Verified</span>
-                </div>
-                <div id="network-info" style="font-size:12px;color:var(--text-muted);line-height:1.8">
-                  Loading network details...
-                </div>
-                <div id="network-scan-status" style="font-size:12px;margin-top:8px"></div>
-              </div>
-              `
-                    : `
-              <div id="network-manual-setup">
-                <div class="identity-option-checklist">
-                  <label class="identity-option-check"><input type="checkbox" id="share-local-ip"> Share local IP (hashed)</label>
-                  <label class="identity-option-check"><input type="checkbox" id="share-mac"> Share MAC (hashed)</label>
-                </div>
-                <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">
-                  Optionally share network identifiers to strengthen your identity.
-                </p>
-                <div id="network-info" style="font-size:13px;color:var(--text-dim);width:100%;max-width:460px">
-                  Loading network info...
-                </div>
-                <button class="btn btn-sm btn-primary" id="network-save-btn" style="border-radius:6px;padding:8px 16px;margin-top:10px">Save Network Identity</button>
-                <p style="font-size:11px;color:var(--text-dim);margin-top:8px;max-width:460px">
-                  IP/MAC values are hashed before storage. Raw values shown here for your reference only.
-                </p>
-              </div>
-              `
-              }
-            </div>
-            <div class="network-identity-visual">
-              <img src="img/agenthalonetworkidentity_panel.png" alt="Network identity visual" onerror="this.style.display='none'">
-            </div>
-          </div>
-        </div>
-      </details>
-
-      <details class="setup-alt-path" id="setup-social-details" style="margin-top:12px;${deferIdentityRoadmapTracks ? "display:none;" : ""}">
-        <summary>Social Login & OAuth Tokens</summary>
-        <div class="alt-body">
-          <div class="social-identity-layout">
-            <div class="social-identity-main">
-              <div class="identity-option-checklist" id="social-provider-checklist">
-                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="google"> Google</label>
-                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="github"> GitHub</label>
-                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="microsoft"> Microsoft</label>
-                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="discord"> Discord</label>
-                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="apple"> Apple</label>
-                <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="facebook"> Facebook</label>
-              </div>
-              <div class="social-connect-controls">
-                <label class="social-expiry-label" for="social-expiry-days">Token expiry (days)</label>
-                <input type="number" min="1" max="365" value="30" id="social-expiry-days" class="setup-input social-expiry-input">
-                <button class="btn btn-primary btn-sm" id="social-connect-selected-btn" style="border-radius:6px;padding:8px 16px">Connect Selected</button>
-                <button class="btn btn-sm" id="social-revoke-selected-btn" style="border-radius:6px;padding:8px 16px">Revoke Selected</button>
-              </div>
-              <div id="social-provider-status" class="social-provider-status">Loading social identity status...</div>
-            </div>
-            <div class="social-identity-visual">
-              <div class="super-secure-note">
-                <div class="super-secure-note-title">Immutable Token Record</div>
-                <p>Each connect/revoke event is appended to a hash-chained identity ledger with active/recent qualifiers and expiry tracking.</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </details>
-
-      <div class="identity-super-secure-title" style="${deferIdentityRoadmapTracks ? "display:none;" : ""}">Super Secure Options</div>
-      <details class="setup-alt-path" id="setup-super-secure-details" style="margin-top:12px;${deferIdentityRoadmapTracks ? "display:none;" : ""}">
-        <summary>Advanced Verification Tracks</summary>
-        <div class="alt-body">
-          <div class="super-secure-layout">
-            <div class="super-secure-main">
-              <div class="super-secure-item">
-                <div class="super-secure-item-title">Passkey (WebAuthn)</div>
-                <p>Requires browser/device registration and an authenticator platform.</p>
-                <label class="identity-option-check"><input type="checkbox" id="super-passkey-enabled"> Enabled</label>
-                <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="passkey">Apply Passkey</button>
-              </div>
-              <div class="super-secure-item">
-                <div class="super-secure-item-title">Hardware Security Key</div>
-                <p>Requires a FIDO2 key (YubiKey/solo key) and physical touch verification.</p>
-                <label class="identity-option-check"><input type="checkbox" id="super-security-key-enabled"> Enabled</label>
-                <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="security_key">Apply Security Key</button>
-              </div>
-              <div class="super-secure-item">
-                <div class="super-secure-item-title">Two-Factor Auth (TOTP)</div>
-                <p>Requires a third-party authenticator app and rotating time-based codes.</p>
-                <label class="identity-option-check"><input type="checkbox" id="super-totp-enabled"> Enabled</label>
-                <input type="text" id="super-totp-label" class="setup-input" placeholder="Authenticator label (optional)">
-                <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="totp">Apply TOTP</button>
-              </div>
-            </div>
-            <div class="super-secure-visual">
-              <div class="super-secure-note">
-                <div class="super-secure-note-title">External Steps Required</div>
-                <p>These tracks raise assurance and are recorded immutably. Complete provider/device registration where applicable, then apply here.</p>
-                <div id="super-secure-status" class="social-provider-status" style="margin-top:10px"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </details>
-      ${
-        deferIdentityRoadmapTracks
-          ? `
-      <details class="setup-alt-path" style="margin-top:14px" id="agentaddress-section">
-        <summary>Agent Identity <span class="setup-inline-status status-done">&#10003; Complete</span></summary>
-        <div class="alt-body">
-          <div class="agentaddress-layout">
-            <div class="agentaddress-main">
-              <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px">
-                Your agent identity is auto-generated on first launch. When a genesis seed is available,
-                it is derived locally from that seed; otherwise it falls back to external generation.
-              </p>
-              <div id="agentaddress-status" style="font-size:12px;color:var(--text-dim);margin-bottom:10px"></div>
-              <div style="margin-bottom:10px">
-                <button class="btn btn-sm btn-primary" id="agentidentity-genesis-btn" type="button"
-                        style="display:none;font-size:11px;padding:6px 14px;border-radius:5px">
-                  Generate from Genesis
-                </button>
-                <button class="btn btn-sm" id="agentidentity-retry-btn" type="button"
-                        style="display:none;font-size:11px;padding:6px 14px;border-radius:5px">
-                  Retry Auto Setup
-                </button>
-              </div>
-              <div id="agentaddress-output" style="display:none;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:0;background:rgba(4,14,8,0.45)">
-                <div style="font-size:12px;color:var(--green);margin-bottom:8px">&#10003; Agent identity ready</div>
-                <div class="wallet-creds-grid">
-                  <div class="wallet-cred-row">
-                    <strong>Address</strong>
-                    <code id="agentaddress-evm-address"></code>
-                    <button class="btn btn-sm agentaddress-copy-btn" type="button" data-copy-target="agentaddress-evm-address">Copy</button>
-                  </div>
-                </div>
-                <div style="margin-top:10px">
-                  <button type="button" id="vault-info-toggle" style="background:none;border:1px solid var(--border);border-radius:5px;color:var(--text-muted);font-size:11px;padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
-                    <span class="info-icon" style="font-size:13px">&#9432;</span> Key Storage
-                  </button>
-                  <div id="vault-info-detail" class="setup-info-box" style="display:none;margin-top:8px">
-                    <span>Your private key and recovery phrase are encrypted automatically in the local vault (AES-256-GCM).
-                      To access them, use the CLI: <code style="font-size:10px">agenthalo vault get agent_wallet_private_key</code>
-                      and <code style="font-size:10px">agenthalo vault get agent_wallet_mnemonic</code>.
-                      The vault file is at <code style="font-size:10px">~/.agenthalo/vault.enc</code>.</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="agentaddress-visual">
-              <div style="text-align:center;font-size:9px;color:var(--text-dim);margin-bottom:4px">Works on all EVM-compatible chains</div>
-              <img src="img/agenthaloidentity.png" alt="Agent identity visual" onerror="this.style.display='none'">
-            </div>
-          </div>
-        </div>
-      </details>
-      `
-          : ""
-      }
-    </div>
-
-    <!-- SECTION 2: CLI Agents -->
-    <div class="setup-card-v2" id="setup-cli-agents" style="margin-bottom:0;border-bottom:none;border-radius:10px 10px 0 0">
-      <div class="card-header">
-        <div class="card-icon">&#9000;</div>
-        <div>
-          <div class="card-title">Agent CLIs</div>
-          <div class="card-desc">Detect agent CLIs on your system &mdash; authenticate each via browser OAuth</div>
-        </div>
-      </div>
+  // CLI section body
+  const _cliBodyHtml = `
       <div class="cli-agents-grid" id="cli-agents-grid">
         <div class="cli-agent-row" data-cli="claude">
           <div class="cli-agent-info">
@@ -3771,22 +3627,14 @@ async function renderSetup() {
           </div>
         </div>
       </div>
-      ${
-        !(cfg && cfg.container_runtime && cfg.container_runtime.available)
-          ? `
-        <div style="margin-top:12px;padding:10px 14px;border:1px solid var(--yellow);border-radius:6px;background:rgba(255,200,0,0.06)">
-          <span style="color:var(--yellow);font-weight:600">&#9888; Native session mode active</span>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:4px;line-height:1.5">
-            Subsidiary agents now launch as native local processes.<br>
-            No Docker or Podman installation is required for AgentHALO review or cockpit launches.
-          </div>
-        </div>
-      `
-          : `
-        <div style="margin-top:12px;font-size:12px;color:var(--text-dim)">
-          <span style="color:var(--green)">&#10003;</span> Native launcher: <strong>${cfg.container_runtime.engine}</strong>
-        </div>
-      `
+      ${!(cfg && cfg.container_runtime && cfg.container_runtime.available)
+        ? `<div class="info-banner amber" style="margin-top:10px">
+            <span style="font-weight:600">&#9888; Native session mode active</span> &mdash;
+            Subsidiary agents launch as native local processes. No Docker/Podman required.
+          </div>`
+        : `<div style="margin-top:10px;font-size:11px;color:var(--halo-text-dim)">
+            <span style="color:var(--halo-green)">&#10003;</span> Native launcher: <strong>${cfg.container_runtime.engine}</strong>
+          </div>`
       }
       <div id="cli-auth-terminal-wrap" style="display:none;margin-top:14px">
         <div style="font-size:12px;color:var(--accent);margin-bottom:6px" id="cli-auth-terminal-label">Authentication session</div>
@@ -3794,141 +3642,513 @@ async function renderSetup() {
         <div style="margin-top:8px;display:flex;gap:8px">
           <button class="btn btn-sm" id="cli-auth-terminal-close">Close Terminal</button>
         </div>
-      </div>
-    </div>
+      </div>`;
 
-    <!-- SECTION 3: Connect Your LLM -->
-    <div class="setup-card-v2 ${step2Done ? "card-done" : "card-active"}" id="setup-llm" style="border-radius:0 0 10px 10px;border-top:1px solid var(--border);margin-top:0">
-      <div class="card-header">
-        <div class="card-icon" style="font-size:22px">&#9889;</div>
-        <div>
-          <div class="card-title">
-            Connect Your LLM
-            ${step2Done ? '<span class="setup-inline-status status-done">&#10003; Ready</span>' : ""}
+  // Identity section body
+  const _identityBodyHtml = `
+      <div id="setup-identity">
+        <div class="proof-lattice-wrap" id="proof-lattice-wrap">
+          <div class="proof-lattice-hero" id="proof-lattice-hero">
+            <div id="proof-lattice-three"></div>
+            <div class="proof-lattice-status" id="proof-lattice-status">Initializing proof lattice...</div>
           </div>
-          <div class="card-desc">Choose how your agents access language models</div>
+          <div class="proof-lattice-sidebar" id="proof-lattice-sidebar">
+            <div class="pls-header">Proof Families</div>
+            <div class="pls-families" id="pls-families"></div>
+            <div class="pls-divider"></div>
+            <div class="pls-header">Stats</div>
+            <div class="pls-stats" id="pls-stats"><span class="pls-muted">Loading...</span></div>
+            <div class="pls-divider"></div>
+            <div class="pls-header">Selected Node</div>
+            <div class="pls-selected" id="pls-selected"><span class="pls-muted">Click a node to inspect</span></div>
+          </div>
         </div>
-      </div>
+        <details class="setup-alt-path" id="setup-device-details" style="margin-top:12px">
+          <summary>Device Identity ${identityCfg.device_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ""}</summary>
+          <div class="alt-body">
+            <div class="device-fingerprint-layout">
+              <div class="device-fingerprint-main" id="device-main-content">
+                ${identityCfg.anonymous_mode
+                  ? '<div style="text-align:center;padding:20px 0"><p style="font-size:12px;color:var(--text-dim)">Anonymous mode active &mdash; device identity disabled.</p></div>'
+                  : identityCfg.device_configured
+                    ? `<div id="device-configured-display">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                          <span style="font-size:18px;color:var(--green)">&#9432;</span>
+                          <span style="font-size:13px;color:var(--green);font-weight:700">Device Identity Verified</span>
+                        </div>
+                        <div id="device-scan-summary" style="font-size:12px;color:var(--text-muted);line-height:1.8">Loading device details...</div>
+                        <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
+                      </div>`
+                    : `<div id="device-manual-setup">
+                        <div class="identity-option-checklist">
+                          <label class="identity-option-check"><input type="checkbox" id="tier-device-enable"> Enable device identity</label>
+                          <label class="identity-option-check"><input type="checkbox" id="tier-device-components"> Include hardware components</label>
+                          <label class="identity-option-check"><input type="checkbox" id="tier-device-browser"> Include browser fingerprint</label>
+                        </div>
+                        <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">Scan your device for unique hardware identifiers. All data stays local.</p>
+                        <button class="btn btn-primary btn-sm" id="device-scan-btn" style="border-radius:6px;padding:8px 16px;margin-bottom:12px">Scan Device</button>
+                        <div id="device-scan-results" style="display:none;width:100%;max-width:460px">
+                          <div id="device-components-list"></div>
+                          <div id="device-entropy-bar" style="margin:12px 0"></div>
+                          <button class="btn btn-primary btn-sm" id="device-save-btn" style="border-radius:6px;padding:8px 16px">Save Device Identity</button>
+                        </div>
+                        <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
+                      </div>`
+                }
+              </div>
+              <div class="device-fingerprint-visual">
+                <img src="img/agenthalofingerprint_panel.png" alt="Device identity" onerror="this.style.display='none'">
+              </div>
+            </div>
+          </div>
+        </details>
+        <details class="setup-alt-path" id="setup-network-details" style="margin-top:12px">
+          <summary>Network Identity ${identityCfg.network_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ""}</summary>
+          <div class="alt-body">
+            <div class="network-identity-layout">
+              <div class="network-identity-main" id="network-main-content">
+                ${identityCfg.anonymous_mode
+                  ? '<div style="text-align:center;padding:20px 0"><p style="font-size:12px;color:var(--text-dim)">Anonymous mode active &mdash; network identity disabled.</p></div>'
+                  : identityCfg.network_configured
+                    ? `<div id="network-configured-display">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                          <span style="font-size:18px;color:var(--green)">&#9432;</span>
+                          <span style="font-size:13px;color:var(--green);font-weight:700">Network Identity Verified</span>
+                        </div>
+                        <div id="network-info" style="font-size:12px;color:var(--text-muted);line-height:1.8">Loading network details...</div>
+                        <div id="network-scan-status" style="font-size:12px;margin-top:8px"></div>
+                      </div>`
+                    : `<div id="network-manual-setup">
+                        <div class="identity-option-checklist">
+                          <label class="identity-option-check"><input type="checkbox" id="share-local-ip"> Share local IP (hashed)</label>
+                          <label class="identity-option-check"><input type="checkbox" id="share-mac"> Share MAC (hashed)</label>
+                        </div>
+                        <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">Optionally share network identifiers to strengthen your identity.</p>
+                        <div id="network-info" style="font-size:13px;color:var(--text-dim);width:100%;max-width:460px">Loading network info...</div>
+                        <button class="btn btn-sm btn-primary" id="network-save-btn" style="border-radius:6px;padding:8px 16px;margin-top:10px">Save Network Identity</button>
+                        <p style="font-size:11px;color:var(--text-dim);margin-top:8px;max-width:460px">IP/MAC values are hashed before storage.</p>
+                      </div>`
+                }
+              </div>
+              <div class="network-identity-visual">
+                <img src="img/agenthalonetworkidentity_panel.png" alt="Network identity" onerror="this.style.display='none'">
+              </div>
+            </div>
+          </div>
+        </details>
+        <details class="setup-alt-path" id="setup-social-details" style="margin-top:12px;${deferIdentityRoadmapTracks ? "display:none;" : ""}">
+          <summary>Social Login &amp; OAuth Tokens</summary>
+          <div class="alt-body">
+            <div class="social-identity-layout">
+              <div class="social-identity-main">
+                <div class="identity-option-checklist" id="social-provider-checklist">
+                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="google"> Google</label>
+                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="github"> GitHub</label>
+                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="microsoft"> Microsoft</label>
+                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="discord"> Discord</label>
+                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="apple"> Apple</label>
+                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="facebook"> Facebook</label>
+                </div>
+                <div class="social-connect-controls">
+                  <label class="social-expiry-label" for="social-expiry-days">Token expiry (days)</label>
+                  <input type="number" min="1" max="365" value="30" id="social-expiry-days" class="setup-input social-expiry-input">
+                  <button class="btn btn-primary btn-sm" id="social-connect-selected-btn" style="border-radius:6px;padding:8px 16px">Connect Selected</button>
+                  <button class="btn btn-sm" id="social-revoke-selected-btn" style="border-radius:6px;padding:8px 16px">Revoke Selected</button>
+                </div>
+                <div id="social-provider-status" class="social-provider-status">Loading social identity status...</div>
+              </div>
+            </div>
+          </div>
+        </details>
+        <details class="setup-alt-path" id="setup-super-secure-details" style="margin-top:12px;${deferIdentityRoadmapTracks ? "display:none;" : ""}">
+          <summary>Advanced Verification Tracks</summary>
+          <div class="alt-body">
+            <div class="super-secure-layout">
+              <div class="super-secure-main">
+                <div class="super-secure-item">
+                  <div class="super-secure-item-title">Passkey (WebAuthn)</div>
+                  <p>Requires browser/device registration.</p>
+                  <label class="identity-option-check"><input type="checkbox" id="super-passkey-enabled"> Enabled</label>
+                  <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="passkey">Apply Passkey</button>
+                </div>
+                <div class="super-secure-item">
+                  <div class="super-secure-item-title">Hardware Security Key</div>
+                  <p>Requires a FIDO2 key.</p>
+                  <label class="identity-option-check"><input type="checkbox" id="super-security-key-enabled"> Enabled</label>
+                  <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="security_key">Apply Security Key</button>
+                </div>
+                <div class="super-secure-item">
+                  <div class="super-secure-item-title">Two-Factor Auth (TOTP)</div>
+                  <p>Requires authenticator app.</p>
+                  <label class="identity-option-check"><input type="checkbox" id="super-totp-enabled"> Enabled</label>
+                  <input type="text" id="super-totp-label" class="setup-input" placeholder="Authenticator label (optional)">
+                  <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="totp">Apply TOTP</button>
+                </div>
+              </div>
+              <div class="super-secure-visual">
+                <div class="super-secure-note">
+                  <div class="super-secure-note-title">External Steps Required</div>
+                  <p>These tracks raise assurance and are recorded immutably.</p>
+                  <div id="super-secure-status" class="social-provider-status" style="margin-top:10px"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+        <details class="setup-alt-path" style="margin-top:12px" id="setup-genesis-details">
+          <summary>Genesis Provenance <span id="genesis-status-inline"></span></summary>
+          <div class="alt-body" id="genesis-provenance-body">
+            <div style="font-size:11px;color:var(--halo-text-dim)">Loading genesis data...</div>
+          </div>
+        </details>
+        ${deferIdentityRoadmapTracks ? `
+        <details class="setup-alt-path" style="margin-top:14px" id="agentaddress-section">
+          <summary>Agent Identity <span class="setup-inline-status status-done">&#10003; Complete</span></summary>
+          <div class="alt-body">
+            <div class="agentaddress-layout">
+              <div class="agentaddress-main">
+                <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px">
+                  Your agent identity is auto-generated on first launch.
+                </p>
+                <div id="agentaddress-status" style="font-size:12px;color:var(--text-dim);margin-bottom:10px"></div>
+                <div style="margin-bottom:10px">
+                  <button class="btn btn-sm btn-primary" id="agentidentity-genesis-btn" type="button" style="display:none;font-size:11px;padding:6px 14px;border-radius:5px">Generate from Genesis</button>
+                  <button class="btn btn-sm" id="agentidentity-retry-btn" type="button" style="display:none;font-size:11px;padding:6px 14px;border-radius:5px">Retry Auto Setup</button>
+                </div>
+                <div id="agentaddress-output" style="display:none;border:1px solid var(--border);border-radius:8px;padding:12px;background:rgba(4,14,8,0.45)">
+                  <div style="font-size:12px;color:var(--green);margin-bottom:8px">&#10003; Agent identity ready</div>
+                  <div class="wallet-creds-grid">
+                    <div class="wallet-cred-row">
+                      <strong>Address</strong>
+                      <code id="agentaddress-evm-address"></code>
+                      <button class="btn btn-sm agentaddress-copy-btn" type="button" data-copy-target="agentaddress-evm-address">Copy</button>
+                    </div>
+                  </div>
+                  <div style="margin-top:10px">
+                    <button type="button" id="vault-info-toggle" style="background:none;border:1px solid var(--border);border-radius:5px;color:var(--text-muted);font-size:11px;padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+                      <span class="info-icon" style="font-size:13px">&#9432;</span> Key Storage
+                    </button>
+                    <div id="vault-info-detail" class="setup-info-box" style="display:none;margin-top:8px">
+                      <span>Your private key and recovery phrase are encrypted in the local vault (AES-256-GCM).
+                        CLI: <code style="font-size:10px">agenthalo vault get agent_wallet_private_key</code>.
+                        Vault file: <code style="font-size:10px">~/.agenthalo/vault.enc</code>.</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="agentaddress-visual">
+                <div style="text-align:center;font-size:9px;color:var(--text-dim);margin-bottom:4px">Works on all EVM-compatible chains</div>
+                <img src="img/agenthaloidentity.png" alt="Agent identity" onerror="this.style.display='none'">
+              </div>
+            </div>
+          </div>
+        </details>` : ""}
+      </div>`;
 
-      ${
-        step2Done
+  // LLM section body
+  const _llmBodyHtml = `
+      <div id="setup-llm">
+        ${step2Done
           ? _step2DoneHtml
-          : `
-        <!-- Choice: two options -->
-        <div class="setup-llm-choice-grid">
-
-          <!-- Option: Local Models -->
-          <div class="setup-llm-option" id="setup-local-models">
-            <div class="setup-llm-option-icon">&#128421;</div>
-            <div class="setup-llm-option-title">Local Models</div>
-            <div class="setup-llm-option-desc">
-              Use your own hardware through vLLM. This is the default guided path for AgentHALO.
+          : `<div class="setup-llm-choice-grid">
+              <div class="setup-llm-option" id="setup-local-models">
+                <div class="setup-llm-option-icon">&#128421;</div>
+                <div class="setup-llm-option-title">Local Models</div>
+                <div class="setup-llm-option-desc">Use your own hardware through vLLM.</div>
+                <button class="btn btn-primary" id="setup-choose-local-models-btn" style="border-radius:8px;padding:10px 24px;font-size:13px;margin-top:auto">Use Local Models</button>
+                <div id="setup-local-models-status" style="margin-top:6px;font-size:11px;min-height:16px"></div>
+              </div>
             </div>
-            <button class="btn btn-primary" id="setup-choose-local-models-btn"
-                    style="border-radius:8px;padding:10px 24px;font-size:13px;margin-top:auto">
-              Use Local Models
-            </button>
-            <div id="setup-local-models-status" style="margin-top:6px;font-size:11px;min-height:16px"></div>
-          </div>
-        </div>
-        <div class="setup-info-box" style="margin-top:14px">
-          <span class="info-icon">&#9432;</span>
-          <span>Cloud providers, including OpenRouter, remain available from Configuration if you want to add them later.</span>
-        </div>
-      `
-      }
-    </div>
-
-    <!-- SECTION 4: Wallet -->
-    <div class="setup-card-v2 ${c1c}" id="setup-wallet">
-      <div class="card-header">
-        ${
-          agentpmtConnected
-            ? '<img class="card-icon-logo" src="img/agentpmt-192.png" alt="AgentPMT" title="AgentPMT" onerror="this.outerHTML=\'<div class=\\\'card-icon\\\'>&#9883;</div>\'">'
-            : '<div class="card-icon">&#9883;</div>'
+            <div class="info-banner green" style="margin-top:10px">
+              &#9432; Cloud providers (OpenRouter, etc.) are available from Configuration.
+            </div>`
         }
-        <div>
-          <div class="card-title">
-            Your Wallet
-            ${
-              step1Done
-                ? agentpmtConnected
-                  ? '<span class="setup-inline-status status-done">&#10003; AgentPMT Connected</span>'
-                  : agentaddressConnected
-                    ? '<span class="setup-inline-status status-done">&#10003; Agent Wallet Connected</span>'
-                    : '<span class="setup-inline-status status-done">&#10003; Connected</span>'
-                : '<span class="setup-inline-status status-missing">&#10007; Not Connected</span>'
-            }
+      </div>`;
+
+  // Wallet section body
+  const _walletBodyHtml = `
+      <div id="setup-wallet">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
+          <div class="dot ${hasAnyWallet ? "g" : ""}"></div>
+          <span style="font-size:11px;color:var(--halo-text)">Wallet Presence</span>
+          <span class="pill ${hasAnyWallet ? "ok" : "off"}">${hasAnyWallet ? "bound" : "not bound"}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
+          <div class="dot ${agentpmtConnected ? "g" : ""}"></div>
+          <span style="font-size:11px;color:var(--halo-text)">AgentPMT</span>
+          <span class="pill ${agentpmtConnected ? "ok" : "off"}">${agentpmtConnected ? "connected" : "not configured"}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
+          <div class="dot ${agentaddressConnected ? "g" : ""}"></div>
+          <span style="font-size:11px;color:var(--halo-text)">Agent Wallet</span>
+          <span class="pill ${agentaddressConnected ? "ok" : "off"}">${agentaddressConnected ? "active" : "not configured"}</span>
+          ${agentaddressAddress ? `<span style="font-size:9px;color:var(--halo-text-dim)">${esc(agentaddressAddress.slice(0, 10))}...</span>` : ""}
+        </div>
+        ${step1Done
+          ? `<div class="info-banner green">
+              &#10003; ${walletPath === "agentpmt"
+                ? `AgentPMT connected${pmtToolCount > 0 ? " &mdash; " + pmtToolCount + " tools ready" : ""}`
+                : `Agent wallet connected${agentaddressAddress ? " &mdash; " + esc(agentaddressAddress) : ""}`}
+            </div>
+            ${walletPath === "agentpmt"
+              ? `<div style="margin-top:12px"><button class="btn btn-sm" id="setup-disconnect-agentpmt" style="border-color:var(--red);color:var(--red);font-size:10px">Disconnect</button></div>`
+              : `<div style="margin-top:12px;text-align:center">
+                  <button class="btn btn-primary" id="setup-agentpmt-initiate" style="padding:10px 28px;font-size:12px;border-radius:6px;font-weight:600;letter-spacing:0.5px">&#9883; Connect AgentPMT</button>
+                </div>`
+            }`
+          : `<div style="text-align:center;padding:16px 0">
+              <p style="font-size:12px;color:var(--halo-text-dim);margin-bottom:14px">Connect to AgentPMT to unlock 100+ tools, budget controls, and workflows.</p>
+              <button class="btn btn-primary" id="setup-agentpmt-setup-now" style="padding:10px 28px;font-size:12px;border-radius:6px;font-weight:600">SET UP NOW</button>
+            </div>`
+        }
+      </div>`;
+
+  // Technical options section body
+  const _technicalBodyHtml = `
+      <div>
+        <div class="s-row">
+          <div class="dot g"></div>
+          <span class="name">MCP Tools</span>
+          <span class="meta">Agent tool proxy</span>
+          <a href="#/mcp-tools" class="btn btn-sm" style="font-size:10px;padding:3px 10px">Open</a>
+        </div>
+        <div class="s-row">
+          <div class="dot g"></div>
+          <span class="name">Proof Gate (HeytingLean)</span>
+          <span class="meta">Formal verification</span>
+          <a href="#/proof-gate" class="btn btn-sm" style="font-size:10px;padding:3px 10px">Open</a>
+        </div>
+        <div class="s-row">
+          <div class="dot ${cfg && cfg.nucleusdb_available ? "g" : ""}"></div>
+          <span class="name">NucleusDB</span>
+          <span class="meta">Verifiable storage</span>
+          <a href="#/nucleusdb" class="btn btn-sm" style="font-size:10px;padding:3px 10px">Open</a>
+        </div>
+        <div class="info-banner green" style="margin-top:8px">
+          &#9432; Advanced configuration is always available from the <a href="#/config" style="color:var(--halo-green)">Configuration</a> page.
+        </div>
+      </div>`;
+
+  // ---- Decide which sections to auto-expand ----
+  const _autoExpand = {
+    cli: true,  // always show CLIs on load
+    identity: !identityDone,
+    llm: !step2Done,
+    wallet: !walletComplete,
+    technical: false,
+  };
+
+  if (showWizard) {
+    // ---- WIZARD VIEW ----
+    content.innerHTML = `
+    <div class="wizard-wrap setup-v3">
+      <div class="wizard-spine">
+        <div class="wizard-spine-dot active" data-step="1" onclick="goSetupStep(1)">1</div>
+        <div class="wizard-spine-line" data-after="1"></div>
+        <div class="wizard-spine-dot" data-step="2" onclick="goSetupStep(2)">2</div>
+        <div class="wizard-spine-line" data-after="2"></div>
+        <div class="wizard-spine-dot" data-step="3" onclick="goSetupStep(3)">3</div>
+        <div class="wizard-spine-line" data-after="3"></div>
+        <div class="wizard-spine-dot" data-step="4" onclick="goSetupStep(4)">4</div>
+        <div class="wizard-spine-line" data-after="4"></div>
+        <div class="wizard-spine-dot" data-step="5" onclick="goSetupStep(5)">5</div>
+      </div>
+      <div class="wizard-skip"><a onclick="skipToSetupPower()">I know what I'm doing &rarr; Skip to power view</a></div>
+
+      <!-- Step 1: Welcome -->
+      <div class="wizard-step active" data-step="1">
+        <div class="wizard-hal">
+          <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
+          <div class="wizard-hal-bubble">Welcome. I'm Hal. Let's get your agent environment properly set up.</div>
+        </div>
+        <div class="opt-grid" style="grid-template-columns:1fr 1fr;margin:16px 0">
+          <div class="opt-card sel" onclick="this.classList.add('sel');this.nextElementSibling.classList.remove('sel')">
+            <div class="opt-card-icon">&#128736;</div>
+            <div class="opt-card-name">Build with agents</div>
+            <div class="opt-card-desc">Set up for developing and deploying AI agents</div>
           </div>
-          <div class="card-desc">${walletCardDesc}</div>
-          <div class="setup-wallet-summary">
-            <span class="setup-wallet-chip ${hasAnyWallet ? "ok" : "bad"}">
-              ${hasAnyWallet ? "&#10003;" : "&#10007;"} Wallet Presence
-            </span>
-            <span class="setup-wallet-chip ${agentpmtConnected ? "ok" : "bad"}">
-              ${agentpmtConnected ? "&#10003;" : "&#10007;"} AgentPMT
-            </span>
-            <span class="setup-wallet-chip ${agentaddressConnected ? "ok" : "bad"}">
-              ${agentaddressConnected ? "&#10003;" : "&#10007;"} Agent Wallet
-            </span>
+          <div class="opt-card" onclick="this.classList.add('sel');this.previousElementSibling.classList.remove('sel')">
+            <div class="opt-card-icon">&#9654;</div>
+            <div class="opt-card-name">Run existing agents</div>
+            <div class="opt-card-desc">Connect to an existing agent configuration</div>
           </div>
+        </div>
+        <div class="info-banner green">&#9432; Configuration is always available from the sidebar after setup.</div>
+        <div class="wizard-nav">
+          <div></div>
+          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(2)">GET STARTED</button>
         </div>
       </div>
 
-      ${
-        step1Done
-          ? `
-        <div class="setup-success-banner">
-          <span class="success-icon">&#10003;</span>
-          <span>
-            ${
-              walletPath === "agentpmt"
-                ? `AgentPMT connected${pmtToolCount > 0 ? " &mdash; <strong>" + pmtToolCount + " tools</strong> ready to use" : ""}`
-                : `Agent wallet connected${agentaddressAddress ? ` &mdash; <code>${esc(agentaddressAddress)}</code>` : ""}`
-            }
-          </span>
+      <!-- Step 2: Identity -->
+      <div class="wizard-step" data-step="2">
+        <div class="wizard-hal">
+          <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
+          <div class="wizard-hal-bubble">Let's establish your identity. This anchors trust for everything that follows.</div>
         </div>
-        ${
-          walletPath === "agentpmt"
-            ? `
-          <div style="margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button class="btn btn-sm" id="setup-disconnect-agentpmt" style="border-color:var(--red);color:var(--red)">
-              Disconnect My Account
-            </button>
-            <span style="font-size:11px;color:var(--text-dim)">Removes your token and disables the tool proxy</span>
+        ${_identityBodyHtml}
+        <div class="wizard-nav">
+          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(1)">BACK</button>
+          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(3)">CONTINUE</button>
+        </div>
+      </div>
+
+      <!-- Step 3: LLM Provider -->
+      <div class="wizard-step" data-step="3">
+        <div class="wizard-hal">
+          <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
+          <div class="wizard-hal-bubble">Your agents need language model access. Choose how they should connect.</div>
+        </div>
+        ${_llmBodyHtml}
+        <div class="wizard-nav">
+          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(2)">BACK</button>
+          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(4)">CONTINUE</button>
+        </div>
+      </div>
+
+      <!-- Step 4: Wallet -->
+      <div class="wizard-step" data-step="4">
+        <div class="wizard-hal">
+          <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
+          <div class="wizard-hal-bubble">Your wallet was auto-derived from your Genesis identity. Here's the status.</div>
+        </div>
+        ${_walletBodyHtml}
+        <div class="wizard-nav">
+          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(3)">BACK</button>
+          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(5)">CONTINUE</button>
+        </div>
+      </div>
+
+      <!-- Step 5: Review -->
+      <div class="wizard-step" data-step="5">
+        <div class="wizard-hal">
+          <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
+          <div class="wizard-hal-bubble">All set. Let's build.</div>
+        </div>
+        <div class="wizard-review-grid">
+          <div class="wizard-review-card">
+            <div class="label">Agent CLIs</div>
+            <div class="value" id="wizard-review-cli">Detecting...</div>
           </div>
-        `
-            : `
-          <div style="margin-top:20px;text-align:center">
-            <button class="btn btn-primary" id="setup-agentpmt-initiate" style="padding:14px 36px;font-size:15px;border-radius:8px;font-weight:700;letter-spacing:0.5px">
-              &#9883; INITIATE
-            </button>
-            <div style="margin-top:10px">
-              <span style="font-size:12px;color:var(--text-dim)">Connect to AgentPMT for 100+ tools, budget controls, and workflow automation</span>
-            </div>
+          <div class="wizard-review-card">
+            <div class="label">LLM Provider</div>
+            <div class="value">${step2Done ? "Configured" : "Not set"}</div>
           </div>
-        `
-        }
-      `
-          : `
-        <div style="text-align:center;padding:24px 16px">
-          <p style="font-size:15px;color:var(--text-muted);line-height:1.7;margin-bottom:20px;max-width:480px;margin-left:auto;margin-right:auto">
-            Connect to AgentPMT to unlock 100+ third-party tools, budget controls, and workflow automation for your agents.
-          </p>
-          <button class="btn btn-primary" id="setup-agentpmt-setup-now" style="padding:14px 36px;font-size:15px;border-radius:8px;font-weight:700;letter-spacing:0.5px">
-            SET UP NOW
-          </button>
-          <div style="margin-top:14px">
-            <span style="font-size:12px;color:var(--text-dim)">Opens the AgentPMT dashboard where you can create an account and connect</span>
+          <div class="wizard-review-card">
+            <div class="label">Identity</div>
+            <div class="value">${identityDone ? "Complete" : "Pending"}</div>
+          </div>
+          <div class="wizard-review-card">
+            <div class="label">Wallet</div>
+            <div class="value">${hasAnyWallet ? esc(agentaddressAddress ? agentaddressAddress.slice(0, 10) + "..." : "Bound") : "Not bound"}</div>
           </div>
         </div>
-      `
-      }
-    </div>
+        <div class="initiate-wrap" style="border:none;padding-top:16px">
+          <button class="init-btn" id="setup-initiate-btn" onclick="location.hash='#/overview'">INITIATE</button>
+        </div>
+        <div class="wizard-nav" style="border:none">
+          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(4)">BACK</button>
+          <div></div>
+        </div>
+      </div>
+    </div>`;
+    _setupV3WizardStep = 1;
+  } else {
+    // ---- DASHBOARD VIEW (Power User) ----
+    content.innerHTML = `
+    <div class="setup-v3">
+      <!-- Top Bar -->
+      <div class="halo-topbar">
+        <div class="halo-topbar-avatar">
+          <img src="img/agenthalo_ready.png" alt="Hal" onerror="this.outerHTML='H'">
+        </div>
+        <div class="halo-topbar-text">
+          <div class="halo-topbar-title">H.A.L.O. Setup</div>
+          <div class="halo-topbar-sub" id="halo-topbar-sub">Loading...</div>
+        </div>
+        <div class="halo-topbar-meta">
+          <span class="version-label">${esc((cfg && cfg.version) || "v0.3.0")}</span>
+          <div class="dot" id="halo-overall-dot"></div>
+        </div>
+      </div>
 
+      <!-- Completion Bar -->
+      <div class="completion-bar" id="setup-completion-bar">
+        <div class="completion-seg${_sectionStates.cli ? " done" : ""}" data-section="cli"></div>
+        <div class="completion-seg${_sectionStates.identity ? " done" : ""}" data-section="identity"></div>
+        <div class="completion-seg${_sectionStates.llm ? " done" : ""}" data-section="llm"></div>
+        <div class="completion-seg${_sectionStates.wallet ? " done" : ""}" data-section="wallet"></div>
+        <div class="completion-seg" data-section="technical"></div>
+        <span class="completion-label" id="completion-label"></span>
+      </div>
 
-  </div>
-  `;
+      <!-- Section 1: Agent CLIs -->
+      <div class="section${_autoExpand.cli ? " open" : ""}" id="s-cli">
+        <div class="sec-head" onclick="toggleSetupSection('cli')">
+          <span class="arrow">&#x25B6;</span>
+          <span class="sec-title">AGENT CLIs</span>
+          <div class="sec-summary" id="sec-summary-cli"><span class="pill off">detecting</span></div>
+        </div>
+        <div class="sec-body" id="body-cli">${_cliBodyHtml}</div>
+      </div>
+
+      <!-- Section 2: Identity -->
+      <div class="section${_autoExpand.identity ? " open" : ""}" id="s-identity">
+        <div class="sec-head" onclick="toggleSetupSection('identity')">
+          <span class="arrow">&#x25B6;</span>
+          <span class="sec-title">IDENTITY</span>
+          <div class="sec-summary" id="sec-summary-identity">
+            ${setupV3SectionSummaryHtml("identity", { deviceDone: !!identityCfg.device_configured, networkDone: !!identityCfg.network_configured, agentDone: !!agentaddressConnected })}
+          </div>
+        </div>
+        <div class="sec-body" id="body-identity">${_identityBodyHtml}</div>
+      </div>
+
+      <!-- Section 3: LLM Provider -->
+      <div class="section${_autoExpand.llm ? " open" : ""}" id="s-llm">
+        <div class="sec-head" onclick="toggleSetupSection('llm')">
+          <span class="arrow">&#x25B6;</span>
+          <span class="sec-title">LLM PROVIDER</span>
+          <div class="sec-summary" id="sec-summary-llm">
+            ${setupV3SectionSummaryHtml("llm", { llmDone: step2Done, llmLabel: step2Done ? "configured" : "" })}
+          </div>
+        </div>
+        <div class="sec-body" id="body-llm">${_llmBodyHtml}</div>
+      </div>
+
+      <!-- Section 4: Wallet -->
+      <div class="section${_autoExpand.wallet ? " open" : ""}" id="s-wallet">
+        <div class="sec-head" onclick="toggleSetupSection('wallet')">
+          <span class="arrow">&#x25B6;</span>
+          <span class="sec-title">WALLET</span>
+          <div class="sec-summary" id="sec-summary-wallet">
+            ${setupV3SectionSummaryHtml("wallet", { walletBound: hasAnyWallet })}
+          </div>
+        </div>
+        <div class="sec-body" id="body-wallet">${_walletBodyHtml}</div>
+      </div>
+
+      <!-- Section 5: Technical Options -->
+      <div class="section${_autoExpand.technical ? " open" : ""}" id="s-technical">
+        <div class="sec-head" onclick="toggleSetupSection('technical')">
+          <span class="arrow">&#x25B6;</span>
+          <span class="sec-title">TECHNICAL OPTIONS</span>
+          <div class="sec-summary" id="sec-summary-technical">
+            <span class="pill off">configure</span>
+          </div>
+        </div>
+        <div class="sec-body" id="body-technical">${_technicalBodyHtml}</div>
+      </div>
+
+      <!-- INITIATE Button -->
+      <div class="initiate-wrap">
+        <button class="init-btn" id="setup-initiate-btn" onclick="location.hash='#/overview'">INITIATE</button>
+      </div>
+    </div>`;
+
+    // Run initial completion update
+    updateSetupCompletion(_sectionStates);
+  }
 
   // ---- Proof lattice Three.js visualization (green theme + sidebar) ----
   (async () => {
@@ -4591,10 +4811,18 @@ async function renderSetup() {
     let cliPollCount = 0;
     const maxCliPolls = 15;
 
+    const _cliAuthCount = { n: 0 };
     const setCliStatus = (cli, resp, statusEl, authBtn) => {
       if (resp.installed) {
         cliResolved[cli] = true;
         if (resp.authenticated) {
+          _cliAuthCount.n++;
+          // Update section state + completion bar
+          _sectionStates.cli = true;
+          updateSetupCompletion(_sectionStates);
+          // Also update CLI section summary
+          const summEl = document.getElementById("sec-summary-cli");
+          if (summEl) summEl.innerHTML = setupV3SectionSummaryHtml("cli", { cliConnected: _cliAuthCount.n, cliPending: 0 });
           if (statusEl)
             statusEl.innerHTML =
               '<span style="color:var(--green)">&#10003; Authenticated</span>';
@@ -5015,6 +5243,63 @@ async function renderSetup() {
     maybeShowGenesisGenerate(false);
   }
   await runAutoProvision(false);
+
+  // --- Genesis Provenance section ---
+  (async () => {
+    const genesisBody = document.getElementById("genesis-provenance-body");
+    const genesisInline = document.getElementById("genesis-status-inline");
+    if (!genesisBody) return;
+    try {
+      const gs = await api("/genesis/status");
+      if (!gs || !gs.completed) {
+        genesisBody.innerHTML = '<div style="font-size:11px;color:var(--halo-text-dim)">Genesis ceremony not yet completed.</div>';
+        return;
+      }
+      if (genesisInline) genesisInline.innerHTML = '<span class="setup-inline-status status-done">&#10003; Complete</span>';
+      const sources = Array.isArray(gs.entropy_sources) ? gs.entropy_sources : [];
+      const sourceRows = sources.map(s => {
+        const label = esc(String(s.name || s.source || "Unknown"));
+        const meta = esc(String(s.detail || s.pulse_id || s.round || s.id || ""));
+        return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--halo-border)">
+          <div class="dot g" style="width:5px;height:5px"></div>
+          <span style="font-size:11px;color:var(--halo-text);min-width:90px">${label}</span>
+          <span style="font-size:10px;color:var(--halo-text-dim);font-family:monospace">${meta}</span>
+        </div>`;
+      }).join("");
+      const seedHash = String(gs.seed_hash_sha256 || gs.seed_hash || "").slice(0, 24);
+      const combinedEntropy = String(gs.combined_entropy_sha256 || "").slice(0, 24);
+      const didUri = String(gs.did_uri || "");
+      const twineType = String(gs.twine_signature_type || gs.signature_type || "Ed25519");
+      genesisBody.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--halo-border)">
+            <div class="dot g" style="width:5px;height:5px"></div>
+            <span style="font-size:11px;color:var(--halo-text);min-width:90px">Seed Hash</span>
+            <span style="font-size:10px;color:var(--halo-text-dim);font-family:monospace">${esc(seedHash)}${seedHash ? "..." : "N/A"}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--halo-border)">
+            <div class="dot g" style="width:5px;height:5px"></div>
+            <span style="font-size:11px;color:var(--halo-text);min-width:90px">DID</span>
+            <span style="font-size:10px;color:var(--halo-text-dim);font-family:monospace;word-break:break-all">${esc(didUri) || "N/A"}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--halo-border)">
+            <div class="dot g" style="width:5px;height:5px"></div>
+            <span style="font-size:11px;color:var(--halo-text);min-width:90px">Twine</span>
+            <span style="font-size:10px;color:var(--halo-text-dim);font-family:monospace">${esc(twineType)}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--halo-border)">
+            <div class="dot g" style="width:5px;height:5px"></div>
+            <span style="font-size:11px;color:var(--halo-text);min-width:90px">Combined Entropy</span>
+            <span style="font-size:10px;color:var(--halo-text-dim);font-family:monospace">${esc(combinedEntropy)}${combinedEntropy ? "..." : "N/A"}</span>
+          </div>
+          <div style="margin-top:6px;padding-top:4px;font-size:10px;color:var(--halo-text-dim);text-transform:uppercase;letter-spacing:0.5px">Entropy Sources</div>
+          ${sourceRows || '<div style="font-size:11px;color:var(--halo-text-dim)">No entropy sources found</div>'}
+        </div>
+      `;
+    } catch (_e) {
+      genesisBody.innerHTML = '<div style="font-size:11px;color:var(--halo-text-dim)">Genesis data unavailable.</div>';
+    }
+  })();
 
   // --- Key Storage toggle for vault info box (delegation, registered once) ---
   if (!content._haloVaultInfoHandler) {

@@ -43,6 +43,19 @@
   --glow-amber: 0 0 6px rgba(255, 106, 0, 0.28);
   --glow-red: 0 0 8px rgba(255, 48, 48, 0.35);
   --glow-bright: 0 0 8px rgba(53, 255, 62, 0.22);
+
+  /* === Setup V3 Design Tokens === */
+  --halo-bg: #080c08;
+  --halo-surface: #0e150e;
+  --halo-card: #121c12;
+  --halo-border: #1a2e1a;
+  --halo-green: #33ff66;
+  --halo-green-dim: #1a8033;
+  --halo-green-muted: #0d4020;
+  --halo-amber: #e0a020;
+  --halo-red: #e04040;
+  --halo-text: #c8e0c8;
+  --halo-text-dim: #4a6a4a;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -592,11 +605,16 @@ body.no-crt #crt-overlay { display: none; }
 
 /* LLM choice grid — side-by-side Local vs OpenRouter */
 .setup-llm-choice-grid {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
+  justify-content: center;
   gap: 0;
   align-items: stretch;
   margin-top: 4px;
+}
+
+.setup-llm-choice-grid .setup-llm-option {
+  max-width: 320px;
+  width: 100%;
 }
 @media (max-width: 640px) {
   .setup-llm-choice-grid {
@@ -5888,4 +5906,579 @@ input:focus, select:focus, textarea:focus {
   .mcp-detail-panel {
     position: static;
   }
+}
+
+/* ================================================================
+   SETUP V3 — Redesigned dual-mode setup page
+   ================================================================ */
+
+.setup-v3 {
+  max-width: 860px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 0 8px;
+}
+
+/* --- Top Bar --- */
+.halo-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 0 14px;
+  margin-bottom: 4px;
+}
+
+.halo-topbar-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--halo-green-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+  font-size: 14px;
+  color: var(--halo-green);
+  box-shadow: 0 0 12px rgba(51, 255, 102, 0.2);
+}
+
+.halo-topbar-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.halo-topbar-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.halo-topbar-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--halo-green);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.halo-topbar-sub {
+  font-size: 10px;
+  color: var(--halo-text-dim);
+  margin-top: 2px;
+}
+
+.halo-topbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.halo-topbar-meta .version-label {
+  font-size: 9px;
+  color: var(--halo-text-dim);
+}
+
+/* --- Completion Bar --- */
+.completion-bar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 0 16px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--halo-border);
+}
+
+.completion-seg {
+  flex: 1;
+  height: 3px;
+  background: var(--halo-border);
+  border-radius: 1px;
+  transition: background 0.3s;
+}
+
+.completion-seg.done {
+  background: var(--halo-green);
+}
+
+.completion-seg.partial {
+  background: var(--halo-amber);
+}
+
+.completion-label {
+  font-size: 9px;
+  color: var(--halo-text-dim);
+  letter-spacing: 0.5px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+/* --- Collapsible Sections --- */
+.setup-v3 .section {
+  border: 1px solid var(--halo-border);
+  border-radius: 4px;
+  margin-bottom: 6px;
+  background: var(--halo-card);
+  overflow: hidden;
+}
+
+.setup-v3 .sec-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.setup-v3 .sec-head:hover {
+  background: rgba(51, 255, 102, 0.02);
+}
+
+.setup-v3 .arrow {
+  font-size: 9px;
+  color: var(--halo-text-dim);
+  transition: transform 0.2s;
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+}
+
+.setup-v3 .section.open .arrow {
+  transform: rotate(90deg);
+}
+
+.setup-v3 .sec-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--halo-green);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.setup-v3 .sec-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.setup-v3 .sec-body {
+  display: none;
+  padding: 12px 14px 16px;
+  border-top: 1px solid var(--halo-border);
+}
+
+.setup-v3 .section.open .sec-body {
+  display: block;
+}
+
+/* --- Status Dots --- */
+.setup-v3 .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--halo-text-dim);
+}
+
+.setup-v3 .dot.g {
+  background: var(--halo-green);
+  box-shadow: 0 0 5px rgba(51, 255, 102, 0.5);
+}
+
+.setup-v3 .dot.a {
+  background: var(--halo-amber);
+  box-shadow: 0 0 5px rgba(224, 160, 32, 0.5);
+}
+
+.setup-v3 .dot.r {
+  background: var(--halo-red);
+  box-shadow: 0 0 5px rgba(224, 64, 64, 0.5);
+}
+
+/* --- Pills / Badges --- */
+.setup-v3 .pill {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.setup-v3 .pill.ok {
+  color: var(--halo-green);
+  background: rgba(51, 255, 102, 0.1);
+  border: 1px solid rgba(51, 255, 102, 0.2);
+}
+
+.setup-v3 .pill.warn {
+  color: var(--halo-amber);
+  background: rgba(224, 160, 32, 0.1);
+  border: 1px solid rgba(224, 160, 32, 0.2);
+}
+
+.setup-v3 .pill.err {
+  color: var(--halo-red);
+  background: rgba(224, 64, 64, 0.1);
+  border: 1px solid rgba(224, 64, 64, 0.2);
+}
+
+.setup-v3 .pill.off {
+  color: var(--halo-text-dim);
+  background: rgba(74, 106, 74, 0.1);
+  border: 1px solid rgba(74, 106, 74, 0.2);
+}
+
+/* --- Status Rows --- */
+.setup-v3 .s-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(26, 46, 26, 0.5);
+}
+
+.setup-v3 .s-row:last-child {
+  border-bottom: none;
+}
+
+.setup-v3 .s-row .name {
+  font-size: 11px;
+  color: var(--halo-text);
+  flex: 1;
+  min-width: 0;
+}
+
+.setup-v3 .s-row .meta {
+  font-size: 9px;
+  color: var(--halo-text-dim);
+}
+
+/* --- Option Cards --- */
+.setup-v3 .opt-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 8px 0;
+}
+
+@media (max-width: 700px) {
+  .setup-v3 .opt-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.setup-v3 .opt-card {
+  border: 1px solid var(--halo-border);
+  border-radius: 4px;
+  padding: 14px 12px;
+  background: var(--halo-surface);
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  text-align: center;
+}
+
+.setup-v3 .opt-card:hover {
+  border-color: var(--halo-green-dim);
+}
+
+.setup-v3 .opt-card.sel {
+  border-color: var(--halo-green);
+  box-shadow: 0 0 8px rgba(51, 255, 102, 0.15);
+}
+
+.setup-v3 .opt-card-icon {
+  font-size: 24px;
+  margin-bottom: 6px;
+}
+
+.setup-v3 .opt-card-name {
+  font-size: 11px;
+  color: var(--halo-text);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.setup-v3 .opt-card-desc {
+  font-size: 9px;
+  color: var(--halo-text-dim);
+  line-height: 1.4;
+}
+
+/* --- Info Banners --- */
+.setup-v3 .info-banner {
+  font-size: 10px;
+  padding: 8px 12px;
+  border-radius: 3px;
+  margin-top: 10px;
+  line-height: 1.5;
+}
+
+.setup-v3 .info-banner.green {
+  color: var(--halo-green);
+  background: rgba(51, 255, 102, 0.05);
+  border: 1px solid rgba(51, 255, 102, 0.12);
+}
+
+.setup-v3 .info-banner.amber {
+  color: var(--halo-amber);
+  background: rgba(224, 160, 32, 0.05);
+  border: 1px solid rgba(224, 160, 32, 0.12);
+}
+
+/* --- INITIATE Button --- */
+.initiate-wrap {
+  text-align: center;
+  padding: 24px 0 16px;
+  margin-top: 8px;
+  border-top: 1px solid var(--halo-border);
+}
+
+.init-btn {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--halo-green);
+  background: var(--halo-green-muted);
+  border: 1px solid var(--halo-green-dim);
+  border-radius: 4px;
+  padding: 12px 48px;
+  cursor: pointer;
+  transition: background 0.2s, box-shadow 0.2s, color 0.2s;
+}
+
+.init-btn:hover:not(:disabled) {
+  background: rgba(51, 255, 102, 0.15);
+  box-shadow: 0 0 16px rgba(51, 255, 102, 0.2);
+}
+
+.init-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* --- Wizard View --- */
+.wizard-wrap {
+  max-width: 620px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 0 8px;
+}
+
+.wizard-spine {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 24px 0 8px;
+  position: relative;
+}
+
+.wizard-spine-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  border: 2px solid var(--halo-border);
+  background: var(--halo-surface);
+  color: var(--halo-text-dim);
+  cursor: pointer;
+  transition: all 0.2s;
+  z-index: 1;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.wizard-spine-dot.active {
+  border-color: var(--halo-green);
+  color: var(--halo-green);
+  box-shadow: 0 0 10px rgba(51, 255, 102, 0.3);
+}
+
+.wizard-spine-dot.done {
+  border-color: var(--halo-green);
+  background: var(--halo-green);
+  color: #080c08;
+}
+
+.wizard-spine-line {
+  flex: 1;
+  height: 2px;
+  background: var(--halo-border);
+  max-width: 60px;
+}
+
+.wizard-spine-line.filled {
+  background: var(--halo-green);
+}
+
+.wizard-skip {
+  text-align: center;
+  padding: 8px 0 20px;
+}
+
+.wizard-skip a {
+  font-size: 10px;
+  color: var(--halo-text-dim);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.wizard-skip a:hover {
+  color: var(--halo-green);
+}
+
+.wizard-step {
+  display: none;
+  padding: 0;
+}
+
+.wizard-step.active {
+  display: block;
+}
+
+.wizard-hal {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.wizard-hal-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--halo-green-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.wizard-hal-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wizard-hal-bubble {
+  background: var(--halo-card);
+  border: 1px solid var(--halo-border);
+  border-radius: 4px 8px 8px 8px;
+  padding: 12px 16px;
+  font-size: 12px;
+  color: var(--halo-text);
+  line-height: 1.6;
+  flex: 1;
+}
+
+.wizard-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 0;
+  margin-top: 16px;
+  border-top: 1px solid var(--halo-border);
+}
+
+.wizard-btn {
+  font-family: var(--font);
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 8px 20px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+
+.wizard-btn-back {
+  color: var(--halo-text-dim);
+  background: none;
+  border: 1px solid var(--halo-border);
+}
+
+.wizard-btn-back:hover {
+  border-color: var(--halo-green-dim);
+  color: var(--halo-text);
+}
+
+.wizard-btn-next {
+  color: var(--halo-green);
+  background: var(--halo-green-muted);
+  border: 1px solid var(--halo-green-dim);
+}
+
+.wizard-btn-next:hover {
+  background: rgba(51, 255, 102, 0.15);
+  box-shadow: 0 0 10px rgba(51, 255, 102, 0.15);
+}
+
+/* Wizard review summary cards */
+.wizard-review-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.wizard-review-card {
+  border: 1px solid var(--halo-border);
+  border-radius: 4px;
+  padding: 12px;
+  background: var(--halo-surface);
+}
+
+.wizard-review-card .label {
+  font-size: 9px;
+  color: var(--halo-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.wizard-review-card .value {
+  font-size: 12px;
+  color: var(--halo-green);
+  font-weight: 600;
+}
+
+/* --- Existing content inside v3 sections --- */
+.setup-v3 .sec-body .setup-card-v2 {
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  background-image: none;
+}
+
+.setup-v3 .sec-body .setup-card-v2::before {
+  display: none;
+}
+
+.setup-v3 .sec-body .card-header {
+  padding: 0 0 10px;
+}
+
+.setup-v3 .sec-body .setup-card-v2 .card-title {
+  color: var(--halo-text);
+}
+
+.setup-v3 .sec-body .setup-card-v2 .card-desc {
+  color: var(--halo-text-dim);
 }
