@@ -280,6 +280,97 @@
 .orch-status-bar .status-dot.warn { background: var(--amber, #fbbf24); }
 .orch-status-bar .status-dot.off { background: var(--text-dim, #888); }
 
+/* ── Execution History ──────────────────────────────── */
+.orch-history-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.orch-history-entry {
+  background: var(--input-bg, #0d0d1a);
+  border: 1px solid var(--border, #2a2a3e);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.orch-history-entry:hover {
+  border-color: var(--blue, #60a5fa);
+}
+
+.hist-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.hist-status {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.hist-status.hist-ok {
+  color: var(--green, #4ade80);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.hist-status.hist-fail {
+  color: var(--red, #f87171);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.hist-status.hist-pending {
+  color: var(--amber, #fbbf24);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.hist-wf {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text, #e0e0e0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hist-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-dim, #888);
+}
+
+.hist-events {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border, #2a2a3e);
+}
+
+.hist-event {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-dim, #888);
+  padding: 2px 0;
+  display: flex;
+  gap: 6px;
+}
+
+.hist-event-type {
+  color: var(--text-dim, #888);
+  min-width: 80px;
+}
+
+.hist-event-msg {
+  color: var(--text, #e0e0e0);
+  word-break: break-word;
+}
+
 /* ── litegraph overrides (dark theme integration) ────── */
 .litegraph .litemenu-entry {
   font-family: 'JetBrains Mono', monospace !important;

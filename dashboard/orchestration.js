@@ -503,6 +503,12 @@
                 '<div style="color:var(--text-dim);font-size:12px;">Select a node to see details</div>' +
               '</div>' +
             '</div>' +
+            '<div class="orch-side-section">' +
+              '<div class="orch-side-section-title">Execution History</div>' +
+              '<div id="orch-history-list" class="orch-history-list">' +
+                '<div style="color:var(--text-dim);font-size:11px;">Loading...</div>' +
+              '</div>' +
+            '</div>' +
           '</aside>' +
         '</div>' +
         '<div class="orch-status-bar" id="orch-status-bar">' +
@@ -518,6 +524,7 @@
     bindToolbar();
     renderTemplates();
     refreshWorkflowSelect();
+    refreshHistory();
   }
 
   /* ── Initialize litegraph canvas ─────────────────── */
@@ -873,6 +880,70 @@
     document.body.appendChild(el);
     setTimeout(function () { el.style.opacity = '0'; }, 2000);
     setTimeout(function () { el.remove(); }, 2500);
+  }
+
+  /* ── Execution History ──────────────────────────── */
+  function listWorkflowInstances() {
+    return fetch('/api/workflows/instances').then(function (r) {
+      if (!r.ok) throw new Error('API unavailable');
+      return r.json();
+    }).then(function (data) {
+      return data.instances || [];
+    }).catch(function () {
+      return [];
+    });
+  }
+
+  function refreshHistory() {
+    var container = document.getElementById('orch-history-list');
+    if (!container) return;
+    listWorkflowInstances().then(function (instances) {
+      if (instances.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-dim);font-size:11px;">No workflow runs yet</div>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < Math.min(instances.length, 20); i++) {
+        var inst = instances[i];
+        var status = inst.status || 'unknown';
+        var statusClass = status === 'completed' ? 'hist-ok' : status === 'failed' || status === 'max_iterations_exceeded' ? 'hist-fail' : 'hist-pending';
+        var startDate = inst.started_at ? new Date(inst.started_at * 1000).toLocaleString() : '?';
+        var duration = '';
+        if (inst.started_at && inst.completed_at) {
+          var secs = inst.completed_at - inst.started_at;
+          duration = secs < 60 ? secs + 's' : Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+        }
+        var evCount = Array.isArray(inst.events) ? inst.events.length : 0;
+        html += '<div class="orch-history-entry" data-instance-id="' + escHtml(inst.instance_id || '') + '">' +
+          '<div class="hist-header">' +
+            '<span class="hist-status ' + statusClass + '">' + escHtml(status) + '</span>' +
+            '<span class="hist-wf">' + escHtml(inst.workflow_id || '').slice(0, 20) + '</span>' +
+          '</div>' +
+          '<div class="hist-meta">' + escHtml(startDate) + (duration ? ' · ' + escHtml(duration) : '') + ' · ' + evCount + ' events</div>' +
+        '</div>';
+      }
+      container.innerHTML = html;
+
+      // Bind expand on click
+      container.querySelectorAll('.orch-history-entry').forEach(function (entry) {
+        entry.addEventListener('click', function () {
+          var expanded = entry.querySelector('.hist-events');
+          if (expanded) { expanded.remove(); return; }
+          var instanceId = entry.dataset.instanceId;
+          var inst = instances.find(function (ins) { return ins.instance_id === instanceId; });
+          if (!inst || !Array.isArray(inst.events) || inst.events.length === 0) return;
+          var evHtml = '<div class="hist-events">';
+          inst.events.forEach(function (ev) {
+            evHtml += '<div class="hist-event">' +
+              '<span class="hist-event-type">' + escHtml(typeof ev.event_type === 'string' ? ev.event_type : JSON.stringify(ev.event_type)) + '</span>' +
+              '<span class="hist-event-msg">' + escHtml(ev.message || '') + '</span>' +
+            '</div>';
+          });
+          evHtml += '</div>';
+          entry.insertAdjacentHTML('beforeend', evHtml);
+        });
+      });
+    });
   }
 
   /* ── Expose to global page router ────────────────── */

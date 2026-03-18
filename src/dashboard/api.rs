@@ -140,6 +140,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
                 .put(api_workflow_update)
                 .delete(api_workflow_delete),
         )
+        .route("/workflows/instances", get(api_workflow_instances_list))
         .route("/workflows/{id}/run", post(api_workflow_run))
         .route("/workflows/{id}/status", get(api_workflow_status))
         .route("/workflows/{id}/stop", post(api_workflow_stop))
@@ -10599,6 +10600,26 @@ async fn api_workflow_status(Path(id): Path<String>) -> ApiResult {
             "message": "No active workflow instance",
         }))),
     }
+}
+
+async fn api_workflow_instances_list() -> ApiResult {
+    let instances = crate::orchestrator::workflow::list_workflow_instances();
+    let summaries: Vec<Value> = instances
+        .iter()
+        .map(|inst| {
+            json!({
+                "instance_id": inst.instance_id,
+                "workflow_id": inst.workflow_id,
+                "status": inst.status,
+                "started_at": inst.started_at,
+                "completed_at": inst.completed_at,
+                "events": inst.events,
+                "role_bindings": inst.role_bindings,
+                "iteration_counts": inst.iteration_counts,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "ok": true, "instances": summaries })))
 }
 
 async fn api_workflow_stop(Path(id): Path<String>) -> ApiResult {
