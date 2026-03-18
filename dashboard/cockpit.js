@@ -1323,7 +1323,18 @@
         const res = await fetch('/api/workflows');
         if (!res.ok) return;
         const payload = await res.json();
-        const workflows = Array.isArray(payload.workflows) ? payload.workflows : [];
+        let workflows = Array.isArray(payload.workflows) ? payload.workflows : [];
+
+        // Auto-seed built-in templates if no workflows exist yet
+        if (workflows.length === 0) {
+          await this._seedBuiltinWorkflows();
+          const res2 = await fetch('/api/workflows');
+          if (res2.ok) {
+            const p2 = await res2.json();
+            workflows = Array.isArray(p2.workflows) ? p2.workflows : [];
+          }
+        }
+
         const curVal = selectEl.value;
         selectEl.innerHTML = '<option value="">— Select Workflow —</option>';
         workflows.forEach((wf) => {
@@ -1336,6 +1347,63 @@
           selectEl.value = curVal;
         }
       } catch (_e) {}
+    }
+
+    async _seedBuiltinWorkflows() {
+      // Seed 3 built-in template workflows so cockpit dropdown has content on fresh start
+      const templates = [
+        {
+          name: 'Proof + Hostile Audit Loop',
+          litegraph: {
+            nodes: [
+              { id: 1, type: 'halo/agent', pos: [100, 200], size: [240, 110], properties: { role_name: 'Prover', agent_type: 'codex', model: 'codex-5.4-high', skill_ref: 'formal-proof', prompt_template: 'Continue proving the current phase. Address all audit findings.', timeout_secs: 600 } },
+              { id: 2, type: 'halo/transform', pos: [400, 200], size: [200, 60], properties: { transform_type: 'assistant_answer', transform_value: '' } },
+              { id: 3, type: 'halo/agent', pos: [650, 200], size: [240, 110], properties: { role_name: 'Auditor', agent_type: 'claude', model: 'claude-opus-4-6', skill_ref: 'adversarial-audit', prompt_template: 'Perform a hostile audit. If no findings, respond: findings: 0', timeout_secs: 600 } },
+              { id: 4, type: 'halo/decision', pos: [950, 200], size: [200, 120], properties: { condition_type: 'contains', condition_value: 'findings: 0', max_iterations: 5 } },
+            ],
+            links: [[1, 1, 0, 2, 0, 'string'], [2, 2, 0, 3, 0, 'string'], [3, 3, 0, 4, 0, 'string'], [4, 4, 1, 1, 0, 'string']],
+            last_link_id: 4, last_node_id: 4,
+          },
+          halo_meta: { description: 'Prover completes a phase, auditor reviews. Loops until zero findings.', max_iterations: 5, role_definitions: {} },
+        },
+        {
+          name: 'Translation Verification',
+          litegraph: {
+            nodes: [
+              { id: 1, type: 'halo/agent', pos: [100, 200], size: [240, 110], properties: { role_name: 'Translator', agent_type: 'claude', model: 'claude-opus-4-6', skill_ref: 'meta-translation', prompt_template: 'Translate the given Lean code to Coq.', timeout_secs: 600 } },
+              { id: 2, type: 'halo/agent', pos: [450, 200], size: [240, 110], properties: { role_name: 'Verifier', agent_type: 'codex', model: 'codex-5.4-high', skill_ref: '', prompt_template: 'Compile and verify translated Coq code. If clean: compilation: success', timeout_secs: 600 } },
+              { id: 3, type: 'halo/decision', pos: [780, 200], size: [200, 120], properties: { condition_type: 'contains', condition_value: 'compilation: success', max_iterations: 3 } },
+            ],
+            links: [[1, 1, 0, 2, 0, 'string'], [2, 2, 0, 3, 0, 'string'], [3, 3, 1, 1, 0, 'string']],
+            last_link_id: 3, last_node_id: 3,
+          },
+          halo_meta: { description: 'Translate between proof assistants, then verify compilation.', max_iterations: 3, role_definitions: {} },
+        },
+        {
+          name: 'Paper Formalization Pipeline',
+          litegraph: {
+            nodes: [
+              { id: 1, type: 'halo/phase', pos: [60, 80], size: [220, 80], properties: { phase_name: 'Phase 1: Extract', phase_number: 1, description: 'Extract proof obligations from paper' } },
+              { id: 2, type: 'halo/agent', pos: [60, 220], size: [240, 110], properties: { role_name: 'Extractor', agent_type: 'claude', model: 'claude-opus-4-6', skill_ref: 'paper-ingest', prompt_template: 'Extract all proof obligations from the paper.', timeout_secs: 600 } },
+              { id: 3, type: 'halo/agent', pos: [380, 220], size: [240, 110], properties: { role_name: 'Planner', agent_type: 'claude', model: 'claude-sonnet-4-6', skill_ref: 'proof-strategy-polya', prompt_template: 'Create a formalization plan.', timeout_secs: 600 } },
+              { id: 4, type: 'halo/agent', pos: [700, 220], size: [240, 110], properties: { role_name: 'Prover', agent_type: 'codex', model: 'codex-5.4-high', skill_ref: 'formal-proof', prompt_template: 'Formalize the planned obligations in Lean 4.', timeout_secs: 600 } },
+              { id: 5, type: 'halo/agent', pos: [1020, 220], size: [240, 110], properties: { role_name: 'Auditor', agent_type: 'claude', model: 'claude-opus-4-6', skill_ref: 'adversarial-audit', prompt_template: 'Audit the formalization for sorry, vacuity, and mathematical correctness.', timeout_secs: 600 } },
+            ],
+            links: [[1, 1, 0, 2, 0, 'string'], [2, 2, 0, 3, 0, 'string'], [3, 3, 0, 4, 0, 'string'], [4, 4, 0, 5, 0, 'string']],
+            last_link_id: 4, last_node_id: 5,
+          },
+          halo_meta: { description: 'Extract obligations from paper, plan formalization, prove, then audit.', max_iterations: 10, role_definitions: {} },
+        },
+      ];
+      for (const t of templates) {
+        try {
+          await fetch('/api/workflows', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: t.name, workflow_id: '', created_at: 0, updated_at: 0, version: 1, litegraph: t.litegraph, halo_meta: t.halo_meta }),
+          });
+        } catch (_e) {}
+      }
     }
 
     async onWorkflowSelected(workflowId) {

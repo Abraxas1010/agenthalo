@@ -371,6 +371,60 @@
   word-break: break-word;
 }
 
+/* ── Node palette (drag-and-drop) ──────────────────── */
+.orch-node-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.orch-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--input-bg, #0d0d1a);
+  border: 1px solid var(--border, #2a2a3e);
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: grab;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  user-select: none;
+}
+
+.orch-palette-item:hover {
+  border-color: var(--blue, #60a5fa);
+  background: rgba(96, 165, 250, 0.05);
+}
+
+.orch-palette-item:active {
+  cursor: grabbing;
+  opacity: 0.7;
+}
+
+.palette-color-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.palette-label {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text, #e0e0e0);
+  white-space: nowrap;
+}
+
+.palette-desc {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-dim, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── litegraph overrides (dark theme integration) ────── */
 .litegraph .litemenu-entry {
   font-family: 'JetBrains Mono', monospace !important;

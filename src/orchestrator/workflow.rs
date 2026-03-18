@@ -255,7 +255,10 @@ pub fn validate_graph(wf: &WorkflowDefinition) -> Vec<String> {
 
     // Check nodes exist and are from known types
     if let Some(nodes) = lg.get("nodes").and_then(|v| v.as_array()) {
-        let known_types = ["halo/agent", "halo/decision", "halo/transform", "halo/phase"];
+        let known_types = [
+            "halo/agent", "halo/decision", "halo/transform", "halo/phase",
+            "halo/tool", "halo/skill", "halo/lean_verifier",
+        ];
         for node in nodes {
             if let Some(ntype) = node.get("type").and_then(|v| v.as_str()) {
                 if !known_types.contains(&ntype) {

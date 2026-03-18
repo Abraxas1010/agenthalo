@@ -29,8 +29,19 @@
   };
 
   const AGENT_TYPES = ['claude', 'gemini', 'codex', 'shell', 'api', 'local'];
-  const CONDITION_TYPES = ['json_path', 'regex', 'contains', 'llm_judge'];
+  const CONDITION_TYPES = ['json_path', 'regex', 'contains', 'llm_judge', 'lean_typecheck', 'exit_code'];
   const TRANSFORM_TYPES = ['identity', 'json_extract', 'prefix', 'suffix', 'assistant_answer'];
+
+  /* Models per agent type — used in property editor dropdown */
+  const MODELS_BY_TYPE = {
+    claude:  ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
+    gemini:  ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+    codex:   ['codex-5.4-high', 'codex-5.4-medium', 'codex-5.4-low', 'codex-mini-latest'],
+    shell:   ['local'],
+    api:     ['openai/gpt-4o', 'openai/o3', 'openai/o4-mini', 'deepseek/deepseek-r1'],
+    local:   ['local'],
+  };
+  const ALL_MODELS = Object.values(MODELS_BY_TYPE).flat();
 
   /* ── State ───────────────────────────────────────── */
   let __graph = null;
@@ -225,6 +236,117 @@
     }
   };
 
+  /* ── Custom Node: Tool ──────────────────────────── */
+  function HaloToolNode() {
+    this.addInput('input', 'string');
+    this.addOutput('output', 'string');
+    this.properties = {
+      tool_name: '',
+      tool_category: 'atp',
+      args_template: '',
+      timeout_secs: 120,
+    };
+    this.size = [220, 90];
+  }
+
+  HaloToolNode.title = 'Tool';
+  HaloToolNode.desc = 'Invokes an MCP tool from the heyting-local-tools registry';
+
+  HaloToolNode.prototype.onDrawForeground = function (ctx) {
+    ctx.fillStyle = '#6366f1';
+    ctx.fillRect(0, -LiteGraph.NODE_TITLE_HEIGHT, this.size[0], 3);
+
+    ctx.font = 'bold 13px Space Grotesk, Arial, sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.fillText(this.properties.tool_name || 'Tool', this.size[0] * 0.5, 28);
+
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.fillStyle = '#888';
+    ctx.fillText('cat: ' + this.properties.tool_category, this.size[0] * 0.5, 46);
+  };
+
+  /* ── Custom Node: Skill ─────────────────────────── */
+  function HaloSkillNode() {
+    this.addInput('input', 'string');
+    this.addOutput('output', 'string');
+    this.properties = {
+      skill_name: '',
+      skill_args: '',
+      timeout_secs: 300,
+    };
+    this.size = [220, 90];
+  }
+
+  HaloSkillNode.title = 'Skill';
+  HaloSkillNode.desc = 'Invokes a registered agent skill (e.g. formal-proof, adversarial-audit)';
+
+  HaloSkillNode.prototype.onDrawForeground = function (ctx) {
+    ctx.fillStyle = '#8b5cf6';
+    ctx.fillRect(0, -LiteGraph.NODE_TITLE_HEIGHT, this.size[0], 3);
+
+    ctx.font = 'bold 13px Space Grotesk, Arial, sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.fillText(this.properties.skill_name || 'Skill', this.size[0] * 0.5, 28);
+
+    if (this.properties.skill_args) {
+      ctx.font = '10px JetBrains Mono, monospace';
+      ctx.fillStyle = '#888';
+      var a = this.properties.skill_args;
+      if (a.length > 30) a = a.slice(0, 28) + '..';
+      ctx.fillText(a, this.size[0] * 0.5, 46);
+    }
+  };
+
+  /* ── Custom Node: Lean Verifier Gate ────────────── */
+  function HaloLeanVerifierNode() {
+    this.addInput('lean_code', 'string');
+    this.addOutput('pass', 'string');
+    this.addOutput('fail', 'string');
+    this.properties = {
+      check_mode: 'typecheck',  // typecheck | no_sorry | build
+      target_module: '',
+      max_time_secs: 120,
+    };
+    this.size = [220, 120];
+    this.shape = LiteGraph.BOX_SHAPE;
+  }
+
+  HaloLeanVerifierNode.title = 'Lean Verifier';
+  HaloLeanVerifierNode.desc = 'Gate: typecheck, no-sorry guard, or full build. Pass/fail routing.';
+
+  HaloLeanVerifierNode.prototype.onDrawForeground = function (ctx) {
+    var w = this.size[0], h = this.size[1];
+    // Shield icon outline
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(w * 0.5, 6);
+    ctx.lineTo(w - 16, h * 0.35);
+    ctx.lineTo(w - 16, h * 0.65);
+    ctx.lineTo(w * 0.5, h - 6);
+    ctx.lineTo(16, h * 0.65);
+    ctx.lineTo(16, h * 0.35);
+    ctx.closePath();
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.font = 'bold 12px Space Grotesk, Arial, sans-serif';
+    ctx.fillStyle = '#10b981';
+    ctx.textAlign = 'center';
+    ctx.fillText(this.properties.check_mode, w * 0.5, h * 0.5 - 6);
+
+    if (this.properties.target_module) {
+      ctx.font = '10px JetBrains Mono, monospace';
+      ctx.fillStyle = '#888';
+      var mod = this.properties.target_module;
+      if (mod.length > 24) mod = mod.slice(0, 22) + '..';
+      ctx.fillText(mod, w * 0.5, h * 0.5 + 10);
+    }
+  };
+
   /* ── Register all node types ─────────────────────── */
   function registerNodeTypes() {
     if (typeof LiteGraph === 'undefined') return;
@@ -232,6 +354,9 @@
     LiteGraph.registerNodeType('halo/decision', HaloDecisionNode);
     LiteGraph.registerNodeType('halo/transform', HaloTransformNode);
     LiteGraph.registerNodeType('halo/phase', HaloPhaseNode);
+    LiteGraph.registerNodeType('halo/tool', HaloToolNode);
+    LiteGraph.registerNodeType('halo/skill', HaloSkillNode);
+    LiteGraph.registerNodeType('halo/lean_verifier', HaloLeanVerifierNode);
   }
 
   /* ── Built-in workflow templates ─────────────────── */
@@ -244,8 +369,8 @@
           var prover = LiteGraph.createNode('halo/agent');
           prover.pos = [100, 200];
           prover.properties.role_name = 'Prover';
-          prover.properties.agent_type = 'claude';
-          prover.properties.model = 'claude-opus-4-6';
+          prover.properties.agent_type = 'codex';
+          prover.properties.model = 'codex-5.4-high';
           prover.properties.skill_ref = 'formal-proof';
           prover.properties.prompt_template = 'Continue proving the current phase. Address all audit findings from the previous iteration.';
           graph.add(prover);
@@ -258,8 +383,8 @@
           var auditor = LiteGraph.createNode('halo/agent');
           auditor.pos = [650, 200];
           auditor.properties.role_name = 'Auditor';
-          auditor.properties.agent_type = 'gemini';
-          auditor.properties.model = 'gemini-2.5-pro';
+          auditor.properties.agent_type = 'claude';
+          auditor.properties.model = 'claude-opus-4-6';
           auditor.properties.skill_ref = 'adversarial-audit';
           auditor.properties.prompt_template = 'Perform a hostile audit of the proof work. List all findings. If no findings, respond with exactly: findings: 0';
           graph.add(auditor);
@@ -494,6 +619,10 @@
               '<button class="orch-side-toggle" id="orch-side-close" title="Close panel">&times;</button>' +
             '</div>' +
             '<div class="orch-side-section">' +
+              '<div class="orch-side-section-title">Node Palette</div>' +
+              '<div class="orch-node-palette" id="orch-node-palette"></div>' +
+            '</div>' +
+            '<div class="orch-side-section">' +
               '<div class="orch-side-section-title">Workflow Templates</div>' +
               '<div id="orch-templates-list"></div>' +
             '</div>' +
@@ -522,6 +651,7 @@
     registerNodeTypes();
     initCanvas();
     bindToolbar();
+    renderNodePalette();
     renderTemplates();
     refreshWorkflowSelect();
     refreshHistory();
@@ -746,6 +876,85 @@
     });
   }
 
+  /* ── Node palette (drag-and-drop) ────────────────── */
+  var NODE_PALETTE = [
+    { type: 'halo/agent',         label: 'Agent',         color: '#7c3aed', desc: 'Dispatch task to an agent' },
+    { type: 'halo/decision',      label: 'Decision',      color: '#f59e0b', desc: 'Conditional pass/fail routing' },
+    { type: 'halo/transform',     label: 'Transform',     color: '#6b7280', desc: 'Transform output between nodes' },
+    { type: 'halo/phase',         label: 'Phase',         color: '#3b82f6', desc: 'Group nodes into a named phase' },
+    { type: 'halo/tool',          label: 'Tool',          color: '#6366f1', desc: 'Invoke an MCP tool' },
+    { type: 'halo/skill',         label: 'Skill',         color: '#8b5cf6', desc: 'Invoke an agent skill' },
+    { type: 'halo/lean_verifier', label: 'Lean Verifier', color: '#10b981', desc: 'Gate: typecheck / no-sorry / build' },
+  ];
+
+  function renderNodePalette() {
+    var container = document.getElementById('orch-node-palette');
+    if (!container) return;
+    var html = '';
+    for (var i = 0; i < NODE_PALETTE.length; i++) {
+      var p = NODE_PALETTE[i];
+      html += '<div class="orch-palette-item" draggable="true" data-node-type="' + escHtml(p.type) + '">' +
+        '<span class="palette-color-dot" style="background:' + p.color + '"></span>' +
+        '<span class="palette-label">' + escHtml(p.label) + '</span>' +
+        '<span class="palette-desc">' + escHtml(p.desc) + '</span>' +
+      '</div>';
+    }
+    container.innerHTML = html;
+
+    // Bind drag start
+    container.querySelectorAll('.orch-palette-item').forEach(function (item) {
+      item.addEventListener('dragstart', function (ev) {
+        ev.dataTransfer.setData('application/x-halo-node-type', item.dataset.nodeType);
+        ev.dataTransfer.effectAllowed = 'copy';
+      });
+    });
+
+    // Click to add at center of viewport
+    container.querySelectorAll('.orch-palette-item').forEach(function (item) {
+      item.addEventListener('click', function () {
+        if (!__graph || !__canvas) return;
+        var nodeType = item.dataset.nodeType;
+        var node = LiteGraph.createNode(nodeType);
+        if (!node) return;
+        // Place at center of current canvas viewport
+        var cx = (__canvas.visible_area ? (__canvas.visible_area[0] + __canvas.visible_area[2]) * 0.5 : 400);
+        var cy = (__canvas.visible_area ? (__canvas.visible_area[1] + __canvas.visible_area[3]) * 0.5 : 300);
+        node.pos = [cx, cy];
+        __graph.add(node);
+        __canvas.selectNode(node);
+        renderNodeInfo(node);
+        updateStatusBar();
+      });
+    });
+
+    // Bind drop target on canvas
+    var wrap = document.getElementById('orch-canvas-wrap');
+    if (wrap) {
+      wrap.addEventListener('dragover', function (ev) {
+        if (ev.dataTransfer.types.indexOf('application/x-halo-node-type') >= 0) {
+          ev.preventDefault();
+          ev.dataTransfer.dropEffect = 'copy';
+        }
+      });
+      wrap.addEventListener('drop', function (ev) {
+        var nodeType = ev.dataTransfer.getData('application/x-halo-node-type');
+        if (!nodeType || !__graph || !__canvas) return;
+        ev.preventDefault();
+        var node = LiteGraph.createNode(nodeType);
+        if (!node) return;
+        // Convert screen coordinates to canvas coordinates
+        var rect = wrap.getBoundingClientRect();
+        var canvasX = (ev.clientX - rect.left) / __canvas.ds.scale + __canvas.ds.offset[0];
+        var canvasY = (ev.clientY - rect.top) / __canvas.ds.scale + __canvas.ds.offset[1];
+        node.pos = [canvasX, canvasY];
+        __graph.add(node);
+        __canvas.selectNode(node);
+        renderNodeInfo(node);
+        updateStatusBar();
+      });
+    }
+  }
+
   /* ── Render template cards ──────────────────────── */
   function renderTemplates() {
     var container = document.getElementById('orch-templates-list');
@@ -811,6 +1020,42 @@
           html += '<option value="' + AGENT_TYPES[j] + '"' + sel + '>' + AGENT_TYPES[j] + '</option>';
         }
         html += '</select></div>';
+      } else if (key === 'model') {
+        // Model dropdown — scoped to agent_type if available, plus all models
+        var agentType = (props.agent_type || '').toLowerCase();
+        var scopedModels = MODELS_BY_TYPE[agentType] || [];
+        var otherModels = ALL_MODELS.filter(function (m) { return scopedModels.indexOf(m) === -1; });
+        html += '<div class="info-value"><select data-prop="' + escHtml(key) + '" class="orch-prop-edit">';
+        html += '<option value=""' + (!val ? ' selected' : '') + '>(auto)</option>';
+        if (scopedModels.length > 0) {
+          html += '<optgroup label="' + escHtml(agentType) + ' models">';
+          for (var mi = 0; mi < scopedModels.length; mi++) {
+            var msel = scopedModels[mi] === val ? ' selected' : '';
+            html += '<option value="' + scopedModels[mi] + '"' + msel + '>' + scopedModels[mi] + '</option>';
+          }
+          html += '</optgroup>';
+        }
+        if (otherModels.length > 0) {
+          html += '<optgroup label="Other models">';
+          for (var oi = 0; oi < otherModels.length; oi++) {
+            var osel = otherModels[oi] === val ? ' selected' : '';
+            html += '<option value="' + otherModels[oi] + '"' + osel + '>' + otherModels[oi] + '</option>';
+          }
+          html += '</optgroup>';
+        }
+        // If current value is custom / not in list, add it
+        if (val && ALL_MODELS.indexOf(val) === -1) {
+          html += '<option value="' + escHtml(val) + '" selected>' + escHtml(val) + '</option>';
+        }
+        html += '</select></div>';
+      } else if (key === 'check_mode') {
+        var CHECK_MODES = ['typecheck', 'no_sorry', 'build'];
+        html += '<div class="info-value"><select data-prop="' + escHtml(key) + '" class="orch-prop-edit">';
+        for (var ci = 0; ci < CHECK_MODES.length; ci++) {
+          var csel = CHECK_MODES[ci] === val ? ' selected' : '';
+          html += '<option value="' + CHECK_MODES[ci] + '"' + csel + '>' + CHECK_MODES[ci] + '</option>';
+        }
+        html += '</select></div>';
       } else if (key === 'condition_type') {
         html += '<div class="info-value"><select data-prop="' + escHtml(key) + '" class="orch-prop-edit">';
         for (var k = 0; k < CONDITION_TYPES.length; k++) {
@@ -845,6 +1090,8 @@
         if (typeof node.properties[prop] === 'number') newVal = Number(newVal) || 0;
         node.properties[prop] = newVal;
         node.setDirtyCanvas(true);
+        // When agent_type changes, re-render to update model dropdown options
+        if (prop === 'agent_type') renderNodeInfo(node);
       });
     });
   }
