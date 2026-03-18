@@ -124,7 +124,7 @@ mod tests {
         let _fail = EnvVarGuard::set("NYM_FAIL_CLOSED", Some("true"));
         let _socks = EnvVarGuard::set("SOCKS5_PROXY", None);
         let _all = EnvVarGuard::set("ALL_PROXY", None);
-        let err = agent_for_url("https://api.openai.com/v1/models").expect_err("must fail closed");
+        let err = agent_for_url("https://sepolia.base.org/rpc").expect_err("must fail closed");
         assert!(err.contains("outbound blocked"));
     }
 
@@ -133,7 +133,20 @@ mod tests {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let _fail = EnvVarGuard::set("NYM_FAIL_CLOSED", Some("true"));
         let _socks = EnvVarGuard::set("SOCKS5_PROXY", Some("127.0.0.1:1080"));
+        assert!(agent_for_url("https://sepolia.base.org/rpc").is_ok());
+    }
+
+    #[test]
+    fn known_api_services_direct_without_proxy() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _fail = EnvVarGuard::set("NYM_FAIL_CLOSED", Some("true"));
+        let _socks = EnvVarGuard::set("SOCKS5_PROXY", None);
+        let _all = EnvVarGuard::set("ALL_PROXY", None);
+        // Known API services must work without SOCKS5
         assert!(agent_for_url("https://api.openai.com/v1/models").is_ok());
+        assert!(agent_for_url("https://openrouter.ai/api/v1/chat").is_ok());
+        assert!(agent_for_url("https://api.anthropic.com/v1/messages").is_ok());
+        assert!(agent_for_url("https://huggingface.co/api/models").is_ok());
     }
 
     #[test]

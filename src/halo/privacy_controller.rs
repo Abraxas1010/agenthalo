@@ -50,15 +50,32 @@ pub fn classify_url(url: &str) -> PrivacyLevel {
     }
 }
 
-/// Public infrastructure endpoints that carry no privacy-sensitive data.
-/// These are randomness beacons and similar services where the request
-/// itself reveals nothing about the agent's identity or purpose.
+/// Public infrastructure endpoints that carry no privacy-sensitive data
+/// or are known configured API services. These are allowed direct egress
+/// without requiring SOCKS5/mixnet routing.
 fn is_public_infrastructure(host: &str) -> bool {
     let h = host.to_ascii_lowercase();
+    // Randomness beacons — zero identity exposure
     h == "random.colorado.edu"
         || h == "beacon.nist.gov"
         || h == "api.drand.sh"
         || h.ends_with(".drand.sh")
+        // Configured API providers — explicitly chosen by user
+        || h == "openrouter.ai"
+        || h.ends_with(".openrouter.ai")
+        || h == "huggingface.co"
+        || h.ends_with(".huggingface.co")
+        || h.ends_with(".hf.co")
+        // Anthropic and OpenAI — direct API access when configured
+        || h == "api.anthropic.com"
+        || h == "api.openai.com"
+        // GitHub — dependency resolution and git operations
+        || h == "github.com"
+        || h.ends_with(".github.com")
+        || h.ends_with(".githubusercontent.com")
+        // P2PCLAW — our own research gateway, direct access
+        || h == "p2pclaw.com"
+        || h.ends_with(".p2pclaw.com")
 }
 
 pub fn should_route_didcomm_via_mixnet(message_type: &str) -> bool {
@@ -212,19 +229,51 @@ mod tests {
     #[test]
     fn classify_external_maximum() {
         assert_eq!(
-            classify_url("https://api.openai.com/v1/models"),
-            PrivacyLevel::Maximum
-        );
-        assert_eq!(
             classify_url("https://sepolia.base.org"),
-            PrivacyLevel::Maximum
-        );
-        assert_eq!(
-            classify_url("HTTPS://api.openai.com/v1/models"),
             PrivacyLevel::Maximum
         );
         assert_eq!(classify_url("Http://Example.Com"), PrivacyLevel::Maximum);
         assert_eq!(classify_url("hTTpS://foo.bar"), PrivacyLevel::Maximum);
+    }
+
+    #[test]
+    fn classify_known_api_services_none() {
+        assert_eq!(
+            classify_url("https://api.openai.com/v1/models"),
+            PrivacyLevel::None
+        );
+        assert_eq!(
+            classify_url("HTTPS://api.openai.com/v1/models"),
+            PrivacyLevel::None
+        );
+        assert_eq!(
+            classify_url("https://openrouter.ai/api/v1/chat/completions"),
+            PrivacyLevel::None
+        );
+        assert_eq!(
+            classify_url("https://api.anthropic.com/v1/messages"),
+            PrivacyLevel::None
+        );
+        assert_eq!(
+            classify_url("https://huggingface.co/api/models"),
+            PrivacyLevel::None
+        );
+        assert_eq!(
+            classify_url("https://github.com/Abraxas1010/agenthalo"),
+            PrivacyLevel::None
+        );
+    }
+
+    #[test]
+    fn classify_p2pclaw_direct() {
+        assert_eq!(
+            classify_url("https://p2pclaw.com/swarm-status"),
+            PrivacyLevel::None
+        );
+        assert_eq!(
+            classify_url("https://api.p2pclaw.com/latest-papers"),
+            PrivacyLevel::None
+        );
     }
 
     #[test]

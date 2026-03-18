@@ -358,7 +358,7 @@ mod tests {
         let _all_proxy = EnvVarGuard::set("ALL_PROXY", None);
         let _fail = EnvVarGuard::set("NYM_FAIL_CLOSED", Some("true"));
         let err =
-            ensure_route_allowed("https://api.openai.com/v1/models").expect_err("should block");
+            ensure_route_allowed("https://sepolia.base.org/rpc").expect_err("should block");
         assert!(err.contains("outbound blocked"));
     }
 
