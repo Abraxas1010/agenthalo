@@ -771,6 +771,59 @@
       this.topologyChart = null;
       this.noticeEl = null;
       this.noticeTimer = null;
+
+      // Agent lettering system — letters are permanent per session (H4)
+      this.nextLetterIndex = 0;
+      this.agentLetters = new Map(); // sessionId → letter
+      this.agentColors = new Map();  // sessionId → CSS class
+
+      // Workflow sidebar state
+      this.wfSidebarEl = null;
+      this.selectedWorkflowId = null;
+      this.selectedWorkflow = null;
+      this.wfMiniGraph = null;
+      this.wfMiniCanvas = null;
+      this.activeWorkflowInstance = null;
+      this.wfPollTimer = null;
+      this.wfExecLog = [];
+    }
+
+    // ── Agent Lettering (H4: persistent within session, never reassigned) ──
+
+    assignLetter(sessionId) {
+      if (this.agentLetters.has(sessionId)) return this.agentLetters.get(sessionId);
+      const idx = this.nextLetterIndex++;
+      const suffix = idx < 26 ? '' : String(Math.floor(idx / 26));
+      const letter = String.fromCharCode(65 + (idx % 26)) + suffix;
+      this.agentLetters.set(sessionId, letter);
+      return letter;
+    }
+
+    getAgentColorClass(agentType) {
+      const type = (agentType || '').toLowerCase();
+      if (type === 'claude') return 'agent-claude';
+      if (type === 'gemini') return 'agent-gemini';
+      if (type === 'codex') return 'agent-codex';
+      if (type === 'shell' || type === 'custom') return 'agent-shell';
+      return 'agent-other';
+    }
+
+    letterBadgeHtml(sessionId, agentType) {
+      const letter = this.agentLetters.get(sessionId) || '?';
+      const colorClass = this.getAgentColorClass(agentType);
+      return `<span class="agent-letter-badge ${colorClass}">${escapeHtml(letter)}</span>`;
+    }
+
+    // Get all active agents with letters for dropdown population
+    getActiveAgentsForRoles() {
+      const agents = [];
+      this.sessions.forEach((entry, id) => {
+        const letter = this.agentLetters.get(id);
+        if (!letter) return;
+        const agentType = entry.panel?.agentType || 'session';
+        agents.push({ sessionId: id, letter, agentType, agentId: entry.agentId || id });
+      });
+      return agents;
     }
 
     mount(hostEl) {
@@ -788,6 +841,7 @@
       this.topologyCanvasEl = hostEl.querySelector('#cockpit-topology-chart');
       this.topologyEmptyEl = hostEl.querySelector('#cockpit-topology-empty');
       this.noticeEl = hostEl.querySelector('#cockpit-notice-bar');
+      this.wfSidebarEl = hostEl.querySelector('#cockpit-wf-sidebar-body');
       this.setMeshCollapsed(this.meshCollapsed);
       this.bindUi(hostEl);
       this.restoreSessions();
@@ -798,6 +852,7 @@
       this.startMeshPoll();
       this.stopMetricsPoll();
       this.startMetricsPoll();
+      this.initWorkflowSidebar();
     }
 
     renderSkeleton() {
@@ -815,22 +870,43 @@
             </div>
             <aside class="cockpit-mesh-sidebar" id="cockpit-mesh-sidebar">
               <div class="cockpit-mesh-header">
-                <span class="cockpit-mesh-title">⬡ Mesh Network</span>
-                <button type="button" class="cockpit-mesh-toggle" id="cockpit-mesh-toggle" title="Collapse mesh sidebar">◀</button>
+                <span class="cockpit-mesh-title">&#9851; Workflows</span>
+                <button type="button" class="cockpit-mesh-toggle" id="cockpit-mesh-toggle" title="Collapse sidebar">◀</button>
               </div>
               <div class="cockpit-mesh-body" id="cockpit-mesh-body">
-                <div class="cockpit-mesh-self" id="cockpit-mesh-self"></div>
-                <div class="cockpit-mesh-peers" id="cockpit-mesh-peers"></div>
-                <div class="cockpit-diversity-card">
-                  <div class="mesh-section-title">Strategy Diversity</div>
-                  <div class="cockpit-diversity-score" id="cockpit-diversity-score">--</div>
-                  <canvas id="cockpit-diversity-chart" height="110"></canvas>
-                  <div class="cockpit-diversity-meta" id="cockpit-diversity-meta">Waiting for data...</div>
-                </div>
-                <div class="cockpit-topology-card">
-                  <div class="mesh-section-title">Trace Topology (H₀)</div>
-                  <canvas id="cockpit-topology-chart" height="180"></canvas>
-                  <div class="cockpit-topology-empty" id="cockpit-topology-empty">No persistent patterns yet</div>
+                <div class="wf-sidebar-body" id="cockpit-wf-sidebar-body">
+                  <div class="wf-section" id="wf-select-section">
+                    <div class="wf-section-title">Workflow</div>
+                    <select class="wf-select" id="wf-workflow-select">
+                      <option value="">— Select Workflow —</option>
+                    </select>
+                    <div class="wf-mini-diagram" id="wf-mini-diagram">
+                      <div class="wf-mini-empty">No workflow selected</div>
+                    </div>
+                  </div>
+                  <div class="wf-section" id="wf-roles-section" style="display:none">
+                    <div class="wf-section-title">Role Assignment</div>
+                    <div id="wf-roles-list"></div>
+                    <div class="wf-actions">
+                      <button type="button" class="btn btn-sm btn-primary" id="wf-run-btn" disabled>&#9654; Run</button>
+                      <button type="button" class="btn btn-sm" id="wf-stop-btn" disabled>&#9632; Stop</button>
+                    </div>
+                  </div>
+                  <div class="wf-section" id="wf-exec-section" style="display:none">
+                    <div class="wf-section-title">Execution Log</div>
+                    <div class="wf-exec-log" id="wf-exec-log"></div>
+                    <div class="wf-progress-bar" id="wf-progress-bar" style="display:none">
+                      <div class="wf-progress-fill" id="wf-progress-fill" style="width:0%"></div>
+                    </div>
+                  </div>
+                  <div class="wf-section" id="wf-agents-section">
+                    <div class="wf-section-title">Active Agents</div>
+                    <div id="wf-agents-list"></div>
+                  </div>
+                  <div class="wf-section" id="wf-joint-section" style="display:none">
+                    <div class="wf-section-title">Active Workflow</div>
+                    <div id="wf-joint-card"></div>
+                  </div>
                 </div>
               </div>
             </aside>
@@ -1198,6 +1274,479 @@
       this.topologyChart.update('none');
     }
 
+    // ── Workflow Sidebar Methods ──────────────────────────────────
+
+    async initWorkflowSidebar() {
+      const selectEl = this.root?.querySelector('#wf-workflow-select');
+      if (selectEl) {
+        selectEl.addEventListener('change', () => this.onWorkflowSelected(selectEl.value));
+      }
+      const runBtn = this.root?.querySelector('#wf-run-btn');
+      if (runBtn) runBtn.addEventListener('click', () => this.runSelectedWorkflow());
+      const stopBtn = this.root?.querySelector('#wf-stop-btn');
+      if (stopBtn) stopBtn.addEventListener('click', () => this.stopActiveWorkflow());
+      await this.refreshWorkflowList();
+      this.refreshAgentsList();
+    }
+
+    async refreshWorkflowList() {
+      const selectEl = this.root?.querySelector('#wf-workflow-select');
+      if (!selectEl) return;
+      try {
+        const res = await fetch('/api/workflows');
+        if (!res.ok) return;
+        const payload = await res.json();
+        const workflows = Array.isArray(payload.workflows) ? payload.workflows : [];
+        const curVal = selectEl.value;
+        selectEl.innerHTML = '<option value="">— Select Workflow —</option>';
+        workflows.forEach((wf) => {
+          const opt = document.createElement('option');
+          opt.value = wf.workflow_id;
+          opt.textContent = wf.name || wf.workflow_id;
+          selectEl.appendChild(opt);
+        });
+        if (curVal && workflows.some((w) => w.workflow_id === curVal)) {
+          selectEl.value = curVal;
+        }
+      } catch (_e) {}
+    }
+
+    async onWorkflowSelected(workflowId) {
+      this.selectedWorkflowId = workflowId || null;
+      this.selectedWorkflow = null;
+      const rolesSection = this.root?.querySelector('#wf-roles-section');
+      const miniDiagram = this.root?.querySelector('#wf-mini-diagram');
+
+      if (!workflowId) {
+        if (rolesSection) rolesSection.style.display = 'none';
+        if (miniDiagram) miniDiagram.innerHTML = '<div class="wf-mini-empty">No workflow selected</div>';
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}`);
+        if (!res.ok) return;
+        const wf = await res.json();
+        this.selectedWorkflow = wf;
+        this.renderMiniDiagram(wf);
+        this.renderRoleAssignment(wf);
+      } catch (_e) {}
+    }
+
+    renderMiniDiagram(wf) {
+      const container = this.root?.querySelector('#wf-mini-diagram');
+      if (!container) return;
+      container.innerHTML = '';
+
+      // Use a simplified SVG diagram showing nodes and connections
+      const litegraph = wf.litegraph || {};
+      const nodes = Array.isArray(litegraph.nodes) ? litegraph.nodes : [];
+      const links = Array.isArray(litegraph.links) ? litegraph.links : [];
+
+      if (nodes.length === 0) {
+        container.innerHTML = '<div class="wf-mini-empty">Empty workflow</div>';
+        return;
+      }
+
+      // Compute bounding box of all nodes
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      nodes.forEach((n) => {
+        const x = n.pos?.[0] ?? 0, y = n.pos?.[1] ?? 0;
+        const w = n.size?.[0] ?? 160, h = n.size?.[1] ?? 60;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x + w);
+        maxY = Math.max(maxY, y + h);
+      });
+
+      const padding = 20;
+      const worldW = maxX - minX + 2 * padding;
+      const worldH = maxY - minY + 2 * padding;
+
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', `0 0 ${worldW} ${worldH}`);
+      svg.style.width = '100%';
+      svg.style.height = '100%';
+
+      const nodeColors = { 'halo/agent': '#7c3aed', 'halo/decision': '#f59e0b', 'halo/transform': '#0ea5e9', 'halo/phase': '#22c55e' };
+
+      // Draw links
+      const nodeById = new Map();
+      nodes.forEach((n) => nodeById.set(n.id, n));
+      links.forEach((link) => {
+        // litegraph link format: [linkId, originId, originSlot, targetId, targetSlot, type]
+        const originNode = nodeById.get(link[1]);
+        const targetNode = nodeById.get(link[3]);
+        if (!originNode || !targetNode) return;
+        const ox = (originNode.pos?.[0] ?? 0) - minX + padding + (originNode.size?.[0] ?? 160);
+        const oy = (originNode.pos?.[1] ?? 0) - minY + padding + (originNode.size?.[1] ?? 60) / 2;
+        const tx = (targetNode.pos?.[0] ?? 0) - minX + padding;
+        const ty = (targetNode.pos?.[1] ?? 0) - minY + padding + (targetNode.size?.[1] ?? 60) / 2;
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', ox); line.setAttribute('y1', oy);
+        line.setAttribute('x2', tx); line.setAttribute('y2', ty);
+        line.setAttribute('stroke', 'rgba(255,255,255,0.25)');
+        line.setAttribute('stroke-width', '1.5');
+        svg.appendChild(line);
+      });
+
+      // Draw nodes
+      nodes.forEach((n) => {
+        const x = (n.pos?.[0] ?? 0) - minX + padding;
+        const y = (n.pos?.[1] ?? 0) - minY + padding;
+        const w = n.size?.[0] ?? 160;
+        const h = n.size?.[1] ?? 60;
+        const color = nodeColors[n.type] || '#6b7280';
+
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', x); rect.setAttribute('y', y);
+        rect.setAttribute('width', w); rect.setAttribute('height', h);
+        rect.setAttribute('rx', '4');
+        rect.setAttribute('fill', color);
+        rect.setAttribute('fill-opacity', '0.3');
+        rect.setAttribute('stroke', color);
+        rect.setAttribute('stroke-width', '1.5');
+        svg.appendChild(rect);
+
+        const title = n.properties?.role_name || n.title || n.type?.split('/')[1] || '';
+        if (title) {
+          const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          text.setAttribute('x', x + w / 2);
+          text.setAttribute('y', y + h / 2 + 4);
+          text.setAttribute('text-anchor', 'middle');
+          text.setAttribute('fill', '#fff');
+          text.setAttribute('font-size', Math.min(12, w / (title.length * 0.7)));
+          text.setAttribute('font-family', 'sans-serif');
+          text.textContent = title.length > 12 ? title.slice(0, 11) + '...' : title;
+          svg.appendChild(text);
+        }
+      });
+
+      container.appendChild(svg);
+    }
+
+    renderRoleAssignment(wf) {
+      const rolesSection = this.root?.querySelector('#wf-roles-section');
+      const rolesList = this.root?.querySelector('#wf-roles-list');
+      if (!rolesSection || !rolesList) return;
+
+      // Extract roles from workflow — agent nodes define roles
+      const roles = [];
+      const meta = wf.halo_meta || {};
+      const roleDefs = meta.role_definitions || {};
+      Object.entries(roleDefs).forEach(([key, def]) => {
+        roles.push({ key, name: def.role_name || key, agentType: def.agent_type || '' });
+      });
+
+      // Also scan litegraph nodes for agent nodes that might not be in role_definitions
+      const litegraph = wf.litegraph || {};
+      const nodes = Array.isArray(litegraph.nodes) ? litegraph.nodes : [];
+      nodes.forEach((n) => {
+        if (n.type === 'halo/agent') {
+          const roleName = n.properties?.role_name || `Agent ${n.id}`;
+          const key = String(n.id);
+          if (!roles.some((r) => r.key === key || r.name === roleName)) {
+            roles.push({ key, name: roleName, agentType: n.properties?.agent_type || '' });
+          }
+        }
+      });
+
+      if (roles.length === 0) {
+        rolesSection.style.display = 'none';
+        return;
+      }
+
+      rolesSection.style.display = '';
+      const activeAgents = this.getActiveAgentsForRoles();
+
+      rolesList.innerHTML = roles.map((role) => {
+        const options = activeAgents.map((a) =>
+          `<option value="${escapeHtml(a.agentId)}">${escapeHtml(a.letter)} — ${escapeHtml(a.agentType)}</option>`
+        ).join('');
+        return `
+          <div class="wf-role-row" data-role-key="${escapeHtml(role.key)}">
+            <span class="wf-role-label" title="${escapeHtml(role.name)}">${escapeHtml(role.name)}</span>
+            <select class="wf-role-select" data-role="${escapeHtml(role.key)}">
+              <option value="">— Auto —</option>
+              ${options}
+            </select>
+          </div>
+        `;
+      }).join('');
+
+      this.updateRunButton();
+      rolesList.querySelectorAll('.wf-role-select').forEach((sel) => {
+        sel.addEventListener('change', () => this.updateRunButton());
+      });
+    }
+
+    updateRunButton() {
+      const runBtn = this.root?.querySelector('#wf-run-btn');
+      if (!runBtn) return;
+      const isRunning = this.activeWorkflowInstance && this.activeWorkflowInstance.status === 'running';
+      runBtn.disabled = !this.selectedWorkflowId || isRunning;
+    }
+
+    async runSelectedWorkflow() {
+      if (!this.selectedWorkflowId) return;
+      const roleBindings = {};
+      this.root?.querySelectorAll('.wf-role-select').forEach((sel) => {
+        const role = sel.dataset.role;
+        const agentId = sel.value;
+        if (role && agentId) roleBindings[role] = agentId;
+      });
+
+      try {
+        const res = await fetch(`/api/workflows/${encodeURIComponent(this.selectedWorkflowId)}/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role_bindings: roleBindings }),
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          this.showNotice(`Workflow run failed: ${errData.error || res.statusText}`, 'warn', 5000);
+          return;
+        }
+        const payload = await res.json();
+        this.activeWorkflowInstance = payload.instance || payload;
+        this.showNotice('Workflow started', 'success', 3000);
+        this.showExecSection(true);
+        this.startWfPoll();
+        this.updateRunButton();
+        this.updateStopButton(true);
+        this.updateJointIndicators();
+      } catch (e) {
+        this.showNotice(`Workflow run error: ${e.message}`, 'warn', 5000);
+      }
+    }
+
+    async stopActiveWorkflow() {
+      if (!this.activeWorkflowInstance) return;
+      const instanceId = this.activeWorkflowInstance.instance_id;
+      try {
+        await fetch(`/api/workflows/${encodeURIComponent(this.selectedWorkflowId)}/stop`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instance_id: instanceId }),
+        });
+        this.showNotice('Workflow stopped', 'info', 3000);
+        this.stopWfPoll();
+        this.activeWorkflowInstance = null;
+        this.updateRunButton();
+        this.updateStopButton(false);
+        this.updateJointIndicators();
+      } catch (_e) {}
+    }
+
+    showExecSection(show) {
+      const section = this.root?.querySelector('#wf-exec-section');
+      if (section) section.style.display = show ? '' : 'none';
+    }
+
+    updateStopButton(enabled) {
+      const stopBtn = this.root?.querySelector('#wf-stop-btn');
+      if (stopBtn) stopBtn.disabled = !enabled;
+    }
+
+    startWfPoll() {
+      this.stopWfPoll();
+      this.pollWorkflowStatus();
+      this.wfPollTimer = setInterval(() => this.pollWorkflowStatus(), 3000);
+    }
+
+    stopWfPoll() {
+      if (this.wfPollTimer) {
+        clearInterval(this.wfPollTimer);
+        this.wfPollTimer = null;
+      }
+    }
+
+    async pollWorkflowStatus() {
+      if (!this.selectedWorkflowId || !this.activeWorkflowInstance) return;
+      try {
+        const res = await fetch(`/api/workflows/${encodeURIComponent(this.selectedWorkflowId)}/status`);
+        if (!res.ok) return;
+        const payload = await res.json();
+        const instance = payload.instance || payload;
+        this.activeWorkflowInstance = instance;
+        this.renderExecLog(instance);
+        this.updateJointIndicators();
+
+        const status = (instance.status || '').toLowerCase();
+        if (status === 'completed' || status === 'failed' || status === 'stopped' || status === 'max_iterations_exceeded') {
+          this.stopWfPoll();
+          this.updateRunButton();
+          this.updateStopButton(false);
+          this.showNotice(`Workflow ${status}`, status === 'completed' ? 'success' : 'warn', 5000);
+        }
+      } catch (_e) {}
+    }
+
+    renderExecLog(instance) {
+      const logEl = this.root?.querySelector('#wf-exec-log');
+      const progressBar = this.root?.querySelector('#wf-progress-bar');
+      const progressFill = this.root?.querySelector('#wf-progress-fill');
+      if (!logEl) return;
+
+      const events = Array.isArray(instance.events) ? instance.events : [];
+      logEl.innerHTML = events.slice(-20).map((ev) => {
+        const letter = ev.agent_letter || '';
+        const badgeHtml = letter
+          ? `<span class="agent-letter-badge agent-other" style="width:16px;height:16px;font-size:9px">${escapeHtml(letter)}</span>`
+          : '';
+        const evType = ev.event_type || {};
+        let msgClass = '';
+        if (typeof evType === 'string') {
+          if (evType === 'workflow_completed' || evType === 'node_completed') msgClass = 'event-complete';
+          if (evType === 'node_failed' || evType === 'workflow_failed') msgClass = 'event-error';
+        }
+        return `<div class="wf-exec-entry">${badgeHtml}<span class="wf-exec-msg ${msgClass}">${escapeHtml(ev.message || '')}</span></div>`;
+      }).join('');
+
+      logEl.scrollTop = logEl.scrollHeight;
+
+      // Render progress for decision loops
+      const iterations = instance.iteration_counts || {};
+      const maxIter = this.selectedWorkflow?.halo_meta?.max_iterations || 10;
+      const maxCount = Math.max(...Object.values(iterations), 0);
+      if (maxCount > 0 && progressBar && progressFill) {
+        progressBar.style.display = '';
+        const pct = Math.min(100, (maxCount / maxIter) * 100);
+        progressFill.style.width = `${pct}%`;
+      } else if (progressBar) {
+        progressBar.style.display = 'none';
+      }
+    }
+
+    refreshAgentsList() {
+      const listEl = this.root?.querySelector('#wf-agents-list');
+      if (!listEl) return;
+
+      const agents = this.getActiveAgentsForRoles();
+      if (agents.length === 0) {
+        listEl.innerHTML = '<div class="mesh-empty" style="font-size:11px;color:var(--text-dim)">No active agents</div>';
+        return;
+      }
+
+      listEl.innerHTML = agents.map((a) => {
+        const entry = this.sessions.get(a.sessionId);
+        const statusState = entry?.status?.state || 'idle';
+        const statusClass = statusState === 'active' ? 'status-running' : statusState === 'waiting' ? 'status-waiting' : 'status-idle';
+        return `
+          <div class="wf-agent-row">
+            ${this.letterBadgeHtml(a.sessionId, a.agentType)}
+            <span class="wf-agent-name">${escapeHtml(a.agentType)}</span>
+            <span class="wf-agent-status ${statusClass}">${escapeHtml(statusState)}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // ── Joint Workflow Indicators (H6) ──────────────────────────
+
+    updateJointIndicators() {
+      const jointSection = this.root?.querySelector('#wf-joint-section');
+      const jointCard = this.root?.querySelector('#wf-joint-card');
+      if (!jointSection || !jointCard) return;
+
+      if (!this.activeWorkflowInstance || !this.selectedWorkflow) {
+        jointSection.style.display = 'none';
+        // Remove workflow indicators from tabs
+        this.sessions.forEach((_entry, id) => {
+          this.setTabWorkflowBadge(id, null);
+        });
+        return;
+      }
+
+      const inst = this.activeWorkflowInstance;
+      const status = (inst.status || '').toLowerCase();
+      const isRunning = status === 'running' || status === 'pending';
+
+      if (!isRunning) {
+        jointSection.style.display = 'none';
+        this.sessions.forEach((_entry, id) => {
+          this.setTabWorkflowBadge(id, null);
+        });
+        return;
+      }
+
+      // Find which sessions are bound to this workflow
+      const bindings = inst.role_bindings || {};
+      const boundAgentIds = new Set(Object.values(bindings));
+      const boundSessions = [];
+
+      this.sessions.forEach((entry, id) => {
+        const agentId = entry.agentId || id;
+        if (boundAgentIds.has(agentId)) {
+          boundSessions.push({ sessionId: id, agentId, letter: this.agentLetters.get(id) || '?', agentType: entry.panel?.agentType || 'agent' });
+        }
+      });
+
+      if (boundSessions.length < 2) {
+        jointSection.style.display = 'none';
+        return;
+      }
+
+      jointSection.style.display = '';
+      const wfColor = '#ff6a00'; // accent
+      const comboLetters = boundSessions.map((s) => s.letter).join('');
+      const wfName = this.selectedWorkflow.name || this.selectedWorkflow.workflow_id || 'Workflow';
+
+      const agentBadges = boundSessions.map((s) =>
+        this.letterBadgeHtml(s.sessionId, s.agentType)
+      ).join('<span class="wf-joint-arrow">↔</span>');
+
+      const currentNode = inst.current_node ? ` — Node: ${escapeHtml(String(inst.current_node))}` : '';
+      const iterations = inst.iteration_counts || {};
+      const maxIter = this.selectedWorkflow?.halo_meta?.max_iterations || 10;
+      const maxCount = Math.max(...Object.values(iterations), 0);
+      const loopText = maxCount > 0 ? ` · Loop ${maxCount}/${maxIter}` : '';
+
+      jointCard.innerHTML = `
+        <div class="wf-joint-card">
+          <div class="wf-joint-header">
+            <span class="wf-joint-dot" style="background:${wfColor}"></span>
+            <span class="wf-joint-name">${escapeHtml(wfName)}</span>
+          </div>
+          <div class="wf-joint-agents">
+            ${agentBadges}
+            <span class="wf-joint-combo">= ${escapeHtml(comboLetters)}</span>
+          </div>
+          <div class="wf-joint-status">Status: ${escapeHtml(status)}${currentNode}${loopText}</div>
+        </div>
+      `;
+
+      // Set workflow badges on participating tabs
+      boundSessions.forEach((s) => {
+        this.setTabWorkflowBadge(s.sessionId, { comboLetters, color: wfColor, name: wfName });
+      });
+      // Clear badges from non-participating sessions
+      this.sessions.forEach((_entry, id) => {
+        if (!boundSessions.some((s) => s.sessionId === id)) {
+          this.setTabWorkflowBadge(id, null);
+        }
+      });
+    }
+
+    setTabWorkflowBadge(sessionId, wfInfo) {
+      const entry = this.sessions.get(sessionId);
+      if (!entry?.tab) return;
+      // Remove existing badges
+      entry.tab.querySelectorAll('.tab-workflow-indicator,.tab-joint-badge').forEach((el) => el.remove());
+      if (!wfInfo) return;
+      const dot = document.createElement('span');
+      dot.className = 'tab-workflow-indicator';
+      dot.style.background = wfInfo.color;
+      dot.title = `In workflow: ${wfInfo.name}`;
+      entry.tab.appendChild(dot);
+      const badge = document.createElement('span');
+      badge.className = 'tab-joint-badge';
+      badge.style.background = wfInfo.color + '44';
+      badge.textContent = wfInfo.comboLetters;
+      badge.title = `Joint workflow: ${wfInfo.name}`;
+      entry.tab.appendChild(badge);
+    }
+
     async fetchAgentState() {
       const [agentRes, taskRes] = await Promise.all([
         fetch('/api/orchestrator/agents').catch(() => null),
@@ -1515,9 +2064,22 @@
         return panelId;
       }
 
-      const panel = new CockpitPanel(panelId, 'chat', `${agent.agent_type}:${agent.agent_id.slice(0, 8)}`, this);
-      panel.agentType = agent.agent_type;
-      const tab = this.createTab(panelId, agent.agent_type || 'agent');
+      const agentType = agent.agent_type || 'agent';
+      this.assignLetter(panelId);
+      const letter = this.agentLetters.get(panelId);
+
+      const panel = new CockpitPanel(panelId, 'chat', `${agentType}:${agent.agent_id.slice(0, 8)}`, this);
+      panel.agentType = agentType;
+
+      // Add letter badge to panel header
+      const titleEl = panel.el.querySelector('.cockpit-panel-title');
+      if (titleEl && letter) {
+        const badgeSpan = document.createElement('span');
+        badgeSpan.innerHTML = this.letterBadgeHtml(panelId, agentType);
+        titleEl.insertBefore(badgeSpan.firstChild, titleEl.firstChild);
+      }
+
+      const tab = this.createTab(panelId, agentType, agentType);
       const closeBtn = panel.el.querySelector('[data-action="close"]');
       if (closeBtn) {
         closeBtn.title = 'Close panel only (agent keeps running)';
@@ -1545,6 +2107,7 @@
         this.setLayout('2h');
       }
       this.applyLayout();
+      this.refreshAgentsList();
       return panelId;
     }
 
@@ -1762,11 +2325,24 @@
     attachSession(session) {
       if (this.sessions.has(session.id)) return;
 
-      const panel = new CockpitPanel(session.id, 'terminal', `${session.agent_type || 'session'}:${session.id.slice(0, 8)}`, this);
-      panel.agentType = session.agent_type || 'session';
+      const agentType = session.agent_type || 'session';
+      this.assignLetter(session.id);
+      const letter = this.agentLetters.get(session.id);
+
+      const panel = new CockpitPanel(session.id, 'terminal', `${agentType}:${session.id.slice(0, 8)}`, this);
+      panel.agentType = agentType;
       if (session.identity) panel.setIdentity(session.identity);
       if (session.attestations) panel.setAttestations(session.attestations);
-      const tab = this.createTab(session.id, session.agent_type || 'session');
+
+      // Add letter badge to panel header
+      const titleEl = panel.el.querySelector('.cockpit-panel-title');
+      if (titleEl && letter) {
+        const badgeSpan = document.createElement('span');
+        badgeSpan.innerHTML = this.letterBadgeHtml(session.id, agentType);
+        titleEl.insertBefore(badgeSpan.firstChild, titleEl.firstChild);
+      }
+
+      const tab = this.createTab(session.id, agentType, agentType);
 
       panel.el.querySelector('[data-action="close"]').addEventListener('click', () => this.destroySession(session.id));
       panel.attachTerminal(session.id, session.ws_url, (statusMsg) => this.updateTabStatus(session.id, statusMsg));
@@ -1778,15 +2354,18 @@
       if (this.sessions.size === 2 && this.layout === '1') {
         this.setLayout('2h');
       }
+      this.refreshAgentsList();
     }
 
-    createTab(sessionId, label) {
+    createTab(sessionId, label, agentType) {
       const tab = document.createElement('button');
       tab.type = 'button';
       tab.className = 'cockpit-tab tab-active';
       tab.dataset.sessionId = sessionId;
+      const letter = this.agentLetters.get(sessionId);
+      const letterHtml = letter ? this.letterBadgeHtml(sessionId, agentType) : '<span class="tab-icon">●</span>';
       tab.innerHTML = `
-        <span class="tab-icon">●</span>
+        ${letterHtml}
         <span class="tab-label">${escapeHtml(label)}</span>
         <span class="tab-cost">${formatUsd(0)}</span>`;
       tab.addEventListener('click', () => this.activateTab(sessionId));
@@ -1943,6 +2522,7 @@
       this.activeTab = next;
       if (next) this.activateTab(next);
       this.applyLayout();
+      this.refreshAgentsList();
       if (options.notice) {
         this.showNotice(options.notice.message, options.notice.tone || 'info');
       }
