@@ -79,6 +79,15 @@ function renderMcpToolsPageRoute() {
   }
 }
 
+function renderOrchestrationPageRoute() {
+  if (typeof window.renderOrchestrationPage === "function") {
+    window.renderOrchestrationPage();
+  } else {
+    content.innerHTML =
+      '<div class="loading">Orchestration module not loaded.</div>';
+  }
+}
+
 async function renderAgentPmt() {
   const content = $("#content");
   let cfg = null;
@@ -153,6 +162,7 @@ const pages = {
   "proof-gate": renderProofGate,
   nucleusdb: renderNucleusDB,
   cockpit: renderCockpit,
+  orchestration: renderOrchestrationPageRoute,
   "mcp-tools": renderMcpToolsPageRoute,
   agentpmt: renderAgentPmt,
 };

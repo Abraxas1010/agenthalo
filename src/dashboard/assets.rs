@@ -1,5 +1,5 @@
 //! Embedded static file serving via rust-embed.
-//! Asset sync marker: 2026-03-06 mesh sidebar persistence + config handoff.
+//! Asset sync marker: 2026-03-18 orchestration canvas + litegraph.js.
 
 use axum::extract::Request;
 use axum::http::{header, StatusCode};

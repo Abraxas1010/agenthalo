@@ -10,6 +10,8 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="vendor/xterm.css">
   <link rel="stylesheet" href="cockpit.css">
+  <link rel="stylesheet" href="vendor/litegraph.css">
+  <link rel="stylesheet" href="orchestration.css">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
   <script type="importmap">
   {
@@ -23,6 +25,7 @@
   <script src="vendor/xterm.min.js"></script>
   <script src="vendor/xterm-addon-fit.min.js"></script>
   <script src="vendor/xterm-addon-webgl.min.js"></script>
+  <script src="vendor/litegraph.js"></script>
 </head>
 <body>
   <div id="crypto-lock-overlay" style="display:none"></div>
@@ -80,6 +83,8 @@
         <span class="nav-icon">&#9762;</span> NucleusDB</a></li>
       <li><a href="#/cockpit" class="nav-link" data-page="cockpit">
         <span class="nav-icon">&#9654;</span> Cockpit</a></li>
+      <li><a href="#/orchestration" class="nav-link" data-page="orchestration">
+        <span class="nav-icon">&#9851;</span> Orchestration</a></li>
       <li><a href="#/p2pclaw" class="nav-link" data-page="p2pclaw">
         <span class="nav-icon">&#9788;</span> P2PCLAW</a></li>
       <li><a href="#/mcp-tools" class="nav-link" data-page="mcp-tools">
@@ -99,5 +104,6 @@
   <script src="genesis-docs.js"></script>
   <script src="cockpit.js"></script>
   <script src="mcp-tools.js"></script>
+  <script src="orchestration.js"></script>
 </body>
 </html>
