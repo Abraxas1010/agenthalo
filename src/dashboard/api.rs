@@ -133,6 +133,16 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/orchestrator/pipe", post(api_orch_pipe))
         .route("/orchestrator/stop", post(api_orch_stop))
         .route("/orchestrator/agents/{id}/ws", get(ws_orch_agent_output))
+        .route("/workflows", get(api_workflows_list).post(api_workflow_create))
+        .route(
+            "/workflows/{id}",
+            get(api_workflow_get)
+                .put(api_workflow_update)
+                .delete(api_workflow_delete),
+        )
+        .route("/workflows/{id}/run", post(api_workflow_run))
+        .route("/workflows/{id}/status", get(api_workflow_status))
+        .route("/workflows/{id}/stop", post(api_workflow_stop))
         .route("/addons", get(api_addons_get).post(api_addons_post))
         .route("/p2pclaw/auto-register", post(api_p2pclaw_auto_register))
         .route("/p2pclaw/configure", post(api_p2pclaw_configure))
@@ -10473,6 +10483,141 @@ fn resolve_binary(name: &str) -> Option<String> {
                 .filter(|candidate| candidate.exists())
                 .map(|candidate| candidate.display().to_string())
         })
+}
+
+// ── Workflow API handlers ─────────────────────────────────────────────
+
+async fn api_workflows_list() -> ApiResult {
+    let workflows = crate::orchestrator::workflow::list_workflows();
+    let summaries: Vec<serde_json::Value> = workflows
+        .iter()
+        .map(|w| {
+            json!({
+                "workflow_id": w.workflow_id,
+                "name": w.name,
+                "version": w.version,
+                "created_at": w.created_at,
+                "updated_at": w.updated_at,
+                "role_count": w.halo_meta.role_definitions.len(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "ok": true, "workflows": summaries })))
+}
+
+async fn api_workflow_get(Path(id): Path<String>) -> ApiResult {
+    match crate::orchestrator::workflow::get_workflow(&id) {
+        Some(wf) => {
+            let val = serde_json::to_value(&wf).map_err(|e| internal_err(e.to_string()))?;
+            Ok(Json(val))
+        }
+        None => Err(api_err(StatusCode::NOT_FOUND, "workflow not found")),
+    }
+}
+
+async fn api_workflow_create(Json(body): Json<Value>) -> ApiResult {
+    let wf: crate::orchestrator::workflow::WorkflowDefinition =
+        serde_json::from_value(body).map_err(|e| internal_err(format!("invalid workflow: {e}")))?;
+    let saved =
+        crate::orchestrator::workflow::save_workflow(wf).map_err(|e| internal_err(e))?;
+    let val = serde_json::to_value(&saved).map_err(|e| internal_err(e.to_string()))?;
+    Ok(Json(val))
+}
+
+async fn api_workflow_update(Path(id): Path<String>, Json(body): Json<Value>) -> ApiResult {
+    let mut wf: crate::orchestrator::workflow::WorkflowDefinition =
+        serde_json::from_value(body).map_err(|e| internal_err(format!("invalid workflow: {e}")))?;
+    wf.workflow_id = id;
+    let saved =
+        crate::orchestrator::workflow::save_workflow(wf).map_err(|e| internal_err(e))?;
+    let val = serde_json::to_value(&saved).map_err(|e| internal_err(e.to_string()))?;
+    Ok(Json(val))
+}
+
+async fn api_workflow_delete(Path(id): Path<String>) -> ApiResult {
+    crate::orchestrator::workflow::delete_workflow(&id).map_err(|e| internal_err(e))?;
+    Ok(Json(json!({ "ok": true, "deleted": id })))
+}
+
+async fn api_workflow_run(Path(id): Path<String>, Json(body): Json<Value>) -> ApiResult {
+    let wf = crate::orchestrator::workflow::get_workflow(&id)
+        .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "workflow not found"))?;
+
+    let role_bindings: std::collections::BTreeMap<String, String> = body
+        .get("role_bindings")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    let instance_id = format!(
+        "wfi-{}-{}",
+        crate::pod::now_unix(),
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+
+    let instance = crate::orchestrator::workflow::WorkflowInstance {
+        instance_id: instance_id.clone(),
+        workflow_id: wf.workflow_id.clone(),
+        status: crate::orchestrator::workflow::WorkflowStatus::Pending,
+        role_bindings,
+        iteration_counts: std::collections::BTreeMap::new(),
+        current_node: None,
+        events: vec![crate::orchestrator::workflow::WorkflowEvent {
+            timestamp: crate::pod::now_unix(),
+            node_id: String::new(),
+            event_type: crate::orchestrator::workflow::WorkflowEventType::NodeStarted,
+            message: format!("Workflow '{}' instance created", wf.name),
+            agent_letter: None,
+        }],
+        started_at: crate::pod::now_unix(),
+        completed_at: None,
+    };
+
+    crate::orchestrator::workflow::save_workflow_instance(&instance)
+        .map_err(|e| internal_err(e))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "instance_id": instance_id,
+        "workflow_id": wf.workflow_id,
+        "status": "pending",
+    })))
+}
+
+async fn api_workflow_status(Path(id): Path<String>) -> ApiResult {
+    let instances = crate::orchestrator::workflow::list_workflow_instances();
+    let instance = instances
+        .iter()
+        .find(|i| i.workflow_id == id || i.instance_id == id);
+    match instance {
+        Some(inst) => {
+            let val = serde_json::to_value(inst).map_err(|e| internal_err(e.to_string()))?;
+            Ok(Json(val))
+        }
+        None => Ok(Json(json!({
+            "ok": true,
+            "status": "no_instance",
+            "message": "No active workflow instance",
+        }))),
+    }
+}
+
+async fn api_workflow_stop(Path(id): Path<String>) -> ApiResult {
+    if let Some(mut inst) = crate::orchestrator::workflow::get_workflow_instance(&id) {
+        inst.status = crate::orchestrator::workflow::WorkflowStatus::Stopped;
+        inst.completed_at = Some(crate::pod::now_unix());
+        inst.events.push(crate::orchestrator::workflow::WorkflowEvent {
+            timestamp: crate::pod::now_unix(),
+            node_id: String::new(),
+            event_type: crate::orchestrator::workflow::WorkflowEventType::WorkflowFailed,
+            message: "Workflow stopped by user".to_string(),
+            agent_letter: None,
+        });
+        crate::orchestrator::workflow::save_workflow_instance(&inst)
+            .map_err(|e| internal_err(e))?;
+        Ok(Json(json!({ "ok": true, "stopped": id })))
+    } else {
+        Ok(Json(json!({ "ok": true, "message": "no instance to stop" })))
+    }
 }
 
 #[cfg(test)]

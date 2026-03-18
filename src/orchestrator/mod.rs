@@ -6,6 +6,7 @@ pub mod subsidiary_registry;
 pub mod task;
 pub mod task_graph;
 pub mod trace_bridge;
+pub mod workflow;
 
 pub use dispatch::{ContainerHookupRequest, DispatchMode};
 
