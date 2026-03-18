@@ -119,6 +119,7 @@
     }
 
     attachChat(agentId, agentType, options = {}) {
+      const panelSelf = this;
       this.agentId = agentId;
       this.agentType = agentType;
       this.chatMessages = [];
@@ -236,6 +237,30 @@
         const value = String(input?.value || '').trim();
         if (!value) return;
         input.value = '';
+        // Route @LETTER messages to the target agent's orchestrator task
+        const atMatch = value.match(/^@([A-Z][A-Z0-9]*)\s+([\s\S]+)$/i);
+        const mgr = panelSelf.manager;
+        if (atMatch && mgr) {
+          const targetLetter = atMatch[1].toUpperCase();
+          const message = atMatch[2];
+          const targetSessionId = mgr.findSessionByLetter(targetLetter);
+          if (targetSessionId) {
+            const entry = mgr.sessions.get(targetSessionId);
+            const targetAgentId = entry?.panel?.agentType || entry?.agentId || 'shell';
+            appendMessage('user', `\u2192 Agent ${targetLetter}: ${message}`);
+            fetch('/api/orchestrator/task', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ agent_id: targetAgentId, task: message, timeout_secs: 600, wait: false }),
+            }).then(res => {
+              if (!res.ok) appendMessage('error', `Failed to route to Agent ${targetLetter}: HTTP ${res.status}`);
+              else appendMessage('agent', `Message routed to Agent ${targetLetter}`);
+            }).catch(e => appendMessage('error', `Route error: ${e.message}`));
+          } else {
+            appendMessage('error', `No agent with letter "${targetLetter}". Active: ${Array.from(mgr.agentLetters.values()).join(', ') || 'none'}`);
+          }
+          return;
+        }
         sendTask(value);
       });
       input?.addEventListener('keydown', (ev) => {
@@ -810,6 +835,30 @@
         };
         sessionStorage.setItem('halo_agent_letters', JSON.stringify(data));
       } catch (_) { /* storage full or unavailable — non-critical */ }
+      // Expose globally so mesh, orchestrator, and other surfaces can look up letters
+      this._publishLetterRegistry();
+    }
+
+    _publishLetterRegistry() {
+      const registry = {};
+      this.agentLetters.forEach((letter, sessionId) => {
+        const entry = this.sessions.get(sessionId);
+        const agentType = entry?.panel?.agentType || entry?.agentType || 'agent';
+        registry[sessionId] = { letter, agentType };
+      });
+      window.__haloAgentLetters = registry;
+      document.dispatchEvent(new CustomEvent('halo-agent-letters-changed', {
+        detail: { letters: registry },
+      }));
+    }
+
+    /** Look up a session ID by its letter (case-insensitive). */
+    findSessionByLetter(letter) {
+      const target = String(letter).toUpperCase();
+      for (const [sessionId, assignedLetter] of this.agentLetters) {
+        if (assignedLetter === target) return sessionId;
+      }
+      return null;
     }
 
     _restoreLetterState() {
@@ -822,6 +871,7 @@
         }
         if (Array.isArray(data.letters)) {
           this.agentLetters = new Map(data.letters);
+          this._publishLetterRegistry();
         }
       } catch (_) { /* corrupt data — start fresh */ }
     }
@@ -1145,11 +1195,21 @@
           ? `${Number(peer.latency_ms)}ms`
           : 'unreachable';
         const did = peer && peer.did_uri ? ' · DID' : '';
+        // Look up letter badge from the global registry
+        const reg = window.__haloAgentLetters || {};
+        let badge = '';
+        for (const [, info] of Object.entries(reg)) {
+          // Match by agent_id prefix in peer name
+          if (info.letter && name.toLowerCase().includes(info.agentType.toLowerCase())) {
+            badge = `<span class="agent-letter-badge ${this.getAgentColorClass(info.agentType)}">${escapeHtml(info.letter)}</span> `;
+            break;
+          }
+        }
         return `
           <div class="mesh-peer ${online ? 'mesh-peer-online' : 'mesh-peer-offline'}">
             <span class="mesh-indicator ${online ? 'mesh-online' : 'mesh-offline'}">${online ? '●' : '○'}</span>
             <div class="mesh-peer-info">
-              <div class="mesh-peer-name">${escapeHtml(name)}</div>
+              <div class="mesh-peer-name">${badge}${escapeHtml(name)}</div>
               <div class="mesh-peer-detail">${escapeHtml(latency)}${did}</div>
             </div>
           </div>
