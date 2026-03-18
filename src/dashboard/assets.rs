@@ -11,9 +11,10 @@ use rust_embed::Embed;
 struct DashboardAssets;
 
 /// Serve embedded static files. Falls back to index.html for SPA routing.
+/// Query strings (e.g. `?v=20260318a`) are stripped for cache-busting support.
 pub async fn static_handler(req: Request) -> Response {
-    let path = req.uri().path().trim_start_matches('/');
-    let path = if path.is_empty() { "index.html" } else { path };
+    let raw_path = req.uri().path().trim_start_matches('/');
+    let path = if raw_path.is_empty() { "index.html" } else { raw_path };
 
     serve_embedded(path).unwrap_or_else(|| serve_embedded("index.html").unwrap_or_else(not_found))
 }

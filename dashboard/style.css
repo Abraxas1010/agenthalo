@@ -6492,8 +6492,6 @@ input:focus, select:focus, textarea:focus {
      fonts: Space Grotesk (display), JetBrains Mono (code)
    ================================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
 .p2p-hybrid {
   --p2p-bg: #0c0c0d;
   --p2p-surface: #141416;
