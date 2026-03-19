@@ -88,6 +88,15 @@ function renderOrchestrationPageRoute() {
   }
 }
 
+function renderSkillsPageRoute() {
+  if (typeof window.renderSkillsPage === "function") {
+    window.renderSkillsPage();
+  } else {
+    content.innerHTML =
+      '<div class="loading">Skills module not loaded.</div>';
+  }
+}
+
 async function renderAgentPmt() {
   const content = $("#content");
   let cfg = null;
@@ -164,6 +173,7 @@ const pages = {
   cockpit: renderCockpit,
   orchestration: renderOrchestrationPageRoute,
   "mcp-tools": renderMcpToolsPageRoute,
+  skills: renderSkillsPageRoute,
   agentpmt: renderAgentPmt,
 };
 

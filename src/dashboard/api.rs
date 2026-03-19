@@ -251,6 +251,10 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
             "/agentpmt/anonymous-wallet",
             post(api_agentpmt_anonymous_wallet),
         )
+        .route("/skills", get(api_skills_list))
+        .route("/skills", post(api_skills_upsert))
+        .route("/skills/{id}", get(api_skills_get))
+        .route("/skills/{id}", axum::routing::delete(api_skills_delete))
         .route("/agentaddress/status", get(api_agentaddress_status))
         .route("/agentaddress/chains", get(api_agentaddress_chains))
         .route("/agentaddress/generate", post(api_agentaddress_generate))
@@ -8014,6 +8018,84 @@ async fn api_deploy_preflight(
     )
     .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
     Ok(Json(json!(result)))
+}
+
+// ── Skills CRUD ──────────────────────────────────────────────
+async fn api_skills_list(AxumState(state): AxumState<DashboardState>) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let db_path = state.db_path.clone();
+    let _lock = state.db_lock.lock().await;
+    let skills = tokio::task::spawn_blocking(move || {
+        crate::halo::trace::list_skills(&db_path)
+    })
+    .await
+    .map_err(|e| internal_err(format!("skills list task: {e}")))?
+    .map_err(|e| internal_err(e))?;
+    // Filter out soft-deleted skills
+    let active: Vec<_> = skills
+        .into_iter()
+        .filter(|s| !s.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false))
+        .collect();
+    Ok(Json(json!({ "ok": true, "count": active.len(), "skills": active })))
+}
+
+async fn api_skills_get(
+    AxumState(state): AxumState<DashboardState>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let db_path = state.db_path.clone();
+    let _lock = state.db_lock.lock().await;
+    let skill = tokio::task::spawn_blocking(move || {
+        crate::halo::trace::get_skill(&db_path, &id)
+    })
+    .await
+    .map_err(|e| internal_err(format!("skill get task: {e}")))?
+    .map_err(|e| internal_err(e))?;
+    match skill {
+        Some(s) if !s.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) => {
+            Ok(Json(json!({ "ok": true, "skill": s })))
+        }
+        _ => Err(api_err(StatusCode::NOT_FOUND, "skill not found")),
+    }
+}
+
+async fn api_skills_upsert(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let skill_id = body
+        .get("skill_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, "skill_id is required"))?
+        .to_string();
+    if skill_id.is_empty() || skill_id.len() > 200 {
+        return Err(api_err(StatusCode::BAD_REQUEST, "invalid skill_id"));
+    }
+    let db_path = state.db_path.clone();
+    let _lock = state.db_lock.lock().await;
+    tokio::task::spawn_blocking(move || crate::halo::trace::upsert_skill(&db_path, &body))
+        .await
+        .map_err(|e| internal_err(format!("skill upsert task: {e}")))?
+        .map_err(|e| internal_err(e))?;
+    Ok(Json(json!({ "ok": true, "skill_id": skill_id })))
+}
+
+async fn api_skills_delete(
+    AxumState(state): AxumState<DashboardState>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    let db_path = state.db_path.clone();
+    let _lock = state.db_lock.lock().await;
+    let deleted = tokio::task::spawn_blocking(move || {
+        crate::halo::trace::delete_skill(&db_path, &id)
+    })
+    .await
+    .map_err(|e| internal_err(format!("skill delete task: {e}")))?
+    .map_err(|e| internal_err(e))?;
+    Ok(Json(json!({ "ok": true, "deleted": deleted })))
 }
 
 async fn api_deploy_launch(

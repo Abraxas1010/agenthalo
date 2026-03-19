@@ -7240,3 +7240,38 @@ textarea.p2p-input {
     border-top: 1px solid var(--p2p-border);
   }
 }
+
+/* ================================================================
+   Skills Panel
+   ================================================================ */
+.skill-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+
+.skill-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.skill-card:hover { border-color: var(--text-dim); }
+.skill-card.is-selected { border-color: var(--accent); }
+
+.skill-card-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.skill-card-name { font-weight: 600; font-size: 13px; color: var(--text); }
+.skill-card-desc { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+
+.skill-card-triggers { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.skill-trigger {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(53, 255, 62, 0.08);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+.skill-detail-form { display: flex; flex-direction: column; gap: 8px; }
+.skill-detail-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.skill-detail-name { font-size: 16px; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; }

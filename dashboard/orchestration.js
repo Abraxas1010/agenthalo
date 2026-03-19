@@ -119,6 +119,23 @@
 
   HaloAgentNode.prototype.getExtraMenuOptions = function () {
     var node = this;
+    var skillOptions = [{ content: '(none)', callback: function () { node.properties.skill_ref = ''; node.setDirtyCanvas(true); } }];
+    // Fetch skills asynchronously — fallback to static list if API unavailable
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', '/api/skills', false); // synchronous for menu
+      xhr.send();
+      if (xhr.status === 200) {
+        var data = JSON.parse(xhr.responseText);
+        var skills = Array.isArray(data.skills) ? data.skills : (Array.isArray(data) ? data : []);
+        skills.forEach(function (s) {
+          skillOptions.push({ content: s.skill_id || s.name, callback: function () {
+            node.properties.skill_ref = s.skill_id || s.name || '';
+            node.setDirtyCanvas(true);
+          }});
+        });
+      }
+    } catch (_e) { /* API unavailable — only "(none)" option shown */ }
     return [
       { content: 'Set Agent Type', has_submenu: true, callback: function () {},
         submenu: { options: AGENT_TYPES.map(function (t) {
@@ -128,6 +145,9 @@
             node.setDirtyCanvas(true);
           }};
         })}
+      },
+      { content: 'Set Skill', has_submenu: true, callback: function () {},
+        submenu: { options: skillOptions }
       }
     ];
   };

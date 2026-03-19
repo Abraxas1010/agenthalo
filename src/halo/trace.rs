@@ -516,6 +516,100 @@ pub fn record_paid_operation_for_halo(
     })
 }
 
+// ── Skills store (same NucleusDb as trace data) ─────────────────────
+const SKILL_PREFIX: &str = "skill:";
+
+pub fn list_skills(db_path: &Path) -> Result<Vec<serde_json::Value>, String> {
+    let db = load_db(db_path)?;
+    let mut out = Vec::new();
+    for (key, _) in db.keymap.all_keys() {
+        if !key.starts_with(SKILL_PREFIX) || !key.ends_with(":len") {
+            continue;
+        }
+        let base = key.trim_end_matches(":len");
+        if let Some(bytes) = read_blob(&db, base)? {
+            if let Ok(skill) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                out.push(skill);
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        let na = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let nb = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        na.cmp(nb)
+    });
+    Ok(out)
+}
+
+pub fn get_skill(db_path: &Path, skill_id: &str) -> Result<Option<serde_json::Value>, String> {
+    let db = load_db(db_path)?;
+    let base = format!("{SKILL_PREFIX}{skill_id}");
+    let Some(bytes) = read_blob(&db, &base)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|e| format!("parse skill {skill_id}: {e}"))
+}
+
+pub fn upsert_skill(db_path: &Path, skill: &serde_json::Value) -> Result<(), String> {
+    let skill_id = skill
+        .get("skill_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "skill_id is required".to_string())?;
+    let mut db = load_db(db_path)?;
+    let base = format!("{SKILL_PREFIX}{skill_id}");
+    let raw = serde_json::to_vec(skill).map_err(|e| format!("serialize skill: {e}"))?;
+
+    let mut writes = Vec::new();
+    append_blob_writes(&base, &raw, &mut writes);
+
+    let delta = writes
+        .into_iter()
+        .map(|(key, value)| {
+            let idx = db.keymap.get_or_create(&key);
+            (idx, value)
+        })
+        .collect();
+    db.commit(Delta::new(delta), &[])
+        .map_err(|e| format!("commit skill: {e:?}"))?;
+    let wal_path = default_wal_path(db_path);
+    persist_snapshot_and_sync_wal(db_path, &wal_path, &db)
+        .map_err(|e| format!("persist skill: {e:?}"))?;
+    Ok(())
+}
+
+pub fn delete_skill(db_path: &Path, skill_id: &str) -> Result<bool, String> {
+    let mut db = load_db(db_path)?;
+    let base = format!("{SKILL_PREFIX}{skill_id}");
+    let len_key = format!("{base}:len");
+    let Some(_) = read_value_by_key_from_db(&db, &len_key) else {
+        return Ok(false);
+    };
+    // Soft delete: store a tombstone with deleted_at timestamp
+    let tombstone = serde_json::json!({
+        "skill_id": skill_id,
+        "deleted": true,
+        "deleted_at": now_unix_secs(),
+    });
+    let raw = serde_json::to_vec(&tombstone).map_err(|e| format!("serialize tombstone: {e}"))?;
+    let mut writes = Vec::new();
+    append_blob_writes(&base, &raw, &mut writes);
+    let delta = writes
+        .into_iter()
+        .map(|(key, value)| {
+            let idx = db.keymap.get_or_create(&key);
+            (idx, value)
+        })
+        .collect();
+    db.commit(Delta::new(delta), &[])
+        .map_err(|e| format!("commit skill delete: {e:?}"))?;
+    let wal_path = default_wal_path(db_path);
+    persist_snapshot_and_sync_wal(db_path, &wal_path, &db)
+        .map_err(|e| format!("persist skill delete: {e:?}"))?;
+    Ok(true)
+}
+
 fn load_db(db_path: &Path) -> Result<NucleusDb, String> {
     if !db_path.exists() {
         return Ok(NucleusDb::new(

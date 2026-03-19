@@ -237,6 +237,26 @@
         const value = String(input?.value || '').trim();
         if (!value) return;
         input.value = '';
+        // Route /skill <name> commands — load prompt template and send as task
+        const skillMatch = value.match(/^\/skill\s+(\S+)(?:\s+([\s\S]*))?$/i);
+        if (skillMatch) {
+          const skillName = skillMatch[1];
+          const extraArgs = (skillMatch[2] || '').trim();
+          appendMessage('user', value);
+          try {
+            const sRes = await fetch(`/api/skills/${encodeURIComponent(skillName)}`);
+            if (!sRes.ok) { appendMessage('error', `Skill "${skillName}" not found (HTTP ${sRes.status})`); }
+            else {
+              const skill = await sRes.json();
+              let prompt = skill.prompt_template || skill.description || skillName;
+              if (extraArgs) prompt += '\n\n' + extraArgs;
+              appendMessage('agent', `Loading skill: ${skill.name || skillName}`);
+              sendTask(prompt);
+            }
+          } catch (e) { appendMessage('error', `Skill error: ${e.message}`); }
+          return;
+        }
+
         // Route @LETTER messages to the target agent's orchestrator task
         const atMatch = value.match(/^@([A-Z][A-Z0-9]*)\s+([\s\S]+)$/i);
         const mgr = panelSelf.manager;
