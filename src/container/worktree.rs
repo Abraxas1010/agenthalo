@@ -303,6 +303,11 @@ fn set_readonly_recursive(path: &Path) {
     }
 }
 
+/// Recursively copy a file or directory (public wrapper for use by deploy).
+pub fn copy_recursive_pub(src: &Path, dst: &Path) -> Result<(), String> {
+    copy_recursive(src, dst)
+}
+
 /// Recursively copy a file or directory.
 fn copy_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     if src.is_dir() {

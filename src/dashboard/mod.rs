@@ -210,10 +210,13 @@ pub fn build_state_with_bootstrap(
     let orchestrator = if crate::halo::orchestrator_proxy::orchestrator_proxy_enabled() {
         None
     } else {
+        // Use a separate trace DB for orchestrator tasks to avoid redb
+        // file-level lock contention with the dashboard's main traces.ndb.
+        let orch_trace_db = db_path.with_file_name("orch_traces.ndb");
         Some(Arc::new(crate::orchestrator::Orchestrator::new(
             pty_manager.clone(),
             vault.clone(),
-            db_path.clone(),
+            orch_trace_db,
         )))
     };
     let mcp_service = Arc::new(

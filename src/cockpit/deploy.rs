@@ -368,6 +368,19 @@ pub fn launch(
     }
     // ── End worktree isolation ──────────────────────────────────────
 
+    // ── Inject external sources into agent working directory ────────
+    // Copy external skills and MCP tool configs as readonly into the
+    // agent's working directory so they are visible at launch time.
+    // This works for both worktree-isolated and non-isolated agents.
+    let inject_target = effective_working_dir
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    if let Some(ref target_dir) = inject_target {
+        inject_external_sources(target_dir, &ws_profile, agent.id);
+    }
+    // ── End external source injection ──────────────────────────────
+
     let command = if agent.id == "shell" {
         "/bin/bash".to_string()
     } else {
@@ -552,6 +565,115 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Inject external skills and MCP tool configs into the agent's working directory.
+///
+/// For each external skill source in the workspace profile, copies skill
+/// directories into the agent-appropriate skill directory (.claude/skills/,
+/// .codex/skills/, .gemini/skills/) as readonly copies.
+///
+/// Agents cannot write back to the source — copies are set to read-only
+/// permissions (r-- for files, r-x for directories).
+fn inject_external_sources(
+    target_dir: &Path,
+    profile: &crate::halo::workspace_profile::WorkspaceProfile,
+    agent_id: &str,
+) {
+    use crate::halo::workspace_profile::InjectionMode;
+
+    // Determine agent-specific skill directory
+    let skill_rel = match agent_id {
+        "claude" => ".claude/skills",
+        "codex" => ".codex/skills",
+        "gemini" => ".gemini/skills",
+        _ => ".claude/skills", // Default to Claude layout
+    };
+    let skill_dir = target_dir.join(skill_rel);
+
+    // Inject skills
+    for src_dir in profile.external_skill_sources() {
+        if let Ok(entries) = std::fs::read_dir(&src_dir) {
+            for entry in entries.flatten() {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with('.') || name_str == "__pycache__" {
+                    continue;
+                }
+                let target = skill_dir.join(&name);
+                if target.exists() || target.symlink_metadata().is_ok() {
+                    continue; // Don't overwrite existing local skills
+                }
+                if let Err(e) = std::fs::create_dir_all(&skill_dir) {
+                    eprintln!("inject: create skill dir: {e}");
+                    continue;
+                }
+                if let Err(e) =
+                    crate::container::worktree::copy_recursive_pub(&entry.path(), &target)
+                {
+                    eprintln!("inject: copy skill {}: {e}", name_str);
+                    continue;
+                }
+                set_readonly_tree(&target);
+            }
+        }
+    }
+
+    // Inject MCP tool configs
+    for inj in &profile.injections {
+        let t = inj.target.to_lowercase();
+        if !((t.contains("mcp") || t.contains(".mcp")) && t.ends_with(".json")) {
+            continue;
+        }
+        let src = PathBuf::from(crate::halo::workspace_profile::expand_tilde_pub(&inj.source));
+        if !src.exists() {
+            continue;
+        }
+        let target = target_dir.join(&inj.target);
+        if target.exists() {
+            continue; // Don't overwrite existing
+        }
+        if let Some(parent) = target.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if matches!(inj.mode, InjectionMode::Readonly) {
+            if let Ok(_) = std::fs::copy(&src, &target) {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &target,
+                        std::fs::Permissions::from_mode(0o444),
+                    );
+                }
+            }
+        } else {
+            let _ = std::fs::copy(&src, &target);
+        }
+    }
+}
+
+/// Set a directory tree to read-only.
+fn set_readonly_tree(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    set_readonly_tree(&p);
+                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o500));
+                } else {
+                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o400));
+                }
+            }
+        }
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o500));
+    }
 }
 
 fn route_working_dir<'a>(

@@ -183,6 +183,11 @@ impl Default for WorkspaceProfile {
     }
 }
 
+/// Expand `~` to the user's home directory (public wrapper for use by deploy).
+pub fn expand_tilde_pub(path: &str) -> String {
+    expand_tilde(path)
+}
+
 /// Expand `~` to the user's home directory.
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {

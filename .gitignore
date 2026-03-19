@@ -36,6 +36,10 @@
 # Sidecar dependencies
 /wdk-sidecar/node_modules/
 
+# External skill injections (readonly copies injected at agent launch)
+# Identified by .external_source marker file inside each skill directory.
+# The sync script and deploy code manage these; they are not repo content.
+
 # OS
 .DS_Store
 Thumbs.db
