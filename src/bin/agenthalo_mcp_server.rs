@@ -1810,6 +1810,32 @@ async fn mcp(
                         "required": ["operator_agent_id"]
                     }
                 }),
+                // Library tools (read-only access to persistent knowledge store)
+                json!({
+                    "name": "library_search",
+                    "description": "Search the persistent Library for knowledge from past agent sessions. Full-text search across all Library records.",
+                    "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 20}}, "required": ["query"]}
+                }),
+                json!({
+                    "name": "library_browse",
+                    "description": "Browse persistent Library records by key prefix. Use 'lib:session:' for sessions, 'lib:summary:' for summaries, 'lib:evt:' for events.",
+                    "inputSchema": {"type": "object", "properties": {"prefix": {"type": "string", "default": "lib:"}, "limit": {"type": "integer", "default": 20}, "offset": {"type": "integer", "default": 0}}}
+                }),
+                json!({
+                    "name": "library_session_lookup",
+                    "description": "Look up a specific past agent session in the persistent Library by session ID.",
+                    "inputSchema": {"type": "object", "properties": {"session_id": {"type": "string"}}, "required": ["session_id"]}
+                }),
+                json!({
+                    "name": "library_sessions",
+                    "description": "List all past agent sessions stored in the persistent Library.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }),
+                json!({
+                    "name": "library_status",
+                    "description": "Check the persistent Library health: whether initialized, total sessions, total keys, storage size.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }),
             ];
             tools.extend(orchestrator_tool_defs_for_listing());
             tools.push(tool_def_p2pclaw_configure());
@@ -2247,6 +2273,12 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "nucleusdb_container_status" => tool_nucleusdb_container_status(arguments),
         "nucleusdb_container_stop" => tool_nucleusdb_container_stop(arguments),
         "nucleusdb_container_logs" => tool_nucleusdb_container_logs(arguments),
+        // Library tools (read-only agent access to persistent knowledge store)
+        "library_search" => tool_library_search(arguments),
+        "library_browse" => tool_library_browse(arguments),
+        "library_session_lookup" => tool_library_session_lookup(arguments),
+        "library_sessions" => tool_library_sessions(arguments),
+        "library_status" => tool_library_status(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -7384,6 +7416,40 @@ fn tool_nucleusdb_container_logs(arguments: Value) -> Result<Value, String> {
         "follow": follow,
         "logs": logs,
     }))
+}
+
+// ── Library tool handlers ────────────────────────────────────────────
+
+fn tool_library_search(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::halo::library_mcp::LibrarySearchRequest =
+        serde_json::from_value(arguments).map_err(|e| format!("parse library_search args: {e}"))?;
+    let resp = nucleusdb::halo::library_mcp::tool_search(req)?;
+    serde_json::to_value(&resp).map_err(|e| format!("serialize library_search response: {e}"))
+}
+
+fn tool_library_browse(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::halo::library_mcp::LibraryBrowseRequest =
+        serde_json::from_value(arguments).map_err(|e| format!("parse library_browse args: {e}"))?;
+    let resp = nucleusdb::halo::library_mcp::tool_browse(req)?;
+    serde_json::to_value(&resp).map_err(|e| format!("serialize library_browse response: {e}"))
+}
+
+fn tool_library_session_lookup(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::halo::library_mcp::LibrarySessionLookupRequest =
+        serde_json::from_value(arguments)
+            .map_err(|e| format!("parse library_session_lookup args: {e}"))?;
+    let resp = nucleusdb::halo::library_mcp::tool_session_lookup(req)?;
+    serde_json::to_value(&resp).map_err(|e| format!("serialize library_session_lookup response: {e}"))
+}
+
+fn tool_library_sessions(_arguments: Value) -> Result<Value, String> {
+    let resp = nucleusdb::halo::library_mcp::tool_sessions()?;
+    serde_json::to_value(&resp).map_err(|e| format!("serialize library_sessions response: {e}"))
+}
+
+fn tool_library_status(_arguments: Value) -> Result<Value, String> {
+    let resp = nucleusdb::halo::library_mcp::tool_status()?;
+    serde_json::to_value(&resp).map_err(|e| format!("serialize library_status response: {e}"))
 }
 
 fn tool_halo_export(arguments: Value) -> Result<Value, String> {

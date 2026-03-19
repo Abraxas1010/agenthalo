@@ -2900,6 +2900,91 @@ impl NucleusDbMcpService {
         Ok(Json(response))
     }
 
+    // ── Library tools (read-only agent access to persistent Library) ──
+
+    #[tool(
+        name = "library_search",
+        description = "Search the persistent Library for knowledge from past agent sessions. Full-text search across all Library records (traces, summaries, tool calls). Returns matching entries with relevance scores. The Library accumulates data from all completed sessions across all projects."
+    )]
+    pub async fn library_search(
+        &self,
+        Parameters(req): Parameters<crate::halo::library_mcp::LibrarySearchRequest>,
+    ) -> Result<Json<crate::halo::library_mcp::LibrarySearchResponse>, McpError> {
+        tokio::task::spawn_blocking(move || {
+            crate::halo::library_mcp::tool_search(req)
+                .map(Json)
+                .map_err(|e| McpError::internal_error(e, None))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("library_search join: {e}"), None))?
+    }
+
+    #[tool(
+        name = "library_browse",
+        description = "Browse persistent Library records by key prefix. Use prefix 'lib:session:' for session metadata, 'lib:summary:' for summaries, 'lib:evt:' for events. Returns key-value pairs with content previews."
+    )]
+    pub async fn library_browse(
+        &self,
+        Parameters(req): Parameters<crate::halo::library_mcp::LibraryBrowseRequest>,
+    ) -> Result<Json<crate::halo::library_mcp::LibraryBrowseResponse>, McpError> {
+        tokio::task::spawn_blocking(move || {
+            crate::halo::library_mcp::tool_browse(req)
+                .map(Json)
+                .map_err(|e| McpError::internal_error(e, None))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("library_browse join: {e}"), None))?
+    }
+
+    #[tool(
+        name = "library_session_lookup",
+        description = "Look up a specific past agent session in the persistent Library by session ID. Returns session metadata, summary (tokens, cost, tool calls), and event count."
+    )]
+    pub async fn library_session_lookup(
+        &self,
+        Parameters(req): Parameters<crate::halo::library_mcp::LibrarySessionLookupRequest>,
+    ) -> Result<Json<crate::halo::library_mcp::LibrarySessionLookupResponse>, McpError> {
+        tokio::task::spawn_blocking(move || {
+            crate::halo::library_mcp::tool_session_lookup(req)
+                .map(Json)
+                .map_err(|e| McpError::internal_error(e, None))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("library_session_lookup join: {e}"), None))?
+    }
+
+    #[tool(
+        name = "library_sessions",
+        description = "List all past agent sessions stored in the persistent Library. Returns session metadata (agent, model, start/end time, status) sorted by most recent first."
+    )]
+    pub async fn library_sessions(
+        &self,
+    ) -> Result<Json<crate::halo::library_mcp::LibrarySessionsResponse>, McpError> {
+        tokio::task::spawn_blocking(move || {
+            crate::halo::library_mcp::tool_sessions()
+                .map(Json)
+                .map_err(|e| McpError::internal_error(e, None))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("library_sessions join: {e}"), None))?
+    }
+
+    #[tool(
+        name = "library_status",
+        description = "Check the persistent Library health: whether it is initialized, total sessions, total keys, storage size, and push history count."
+    )]
+    pub async fn library_status_tool(
+        &self,
+    ) -> Result<Json<crate::halo::library_mcp::LibraryStatusResponse>, McpError> {
+        tokio::task::spawn_blocking(move || {
+            crate::halo::library_mcp::tool_status()
+                .map(Json)
+                .map_err(|e| McpError::internal_error(e, None))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("library_status join: {e}"), None))?
+    }
+
     #[tool(
         name = "swarm_publish",
         description = "Chunk data into BLAKE3-addressed swarm pieces, persist them in NucleusDB, and emit a manifest. Example: {\"data\":\"hello\",\"encoding\":\"utf8\"}"

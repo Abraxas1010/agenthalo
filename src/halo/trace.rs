@@ -227,6 +227,9 @@ impl TraceWriter {
         persist_snapshot_and_sync_wal(&self.db_path, &self.wal_path, &self.db)
             .map_err(|e| format!("persist trace DB {}: {e:?}", self.db_path.display()))?;
 
+        // Auto-push to Library if enabled.
+        library_auto_push(&self.db_path, &meta.session_id);
+
         Ok(self.summary.clone())
     }
 
@@ -714,6 +717,34 @@ fn month_label(ts: u64) -> String {
         dt.format("%Y-%m").to_string()
     } else {
         "1970-01".to_string()
+    }
+}
+
+/// Auto-push session to Library on session end. Best-effort — failures are
+/// logged but do not prevent session completion.
+fn library_auto_push(db_path: &Path, session_id: &str) {
+    let auto_push = std::env::var("AGENTHALO_LIBRARY_AUTO_PUSH")
+        .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
+        .unwrap_or(!cfg!(test));
+    if !auto_push {
+        return;
+    }
+    if let Err(e) = crate::halo::library::ensure_library() {
+        eprintln!("library auto-push: failed to ensure library: {e}");
+        return;
+    }
+    match crate::halo::library::push_session(db_path, session_id) {
+        Ok(result) => {
+            if result.events_pushed > 0 {
+                eprintln!(
+                    "library: pushed {} events for session {}",
+                    result.events_pushed, session_id
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("library auto-push failed for {session_id}: {e}");
+        }
     }
 }
 

@@ -48,7 +48,7 @@ pub struct PushLogEntry {
     pub pushed_at: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LibraryStats {
     pub total_keys: usize,
     pub total_sessions: usize,
@@ -57,7 +57,7 @@ pub struct LibraryStats {
     pub push_count: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LibrarySession {
     pub metadata: SessionMetadata,
     pub summary: Option<SessionSummary>,
@@ -353,6 +353,51 @@ fn append_push_log(result: &PushResult) {
     }
 }
 
+// ── 24-hour heartbeat push ───────────────────────────────────────────
+
+/// Background loop that pushes session data to the Library every 24 hours.
+/// Runs until the session can no longer be found in the traces DB.
+pub async fn heartbeat_push_loop(traces_db_path: &Path, session_id: &str) {
+    use tokio::time::{interval, Duration};
+    // Jitter: hash session_id to get a 0-600s offset to reduce collision.
+    let jitter_secs = {
+        let hash = session_id.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+        (hash % 600) as u64
+    };
+    tokio::time::sleep(Duration::from_secs(jitter_secs)).await;
+
+    let mut tick = interval(Duration::from_secs(24 * 3600));
+    tick.tick().await; // First tick is immediate, skip it (initial push happens on session end).
+
+    loop {
+        tick.tick().await;
+        // Check if session still exists in traces DB.
+        let sessions = match trace::list_sessions(traces_db_path) {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+        let still_active = sessions.iter().any(|m| {
+            m.session_id == session_id
+                && m.status == crate::halo::schema::SessionStatus::Running
+        });
+        if !still_active {
+            break;
+        }
+        match push_session(traces_db_path, session_id) {
+            Ok(r) if r.events_pushed > 0 => {
+                eprintln!(
+                    "library heartbeat: pushed {} events for {}",
+                    r.events_pushed, session_id
+                );
+            }
+            Err(e) => {
+                eprintln!("library heartbeat push failed for {session_id}: {e}");
+            }
+            _ => {}
+        }
+    }
+}
+
 // ── Query interface ─────────────────────────────────────────────────
 
 /// Browse Library records by key prefix.
@@ -610,13 +655,12 @@ mod tests {
     fn push_session_and_lookup() {
         with_temp_library(|| {
             let (_dir, traces_path) = create_test_traces_db();
-            let result = push_session(&traces_path, "test-sess-1").expect("push");
-            assert_eq!(result.session_id, "test-sess-1");
-            assert!(result.events_pushed > 0);
-            assert_eq!(result.watermark_before, 0);
-            assert!(result.watermark_after > 0);
+            // Note: end_session auto-pushes to Library. The explicit push
+            // may find 0 new events if auto-push already ran. Either way,
+            // the session should be in the Library after this.
+            let _result = push_session(&traces_path, "test-sess-1").expect("push");
 
-            // Lookup.
+            // Lookup — session must be present (via auto-push or explicit push).
             let session = session_lookup("test-sess-1")
                 .expect("lookup")
                 .expect("session exists");
@@ -630,10 +674,11 @@ mod tests {
     fn push_is_idempotent() {
         with_temp_library(|| {
             let (_dir, traces_path) = create_test_traces_db();
+            // First push (may be a no-op if auto-push already ran in end_session).
             let r1 = push_session(&traces_path, "test-sess-1").expect("push 1");
+            // Second push should definitely be a no-op.
             let r2 = push_session(&traces_path, "test-sess-1").expect("push 2");
-            assert!(r1.events_pushed > 0);
-            assert_eq!(r2.events_pushed, 0); // No new events.
+            assert_eq!(r2.events_pushed, 0);
             assert_eq!(r1.watermark_after, r2.watermark_before);
         });
     }

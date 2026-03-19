@@ -8132,6 +8132,15 @@ async fn api_deploy_launch(
         });
     }
 
+    // Spawn 24-hour Library heartbeat push for long-running sessions.
+    {
+        let db_path = state.db_path.clone();
+        let heartbeat_sid = format!("cockpit-{}", result.session_id);
+        tokio::spawn(async move {
+            crate::halo::library::heartbeat_push_loop(&db_path, &heartbeat_sid).await;
+        });
+    }
+
     Ok(Json(json!(result)))
 }
 
