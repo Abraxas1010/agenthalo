@@ -198,3 +198,280 @@ pub fn tool_status() -> Result<LibraryStatusResponse, String> {
     let stats = library::stats()?;
     Ok(LibraryStatusResponse { initialized: true, stats: Some(stats) })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::halo::library;
+    use crate::halo::schema::{EventType, SessionMetadata, SessionStatus, TraceEvent};
+    use crate::halo::trace::TraceWriter;
+    use crate::test_support::{lock_env, EnvVarGuard};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn now_ts() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Set up a temp AGENTHALO_HOME, initialize the library, and push a test session.
+    fn with_populated_library<F: FnOnce()>(f: F) {
+        let _guard = lock_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+        library::ensure_library().expect("ensure library");
+
+        // Create a traces DB with one session.
+        let traces_path = dir.path().join("traces.ndb");
+        let mut writer = TraceWriter::new(&traces_path).expect("writer");
+        writer
+            .start_session(SessionMetadata {
+                session_id: "mcp-test-sess".to_string(),
+                agent: "claude".to_string(),
+                model: Some("opus".to_string()),
+                started_at: now_ts(),
+                ended_at: None,
+                prompt: Some("library mcp test".to_string()),
+                status: SessionStatus::Running,
+                user_id: None,
+                machine_id: None,
+                puf_digest: None,
+            })
+            .expect("start session");
+        writer
+            .write_event(TraceEvent {
+                seq: 0,
+                timestamp: now_ts(),
+                event_type: EventType::PromptSent,
+                content: serde_json::json!({"prompt": "search for eigenform lemma"}),
+                input_tokens: Some(15),
+                output_tokens: None,
+                cache_read_tokens: None,
+                tool_name: None,
+                tool_input: None,
+                tool_output: None,
+                file_path: None,
+                content_hash: String::new(),
+            })
+            .expect("write event");
+        writer.end_session(SessionStatus::Completed).expect("end");
+        library::push_session(&traces_path, "mcp-test-sess").expect("push");
+
+        f();
+    }
+
+    fn with_empty_library<F: FnOnce()>(f: F) {
+        let _guard = lock_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+        // Do NOT initialize — library does not exist.
+        f();
+    }
+
+    // ── tool_status ──────────────────────────────────────────────────
+
+    #[test]
+    fn status_uninitialized_reports_false() {
+        with_empty_library(|| {
+            let resp = tool_status().expect("status");
+            assert!(!resp.initialized);
+            assert!(resp.stats.is_none());
+        });
+    }
+
+    #[test]
+    fn status_initialized_reports_stats() {
+        with_populated_library(|| {
+            let resp = tool_status().expect("status");
+            assert!(resp.initialized);
+            let stats = resp.stats.expect("stats present");
+            assert!(stats.total_keys > 0);
+            assert_eq!(stats.total_sessions, 1);
+        });
+    }
+
+    // ── tool_search ──────────────────────────────────────────────────
+
+    #[test]
+    fn search_uninitialized_returns_empty_with_message() {
+        with_empty_library(|| {
+            let resp = tool_search(LibrarySearchRequest {
+                query: "eigenform".to_string(),
+                limit: 10,
+            })
+            .expect("search");
+            assert_eq!(resp.count, 0);
+            assert!(resp.message.is_some());
+            assert!(resp.message.unwrap().contains("not initialized"));
+        });
+    }
+
+    #[test]
+    fn search_finds_pushed_content() {
+        with_populated_library(|| {
+            let resp = tool_search(LibrarySearchRequest {
+                query: "eigenform".to_string(),
+                limit: 10,
+            })
+            .expect("search");
+            assert!(resp.count > 0, "should find 'eigenform' in pushed event");
+            assert!(!resp.results.is_empty());
+            assert!(resp.results[0].score > 0.0);
+        });
+    }
+
+    #[test]
+    fn search_no_match_returns_empty() {
+        with_populated_library(|| {
+            let resp = tool_search(LibrarySearchRequest {
+                query: "zyxwvunonexistent".to_string(),
+                limit: 10,
+            })
+            .expect("search");
+            assert_eq!(resp.count, 0);
+        });
+    }
+
+    // ── tool_browse ──────────────────────────────────────────────────
+
+    #[test]
+    fn browse_uninitialized_returns_empty() {
+        with_empty_library(|| {
+            let resp = tool_browse(LibraryBrowseRequest {
+                prefix: "lib:".to_string(),
+                limit: 10,
+                offset: 0,
+            })
+            .expect("browse");
+            assert_eq!(resp.count, 0);
+            assert!(resp.message.is_some());
+        });
+    }
+
+    #[test]
+    fn browse_returns_session_records() {
+        with_populated_library(|| {
+            let resp = tool_browse(LibraryBrowseRequest {
+                prefix: "lib:session:".to_string(),
+                limit: 10,
+                offset: 0,
+            })
+            .expect("browse");
+            assert!(resp.count > 0, "should find session records");
+        });
+    }
+
+    // ── tool_sql ─────────────────────────────────────────────────────
+
+    #[test]
+    fn sql_rejects_non_select() {
+        let err = tool_sql(LibrarySqlRequest {
+            sql: "DELETE FROM library".to_string(),
+        });
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("read-only"));
+    }
+
+    #[test]
+    fn sql_select_uninitialized_returns_message() {
+        with_empty_library(|| {
+            let resp = tool_sql(LibrarySqlRequest {
+                sql: "SELECT * FROM sessions".to_string(),
+            })
+            .expect("sql");
+            assert!(resp.get("message").is_some());
+        });
+    }
+
+    #[test]
+    fn sql_select_initialized_returns_hint() {
+        with_populated_library(|| {
+            let resp = tool_sql(LibrarySqlRequest {
+                sql: "SELECT * FROM sessions".to_string(),
+            })
+            .expect("sql");
+            assert!(resp.get("hint").is_some());
+        });
+    }
+
+    // ── tool_session_lookup ──────────────────────────────────────────
+
+    #[test]
+    fn session_lookup_uninitialized() {
+        with_empty_library(|| {
+            let resp = tool_session_lookup(LibrarySessionLookupRequest {
+                session_id: "nonexistent".to_string(),
+            })
+            .expect("lookup");
+            assert!(!resp.found);
+            assert!(resp.message.is_some());
+        });
+    }
+
+    #[test]
+    fn session_lookup_finds_pushed_session() {
+        with_populated_library(|| {
+            let resp = tool_session_lookup(LibrarySessionLookupRequest {
+                session_id: "mcp-test-sess".to_string(),
+            })
+            .expect("lookup");
+            assert!(resp.found);
+            let session = resp.session.expect("session present");
+            assert_eq!(session.metadata.agent, "claude");
+        });
+    }
+
+    #[test]
+    fn session_lookup_missing_returns_not_found() {
+        with_populated_library(|| {
+            let resp = tool_session_lookup(LibrarySessionLookupRequest {
+                session_id: "does-not-exist".to_string(),
+            })
+            .expect("lookup");
+            assert!(!resp.found);
+            assert!(resp.session.is_none());
+        });
+    }
+
+    // ── tool_sessions ────────────────────────────────────────────────
+
+    #[test]
+    fn sessions_uninitialized_returns_empty() {
+        with_empty_library(|| {
+            let resp = tool_sessions().expect("sessions");
+            assert_eq!(resp.count, 0);
+            assert!(resp.message.is_some());
+        });
+    }
+
+    #[test]
+    fn sessions_lists_pushed() {
+        with_populated_library(|| {
+            let resp = tool_sessions().expect("sessions");
+            assert_eq!(resp.count, 1);
+            assert_eq!(resp.sessions[0].session_id, "mcp-test-sess");
+        });
+    }
+
+    // ── preview truncation ───────────────────────────────────────────
+
+    #[test]
+    fn search_result_preview_truncated_at_500() {
+        with_populated_library(|| {
+            // The search results truncate values > 500 chars.
+            let resp = tool_search(LibrarySearchRequest {
+                query: "claude".to_string(),
+                limit: 10,
+            })
+            .expect("search");
+            for result in &resp.results {
+                assert!(
+                    result.preview.len() <= 503, // 500 + "..."
+                    "preview should be truncated: len={}",
+                    result.preview.len()
+                );
+            }
+        });
+    }
+}

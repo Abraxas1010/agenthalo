@@ -4063,3 +4063,188 @@ async fn api_orchestrator_launch_and_task_shell_roundtrip() {
 
     let _ = std::fs::remove_file(&db_path);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Library API endpoints
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn library_status_returns_uninitialized_when_no_library() {
+    let _guard = lock_env();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+    let (state, _db_path) = test_state("lib_status_uninit");
+    let (status, body) = api_get(state, "/library/status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["initialized"], false);
+}
+
+#[tokio::test]
+async fn library_status_returns_stats_after_push() {
+    let _guard = lock_env();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+    let (state, db_path) = test_state("lib_status_init");
+    seed_session(&db_path, "lib-sess-1");
+
+    // Push.
+    let (s_push, _) = api_post(
+        state.clone(),
+        "/library/push",
+        json!({"session_id": "lib-sess-1"}),
+    )
+    .await;
+    assert_eq!(s_push, StatusCode::OK);
+
+    // Status.
+    let (status, body) = api_get(state, "/library/status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["initialized"], true);
+    assert!(body["stats"]["total_sessions"].as_u64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn library_sessions_empty_when_uninitialized() {
+    let _guard = lock_env();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+    let (state, _) = test_state("lib_sess_empty");
+    let (status, body) = api_get(state, "/library/sessions").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["initialized"], false);
+}
+
+#[tokio::test]
+async fn library_push_and_browse_roundtrip() {
+    let _guard = lock_env();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+    let (state, db_path) = test_state("lib_roundtrip");
+    seed_session(&db_path, "browse-sess-1");
+
+    // Push.
+    let (s_push, v_push) = api_post(
+        state.clone(),
+        "/library/push",
+        json!({"session_id": "browse-sess-1"}),
+    )
+    .await;
+    assert_eq!(s_push, StatusCode::OK, "push failed: {v_push}");
+
+    // Browse sessions.
+    let (s_browse, v_browse) =
+        api_get(state.clone(), "/library/browse?prefix=lib:session:&limit=10").await;
+    assert_eq!(s_browse, StatusCode::OK);
+    let records = v_browse["records"].as_array().expect("records array");
+    assert!(!records.is_empty(), "browse should return session records");
+
+    // Search for content.
+    let (s_search, v_search) = api_post(
+        state.clone(),
+        "/library/search",
+        json!({"query": "hello from test", "limit": 5}),
+    )
+    .await;
+    assert_eq!(s_search, StatusCode::OK);
+    let results = v_search["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "search should find pushed content");
+
+    // Session detail.
+    let (s_detail, v_detail) =
+        api_get(state.clone(), "/library/session/browse-sess-1").await;
+    assert_eq!(s_detail, StatusCode::OK, "session detail failed: {v_detail}");
+    assert_eq!(v_detail["metadata"]["agent"], "claude");
+
+    // Push log.
+    let (s_log, v_log) = api_get(state, "/library/push-log").await;
+    assert_eq!(s_log, StatusCode::OK);
+    let entries = v_log["entries"].as_array().expect("entries array");
+    assert!(!entries.is_empty(), "push log should have at least one entry");
+}
+
+#[tokio::test]
+async fn library_push_all_pushes_all_sessions() {
+    let _guard = lock_env();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+    let (state, db_path) = test_state("lib_push_all");
+    seed_session(&db_path, "all-sess-1");
+    seed_session(&db_path, "all-sess-2");
+
+    let (s, v) = api_post(state.clone(), "/library/push-all", json!({})).await;
+    assert_eq!(s, StatusCode::OK, "push-all failed: {v}");
+    assert!(v["pushed"].as_u64().unwrap() >= 2);
+
+    // Verify both sessions are in the library.
+    let (_, v_sessions) = api_get(state, "/library/sessions").await;
+    let sessions = v_sessions["sessions"].as_array().expect("sessions");
+    let ids: Vec<&str> = sessions
+        .iter()
+        .filter_map(|s| s["session_id"].as_str())
+        .collect();
+    assert!(ids.contains(&"all-sess-1"));
+    assert!(ids.contains(&"all-sess-2"));
+}
+
+#[tokio::test]
+async fn library_session_detail_404_for_missing() {
+    let _guard = lock_env();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+    let (state, db_path) = test_state("lib_404");
+    seed_session(&db_path, "real-sess");
+
+    // Push so library is initialized.
+    let _ = api_post(
+        state.clone(),
+        "/library/push",
+        json!({"session_id": "real-sess"}),
+    )
+    .await;
+
+    // Lookup non-existent.
+    let (s, _) = api_get(state, "/library/session/nonexistent-sess").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Worktree API endpoints
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn worktree_profiles_returns_default() {
+    let _guard = lock_env();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+    let (state, _) = test_state("wt_profiles");
+    let (status, body) = api_get(state, "/worktree/profiles").await;
+    assert_eq!(status, StatusCode::OK);
+    let profiles = body["profiles"].as_array().expect("profiles array");
+    assert!(profiles.iter().any(|p| p.as_str() == Some("default")));
+    assert!(body["active"].is_string());
+}
+
+#[tokio::test]
+async fn worktree_active_profile_returns_default_profile() {
+    let _guard = lock_env();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+    let (state, _) = test_state("wt_active");
+    let (status, body) = api_get(state, "/worktree/active-profile").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["profile_name"], "default");
+    assert_eq!(body["worktree_isolation"], false);
+}
+
+#[tokio::test]
+async fn worktree_list_returns_ok() {
+    let _guard = lock_env();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _home = EnvVarGuard::set("AGENTHALO_HOME", Some(dir.path().to_str().unwrap()));
+    let (state, _) = test_state("wt_list");
+    let (status, body) = api_get(state, "/worktree/list").await;
+    assert_eq!(status, StatusCode::OK);
+    // The response contains a "worktrees" array (may be empty or populated
+    // depending on whether cwd is a git repo with matching worktrees).
+    assert!(body["worktrees"].is_array());
+}

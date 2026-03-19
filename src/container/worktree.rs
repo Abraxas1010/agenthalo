@@ -684,4 +684,257 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(!is_git_repo(dir.path()));
     }
+
+    #[test]
+    fn readonly_injection_blocks_writes() {
+        let src = tempfile::tempdir().expect("src");
+        let wt = tempfile::tempdir().expect("wt");
+        let target = wt.path().join("injected");
+
+        std::fs::write(src.path().join("secret.txt"), b"do not modify").expect("write");
+
+        // Copy and set readonly.
+        copy_recursive(src.path(), &target).expect("copy");
+        set_readonly_recursive(&target);
+
+        // Verify write is denied.
+        let result = std::fs::write(target.join("secret.txt"), b"tampered");
+        assert!(result.is_err(), "write to readonly injection should fail");
+
+        // Verify content is still original.
+        restore_write_permissions(&target);
+        let content = std::fs::read_to_string(target.join("secret.txt")).expect("read");
+        assert_eq!(content, "do not modify");
+    }
+
+    #[test]
+    fn set_readonly_recursive_covers_nested_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir");
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(&sub).expect("mkdir");
+        std::fs::write(sub.join("file.txt"), b"test").expect("write");
+
+        set_readonly_recursive(dir.path());
+
+        // File should be read-only (0o400).
+        let file_mode = std::fs::metadata(sub.join("file.txt"))
+            .expect("meta")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o400, "file should be r-- (0o400)");
+
+        // Directory should be r-x (0o500).
+        let dir_mode = std::fs::metadata(&sub)
+            .expect("meta")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o500, "dir should be r-x (0o500)");
+
+        // Restore for cleanup.
+        restore_write_permissions(dir.path());
+    }
+
+    #[test]
+    fn restore_write_permissions_reenables_writes() {
+        let dir = tempfile::tempdir().expect("dir");
+        std::fs::write(dir.path().join("file.txt"), b"test").expect("write");
+        set_readonly_recursive(dir.path());
+
+        // Cannot write.
+        assert!(std::fs::write(dir.path().join("file.txt"), b"x").is_err());
+
+        // Restore.
+        restore_write_permissions(dir.path());
+
+        // Can write again.
+        std::fs::write(dir.path().join("file.txt"), b"restored").expect("write after restore");
+        let content = std::fs::read_to_string(dir.path().join("file.txt")).expect("read");
+        assert_eq!(content, "restored");
+    }
+
+    #[test]
+    fn verify_injections_detects_missing_target() {
+        let wt = tempfile::tempdir().expect("wt");
+        let info = WorktreeInfo {
+            path: wt.path().to_path_buf(),
+            session_id: "verify-test".to_string(),
+            branch: "test".to_string(),
+            created_at: 0,
+            repo_path: wt.path().to_path_buf(),
+            injections: vec![InjectionRecord {
+                source: std::path::PathBuf::from("/tmp/does_not_exist"),
+                target: "missing_target".to_string(),
+                mode: "readonly".to_string(),
+                source_hash: None,
+            }],
+        };
+        let manifest_path = wt.path().join(".agenthalo_manifest.json");
+        let manifest_json = serde_json::to_vec_pretty(&info).expect("serialize");
+        std::fs::write(&manifest_path, &manifest_json).expect("write manifest");
+
+        let violations = verify_injections(wt.path()).expect("verify");
+        assert!(!violations.is_empty());
+        assert_eq!(violations[0].kind, "missing");
+    }
+
+    #[test]
+    fn verify_injections_detects_writable_readonly() {
+        use std::os::unix::fs::PermissionsExt;
+        let wt = tempfile::tempdir().expect("wt");
+        let target = wt.path().join("injected.txt");
+        std::fs::write(&target, b"should be readonly").expect("write");
+        // Intentionally leave it writable.
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).expect("perms");
+
+        let info = WorktreeInfo {
+            path: wt.path().to_path_buf(),
+            session_id: "verify-perm-test".to_string(),
+            branch: "test".to_string(),
+            created_at: 0,
+            repo_path: wt.path().to_path_buf(),
+            injections: vec![InjectionRecord {
+                source: std::path::PathBuf::from("/tmp"),
+                target: "injected.txt".to_string(),
+                mode: "readonly".to_string(),
+                source_hash: None,
+            }],
+        };
+        let manifest_path = wt.path().join(".agenthalo_manifest.json");
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&info).expect("ser")).expect("write");
+
+        let violations = verify_injections(wt.path()).expect("verify");
+        assert!(
+            violations.iter().any(|v| v.kind == "writable"),
+            "should detect writable readonly injection"
+        );
+    }
+
+    #[test]
+    fn verify_injections_detects_hash_mismatch() {
+        let src = tempfile::tempdir().expect("src");
+        let wt = tempfile::tempdir().expect("wt");
+        let src_file = src.path().join("data.txt");
+        std::fs::write(&src_file, b"original content").expect("write");
+
+        let original_hash = hash_path(&src_file).expect("hash");
+
+        // Mutate source after recording hash.
+        std::fs::write(&src_file, b"mutated content").expect("mutate");
+
+        let target = wt.path().join("data.txt");
+        std::fs::write(&target, b"original content").expect("write target");
+
+        let info = WorktreeInfo {
+            path: wt.path().to_path_buf(),
+            session_id: "hash-test".to_string(),
+            branch: "test".to_string(),
+            created_at: 0,
+            repo_path: wt.path().to_path_buf(),
+            injections: vec![InjectionRecord {
+                source: src_file,
+                target: "data.txt".to_string(),
+                mode: "copy".to_string(),
+                source_hash: Some(original_hash),
+            }],
+        };
+        let manifest_path = wt.path().join(".agenthalo_manifest.json");
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&info).expect("ser")).expect("write");
+
+        let violations = verify_injections(wt.path()).expect("verify");
+        assert!(
+            violations.iter().any(|v| v.kind == "hash_mismatch"),
+            "should detect hash mismatch"
+        );
+    }
+
+    #[test]
+    fn scan_injected_skills_returns_none_when_absent() {
+        let dir = tempfile::tempdir().expect("dir");
+        let result = scan_injected_skills(dir.path()).expect("scan");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn scan_injected_skills_returns_value_when_present() {
+        let dir = tempfile::tempdir().expect("dir");
+        let skills_dir = dir.path().join(".agents/skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(
+            skills_dir.join("MANIFEST.json"),
+            br#"{"skills": ["proof-tree", "formal-proof"]}"#,
+        )
+        .expect("write");
+        let result = scan_injected_skills(dir.path()).expect("scan");
+        assert!(result.is_some());
+        let val = result.unwrap();
+        assert!(val.get("skills").is_some());
+    }
+
+    #[test]
+    fn scan_injected_mcp_tools_returns_none_when_absent() {
+        let dir = tempfile::tempdir().expect("dir");
+        let result = scan_injected_mcp_tools(dir.path()).expect("scan");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn scan_injected_mcp_tools_returns_value_when_present() {
+        let dir = tempfile::tempdir().expect("dir");
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            br#"{"mcpServers": {"test": {}}}"#,
+        )
+        .expect("write");
+        let result = scan_injected_mcp_tools(dir.path()).expect("scan");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn read_injected_instructions_reads_agents_md() {
+        let dir = tempfile::tempdir().expect("dir");
+        std::fs::write(dir.path().join("AGENTS.md"), b"# Test instructions").expect("write");
+        let result = read_injected_instructions(dir.path()).expect("read");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Test instructions"));
+    }
+
+    #[test]
+    fn read_injected_instructions_returns_none_when_absent() {
+        let dir = tempfile::tempdir().expect("dir");
+        let result = read_injected_instructions(dir.path()).expect("read");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn read_manifest_roundtrips() {
+        let dir = tempfile::tempdir().expect("dir");
+        let info = WorktreeInfo {
+            path: dir.path().to_path_buf(),
+            session_id: "roundtrip-test".to_string(),
+            branch: "master".to_string(),
+            created_at: 1234567890,
+            repo_path: dir.path().to_path_buf(),
+            injections: vec![InjectionRecord {
+                source: std::path::PathBuf::from("/tmp/test"),
+                target: "skills".to_string(),
+                mode: "readonly".to_string(),
+                source_hash: Some("abcdef1234567890".to_string()),
+            }],
+        };
+        let manifest_path = dir.path().join(".agenthalo_manifest.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&info).expect("serialize"),
+        )
+        .expect("write");
+
+        let loaded = read_manifest(dir.path()).expect("read manifest");
+        assert_eq!(loaded.session_id, "roundtrip-test");
+        assert_eq!(loaded.created_at, 1234567890);
+        assert_eq!(loaded.injections.len(), 1);
+        assert_eq!(loaded.injections[0].mode, "readonly");
+    }
 }
