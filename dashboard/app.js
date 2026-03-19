@@ -2658,46 +2658,25 @@ window.attestSessionByButton = function (btn) {
 // =============================================================================
 // PAGE: Configuration
 // =============================================================================
+// ---- Config sidebar+main state ----
+let __cfgActiveSection = localStorage.getItem("halo_config_section") || "auth";
+
 async function renderConfig() {
   content.innerHTML = '<div class="loading">Loading config...</div>';
   try {
     const cfg = await api("/config");
-    let crypto = {
-      locked: false,
-      migration_status: "unknown",
-      active_scopes: [],
-      password_protected: false,
-      bootstrap_mode: "required",
-    };
-    try {
-      crypto = await api("/crypto/status");
-    } catch (_e) {}
+    let crypto = { locked: false, migration_status: "unknown", active_scopes: [], password_protected: false, bootstrap_mode: "required" };
+    try { crypto = await api("/crypto/status"); } catch (_e) {}
     let agentsResp = { agents: [] };
-    try {
-      agentsResp = await api("/agents/list");
-    } catch (_e) {}
+    try { agentsResp = await api("/agents/list"); } catch (_e) {}
     let vaultResp = { keys: [] };
     let vaultKeysAuthRequired = false;
-    try {
-      vaultResp = await api("/vault/keys");
-    } catch (e) {
-      vaultKeysAuthRequired = Number(e && e.status) === 401;
-    }
+    try { vaultResp = await api("/vault/keys"); } catch (e) { vaultKeysAuthRequired = Number(e && e.status) === 401; }
     const vaultKeys = vaultResp.keys || [];
     let pmtToolsResp = { count: 0, tools: [] };
     let pmtToolsError = "";
-    try {
-      pmtToolsResp = await api("/agentpmt/tools");
-    } catch (e) {
-      pmtToolsError = String(
-        (e && e.message) || "failed to load AgentPMT tool catalog",
-      );
-    }
-    // Identity data for config page
-    let identityCfgForConfig = {};
-    let profileForConfig = {};
-    let tierCfgForConfig = {};
-    let genesisForConfig = {};
+    try { pmtToolsResp = await api("/agentpmt/tools"); } catch (e) { pmtToolsError = String((e && e.message) || "failed to load AgentPMT tool catalog"); }
+    let identityCfgForConfig = {}, profileForConfig = {}, tierCfgForConfig = {}, genesisForConfig = {};
     try { identityCfgForConfig = await api("/identity/status") || {}; } catch (_e) {}
     try { profileForConfig = await api("/profile") || {}; } catch (_e) {}
     try { tierCfgForConfig = await api("/identity/tier") || {}; } catch (_e) {}
@@ -2717,536 +2696,289 @@ async function renderConfig() {
     const cfgLedgerSigned = !!identityCfgForConfig.identity_ledger_fully_signed;
     const cfgLedgerEntries = identityCfgForConfig.identity_ledger_entry_count || 0;
 
-    content.innerHTML = `
-      <div class="config-page">
-      <div class="page-title config-page-title">Configuration</div>
-      <div class="config-page-subtitle">Provider health, operator controls, model runtime, and ledger-adjacent infrastructure in one surface.</div>
-      <div class="config-quicknav">
-        <button class="config-quicknav-chip" data-target="config-auth">🔐 Auth</button>
-        <button class="config-quicknav-chip" data-target="config-identity">🪪 Identity</button>
-        <button class="config-quicknav-chip" data-target="config-security">🛡 Security</button>
-        <button class="config-quicknav-chip" data-target="config-agents">🤖 Agents</button>
-        <button class="config-quicknav-chip" data-target="config-payments">💸 Payments</button>
-        <button class="config-quicknav-chip" data-target="config-services">🔑 Services</button>
-        <button class="config-quicknav-chip" data-target="config-models">🖥 Models</button>
-        <button class="config-quicknav-chip" data-target="config-paths">📁 Paths</button>
-        <button class="config-quicknav-chip" data-target="config-integrations">🔌 Integrations</button>
-        <button class="config-quicknav-chip" data-target="config-funding">💰 Funding</button>
-      </div>
+    // ---- Section definitions with status indicators ----
+    const sections = [
+      { id: "auth", icon: "\uD83D\uDD10", label: "Authentication", status: cfg.authentication.authenticated ? "ok" : "warn" },
+      { id: "identity", icon: "\uD83E\uDEAA", label: "Identity", status: cfgDeviceOk && cfgNetworkOk && cfgGenesisComplete ? "ok" : "warn" },
+      { id: "security", icon: "\uD83D\uDEE1", label: "Crypto Lock", status: crypto.locked ? "warn" : "ok" },
+      { id: "agents", icon: "\uD83E\uDD16", label: "Agents", status: (agentsResp.agents || []).length > 0 ? "ok" : "muted" },
+      { id: "payments", icon: "\uD83D\uDCB8", label: "Payments", status: cfg.x402.enabled ? "ok" : "muted" },
+      { id: "services", icon: "\uD83D\uDD11", label: "API Keys", status: vaultKeys.some(k => k.configured) ? "ok" : "warn" },
+      { id: "models", icon: "\uD83D\uDDA5", label: "Local Models", status: "defer" },
+      { id: "paths", icon: "\uD83D\uDCC1", label: "Paths", status: "ok" },
+      { id: "integrations", icon: "\uD83D\uDD0C", label: "Integrations", status: "muted" },
+      { id: "funding", icon: "\uD83D\uDCB0", label: "Funding", status: "muted" },
+    ];
 
-      <section id="config-auth" class="config-section-card">
-      <div class="config-section-heading">
-        <div class="config-section-icon">🔐</div>
-        <div>
-          <div class="config-section-title">Authentication</div>
-          <div class="config-section-kicker">Operator identity and dashboard access posture</div>
+    // ---- Health summary counts ----
+    const healthOk = sections.filter(s => s.status === "ok").length;
+    const healthWarn = sections.filter(s => s.status === "warn").length;
+    const configuredKeys = vaultKeys.filter(k => k.configured).length;
+    const agentCount = (agentsResp.agents || []).length;
+
+    // ---- Build sidebar nav items ----
+    const sidebarHtml = sections.map(s => {
+      const dot = s.status === "ok" ? "cfg-dot-ok" : s.status === "warn" ? "cfg-dot-warn" : "cfg-dot-muted";
+      const active = __cfgActiveSection === s.id ? " is-active" : "";
+      return `<button class="cfg-nav-item${active}" data-cfg-nav="${esc(s.id)}">
+        <span class="cfg-nav-icon">${s.icon}</span>
+        <span class="cfg-nav-label">${esc(s.label)}</span>
+        <span class="cfg-dot ${dot}"></span>
+      </button>`;
+    }).join("");
+
+    // ---- Build section content based on active selection ----
+    const sec = __cfgActiveSection;
+    let sectionHtml = "";
+
+    if (sec === "auth") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83D\uDD10</div>
+          <div><div class="config-section-title">Authentication</div>
+          <div class="config-section-kicker">Operator identity and dashboard access posture</div></div>
         </div>
-      </div>
-      <div class="config-section-body">
-        <div class="config-row">
-          <div>
-            <div class="config-label">Status</div>
-            <div class="config-desc">Local mode (auth optional) or OAuth-authenticated (enforced mode)</div>
-          </div>
-          ${
-            cfg.authentication.authenticated
+        <div class="config-section-body">
+          <div class="config-row">
+            <div><div class="config-label">Status</div>
+            <div class="config-desc">Local mode (auth optional) or OAuth-authenticated (enforced mode)</div></div>
+            ${cfg.authentication.authenticated
               ? '<span class="badge badge-ok">Authenticated</span>'
-              : '<span class="badge badge-warn">Not Authenticated</span>'
-          }
+              : '<span class="badge badge-warn">Not Authenticated</span>'}
+          </div>
+        </div>`;
+    } else if (sec === "identity") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83E\uDEAA</div>
+          <div><div class="config-section-title">Identity</div>
+          <div class="config-section-kicker">Device anchors, network identity, agent address, genesis provenance, and DID</div></div>
         </div>
-      </div>
-      </section>
-
-      <section id="config-identity" class="config-section-card">
-      <div class="config-section-heading">
-        <div class="config-section-icon">🪪</div>
-        <div>
-          <div class="config-section-title">Identity</div>
-          <div class="config-section-kicker">Device anchors, network identity, agent address, genesis provenance, and DID</div>
+        <div class="config-section-body">
+          <div class="config-row"><div><div class="config-label">Profile</div><div class="config-desc">${cfgProfileName ? esc(cfgProfileName) : "Not set"}</div></div>
+            <span class="badge ${cfgProfileName ? "badge-ok" : "badge-muted"}">${cfgProfileName ? "Set" : "Unset"}</span></div>
+          <div class="config-row"><div><div class="config-label">Security Tier</div><div class="config-desc">${cfgTier ? esc(cfgTier) : "Not configured"}</div></div>
+            <span class="badge ${cfgTier ? "badge-ok" : "badge-muted"}">${cfgTier || "\u2014"}</span></div>
+          <div class="config-row"><div><div class="config-label">Device Identity</div><div class="config-desc">${cfgDeviceOk ? "Verified \u2014 hardware fingerprint collected" : "Not configured"}</div></div>
+            <span class="badge ${cfgDeviceOk ? "badge-ok" : "badge-warn"}">${cfgDeviceOk ? "Complete" : "Pending"}</span></div>
+          <div class="config-row"><div><div class="config-label">Network Identity</div><div class="config-desc">${cfgNetworkOk ? "Verified \u2014 network anchors collected" : "Not configured"}</div></div>
+            <span class="badge ${cfgNetworkOk ? "badge-ok" : "badge-warn"}">${cfgNetworkOk ? "Complete" : "Pending"}</span></div>
+          <div class="config-row"><div><div class="config-label">Agent Address (EVM)</div><div class="config-desc" style="font-size:10px">${cfgAgentAddr ? esc(String(cfgAgentAddr)) : "Not generated"}</div></div>
+            <span class="badge ${cfgAgentOk ? "badge-ok" : "badge-warn"}">${cfgAgentOk ? "Active" : "Pending"}</span></div>
         </div>
-      </div>
-      <div class="config-section-body">
-        <div class="config-row">
-          <div>
-            <div class="config-label">Profile</div>
-            <div class="config-desc">${cfgProfileName ? esc(cfgProfileName) : "Not set"}</div>
-          </div>
-          <span class="badge ${cfgProfileName ? "badge-ok" : "badge-muted"}">${cfgProfileName ? "Set" : "Unset"}</span>
+        <div class="cfg-subsection-label">Genesis Provenance</div>
+        <div class="config-section-body">
+          <div class="config-row"><div><div class="config-label">Genesis Ceremony</div><div class="config-desc">${cfgGenesisComplete ? "Completed" : "Not completed"}</div></div>
+            <span class="badge ${cfgGenesisComplete ? "badge-ok" : "badge-warn"}">${cfgGenesisComplete ? "Done" : "Pending"}</span></div>
+          ${cfgSeedHash ? `<div class="config-row"><div><div class="config-label">Seed Hash (SHA-256)</div><div class="config-desc" style="font-size:10px;font-family:var(--mono)">${esc(cfgSeedHash)}...</div></div></div>` : ""}
+          ${cfgDidUri ? `<div class="config-row"><div><div class="config-label">DID URI</div><div class="config-desc" style="font-size:10px;font-family:var(--mono);word-break:break-all">${esc(cfgDidUri)}</div></div></div>` : ""}
+          ${cfgCombinedEntropy ? `<div class="config-row"><div><div class="config-label">Combined Entropy</div><div class="config-desc" style="font-size:10px;font-family:var(--mono)">${esc(cfgCombinedEntropy)}...</div></div></div>` : ""}
+          ${cfgEntropySources.length ? cfgEntropySources.map(s => `<div class="config-row"><div><div class="config-label">${esc(String(s.name || s.source || "Source"))}</div><div class="config-desc" style="font-size:10px;font-family:var(--mono)">${esc(String(s.detail || s.pulse_id || s.round || s.id || ""))}</div></div><span class="badge badge-ok">Collected</span></div>`).join("") : ""}
+          <div class="config-row"><div><div class="config-label">Identity Ledger</div><div class="config-desc">${cfgLedgerSigned ? cfgLedgerEntries + " entries, fully signed" : cfgLedgerEntries > 0 ? cfgLedgerEntries + " entries" : "Empty"}</div></div>
+            <span class="badge ${cfgLedgerSigned ? "badge-ok" : cfgLedgerEntries > 0 ? "badge-warn" : "badge-muted"}">${cfgLedgerSigned ? "Signed" : "\u2014"}</span></div>
+        </div>`;
+    } else if (sec === "security") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83D\uDEE1</div>
+          <div><div class="config-section-title">Crypto Lock</div>
+          <div class="config-section-kicker">Session bootstrap mode, lock state, and active scopes</div></div>
         </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Security Tier</div>
-            <div class="config-desc">${cfgTier ? esc(cfgTier) : "Not configured"}</div>
-          </div>
-          <span class="badge ${cfgTier ? "badge-ok" : "badge-muted"}">${cfgTier || "—"}</span>
-        </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Device Identity</div>
-            <div class="config-desc">${cfgDeviceOk ? "Verified — hardware fingerprint collected" : "Not configured"}</div>
-          </div>
-          <span class="badge ${cfgDeviceOk ? "badge-ok" : "badge-warn"}">${cfgDeviceOk ? "Complete" : "Pending"}</span>
-        </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Network Identity</div>
-            <div class="config-desc">${cfgNetworkOk ? "Verified — network anchors collected" : "Not configured"}</div>
-          </div>
-          <span class="badge ${cfgNetworkOk ? "badge-ok" : "badge-warn"}">${cfgNetworkOk ? "Complete" : "Pending"}</span>
-        </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Agent Address (EVM)</div>
-            <div class="config-desc" style="font-size:10px">${cfgAgentAddr ? esc(String(cfgAgentAddr)) : "Not generated"}</div>
-          </div>
-          <span class="badge ${cfgAgentOk ? "badge-ok" : "badge-warn"}">${cfgAgentOk ? "Active" : "Pending"}</span>
-        </div>
-      </div>
-      <div class="config-section-body" style="margin-top:12px">
-        <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px">Genesis Provenance</div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Genesis Ceremony</div>
-            <div class="config-desc">${cfgGenesisComplete ? "Completed" : "Not completed"}</div>
-          </div>
-          <span class="badge ${cfgGenesisComplete ? "badge-ok" : "badge-warn"}">${cfgGenesisComplete ? "Done" : "Pending"}</span>
-        </div>
-        ${cfgSeedHash ? `
-        <div class="config-row">
-          <div>
-            <div class="config-label">Seed Hash (SHA-256)</div>
-            <div class="config-desc" style="font-size:10px;font-family:monospace">${esc(cfgSeedHash)}...</div>
-          </div>
-        </div>` : ""}
-        ${cfgDidUri ? `
-        <div class="config-row">
-          <div>
-            <div class="config-label">DID URI</div>
-            <div class="config-desc" style="font-size:10px;font-family:monospace;word-break:break-all">${esc(cfgDidUri)}</div>
-          </div>
-        </div>` : ""}
-        ${cfgCombinedEntropy ? `
-        <div class="config-row">
-          <div>
-            <div class="config-label">Combined Entropy</div>
-            <div class="config-desc" style="font-size:10px;font-family:monospace">${esc(cfgCombinedEntropy)}...</div>
-          </div>
-        </div>` : ""}
-        ${cfgEntropySources.length ? cfgEntropySources.map(s => `
-        <div class="config-row">
-          <div>
-            <div class="config-label">${esc(String(s.name || s.source || "Source"))}</div>
-            <div class="config-desc" style="font-size:10px;font-family:monospace">${esc(String(s.detail || s.pulse_id || s.round || s.id || ""))}</div>
-          </div>
-          <span class="badge badge-ok">Collected</span>
-        </div>`).join("") : ""}
-        <div class="config-row">
-          <div>
-            <div class="config-label">Identity Ledger</div>
-            <div class="config-desc">${cfgLedgerSigned ? cfgLedgerEntries + " entries, fully signed" : cfgLedgerEntries > 0 ? cfgLedgerEntries + " entries" : "Empty"}</div>
-          </div>
-          <span class="badge ${cfgLedgerSigned ? "badge-ok" : cfgLedgerEntries > 0 ? "badge-warn" : "badge-muted"}">${cfgLedgerSigned ? "Signed" : "—"}</span>
-        </div>
-      </div>
-      </section>
-
-      <section id="config-security" class="config-section-card">
-      <div class="config-section-heading">
-        <div class="config-section-icon">🛡</div>
-        <div>
-          <div class="config-section-title">Crypto Lock</div>
-          <div class="config-section-kicker">Session bootstrap mode, lock state, and active scopes</div>
-        </div>
-      </div>
-      <div class="config-section-body">
-        <div class="config-row">
-          <div>
-            <div class="config-label">Session</div>
-            <div class="config-desc">
-              ${crypto.locked ? "Locked" : "Unlocked"}
-              · status: ${esc(String(crypto.migration_status || "unknown"))}
-              · bootstrap: ${esc(String(crypto.bootstrap_mode || "required"))}
-              · scopes: ${esc((crypto.active_scopes || []).join(", ") || "none")}
-            </div>
-          </div>
-          <div style="display:flex;gap:6px;align-items:center">
-            <button class="btn btn-sm" onclick="forceCryptoLock()">Lock Now</button>
-            ${
-              !crypto.password_protected
+        <div class="config-section-body">
+          <div class="config-row"><div><div class="config-label">Lock State</div><div class="config-desc">${crypto.locked ? "Locked" : "Unlocked"}</div></div>
+            <span class="badge ${crypto.locked ? "badge-warn" : "badge-ok"}">${crypto.locked ? "Locked" : "Unlocked"}</span></div>
+          <div class="config-row"><div><div class="config-label">Migration</div><div class="config-desc">${esc(String(crypto.migration_status || "unknown"))}</div></div></div>
+          <div class="config-row"><div><div class="config-label">Bootstrap Mode</div><div class="config-desc">${esc(String(crypto.bootstrap_mode || "required"))}</div></div></div>
+          <div class="config-row"><div><div class="config-label">Active Scopes</div><div class="config-desc">${esc((crypto.active_scopes || []).join(", ") || "none")}</div></div></div>
+          <div class="config-row"><div><div class="config-label">Actions</div><div class="config-desc">Lock or unlock the crypto session</div></div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <button class="btn btn-sm" onclick="forceCryptoLock()">Lock Now</button>
+              ${!crypto.password_protected
                 ? '<button class="btn btn-sm btn-primary" onclick="showCryptoSetupPrompt()">Set Password</button>'
-                : '<button class="btn btn-sm btn-primary" onclick="ensureCryptoUnlocked(true)">Unlock</button>'
-            }
-          </div>
-        </div>
-      </div>
-      </section>
-
-      <section id="config-agents" class="config-section-card">
-      <div class="config-section-heading">
-        <div class="config-section-icon">🤖</div>
-        <div>
-          <div class="config-section-title">Authorized Agents</div>
-          <div class="config-section-kicker">Scoped credentials, local wrappers, and runtime delegation</div>
-        </div>
-      </div>
-      <div class="config-section-body">
-        <div class="config-row">
-          <div>
-            <div class="config-label">Agent Credentials</div>
-            <div class="config-desc">Per-scope ML-KEM credentials for autonomous agents.</div>
-          </div>
-          <button class="btn btn-sm btn-primary" onclick="authorizeAgentPrompt()">Authorize New Agent</button>
-        </div>
-        ${
-          (agentsResp.agents || []).length
-            ? (agentsResp.agents || [])
-                .map(
-                  (agent) => `
-          <div class="config-row">
-            <div>
-              <div class="config-label">${esc(agent.label || agent.agent_id)}</div>
-              <div class="config-desc">
-                ${esc(agent.agent_id)} · scopes: ${esc((agent.scopes || []).join(", "))}
-                ${agent.expires_at ? " · expires: " + esc(new Date(agent.expires_at * 1000).toISOString()) : ""}
-              </div>
-            </div>
-            <button class="btn btn-sm" onclick="revokeAgent('${esc(agent.agent_id)}')">Revoke</button>
-          </div>
-        `,
-                )
-                .join("")
-            : `
-          <div class="config-row">
-            <div>
-              <div class="config-label">No authorized agents</div>
-              <div class="config-desc">Create an agent credential to enable scoped autonomous access.</div>
+                : '<button class="btn btn-sm btn-primary" onclick="ensureCryptoUnlocked(true)">Unlock</button>'}
             </div>
           </div>
-        `
-        }
-      </div>
-      <div class="config-section-body" style="margin-top:12px">
-        ${["claude", "codex", "gemini"]
-          .map(
-            (agent) => `
-          <div class="config-row">
-            <div>
-              <div class="config-label">${agent.charAt(0).toUpperCase() + agent.slice(1)}</div>
-              <div class="config-desc">Wrap ${agent} commands through H.A.L.O.</div>
-            </div>
-            <button class="toggle ${cfg.wrapping[agent] ? "on" : ""}"
-              onclick="toggleWrap('${agent}', ${!cfg.wrapping[agent]})"></button>
-          </div>
-        `,
-          )
-          .join("")}
-        <div class="config-row">
-          <div class="config-desc">Shell RC: ${esc(cfg.wrapping.shell_rc)}</div>
+        </div>`;
+    } else if (sec === "agents") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83E\uDD16</div>
+          <div><div class="config-section-title">Authorized Agents</div>
+          <div class="config-section-kicker">Scoped credentials, local wrappers, and runtime delegation</div></div>
         </div>
-      </div>
-      </section>
-
-      <section id="config-payments" class="config-section-card">
-      <div class="config-section-heading">
-        <div class="config-section-icon">💸</div>
-        <div>
-          <div class="config-section-title">Payments</div>
-          <div class="config-section-kicker">Stablecoin settlement, tool budgets, and third-party execution</div>
+        <div class="config-section-body">
+          <div class="config-row"><div><div class="config-label">Agent Credentials</div><div class="config-desc">Per-scope ML-KEM credentials for autonomous agents.</div></div>
+            <button class="btn btn-sm btn-primary" onclick="authorizeAgentPrompt()">Authorize New Agent</button></div>
+          ${(agentsResp.agents || []).length
+            ? (agentsResp.agents || []).map(agent => `<div class="config-row"><div><div class="config-label">${esc(agent.label || agent.agent_id)}</div><div class="config-desc">${esc(agent.agent_id)} \u00B7 scopes: ${esc((agent.scopes || []).join(", "))}${agent.expires_at ? " \u00B7 expires: " + esc(new Date(agent.expires_at * 1000).toISOString()) : ""}</div></div><button class="btn btn-sm" onclick="revokeAgent('${esc(agent.agent_id)}')">Revoke</button></div>`).join("")
+            : `<div class="config-row"><div><div class="config-label">No authorized agents</div><div class="config-desc">Create an agent credential to enable scoped autonomous access.</div></div></div>`}
         </div>
-      </div>
-      <div class="config-section-body">
-        <div class="config-row">
-          <div>
-            <div class="config-label">x402direct Integration</div>
-            <div class="config-desc">Stablecoin payments for AI agents</div>
-          </div>
-          <button class="toggle ${cfg.x402.enabled ? "on" : ""}"
-            onclick="toggleX402(${!cfg.x402.enabled})"></button>
+        <div class="cfg-subsection-label">CLI Wrappers</div>
+        <div class="config-section-body">
+          ${["claude", "codex", "gemini"].map(agent => `<div class="config-row"><div><div class="config-label">${agent.charAt(0).toUpperCase() + agent.slice(1)}</div><div class="config-desc">Wrap ${agent} commands through H.A.L.O.</div></div><button class="toggle ${cfg.wrapping[agent] ? "on" : ""}" onclick="toggleWrap('${agent}', ${!cfg.wrapping[agent]})"></button></div>`).join("")}
+          <div class="config-row"><div><div class="config-desc">Shell RC: ${esc(cfg.wrapping.shell_rc)}</div></div></div>
+        </div>`;
+    } else if (sec === "payments") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83D\uDCB8</div>
+          <div><div class="config-section-title">Payments</div>
+          <div class="config-section-kicker">Stablecoin settlement, tool budgets, and third-party execution</div></div>
         </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Network</div>
-            <div class="config-desc">${cfg.x402.network}</div>
-          </div>
-          <span class="badge badge-info">${cfg.x402.network}</span>
+        <div class="cfg-subsection-label">x402direct</div>
+        <div class="config-section-body">
+          <div class="config-row"><div><div class="config-label">x402direct Integration</div><div class="config-desc">Stablecoin payments for AI agents</div></div>
+            <button class="toggle ${cfg.x402.enabled ? "on" : ""}" onclick="toggleX402(${!cfg.x402.enabled})"></button></div>
+          <div class="config-row"><div><div class="config-label">Network</div><div class="config-desc">${cfg.x402.network}</div></div>
+            <span class="badge badge-info">${cfg.x402.network}</span></div>
+          <div class="config-row"><div><div class="config-label">Max Auto-Approve</div><div class="config-desc">${fmtCost(cfg.x402.max_auto_approve_usd)} USDC</div></div></div>
         </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Max Auto-Approve</div>
-            <div class="config-desc">${fmtCost(cfg.x402.max_auto_approve_usd)} USDC</div>
-          </div>
+        <div class="cfg-subsection-label">AgentPMT Proxy</div>
+        <div class="config-section-body">
+          <div class="config-row"><div><div class="config-label">Tool Proxy</div><div class="config-desc">Third-party tool access via AgentPMT</div></div>
+            <span class="badge ${cfg.agentpmt.enabled ? "badge-ok" : "badge-muted"}">${cfg.agentpmt.enabled ? "Enabled" : "Disabled"}</span></div>
+          <div class="config-row"><div><div class="config-label">Budget Tag</div><div class="config-desc">${esc(cfg.agentpmt.budget_tag || "(none)")}</div></div></div>
+          <div class="config-row"><div><div class="config-label">MCP Endpoint</div><div class="config-desc" style="font-size:10px">${esc(cfg.agentpmt.endpoint || "(default)")}</div></div></div>
+          <div class="config-row"><div><div class="config-label">Credential Status</div><div class="config-desc">${cfg.agentpmt.auth_configured ? "Configured" : "Missing"}</div></div>
+            <span class="badge ${cfg.agentpmt.auth_configured ? "badge-ok" : "badge-warn"}">${cfg.agentpmt.auth_configured ? "Ready" : "Needs Key"}</span></div>
+          <div class="config-row"><div><div class="config-label">Tool Catalog</div><div class="config-desc">${Number(pmtToolsResp.count || 0)} tools discovered (${esc(String(pmtToolsResp.source || "cache"))}${pmtToolsResp.stale ? ", stale" : ", fresh"})${pmtToolsError ? '<br><span style="color:var(--red)">Error: ' + esc(pmtToolsError) + "</span>" : ""}</div></div>
+            <button class="btn btn-sm" onclick="refreshAgentPmtCatalog()">Refresh</button></div>
         </div>
-      </div>
-      <div class="config-section-body" style="margin-top:12px">
-        <div class="config-row">
-          <div>
-            <div class="config-label">Tool Proxy</div>
-            <div class="config-desc">Third-party tool access via AgentPMT</div>
-          </div>
-          <span class="badge ${cfg.agentpmt.enabled ? "badge-ok" : "badge-muted"}">
-            ${cfg.agentpmt.enabled ? "Enabled" : "Disabled"}</span>
+        <div class="cfg-subsection-label">On-Chain &amp; Addons</div>
+        <div class="config-section-body">
+          <div class="config-row"><div><div class="config-label">Chain</div><div class="config-desc">${esc(cfg.onchain.chain_name || "Not configured")} (ID: ${esc(cfg.onchain.chain_id)})</div></div></div>
+          <div class="config-row"><div><div class="config-label">Contract</div><div class="config-desc" style="font-size:10px">${esc(cfg.onchain.contract_address || "(not deployed)")}</div></div></div>
+          <div class="config-row"><div><div class="config-label">p2pclaw</div><div class="config-desc">Marketplace integration</div></div>
+            <span class="badge ${cfg.addons.p2pclaw ? "badge-ok" : "badge-muted"}">${cfg.addons.p2pclaw ? "Enabled" : "Disabled"}</span></div>
+          <div class="config-row"><div><div class="config-label">AgentPMT Workflows</div><div class="config-desc">Challenge and workflow extensions</div></div>
+            <span class="badge ${cfg.addons.agentpmt_workflows ? "badge-ok" : "badge-muted"}">${cfg.addons.agentpmt_workflows ? "Enabled" : "Disabled"}</span></div>
+        </div>`;
+    } else if (sec === "services") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83D\uDD11</div>
+          <div><div class="config-section-title">API Keys &amp; Services</div>
+          <div class="config-section-kicker">Provider readiness, status indicators, and service controls</div></div>
         </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Budget Tag</div>
-            <div class="config-desc">${esc(cfg.agentpmt.budget_tag || "(none)")}</div>
-          </div>
-        </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">MCP Endpoint</div>
-            <div class="config-desc" style="font-size:10px">${esc(cfg.agentpmt.endpoint || "(default)")}</div>
-          </div>
-        </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Credential Status</div>
-            <div class="config-desc">${cfg.agentpmt.auth_configured ? "Configured" : "Missing"}</div>
-          </div>
-          <span class="badge ${cfg.agentpmt.auth_configured ? "badge-ok" : "badge-warn"}">
-            ${cfg.agentpmt.auth_configured ? "Ready" : "Needs Key"}</span>
-        </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Tool Catalog</div>
-            <div class="config-desc">
-              ${Number(pmtToolsResp.count || 0)} tools discovered
-              (${esc(String(pmtToolsResp.source || "cache"))}${pmtToolsResp.stale ? ", stale" : ", fresh"})
-            </div>
-            ${
-              pmtToolsResp.refresh_attempted
-                ? `<div class="config-desc" style="font-size:10px">Live refresh attempted this request</div>`
-                : ""
-            }
-            ${pmtToolsError ? `<div class="config-desc" style="color:var(--danger);font-size:10px">Catalog error: ${esc(pmtToolsError)}</div>` : ""}
-          </div>
-          <div style="display:flex;gap:6px;align-items:center">
-            <button class="btn btn-sm" onclick="refreshAgentPmtCatalog()">Refresh</button>
-          </div>
-        </div>
-        ${
-          Array.isArray(pmtToolsResp.tools) && pmtToolsResp.tools.length
-            ? `
-          <div class="config-row">
-            <div>
-              <div class="config-label">Tools</div>
-              <div class="config-desc" style="font-size:10px">
-                ${pmtToolsResp.tools
-                  .slice(0, 8)
-                  .map((t) => esc(String(t.name || "")))
-                  .join(", ")}
-                ${pmtToolsResp.tools.length > 8 ? ` ... (+${pmtToolsResp.tools.length - 8} more)` : ""}
-              </div>
-            </div>
-          </div>
-        `
-            : ""
-        }
-      </div>
-      <div class="config-section-body" style="margin-top:12px">
-        <div class="config-row">
-          <div>
-            <div class="config-label">Chain</div>
-            <div class="config-desc">${esc(cfg.onchain.chain_name || "Not configured")} (ID: ${esc(cfg.onchain.chain_id)})</div>
-          </div>
-        </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">Contract</div>
-            <div class="config-desc" style="font-size:10px">${esc(cfg.onchain.contract_address || "(not deployed)")}</div>
-          </div>
-        </div>
-      </div>
-      <div class="config-section-body" style="margin-top:12px">
-        <div class="config-row">
-          <div>
-            <div class="config-label">p2pclaw</div>
-            <div class="config-desc">Marketplace integration</div>
-          </div>
-          <span class="badge ${cfg.addons.p2pclaw ? "badge-ok" : "badge-muted"}">
-            ${cfg.addons.p2pclaw ? "Enabled" : "Disabled"}</span>
-        </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">AgentPMT Workflows</div>
-            <div class="config-desc">Challenge and workflow extensions</div>
-          </div>
-          <span class="badge ${cfg.addons.agentpmt_workflows ? "badge-ok" : "badge-muted"}">
-            ${cfg.addons.agentpmt_workflows ? "Enabled" : "Disabled"}</span>
-        </div>
-      </div>
-      </section>
-
-      <section id="config-services" class="config-section-card">
-      <div class="config-section-heading">
-        <div class="config-section-icon">🔑</div>
-        <div>
-          <div class="config-section-title">API Keys &amp; Services</div>
-          <div class="config-section-kicker">Provider readiness, status indicators, and service controls</div>
-        </div>
-      </div>
-      <div class="config-section-body">
-        ${
-          cfg.vault?.available
-            ? `
-          ${
-            vaultKeysAuthRequired
-              ? `
-            <div class="config-row">
-              <div>
-                <div class="config-label">Authentication required</div>
-                <div class="config-desc">Unlock sensitive controls first, then add provider API keys.</div>
-              </div>
-              <button class="btn btn-sm btn-primary" onclick="location.hash='#/setup'">Open Setup</button>
-            </div>
-          `
-              : ""
-          }
-          ${vaultKeys
-            .map((k) => {
-              const pi =
-                PROVIDER_INFO[String(k.provider || "").toLowerCase()] || {};
+        <div class="config-section-body">
+          ${cfg.vault?.available ? `
+            ${vaultKeysAuthRequired ? `<div class="config-row"><div><div class="config-label">Authentication required</div><div class="config-desc">Unlock sensitive controls first, then add provider API keys.</div></div><button class="btn btn-sm btn-primary" onclick="location.hash='#/setup'">Open Setup</button></div>` : ""}
+            ${vaultKeys.map(k => {
+              const pi = PROVIDER_INFO[String(k.provider || "").toLowerCase()] || {};
               const isRequired = pi.required;
               const desc = pi.description || "";
-              const catLabel =
-                pi.category === "storage"
-                  ? "Storage"
-                  : pi.category === "llm"
-                    ? "LLM"
-                    : pi.category === "tooling"
-                      ? "Tooling"
-                      : "";
-              return `
-            <div class="config-row config-provider-row">
-              <div>
-                <div class="config-label">
-                  ${esc(pi.name || k.provider)}
-                  ${isRequired ? '<span class="badge badge-warn" style="font-size:9px;margin-left:6px">REQUIRED</span>' : ""}
-                  ${catLabel ? '<span class="badge badge-info" style="font-size:9px;margin-left:4px">' + esc(catLabel) + "</span>" : ""}
-                </div>
-                <div class="config-desc">${esc(k.env_var)} · ${k.configured ? "Configured" : "Missing"}${k.tested ? " · Tested" : ""}</div>
-                ${desc ? '<div class="config-desc" style="font-size:10px;margin-top:2px">' + esc(desc) + "</div>" : ""}
-              </div>
-              <div style="display:flex;gap:6px;align-items:center">
-                <button class="btn btn-sm" onclick="vaultSetKey('${esc(k.provider)}','${esc(k.env_var)}')">Set Key</button>
-                <button class="btn btn-sm" onclick="vaultTestKey('${esc(k.provider)}')">Test</button>
-                <button class="btn btn-sm" onclick="vaultRemoveKey('${esc(k.provider)}')">Remove</button>
-              </div>
-            </div>
-            `;
-            })
-            .join("")}
-        `
-            : `
-          <div class="config-row">
-            <div>
-              <div class="config-label">Vault unavailable</div>
-              <div class="config-desc">Create/import a PQ wallet to enable encrypted API key storage.</div>
-            </div>
-            <button class="btn btn-sm btn-primary" onclick="location.hash='#/setup'">Open Setup</button>
-          </div>
-        `
-        }
-      </div>
-      </section>
-
-      <section id="config-paths" class="config-section-card">
-      <div class="config-section-heading">
-        <div class="config-section-icon">📁</div>
-        <div>
-          <div class="config-section-title">Paths</div>
-          <div class="config-section-kicker">Filesystem anchors and local materialized state</div>
+              const catLabel = pi.category === "storage" ? "Storage" : pi.category === "llm" ? "LLM" : pi.category === "tooling" ? "Tooling" : "";
+              return `<div class="config-row config-provider-row"><div><div class="config-label">${esc(pi.name || k.provider)}${isRequired ? ' <span class="badge badge-warn" style="font-size:9px;margin-left:6px">REQUIRED</span>' : ""}${catLabel ? ' <span class="badge badge-info" style="font-size:9px;margin-left:4px">' + esc(catLabel) + "</span>" : ""}</div><div class="config-desc">${esc(k.env_var)} \u00B7 ${k.configured ? "Configured" : "Missing"}${k.tested ? " \u00B7 Tested" : ""}</div>${desc ? '<div class="config-desc" style="font-size:10px;margin-top:2px">' + esc(desc) + "</div>" : ""}</div><div style="display:flex;gap:6px;align-items:center"><button class="btn btn-sm" onclick="vaultSetKey('${esc(k.provider)}','${esc(k.env_var)}')">Set Key</button><button class="btn btn-sm" onclick="vaultTestKey('${esc(k.provider)}')">Test</button><button class="btn btn-sm" onclick="vaultRemoveKey('${esc(k.provider)}')">Remove</button></div></div>`;
+            }).join("")}
+          ` : `<div class="config-row"><div><div class="config-label">Vault unavailable</div><div class="config-desc">Create/import a PQ wallet to enable encrypted API key storage.</div></div><button class="btn btn-sm btn-primary" onclick="location.hash='#/setup'">Open Setup</button></div>`}
+        </div>`;
+    } else if (sec === "models") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83D\uDDA5</div>
+          <div><div class="config-section-title">Local Models</div>
+          <div class="config-section-kicker">Runtime inventory, backend status, and operator controls</div></div>
         </div>
-      </div>
-      <div class="config-section-body">
-        <div class="config-row"><div><div class="config-label">Home</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.home)}</div></div></div>
-        <div class="config-row"><div><div class="config-label">Database</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.db)}</div></div></div>
-        <div class="config-row"><div><div class="config-label">PQ Wallet</div><div class="config-desc">${cfg.pq_wallet ? "Present (ML-DSA-65)" : "Not created"}</div></div></div>
-      </div>
-      </section>
-
-      <section id="config-integrations" class="config-section-card">
-      <div class="config-section-heading">
-        <div class="config-section-icon">🔌</div>
-        <div>
-          <div class="config-section-title">Optional Integrations</div>
-          <div class="config-section-kicker">Storage, direct LLM keys, and additional tooling</div>
+        <div id="cfg-models-mount" class="config-section-body">
+          <div class="config-row"><div><div class="config-desc">Loading model status...</div></div></div>
+        </div>`;
+    } else if (sec === "paths") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83D\uDCC1</div>
+          <div><div class="config-section-title">Paths</div>
+          <div class="config-section-kicker">Filesystem anchors and local materialized state</div></div>
         </div>
-      </div>
-      <div class="config-section-body">
-        ${(() => {
-          const optLLM = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "llm");
-          const optStorage = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "storage");
-          const optTooling = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "tooling");
-          const keyStatus = {};
-          vaultKeys.forEach(k => { keyStatus[String(k.provider || "").toLowerCase()] = k; });
-          function ps(provider) { const v = keyStatus[provider]; if (!v) return { configured: false, tested: false }; return { configured: !!v.configured, tested: !!v.tested }; }
-          function sb(provider) { const s = ps(provider); if (s.tested) return '<span class="badge badge-ok">Verified</span>'; if (s.configured) return '<span class="badge badge-warn">Configured</span>'; return '<span class="badge badge-muted">Not configured</span>'; }
-          function pc(provider) { const info = PROVIDER_INFO[provider] || { name: provider, envVar: providerDefaultEnv(provider), keyUrl: "#", description: "" }; const s = ps(provider); const dl = info.keyUrl && info.keyUrl !== "#" ? '<a class="btn btn-sm" href="' + esc(info.keyUrl) + '" target="_blank" rel="noopener noreferrer">Get Key</a>' : ""; return '<div class="config-row" style="flex-wrap:wrap"><div style="flex:1;min-width:180px"><div class="config-label">' + esc(info.name) + '</div><div class="config-desc" style="font-size:10px">' + esc(info.envVar) + '</div>' + (info.description ? '<div class="config-desc">' + esc(info.description) + '</div>' : '') + '</div><div style="display:flex;gap:6px;align-items:center">' + sb(provider) + dl + '<button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="' + esc(provider) + '">Set Key</button>' + (s.configured ? '<button class="btn btn-sm setup-provider-test-btn" data-provider="' + esc(provider) + '">Test</button>' : '') + (s.configured ? '<button class="btn btn-sm setup-provider-disconnect-btn" data-provider="' + esc(provider) + '" title="Remove this key">Disconnect</button>' : '') + '</div></div>'; }
-          let html = "";
-          if (optStorage.length) { html += '<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px">Immutable Storage</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">IPFS-based storage for agent traces and attestations.</div>' + optStorage.map(p => pc(p)).join(""); }
-          if (optLLM.length) { html += '<div style="font-size:13px;font-weight:700;color:var(--accent);margin-top:14px;margin-bottom:6px">Direct LLM Keys</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Operator-side diagnostics and fallback.</div>' + optLLM.map(p => pc(p)).join(""); }
-          if (optTooling.length) { html += '<div style="font-size:13px;font-weight:700;color:var(--accent);margin-top:14px;margin-bottom:6px">Additional Tools</div>' + optTooling.map(p => pc(p)).join(""); }
-          return html;
-        })()}
-      </div>
-      </section>
-
-      <section id="config-funding" class="config-section-card">
-      <div class="config-section-heading">
-        <div class="config-section-icon">💰</div>
-        <div>
-          <div class="config-section-title">Funding &amp; Monetization</div>
-          <div class="config-section-kicker">Verified channels for customer balance top-ups</div>
+        <div class="config-section-body">
+          <div class="config-row"><div><div class="config-label">Home</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.home)}</div></div></div>
+          <div class="config-row"><div><div class="config-label">Database</div><div class="config-desc" style="font-size:10px">${esc(cfg.paths.db)}</div></div></div>
+          <div class="config-row"><div><div class="config-label">PQ Wallet</div><div class="config-desc">${cfg.pq_wallet ? "Present (ML-DSA-65)" : "Not created"}</div></div></div>
+        </div>`;
+    } else if (sec === "integrations") {
+      const optLLM = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "llm");
+      const optStorage = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "storage");
+      const optTooling = Object.keys(PROVIDER_INFO).filter(p => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "tooling");
+      const keyStatus = {};
+      vaultKeys.forEach(k => { keyStatus[String(k.provider || "").toLowerCase()] = k; });
+      function ps(provider) { const v = keyStatus[provider]; if (!v) return { configured: false, tested: false }; return { configured: !!v.configured, tested: !!v.tested }; }
+      function sb(provider) { const s = ps(provider); if (s.tested) return '<span class="badge badge-ok">Verified</span>'; if (s.configured) return '<span class="badge badge-warn">Configured</span>'; return '<span class="badge badge-muted">Not configured</span>'; }
+      function pc(provider) { const info = PROVIDER_INFO[provider] || { name: provider, envVar: providerDefaultEnv(provider), keyUrl: "#", description: "" }; const s = ps(provider); const dl = info.keyUrl && info.keyUrl !== "#" ? '<a class="btn btn-sm" href="' + esc(info.keyUrl) + '" target="_blank" rel="noopener noreferrer">Get Key</a>' : ""; return '<div class="config-row" style="flex-wrap:wrap"><div style="flex:1;min-width:180px"><div class="config-label">' + esc(info.name) + '</div><div class="config-desc" style="font-size:10px">' + esc(info.envVar) + '</div>' + (info.description ? '<div class="config-desc">' + esc(info.description) + '</div>' : '') + '</div><div style="display:flex;gap:6px;align-items:center">' + sb(provider) + dl + '<button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="' + esc(provider) + '">Set Key</button>' + (s.configured ? '<button class="btn btn-sm setup-provider-test-btn" data-provider="' + esc(provider) + '">Test</button>' : '') + (s.configured ? '<button class="btn btn-sm setup-provider-disconnect-btn" data-provider="' + esc(provider) + '" title="Remove this key">Disconnect</button>' : '') + '</div></div>'; }
+      let intHtml = "";
+      if (optStorage.length) { intHtml += '<div class="cfg-subsection-label">Immutable Storage</div><div class="config-section-body">' + optStorage.map(p => pc(p)).join("") + '</div>'; }
+      if (optLLM.length) { intHtml += '<div class="cfg-subsection-label">Direct LLM Keys</div><div class="config-section-body">' + optLLM.map(p => pc(p)).join("") + '</div>'; }
+      if (optTooling.length) { intHtml += '<div class="cfg-subsection-label">Additional Tools</div><div class="config-section-body">' + optTooling.map(p => pc(p)).join("") + '</div>'; }
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83D\uDD0C</div>
+          <div><div class="config-section-title">Optional Integrations</div>
+          <div class="config-section-kicker">Storage, direct LLM keys, and additional tooling</div></div>
         </div>
-      </div>
-      <div class="config-section-body">
-        <div id="config-funding-balance" class="card-grid" style="margin-bottom:8px"></div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">AgentPMT Token Purchase</div>
-            <div class="config-desc">Customers buy tokens at AgentPMT.com. Signed receipts verified via HMAC-SHA256.</div>
-          </div>
+        ${intHtml}`;
+    } else if (sec === "funding") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83D\uDCB0</div>
+          <div><div class="config-section-title">Funding &amp; Monetization</div>
+          <div class="config-section-kicker">Verified channels for customer balance top-ups</div></div>
         </div>
-        <div class="config-row">
-          <div>
-            <div class="config-label">x402direct (USDC on Base L2)</div>
-            <div class="config-desc">Direct USDC stablecoin payment. Transaction hash verified on-chain.</div>
-          </div>
+        <div id="config-funding-balance" class="card-grid" style="margin:12px 0"></div>
+        <div class="config-section-body">
+          <div class="config-row"><div><div class="config-label">AgentPMT Token Purchase</div><div class="config-desc">Customers buy tokens at AgentPMT.com. Signed receipts verified via HMAC-SHA256.</div></div></div>
+          <div class="config-row"><div><div class="config-label">x402direct (USDC on Base L2)</div><div class="config-desc">Direct USDC stablecoin payment. Transaction hash verified on-chain.</div></div></div>
         </div>
-        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;line-height:1.5;padding:0 4px">
+        <div style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.5;padding:0 4px">
           All tools, workflows, and agent configurations are accessible exclusively through AgentPMT MCP.
-        </div>
-      </div>
-      </section>
-      </div>
-    `;
+        </div>`;
+    }
 
-    const autoOpenProvider = localStorage.getItem("halo_setup_open_provider");
-    content
-      .querySelectorAll(".config-quicknav-chip[data-target]")
-      .forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const target = content.querySelector(
-            `#${CSS.escape(btn.dataset.target || "")}`,
-          );
-          if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-        });
+    content.innerHTML = `<div class="mcp-shell cfg-shell">
+      <aside class="card mcp-sidebar cfg-sidebar">
+        <div class="card-label">Configuration</div>
+        <div class="card-sub">System settings and operator controls</div>
+        <div class="cfg-nav">${sidebarHtml}</div>
+      </aside>
+      <section class="mcp-main">
+        <section class="card">
+          <div class="mcp-header">
+            <div><div class="page-title">${esc(sections.find(s => s.id === sec)?.label || "Configuration")}</div></div>
+            <div style="display:flex;gap:10px">
+              <div class="mcp-summary-card"><span>Healthy</span><strong>${healthOk}</strong></div>
+              <div class="mcp-summary-card"><span>Attention</span><strong style="color:${healthWarn > 0 ? "var(--yellow)" : "var(--accent)"}">${healthWarn}</strong></div>
+              <div class="mcp-summary-card"><span>API Keys</span><strong>${configuredKeys}/${vaultKeys.length}</strong></div>
+              <div class="mcp-summary-card"><span>Agents</span><strong>${agentCount}</strong></div>
+            </div>
+          </div>
+        </section>
+        <section class="config-section-card" style="margin-top:16px">
+          ${sectionHtml}
+        </section>
+      </section>
+    </div>`;
+
+    // ---- Sidebar navigation ----
+    content.querySelectorAll("[data-cfg-nav]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        __cfgActiveSection = btn.dataset.cfgNav;
+        localStorage.setItem("halo_config_section", __cfgActiveSection);
+        renderConfig();
       });
+    });
+
+    // ---- Auto-open provider from setup redirect ----
+    const autoOpenProvider = localStorage.getItem("halo_setup_open_provider");
     if (autoOpenProvider) {
       localStorage.removeItem("halo_setup_open_provider");
       const providerEntry = vaultKeys.find(
         (k) => String(k.provider || "").toLowerCase() === autoOpenProvider,
       );
       if (providerEntry) {
-        openVaultModal(
-          providerEntry.provider,
-          providerEntry.env_var || providerDefaultEnv(providerEntry.provider),
-        );
+        openVaultModal(providerEntry.provider, providerEntry.env_var || providerDefaultEnv(providerEntry.provider));
       }
     }
-    await injectConfigModelsSection();
-    await injectConfigFundingBalance();
+
+    // ---- Deferred section loading ----
+    if (sec === "models") { await injectConfigModelsSection(); }
+    if (sec === "funding") { await injectConfigFundingBalance(); }
   } catch (e) {
     content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
@@ -3258,123 +2990,43 @@ async function injectConfigFundingBalance() {
   try {
     const bal = await api("/x402/balance");
     mount.innerHTML = `
-      <div class="card"><span class="card-label">USDC Balance</span><strong>${esc(String(bal.balance_usdc ?? "—"))}</strong></div>
-      <div class="card"><span class="card-label">Address</span><strong style="font-family:var(--mono);font-size:10px;word-break:break-all">${esc(String(bal.address ?? "—"))}</strong></div>
-      <div class="card"><span class="card-label">Network</span><strong>${esc(String(bal.network ?? "—"))}</strong></div>`;
+      <div class="card"><span class="card-label">USDC Balance</span><strong>${esc(String(bal.balance_usdc ?? "\u2014"))}</strong></div>
+      <div class="card"><span class="card-label">Address</span><strong style="font-family:var(--mono);font-size:10px;word-break:break-all">${esc(String(bal.address ?? "\u2014"))}</strong></div>
+      <div class="card"><span class="card-label">Network</span><strong>${esc(String(bal.network ?? "\u2014"))}</strong></div>`;
   } catch (_) {
     mount.innerHTML = '<div class="card"><span class="card-label">Balance</span><strong class="muted">x402 not configured</strong></div>';
   }
 }
 
 async function injectConfigModelsSection() {
+  const mount = document.getElementById("cfg-models-mount");
+  if (!mount) return;
   try {
     const status = await api("/models/status");
-    const installed = Array.isArray(status?.backend?.installed_models)
-      ? status.backend.installed_models
-      : [];
-    const served = new Set(
-      Array.isArray(status?.backend?.served_models) ? status.backend.served_models : [],
-    );
-    const mount = document.createElement("div");
+    const installed = Array.isArray(status?.backend?.installed_models) ? status.backend.installed_models : [];
+    const served = new Set(Array.isArray(status?.backend?.served_models) ? status.backend.served_models : []);
     mount.innerHTML = `
-      <section id="config-models" class="config-section-card">
-      <div class="config-section-heading">
-        <div class="config-section-icon">🖥</div>
-        <div>
-          <div class="config-section-title">Local Models</div>
-          <div class="config-section-kicker">Runtime inventory, backend status, and operator controls</div>
-        </div>
+      <div class="card-grid" style="margin-bottom:12px">
+        <div class="card"><div class="card-label">Backend</div><div class="card-value" style="font-size:15px">${esc(status?.backend?.cli_installed ? "vLLM" : "Not installed")}</div><div class="card-sub">managed: ${esc(summarizeManagedBackends(status?.config))}</div></div>
+        <div class="card"><div class="card-label">Installed Models</div><div class="card-value">${summarizeModelCounts(status)}</div><div class="card-sub">served: ${esc((status?.backend?.served_models || []).join(", ") || "none")}</div></div>
+        <div class="card"><div class="card-label">GPU</div><div class="card-value" style="font-size:15px">${esc(status?.gpu?.name || "Not detected")}</div><div class="card-sub">${status?.huggingface_token_configured ? "HF token configured" : "HF token missing"}</div></div>
       </div>
-      <div class="config-section-body">
-      <div class="card-grid">
-        <div class="card">
-          <div class="card-label">Backend</div>
-          <div class="card-value" style="font-size:15px">${esc(status?.backend?.cli_installed ? "vLLM" : "Not installed")}</div>
-          <div class="card-sub">managed: ${esc(summarizeManagedBackends(status?.config))}</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Installed Models</div>
-          <div class="card-value">${summarizeModelCounts(status)}</div>
-          <div class="card-sub">served: ${esc((status?.backend?.served_models || []).join(", ") || "none")}</div>
-        </div>
-        <div class="card">
-          <div class="card-label">GPU</div>
-          <div class="card-value" style="font-size:15px">${esc(status?.gpu?.name || "Not detected")}</div>
-          <div class="card-sub">${status?.huggingface_token_configured ? "HF token configured" : "HF token missing"}</div>
-        </div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius)">
+        <div class="config-row"><div><div class="config-label">Model Operations</div></div></div>
+        <div class="table-wrap"><table class="config-model-ops-table"><thead><tr><th>Operation</th><th>Target</th><th>Purpose</th><th>Action</th></tr></thead><tbody>
+          <tr><td>Serve</td><td>vLLM</td><td>Launch the managed OpenAI-compatible local runtime.</td><td><button class="btn btn-sm btn-primary" onclick="modelsServe('vllm')">Serve vLLM</button></td></tr>
+          <tr><td>Stop</td><td>vLLM</td><td>Stop the managed runtime and release the bound port.</td><td><button class="btn btn-sm" onclick="modelsStop('vllm')">Stop Runtime</button></td></tr>
+          <tr><td>Credentials</td><td>Hugging Face</td><td>Persist the token used for gated or private model pulls.</td><td><button class="btn btn-sm" onclick="modelsLoginHuggingFace()">Set HF Token</button></td></tr>
+        </tbody></table></div>
       </div>
       <div style="border:1px solid var(--border);border-radius:var(--radius);margin-top:12px">
-        <div class="config-row">
-          <div>
-            <div class="config-label">Model Operations</div>
-            <div class="config-desc">Serve, stop, and credential local runtime operations from one table.</div>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table class="config-model-ops-table">
-            <thead><tr><th>Operation</th><th>Target</th><th>Purpose</th><th>Action</th></tr></thead>
-            <tbody>
-              <tr>
-                <td>Serve</td>
-                <td>vLLM</td>
-                <td>Launch the managed OpenAI-compatible local runtime.</td>
-                <td><button class="btn btn-sm btn-primary" onclick="modelsServe('vllm')">Serve vLLM</button></td>
-              </tr>
-              <tr>
-                <td>Stop</td>
-                <td>vLLM</td>
-                <td>Stop the managed runtime and release the bound port.</td>
-                <td><button class="btn btn-sm" onclick="modelsStop('vllm')">Stop Runtime</button></td>
-              </tr>
-              <tr>
-                <td>Credentials</td>
-                <td>Hugging Face</td>
-                <td>Persist the token used for gated or private model pulls.</td>
-                <td><button class="btn btn-sm" onclick="modelsLoginHuggingFace()">Set HF Token</button></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius);margin-top:12px">
-        <div class="config-row">
-          <div>
-            <div class="config-label">Installed Model Inventory</div>
-            <div class="config-desc">Card/table view of the local model cache and served state.</div>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Model ID</th><th>Size</th><th>Backend</th><th>Status</th><th>Actions</th></tr></thead>
-            <tbody>
-              ${
-                installed.length
-                  ? installed
-                      .map((item) => `
-                        <tr>
-                          <td style="font-family:var(--mono);font-size:11px">${esc(String(item.model || ""))}</td>
-                          <td>${esc(String(item.size || "unknown"))}</td>
-                          <td>${esc(String(item.backend || "vllm"))}</td>
-                          <td>${served.has(String(item.model || "")) || item.served ? "Serving" : "Installed"}</td>
-                          <td style="display:flex;gap:6px;flex-wrap:wrap">
-                            <button class="btn btn-sm" onclick="modelsServe('vllm', '${esc(String(item.model || ""))}')">Serve</button>
-                            <button class="btn btn-sm" onclick="modelsRemove('${esc(String(item.model || ""))}', '${esc(String(item.source || ""))}')">Remove</button>
-                          </td>
-                        </tr>
-                      `)
-                      .join("")
-                  : '<tr><td colspan="5" class="muted">No local models discovered yet.</td></tr>'
-              }
-            </tbody>
-          </table>
-        </div>
-      </div>
-      </div>
-      </section>
-    `;
-    content.appendChild(mount);
+        <div class="config-row"><div><div class="config-label">Installed Model Inventory</div></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Model ID</th><th>Size</th><th>Backend</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+          ${installed.length ? installed.map(item => `<tr><td style="font-family:var(--mono);font-size:11px">${esc(String(item.model || ""))}</td><td>${esc(String(item.size || "unknown"))}</td><td>${esc(String(item.backend || "vllm"))}</td><td>${served.has(String(item.model || "")) || item.served ? "Serving" : "Installed"}</td><td style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" onclick="modelsServe('vllm', '${esc(String(item.model || ""))}')">Serve</button><button class="btn btn-sm" onclick="modelsRemove('${esc(String(item.model || ""))}', '${esc(String(item.source || ""))}')">Remove</button></td></tr>`).join("") : '<tr><td colspan="5" class="muted">No local models discovered yet.</td></tr>'}
+        </tbody></table></div>
+      </div>`;
   } catch (_e) {
-    // Model controls are supplementary inside Configuration.
+    mount.innerHTML = '<div class="config-row"><div><div class="config-desc muted">Model backend unavailable.</div></div></div>';
   }
 }
 
