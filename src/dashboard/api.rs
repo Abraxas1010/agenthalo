@@ -331,6 +331,9 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/worktree/session/{session_id}/mcp-tools", get(api_worktree_mcp_tools))
         .route("/worktree/session/{session_id}/instructions", get(api_worktree_instructions))
         .route("/worktree/session/{session_id}/verify", get(api_worktree_verify))
+        // Lean project browser
+        .route("/lean/scan", get(api_lean_scan))
+        .route("/lean/file", get(api_lean_file))
         // Library (persistent knowledge store)
         .route("/library/status", get(api_library_status))
         .route("/library/push", post(api_library_push))
@@ -8140,6 +8143,180 @@ async fn api_skills_delete(
 
 /// Load external MCP tools from workspace profile injection sources.
 /// Reads JSON registries (e.g., heyting_local_tools.json) and converts to McpToolInfo.
+// ── Lean project browser ─────────────────────────────────────────────
+
+/// Scan the configured Lean project directory and return a file tree.
+async fn api_lean_scan(
+    AxumState(_state): AxumState<DashboardState>,
+) -> ApiResult {
+    let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+    let lean_path = match profile.lean_project_path.as_deref() {
+        Some(p) if !p.trim().is_empty() => {
+            std::path::PathBuf::from(crate::halo::workspace_profile::expand_tilde_pub(p))
+        }
+        _ => return Ok(Json(json!({
+            "ok": false,
+            "message": "No Lean project path configured. Set it in Configuration > External Sources.",
+            "files": [],
+            "tree": {},
+        }))),
+    };
+    if !lean_path.exists() {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("Lean project path does not exist: {}", lean_path.display()),
+        ));
+    }
+    let scan_root = lean_path.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let main = scan_lean_files(&scan_root);
+        // Discover libraries in .lake/packages/
+        let lake_pkgs = scan_root.join(".lake/packages");
+        let mut libraries = Vec::new();
+        if lake_pkgs.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&lake_pkgs) {
+                let mut lib_entries: Vec<_> = entries.flatten().collect();
+                lib_entries.sort_by_key(|e| e.file_name());
+                for entry in lib_entries {
+                    if !entry.path().is_dir() { continue; }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with('.') { continue; }
+                    let lib_scan = scan_lean_files(&entry.path());
+                    if lib_scan.total > 0 {
+                        libraries.push(json!({
+                            "name": name,
+                            "root": entry.path().display().to_string(),
+                            "total_files": lib_scan.total,
+                            "tree": lib_scan.tree,
+                        }));
+                    }
+                }
+            }
+        }
+        (main, libraries)
+    })
+    .await
+    .map_err(|e| internal_err(format!("lean scan task: {e}")))?;
+    let (main, libraries) = result;
+    Ok(Json(json!({
+        "ok": true,
+        "root": lean_path.display().to_string(),
+        "total_files": main.total,
+        "tree": main.tree,
+        "libraries": libraries,
+    })))
+}
+
+struct LeanScanResult {
+    total: usize,
+    tree: Value,
+}
+
+fn scan_lean_files(root: &std::path::Path) -> LeanScanResult {
+    let mut total = 0usize;
+    let tree = scan_lean_dir(root, root, &mut total);
+    LeanScanResult { total, tree }
+}
+
+fn scan_lean_dir(
+    dir: &std::path::Path,
+    root: &std::path::Path,
+    total: &mut usize,
+) -> Value {
+    let mut children = Vec::new();
+    let mut entries: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd.flatten().collect(),
+        Err(_) => return json!({"name": dir.file_name().unwrap_or_default().to_string_lossy(), "type": "dir", "children": []}),
+    };
+    entries.sort_by(|a, b| {
+        let a_dir = a.path().is_dir();
+        let b_dir = b.path().is_dir();
+        b_dir.cmp(&a_dir).then_with(|| a.file_name().cmp(&b.file_name()))
+    });
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Skip hidden dirs, .lake, build artifacts
+        if name.starts_with('.') || name == "build" || name == "lake-packages" {
+            continue;
+        }
+        if path.is_dir() {
+            let child = scan_lean_dir(&path, root, total);
+            // Only include dirs that have lean files (directly or nested)
+            if child.get("lean_count").and_then(|v| v.as_u64()).unwrap_or(0) > 0 {
+                children.push(child);
+            }
+        } else if name.ends_with(".lean") {
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            children.push(json!({
+                "name": name,
+                "type": "file",
+                "path": rel.display().to_string(),
+                "size": size,
+            }));
+            *total += 1;
+        }
+    }
+    let lean_count: u64 = children.iter().map(|c| {
+        if c.get("type").and_then(|v| v.as_str()) == Some("file") { 1 }
+        else { c.get("lean_count").and_then(|v| v.as_u64()).unwrap_or(0) }
+    }).sum();
+    let dir_name = dir.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| dir.display().to_string());
+    json!({
+        "name": dir_name,
+        "type": "dir",
+        "lean_count": lean_count,
+        "children": children,
+    })
+}
+
+/// Read a single Lean file from the configured project directory.
+async fn api_lean_file(
+    AxumState(_state): AxumState<DashboardState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+    let lean_root = match profile.lean_project_path.as_deref() {
+        Some(p) if !p.trim().is_empty() => {
+            std::path::PathBuf::from(crate::halo::workspace_profile::expand_tilde_pub(p))
+        }
+        _ => return Err(api_err(StatusCode::BAD_REQUEST, "no Lean project path configured")),
+    };
+    let rel_path = params.get("path")
+        .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, "missing 'path' query parameter"))?;
+    // Security: prevent path traversal
+    if rel_path.contains("..") {
+        return Err(api_err(StatusCode::BAD_REQUEST, "path traversal not allowed"));
+    }
+    // Support both project-relative and library-relative paths (lib:<name>/...)
+    let full_path = if let Some(lib_rest) = rel_path.strip_prefix("lib:") {
+        let (lib_name, lib_path) = lib_rest.split_once('/').unwrap_or((lib_rest, ""));
+        lean_root.join(".lake/packages").join(lib_name).join(lib_path)
+    } else {
+        lean_root.join(rel_path)
+    };
+    if !full_path.exists() {
+        return Err(api_err(StatusCode::NOT_FOUND, "file not found"));
+    }
+    // Security: must be within lean_root or .lake/packages
+    let in_root = full_path.starts_with(&lean_root);
+    if !in_root {
+        return Err(api_err(StatusCode::BAD_REQUEST, "path outside project root"));
+    }
+    let content = std::fs::read_to_string(&full_path)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("read file: {e}")))?;
+    let size = content.len();
+    Ok(Json(json!({
+        "ok": true,
+        "path": rel_path,
+        "content": content,
+        "size": size,
+    })))
+}
+
 fn load_external_mcp_tools() -> Vec<mcp_bridge::McpToolInfo> {
     let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
     let mut tools = Vec::new();

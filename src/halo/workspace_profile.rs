@@ -141,6 +141,9 @@ pub struct WorkspaceProfile {
     pub max_worktrees: usize,
     #[serde(default = "default_max_lifetime_hours")]
     pub max_lifetime_hours: u64,
+    /// Absolute path to a Lean project directory for the Lean file browser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lean_project_path: Option<String>,
     #[serde(default)]
     pub injections: Vec<Injection>,
     #[serde(default)]
@@ -171,6 +174,7 @@ impl Default for WorkspaceProfile {
             profile_name: "default".to_string(),
             worktree_isolation: false,
             external_write_policy: ExternalWritePolicy::default(),
+            lean_project_path: None,
             worktree_base: default_worktree_base(),
             worktree_prefix: default_worktree_prefix(),
             worktree_branch: default_worktree_branch(),

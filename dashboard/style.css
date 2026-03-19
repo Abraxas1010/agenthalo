@@ -7416,3 +7416,106 @@ textarea.p2p-input {
   white-space: pre-wrap; word-break: break-word;
   margin: 0;
 }
+
+/* ================================================================
+   Lean Project Browser
+   ================================================================ */
+.lean-shell {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+}
+@media (max-width: 900px) { .lean-shell { grid-template-columns: 1fr; } }
+.lean-sidebar {
+  display: flex; flex-direction: column;
+  max-height: calc(100vh - 80px); position: sticky; top: 12px;
+}
+.lean-sidebar-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lean-sidebar-header .card-label { flex: 1; }
+.lean-tabs {
+  display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0;
+  border-bottom: 1px solid var(--border); padding-bottom: 6px;
+}
+.lean-tab {
+  font-size: 11px; padding: 3px 8px;
+  border-radius: 4px 4px 0 0; border: 1px solid var(--border);
+  border-bottom: none; background: var(--bg);
+  color: var(--text-dim); cursor: pointer;
+  transition: all 0.15s; font-family: var(--font-sans);
+}
+.lean-tab:hover { color: var(--text); background: var(--bg-card); }
+.lean-tab.is-active { color: var(--accent); background: var(--bg-card); border-color: var(--accent); font-weight: 600; }
+.lean-tab-count { font-size: 9px; opacity: 0.7; margin-left: 2px; }
+.lean-tree { flex: 1; overflow-y: auto; font-size: 12px; }
+.lean-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.lean-content { min-height: 200px; }
+
+/* ---- Tree nodes ---- */
+.lean-tree-dir-header {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 0; cursor: pointer;
+  color: var(--text); font-weight: 500;
+  transition: color 0.1s;
+}
+.lean-tree-dir-header:hover { color: var(--accent); }
+.lean-tree-dir-arrow { font-size: 10px; width: 12px; text-align: center; color: var(--text-dim); }
+.lean-tree-dir-icon { font-size: 13px; }
+.lean-tree-dir-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lean-tree-dir-count {
+  font-size: 9px; color: var(--text-dim); background: var(--border);
+  border-radius: 6px; padding: 0 5px; min-width: 16px; text-align: center;
+}
+
+.lean-tree-file {
+  display: flex; align-items: center; gap: 4px;
+  padding: 2px 0; cursor: pointer;
+  color: var(--text-muted); font-size: 11px;
+  transition: color 0.1s, background 0.1s;
+  border-radius: 3px;
+}
+.lean-tree-file:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+.lean-tree-file.is-selected { color: var(--accent); background: rgba(53, 255, 62, 0.06); }
+.lean-tree-file-icon { font-size: 11px; }
+.lean-tree-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lean-tree-file-ext { color: var(--text-dim); font-size: 10px; }
+.lean-tree-file-size { color: var(--text-dim); font-size: 9px; margin-left: auto; }
+
+/* ---- File detail ---- */
+.lean-detail-empty { text-align: center; padding: 40px 20px; }
+.lean-detail { padding: 16px; }
+.lean-detail-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.lean-detail-filename { font-size: 16px; font-weight: 600; color: var(--text-bright); font-family: var(--font-mono); }
+.lean-detail-module { font-size: 11px; color: var(--text-dim); margin-bottom: 12px; font-family: var(--font-mono); }
+.lean-detail-meta {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 8px; margin-bottom: 14px;
+}
+.lean-detail-meta > div {
+  text-align: center; padding: 6px;
+  background: var(--bg); border-radius: var(--radius); border: 1px solid var(--border);
+}
+.lean-detail-meta span { display: block; font-size: 10px; color: var(--text-dim); }
+.lean-detail-meta strong { display: block; font-size: 14px; color: var(--text-bright); margin-top: 2px; }
+.lean-detail-section { margin-bottom: 12px; }
+.lean-detail-section-label {
+  font-size: 10px; font-weight: 600; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+}
+
+.lean-decl-list, .lean-import-list { font-size: 11px; font-family: var(--font-mono); }
+.lean-decl { padding: 1px 0; }
+.lean-decl-kind { color: var(--accent); font-weight: 600; }
+.lean-decl-name { color: var(--text); }
+.lean-import { padding: 1px 0; color: var(--text-muted); }
+
+.lean-preview {
+  font-family: var(--font-mono); font-size: 11px;
+  line-height: 1.5; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px;
+  max-height: 300px; overflow: auto;
+  white-space: pre; tab-size: 2;
+  margin: 0;
+}

@@ -97,6 +97,15 @@ function renderSkillsPageRoute() {
   }
 }
 
+function renderLeanPageRoute() {
+  if (typeof window.renderLeanPage === "function") {
+    window.renderLeanPage();
+  } else {
+    content.innerHTML =
+      '<div class="loading">Lean module not loaded.</div>';
+  }
+}
+
 async function renderAgentPmt() {
   const content = $("#content");
   let cfg = null;
@@ -174,6 +183,7 @@ const pages = {
   orchestration: renderOrchestrationPageRoute,
   "mcp-tools": renderMcpToolsPageRoute,
   skills: renderSkillsPageRoute,
+  lean: renderLeanPageRoute,
   agentpmt: renderAgentPmt,
 };
 
@@ -1773,8 +1783,24 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// ---- Lean nav visibility (hidden until path is configured) ----
+async function __updateLeanNavVisibility() {
+  const leanNav = document.querySelector('[data-page="lean"]');
+  if (!leanNav) return;
+  const li = leanNav.closest('li');
+  if (!li) return;
+  try {
+    const profile = await api('/worktree/active-profile');
+    const hasPath = !!(profile && profile.lean_project_path && profile.lean_project_path.trim());
+    li.style.display = hasPath ? '' : 'none';
+  } catch (_) {
+    li.style.display = 'none';
+  }
+}
+window.__updateLeanNavVisibility = __updateLeanNavVisibility;
+
 window.addEventListener("hashchange", route);
-window.addEventListener("DOMContentLoaded", route);
+window.addEventListener("DOMContentLoaded", () => { route(); __updateLeanNavVisibility(); });
 
 // -- CRT Effects Toggle -------------------------------------------------------
 function toggleCRT() {
@@ -2953,6 +2979,13 @@ async function renderConfig() {
             </select>
           </div>
           <div class="config-row"><div><div class="config-label">Active Profile</div><div class="config-desc" style="font-size:10px">${esc(wtProfile.profile_name || "default")}</div></div></div>
+          <div class="config-row" style="flex-wrap:wrap;gap:8px">
+            <div style="flex:1;min-width:200px"><div class="config-label">\u2112 Lean Project Path</div><div class="config-desc">Absolute path to a Lean project directory. Used by the Lean file browser page.</div></div>
+            <div style="display:flex;gap:6px;align-items:center;flex:1;min-width:200px">
+              <input class="input" id="wt-lean-path" value="${esc(wtProfile.lean_project_path || "")}" placeholder="/home/user/project/lean" style="flex:1">
+              <button class="btn btn-sm btn-primary" id="wt-lean-save">Save</button>
+            </div>
+          </div>
         </div>
         <div class="cfg-subsection-label">Injected Paths (${injections.length})</div>
         <div class="config-section-body">
@@ -3033,6 +3066,16 @@ async function renderConfig() {
         wtProfile.external_write_policy = wtWritePolicy.value;
         wtProfile.worktree_isolation = wtWritePolicy.value === "worktree";
         try { await apiPost(`/worktree/profile/${encodeURIComponent(wtProfile.profile_name || "default")}`, wtProfile); } catch (_e) {}
+        renderConfig();
+      });
+    }
+    const wtLeanSave = content.querySelector("#wt-lean-save");
+    if (wtLeanSave) {
+      wtLeanSave.addEventListener("click", async () => {
+        const val = (content.querySelector("#wt-lean-path")?.value || "").trim();
+        wtProfile.lean_project_path = val || null;
+        try { await apiPost(`/worktree/profile/${encodeURIComponent(wtProfile.profile_name || "default")}`, wtProfile); } catch (_e) {}
+        if (typeof __updateLeanNavVisibility === 'function') __updateLeanNavVisibility();
         renderConfig();
       });
     }
