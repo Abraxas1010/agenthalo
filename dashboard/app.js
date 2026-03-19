@@ -2946,8 +2946,11 @@ async function renderConfig() {
           <div class="config-section-kicker">Point to external Skills registries and MCP tool configs. Injected into agent worktrees.</div></div>
         </div>
         <div class="config-section-body">
-          <div class="config-row"><div><div class="config-label">Worktree Isolation</div><div class="config-desc">When enabled, each agent session gets its own git worktree with injected paths.</div></div>
-            <label class="mcp-form-check"><input type="checkbox" id="wt-isolation-toggle" ${wtProfile.worktree_isolation ? "checked" : ""}><span>${wtProfile.worktree_isolation ? "Enabled" : "Disabled"}</span></label>
+          <div class="config-row"><div><div class="config-label">External Write Policy</div><div class="config-desc">Controls whether agents can write to files outside the container. <strong>Deny</strong> = read-only access to external sources. <strong>Worktree</strong> = create a git worktree for external writes.</div></div>
+            <select class="input" id="wt-write-policy" style="width:auto;min-width:140px">
+              <option value="deny" ${(wtProfile.external_write_policy || "deny") === "deny" ? "selected" : ""}>Deny (read-only)</option>
+              <option value="worktree" ${(wtProfile.external_write_policy || "deny") === "worktree" ? "selected" : ""}>Worktree</option>
+            </select>
           </div>
           <div class="config-row"><div><div class="config-label">Active Profile</div><div class="config-desc" style="font-size:10px">${esc(wtProfile.profile_name || "default")}</div></div></div>
         </div>
@@ -3024,10 +3027,11 @@ async function renderConfig() {
     });
 
     // ---- External Sources (worktree profile) event bindings ----
-    const wtIsolationToggle = content.querySelector("#wt-isolation-toggle");
-    if (wtIsolationToggle) {
-      wtIsolationToggle.addEventListener("change", async () => {
-        wtProfile.worktree_isolation = wtIsolationToggle.checked;
+    const wtWritePolicy = content.querySelector("#wt-write-policy");
+    if (wtWritePolicy) {
+      wtWritePolicy.addEventListener("change", async () => {
+        wtProfile.external_write_policy = wtWritePolicy.value;
+        wtProfile.worktree_isolation = wtWritePolicy.value === "worktree";
         try { await apiPost(`/worktree/profile/${encodeURIComponent(wtProfile.profile_name || "default")}`, wtProfile); } catch (_e) {}
         renderConfig();
       });

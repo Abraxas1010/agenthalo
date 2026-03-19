@@ -105,12 +105,32 @@ impl Default for CleanupConfig {
     }
 }
 
+/// Policy for external file writes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalWritePolicy {
+    /// Agents cannot write to files outside the container (default).
+    Deny,
+    /// Agents get a git worktree for external writes.
+    Worktree,
+}
+
+impl Default for ExternalWritePolicy {
+    fn default() -> Self {
+        Self::Deny
+    }
+}
+
 /// A workspace profile defining worktree isolation behaviour.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceProfile {
     pub profile_name: String,
     #[serde(default)]
     pub worktree_isolation: bool,
+    /// Controls whether agents can write to files outside the container.
+    /// `deny` = read-only (default), `worktree` = create a git worktree.
+    #[serde(default)]
+    pub external_write_policy: ExternalWritePolicy,
     #[serde(default = "default_worktree_base")]
     pub worktree_base: String,
     #[serde(default = "default_worktree_prefix")]
@@ -150,6 +170,7 @@ impl Default for WorkspaceProfile {
         Self {
             profile_name: "default".to_string(),
             worktree_isolation: false,
+            external_write_policy: ExternalWritePolicy::default(),
             worktree_base: default_worktree_base(),
             worktree_prefix: default_worktree_prefix(),
             worktree_branch: default_worktree_branch(),
@@ -234,6 +255,29 @@ impl WorkspaceProfile {
             }
         }
         errors
+    }
+
+    /// Get external skill source paths (injections whose target contains "skills").
+    pub fn external_skill_sources(&self) -> Vec<PathBuf> {
+        self.injections
+            .iter()
+            .filter(|inj| inj.target.contains("skills"))
+            .map(|inj| PathBuf::from(expand_tilde(&inj.source)))
+            .filter(|p| p.exists())
+            .collect()
+    }
+
+    /// Get external MCP tool registry paths (injections whose target contains "mcp" and ends in .json).
+    pub fn external_mcp_sources(&self) -> Vec<PathBuf> {
+        self.injections
+            .iter()
+            .filter(|inj| {
+                let t = inj.target.to_lowercase();
+                (t.contains("mcp") || t.contains(".mcp")) && t.ends_with(".json")
+            })
+            .map(|inj| PathBuf::from(expand_tilde(&inj.source)))
+            .filter(|p| p.exists())
+            .collect()
     }
 
     /// Expand tilde in all source paths.

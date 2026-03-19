@@ -6025,9 +6025,16 @@ async fn api_mcp_tools(
     Query(query): Query<McpToolsQuery>,
 ) -> ApiResult {
     require_sensitive_access(&state)?;
-    let catalog = mcp_bridge::tool_catalog()
+    let mut catalog = mcp_bridge::tool_catalog()
         .await
         .map_err(|e| api_err(StatusCode::BAD_GATEWAY, &e))?;
+
+    // Merge external MCP tool registries from workspace profile.
+    let external = load_external_mcp_tools();
+    let external_count = external.len();
+    catalog.extend(external);
+    catalog.sort_by(|a, b| a.category.cmp(&b.category).then_with(|| a.name.cmp(&b.name)));
+
     let total = catalog.len();
     let offset = query.offset.unwrap_or(0).min(total);
     let limit = query.limit.unwrap_or(50).max(1);
@@ -6042,7 +6049,8 @@ async fn api_mcp_tools(
         "offset": offset,
         "limit": limit,
         "count": tools.len(),
-        "tools": tools
+        "tools": tools,
+        "external_count": external_count
     })))
 }
 
@@ -8033,11 +8041,17 @@ async fn api_skills_list(AxumState(state): AxumState<DashboardState>) -> ApiResu
     .map_err(|e| internal_err(format!("skills list task: {e}")))?
     .map_err(|e| internal_err(e))?;
     // Filter out soft-deleted skills
-    let active: Vec<_> = skills
+    let mut active: Vec<_> = skills
         .into_iter()
         .filter(|s| !s.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false))
         .collect();
-    Ok(Json(json!({ "ok": true, "count": active.len(), "skills": active })))
+
+    // Merge external skills from workspace profile injections.
+    let external = load_external_skills();
+    let external_count = external.len();
+    active.extend(external);
+
+    Ok(Json(json!({ "ok": true, "count": active.len(), "skills": active, "external_count": external_count })))
 }
 
 async fn api_skills_get(
@@ -8097,6 +8111,183 @@ async fn api_skills_delete(
     .map_err(|e| internal_err(format!("skill delete task: {e}")))?
     .map_err(|e| internal_err(e))?;
     Ok(Json(json!({ "ok": true, "deleted": deleted })))
+}
+
+/// Load external MCP tools from workspace profile injection sources.
+/// Reads JSON registries (e.g., heyting_local_tools.json) and converts to McpToolInfo.
+fn load_external_mcp_tools() -> Vec<mcp_bridge::McpToolInfo> {
+    let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+    let mut tools = Vec::new();
+    for path in profile.external_mcp_sources() {
+        let raw = match std::fs::read(&path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let val: Value = match serde_json::from_slice(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let source_label = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "external".to_string());
+        let tool_entries = val
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for entry in tool_entries {
+            let name = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let category = entry
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("external")
+                .to_string();
+            let description = entry
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            tools.push(mcp_bridge::McpToolInfo {
+                name,
+                title: None,
+                description,
+                category: category.clone(),
+                domain: format!("external/{source_label}"),
+                input_schema: entry
+                    .get("input_schema")
+                    .or_else(|| entry.get("inputSchema"))
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+                output_schema: None,
+                read_only_hint: None,
+                destructive_hint: None,
+                idempotent_hint: None,
+                open_world_hint: None,
+            });
+        }
+    }
+    tools
+}
+
+/// Load external skills from workspace profile injection sources.
+/// Reads MANIFEST.json (or SKILL.md files) from configured external skill directories.
+fn load_external_skills() -> Vec<Value> {
+    let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+    let mut skills = Vec::new();
+    for dir in profile.external_skill_sources() {
+        // Try MANIFEST.json first
+        let manifest_path = dir.join("MANIFEST.json");
+        if manifest_path.exists() {
+            if let Ok(raw) = std::fs::read(&manifest_path) {
+                if let Ok(val) = serde_json::from_slice::<Value>(&raw) {
+                    // The manifest may be:
+                    // - an array of skills
+                    // - an object with "skills" as array
+                    // - an object with "skills" as dict keyed by skill name
+                    let entries: Vec<(String, Value)> = if let Some(arr) =
+                        val.get("skills").and_then(|v| v.as_array())
+                    {
+                        arr.iter()
+                            .map(|v| {
+                                let id = v
+                                    .get("skill_id")
+                                    .or_else(|| v.get("name"))
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("unknown")
+                                    .to_string();
+                                (id, v.clone())
+                            })
+                            .collect()
+                    } else if let Some(obj) =
+                        val.get("skills").and_then(|v| v.as_object())
+                    {
+                        obj.iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect()
+                    } else if let Some(arr) = val.as_array() {
+                        arr.iter()
+                            .map(|v| {
+                                let id = v
+                                    .get("skill_id")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("unknown")
+                                    .to_string();
+                                (id, v.clone())
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    for (skill_id, entry) in entries {
+                        let name = entry
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&skill_id)
+                            .to_string();
+                        let description = entry
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let category = entry
+                            .get("category")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| {
+                                entry
+                                    .get("meta_parent")
+                                    .and_then(|v| v.as_str())
+                            })
+                            .unwrap_or("external")
+                            .to_string();
+                        let triggers: Vec<String> = entry
+                            .get("triggers")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        skills.push(json!({
+                            "skill_id": skill_id,
+                            "name": name,
+                            "description": description,
+                            "category": category,
+                            "triggers": triggers,
+                            "source": "external",
+                            "source_path": dir.display().to_string(),
+                        }));
+                    }
+                    continue;
+                }
+            }
+        }
+        // Fallback: scan subdirectories for SKILL.md files
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let skill_md = entry.path().join("SKILL.md");
+                if skill_md.exists() {
+                    let name = entry
+                        .file_name()
+                        .to_string_lossy()
+                        .to_string();
+                    skills.push(json!({
+                        "skill_id": name,
+                        "name": name,
+                        "description": format!("External skill from {}", dir.display()),
+                        "category": "external",
+                        "source": "external",
+                        "source_path": dir.display().to_string(),
+                    }));
+                }
+            }
+        }
+    }
+    skills
 }
 
 async fn api_deploy_launch(

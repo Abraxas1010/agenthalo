@@ -1845,6 +1845,46 @@ async fn mcp(
             // Merge AgentPMT proxied tools when tool proxy is enabled.
             let proxied = agentpmt::proxied_tools_for_listing();
             tools.extend(proxied);
+            // Merge external MCP tools from workspace profile injections.
+            let profile = nucleusdb::halo::workspace_profile::load_active_profile()
+                .unwrap_or_default();
+            for path in profile.external_mcp_sources() {
+                if let Ok(raw) = std::fs::read(&path) {
+                    if let Ok(val) = serde_json::from_slice::<Value>(&raw) {
+                        let source_label = path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "external".to_string());
+                        if let Some(entries) = val.get("tools").and_then(|v| v.as_array()) {
+                            for entry in entries {
+                                let name = entry
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let desc = entry
+                                    .get("description")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let input_schema = entry
+                                    .get("input_schema")
+                                    .or_else(|| entry.get("inputSchema"))
+                                    .cloned()
+                                    .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+                                tools.push(json!({
+                                    "name": format!("ext/{source_label}/{name}"),
+                                    "description": desc,
+                                    "inputSchema": input_schema,
+                                    "annotations": {
+                                        "readOnlyHint": true,
+                                        "source": "external",
+                                        "source_registry": path.display().to_string()
+                                    }
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
             json!({"tools": tools})
         }
         "tools/call" => {
