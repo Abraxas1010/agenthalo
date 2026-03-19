@@ -250,6 +250,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/skills", get(api_skills_list))
         .route("/skills", post(api_skills_upsert))
         .route("/skills/{id}", get(api_skills_get))
+        .route("/skills/{id}/content", get(api_skills_content))
         .route("/skills/{id}", axum::routing::delete(api_skills_delete))
         .route("/agentaddress/status", get(api_agentaddress_status))
         .route("/agentaddress/chains", get(api_agentaddress_chains))
@@ -8073,6 +8074,30 @@ async fn api_skills_get(
         }
         _ => Err(api_err(StatusCode::NOT_FOUND, "skill not found")),
     }
+}
+
+/// Return the full SKILL.md content for an external skill.
+async fn api_skills_content(
+    AxumState(_state): AxumState<DashboardState>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    // Search external skill sources for a matching skill directory.
+    let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+    for dir in profile.external_skill_sources() {
+        let skill_dir = dir.join(&id);
+        let skill_md = skill_dir.join("SKILL.md");
+        if skill_md.exists() {
+            let content = std::fs::read_to_string(&skill_md)
+                .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("read SKILL.md: {e}")))?;
+            return Ok(Json(json!({
+                "ok": true,
+                "skill_id": id,
+                "content": content,
+                "path": skill_md.display().to_string(),
+            })));
+        }
+    }
+    Err(api_err(StatusCode::NOT_FOUND, "skill content not found"))
 }
 
 async fn api_skills_upsert(
