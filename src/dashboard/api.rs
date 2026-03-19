@@ -170,10 +170,6 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/proof-gate/verify", post(api_proof_gate_verify))
         .route("/proof-gate/submit-cert", post(api_proof_gate_submit_cert))
         .route("/proof-gate/certificates", get(api_proof_gate_certificates))
-        .route(
-            "/proof-gate/certificate/{id}",
-            axum::routing::delete(api_proof_gate_delete_certificate),
-        )
         .route("/mcp/tools", get(api_mcp_tools))
         .route("/mcp/tools/{name}", get(api_mcp_tool_detail))
         .route("/mcp/invoke", post(api_mcp_invoke))
@@ -5748,28 +5744,6 @@ async fn api_proof_gate_certificates(AxumState(state): AxumState<DashboardState>
         "certificate_dir": cfg.certificate_dir,
         "count": certificates.len(),
         "certificates": certificates,
-    })))
-}
-
-async fn api_proof_gate_delete_certificate(
-    AxumState(state): AxumState<DashboardState>,
-    Path(id): Path<String>,
-) -> ApiResult {
-    require_sensitive_access(&state)?;
-    let cert_id = sanitize_proof_gate_certificate_id(&id)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, &e))?;
-    let cfg = proof_gate::load_gate_config()
-        .map_err(|e| internal_err(format!("load proof gate config: {e}")))?;
-    let path = cfg.certificate_dir.join(&cert_id);
-    if !path.exists() {
-        return Err(api_err(StatusCode::NOT_FOUND, "certificate not found"));
-    }
-    std::fs::remove_file(&path)
-        .map_err(|e| internal_err(format!("remove certificate {}: {e}", path.display())))?;
-    Ok(Json(json!({
-        "ok": true,
-        "id": cert_id,
-        "status": proof_gate_dashboard_payload().map_err(|e| internal_err(format!("proof gate refresh: {e}")))?,
     })))
 }
 

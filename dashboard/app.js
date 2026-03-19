@@ -357,7 +357,7 @@ async function renderProofGate() {
         </div>
         <div class="table-wrap" style="margin-top:12px">
           <table>
-            <thead><tr><th>File</th><th>Status</th><th>Theorems</th><th>Modified</th><th>Actions</th></tr></thead>
+            <thead><tr><th>File</th><th>Status</th><th>Theorems</th><th>Modified</th></tr></thead>
             <tbody>
               ${
                 certificates.length
@@ -372,11 +372,10 @@ async function renderProofGate() {
                           <td>${esc(String(cert.status || "unknown"))}</td>
                           <td style="font-size:11px">${esc(theorems.slice(0, 2).join(", ") || "n/a")}${theorems.length > 2 ? ` (+${theorems.length - 2})` : ""}</td>
                           <td>${fmtWhen(cert.modified_at)}</td>
-                          <td><button class="btn btn-sm" data-proof-delete="${esc(String(cert.id || ""))}">Delete</button></td>
                         </tr>`;
                       })
                       .join("")
-                  : '<tr><td colspan="5" class="muted">No certificates submitted yet.</td></tr>'
+                  : '<tr><td colspan="4" class="muted">No certificates submitted yet.</td></tr>'
               }
             </tbody>
           </table>
@@ -422,13 +421,6 @@ async function renderProofGate() {
           theorem_name: toggle.dataset.proofTheorem,
           enforced: !!toggle.checked,
         });
-        await renderProofGate();
-      }),
-    );
-    $$("[data-proof-delete]").forEach((btn) =>
-      btn.addEventListener("click", async () => {
-        if (!window.confirm(`Delete certificate ${btn.dataset.proofDelete}?`)) return;
-        await apiDelete(`/proof-gate/certificate/${encodeURIComponent(btn.dataset.proofDelete)}`);
         await renderProofGate();
       }),
     );

@@ -349,7 +349,7 @@ async fn api_proof_gate_toggle_master_persists_mutable_config() {
 }
 
 #[tokio::test]
-async fn api_proof_gate_submit_and_delete_certificate_roundtrip() {
+async fn api_proof_gate_submit_certificate_is_append_only() {
     let _guard = lock_env();
     let home = tempfile::tempdir().expect("tempdir");
     let cert_dir = home.path().join("certs");
@@ -368,7 +368,7 @@ async fn api_proof_gate_submit_and_delete_certificate_roundtrip() {
         "NUCLEUSDB_PROOF_GATE_CONFIG",
         Some(cfg_path.to_str().expect("utf8 cfg path")),
     );
-    let (state, db_path) = test_state("proof_gate_submit_delete");
+    let (state, db_path) = test_state("proof_gate_submit_append");
     let cert_body = "#THM T.Uploaded\n#AX propext\n";
     let (submit_status, submit_body) = api_post(
         state.clone(),
@@ -396,15 +396,8 @@ async fn api_proof_gate_submit_and_delete_certificate_roundtrip() {
         .unwrap_or_default()
         .to_string();
     assert!(!cert_id.is_empty());
-
-    let (delete_status, delete_body) =
-        api_delete(state, &format!("/proof-gate/certificate/{cert_id}")).await;
-    assert_eq!(
-        delete_status,
-        StatusCode::OK,
-        "delete certificate failed: {delete_body}"
-    );
-    assert!(!cert_dir.join(cert_id).exists());
+    // Certificate persists on disk (append-only — no delete route exists)
+    assert!(cert_dir.join(&cert_id).exists());
     let _ = std::fs::remove_file(&db_path);
 }
 
