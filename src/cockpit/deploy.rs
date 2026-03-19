@@ -575,7 +575,7 @@ fn now_unix() -> u64 {
 ///
 /// Agents cannot write back to the source — copies are set to read-only
 /// permissions (r-- for files, r-x for directories).
-fn inject_external_sources(
+pub fn inject_external_sources(
     target_dir: &Path,
     profile: &crate::halo::workspace_profile::WorkspaceProfile,
     agent_id: &str,

@@ -171,6 +171,18 @@ impl AgentPool {
         static_args.extend(spec.extra_args);
         let explicit_env_keys = BTreeSet::from_iter(env.iter().map(|(k, _)| k.as_str()));
         env_remove.retain(|key| !explicit_env_keys.contains(key.as_str()));
+        // Inject external skills/MCP tools into the agent's working directory.
+        let working_dir = spec.working_dir.filter(|v| !v.trim().is_empty());
+        if let Some(ref wd) = working_dir {
+            let ws_profile =
+                crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+            crate::cockpit::deploy::inject_external_sources(
+                std::path::Path::new(wd),
+                &ws_profile,
+                &kind,
+            );
+        }
+
         let managed = ManagedAgent {
             agent_id: agent_id.clone(),
             agent_name: if spec.agent_name.trim().is_empty() {
@@ -185,7 +197,7 @@ impl AgentPool {
             launched_at: crate::pod::now_unix(),
             timeout_secs: spec.timeout_secs.max(5),
             model: normalized_model,
-            working_dir: spec.working_dir.filter(|v| !v.trim().is_empty()),
+            working_dir,
             tasks_completed: 0,
             total_cost_usd: 0.0,
             trace_enabled: spec.trace,
