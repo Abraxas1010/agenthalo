@@ -232,7 +232,7 @@
         }
       };
 
-      composer?.addEventListener('submit', (ev) => {
+      composer?.addEventListener('submit', async (ev) => {
         ev.preventDefault();
         const value = String(input?.value || '').trim();
         if (!value) return;
