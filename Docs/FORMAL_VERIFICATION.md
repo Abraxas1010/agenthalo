@@ -39,6 +39,22 @@ This repo maintains local mirror modules for the runtime-facing formal surface:
 
 The mirrors are self-contained. They do not import Heyting modules.
 
+### Worktree Isolation Proof
+
+`lean/NucleusDB/Core/WorktreeIsolation.lean` formalizes the access control model for the container worktree isolation feature. It connects to `Core.Authorization` and `Core.Invariants` and proves 7 theorems (0 sorry):
+
+| # | Theorem | What it proves |
+|---|---------|---------------|
+| 1 | `readonly_blocks_all_mutations` | No mutation to a readonly-injected path is permitted |
+| 2 | `approved_write_denied_without_witness` | Writes to approved-write paths require human approval |
+| 3 | `reads_always_permitted` | Read operations always succeed regardless of mode |
+| 4 | `copy_mode_unrestricted` | Copy-mode injections are agent-owned, fully writable |
+| 5 | `non_injected_unrestricted` | Paths not covered by any injection are unrestricted |
+| 6 | `isolation_preserved` | The isolation invariant holds after any single operation |
+| 7 | `isolation_preserved_replay` | The isolation invariant holds after any sequence of operations |
+
+The Rust implementation in `src/container/worktree.rs` matches this model: readonly injections use copy + `chmod 0o400/0o500`, approved-write injections use symlinks (with edit-gate hooks), and the `editGateAllows` function's logic corresponds to the Lean `editGateAllows` definition.
+
 ## Proof Gate
 
 The proof gate is configured in `configs/proof_gate.json`.

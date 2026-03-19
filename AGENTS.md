@@ -73,6 +73,29 @@ cargo test --test formal_integration_tests
 
 Use the Heyting repo only as the read-only canonical theorem source. Do not import Heyting Lean modules into this repo.
 
+## Key Subsystems for External Agents
+
+Agents loading this repo (via worktree injection or MCP) should know:
+
+### Persistent Library (`src/halo/library.rs`, `src/halo/library_mcp.rs`)
+System-wide NucleusDB at `~/.agenthalo/library/`. Accumulates knowledge from all sessions.
+- **Query tools** (read-only, available in MCP): `library_search`, `library_browse`, `library_session_lookup`, `library_sessions`, `library_status`
+- **Push protocol**: auto-push on session end, 24h heartbeat for long-running sessions, manual push via dashboard
+- **Key namespace**: `lib:session:`, `lib:summary:`, `lib:evt:`, `lib:idx:agent/date/model:`, `lib:push:watermark:`
+- Disable auto-push: `AGENTHALO_LIBRARY_AUTO_PUSH=false`
+
+### Worktree Isolation (`src/halo/workspace_profile.rs`, `src/container/worktree.rs`)
+Per-agent git worktrees with host path injection.
+- **Profiles** at `~/.agenthalo/workspace_profiles/<name>.json`
+- **Three injection modes**: `readonly` (copy+chmod, OS enforced), `approved_write` (symlink+hook), `copy` (agent-owned)
+- **Dashboard API**: `/api/worktree/profiles`, `/api/worktree/active-profile`, `/api/worktree/profile/{name}`, `/api/worktree/list`, `/api/worktree/session/{id}/skills|mcp-tools|instructions|verify`
+- **Formal proof**: `lean/NucleusDB/Core/WorktreeIsolation.lean` (7 theorems, 0 sorry)
+
+### MCP Tool Surface
+- `agenthalo-mcp-server` exposes 125 tools including 5 Library tools
+- Dashboard also exposes Library tools via the rmcp-based `NucleusDbMcpService`
+- Library tools are always read-only; write attempts return helpful error explaining the push protocol
+
 ## Product Expectations
 
 - Discord recording is append-only by default
@@ -81,6 +104,7 @@ Use the Heyting repo only as the read-only canonical theorem source. Do not impo
 - dashboard keeps the CRT aesthetic across cockpit, setup, verification, and operator surfaces
 - credentials stay in environment files or encrypted local storage, never hardcoded
 - cockpit, mesh, wallet-routing, proxy telemetry, and native session orchestration are first-class product surfaces, not legacy exclusions
+- Library auto-push must not block session completion — failures are logged, not fatal
 
 ## Handoff
 

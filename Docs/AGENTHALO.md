@@ -21,6 +21,8 @@
 - [Cost Tracking](#cost-tracking)
 - [Shell Wrapping](#shell-wrapping)
 - [Supported Agents](#supported-agents)
+- [Persistent Library](#persistent-library)
+- [Worktree Isolation](#worktree-isolation)
 - [Web Dashboard](#web-dashboard)
 - [Doctor Command](#doctor-command)
 - [Configuration](#configuration)
@@ -343,6 +345,98 @@ agenthalo run my-custom-agent --flag value
 Without this flag, unrecognized agent commands are rejected.
 
 The `GenericAdapter` captures every stdout line as a `RawOutput` event. No structured parsing is performed. Token counting and cost tracking require the agent to emit parseable output.
+
+## Persistent Library
+
+Every AgentHALO installation includes a **Library** — a system-wide persistent NucleusDB at `~/.agenthalo/library/` that accumulates knowledge from all sessions across all projects. The Library is created automatically on first use.
+
+### How data gets into the Library
+
+Data flows from individual session trace databases (`traces.ndb`) into the Library via the **push protocol**:
+
+| Trigger | When |
+|---------|------|
+| Session end | Automatic — `TraceWriter::end_session()` pushes immediately |
+| Session kill | Best-effort push on SIGTERM |
+| 24-hour heartbeat | Background task for long-running sessions |
+| Manual push | Dashboard button or `POST /api/library/push` |
+| Push all | Dashboard button or `POST /api/library/push-all` |
+
+Each push uses a **watermark** to track what was already pushed. Only events with `seq > last_watermark` are transferred. Pushes are idempotent — pushing the same session twice is a no-op for already-pushed events.
+
+### How agents query the Library
+
+Agents access the Library read-only through 5 MCP tools (available in both `agenthalo-mcp-server` and the dashboard MCP surface):
+
+| Tool | Purpose |
+|------|---------|
+| `library_search` | Full-text search across all Library records |
+| `library_browse` | Browse by key prefix (`lib:session:`, `lib:evt:`, etc.) |
+| `library_session_lookup` | Look up a specific past session by ID |
+| `library_sessions` | List all sessions in the Library |
+| `library_status` | Library health check (initialized, stats) |
+
+Agents **cannot write** to the Library directly. The Library is append-only through the push protocol.
+
+### Dashboard API
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/library/status` | Stats and health |
+| POST | `/api/library/push` | Push one session (`{"session_id": "..."}`) |
+| POST | `/api/library/push-all` | Push all sessions |
+| GET | `/api/library/browse?prefix=lib:&limit=50` | Browse records |
+| POST | `/api/library/search` | Full-text search (`{"query": "...", "limit": 20}`) |
+| GET | `/api/library/sessions` | List all Library sessions |
+| GET | `/api/library/session/{id}` | Session detail |
+| GET | `/api/library/push-log` | Audit trail of pushes |
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AGENTHALO_LIBRARY_AUTO_PUSH` | `true` | Auto-push on session end |
+
+## Worktree Isolation
+
+When launching agents from the cockpit or CLI, AgentHALO can create an isolated **git worktree** per agent session. This prevents workspace conflicts when multiple agents work concurrently and enables injection of host skills, MCP tools, and agent instructions into the agent's environment.
+
+### Workspace profiles
+
+Configuration is stored in **workspace profiles** at `~/.agenthalo/workspace_profiles/<name>.json`. Each profile defines:
+
+- `worktree_isolation: bool` — enable/disable (default: false)
+- `worktree_base` — directory for worktrees (default: `/tmp`)
+- `worktree_branch` — branch to base worktrees on (default: `origin/master`)
+- `max_worktrees` — limit concurrent worktrees (default: 5)
+- `injections` — list of host paths to inject into the worktree
+- `edit_approval` — guardrails for editing injected files
+- `cleanup` — what happens when a session ends
+
+### Injection modes
+
+| Mode | Mechanism | Write behavior |
+|------|-----------|---------------|
+| `readonly` | Copy + `chmod 0o400` | OS denies writes (Permission denied) |
+| `approved_write` | Symlink | Edit-gate hook intercepts (requires human approval) |
+| `copy` | Copy (no chmod) | Agent owns copy, writes freely |
+
+### Dashboard API
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/worktree/profiles` | List profiles + active |
+| GET/POST | `/api/worktree/active-profile` | Get/set active profile |
+| GET/POST | `/api/worktree/profile/{name}` | Get/save a profile |
+| GET | `/api/worktree/list` | List active worktrees |
+| GET | `/api/worktree/session/{id}/skills` | Injected skills for a session |
+| GET | `/api/worktree/session/{id}/mcp-tools` | Injected MCP tools for a session |
+| GET | `/api/worktree/session/{id}/instructions` | Injected AGENTS.md for a session |
+| GET | `/api/worktree/session/{id}/verify` | Injection integrity check |
+
+### Formal proof
+
+The worktree isolation access control model is formally verified in `lean/NucleusDB/Core/WorktreeIsolation.lean` (7 theorems, 0 sorry). The key guarantee: no sequence of agent operations can modify a readonly-injected host file.
 
 ## Configuration
 

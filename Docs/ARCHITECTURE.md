@@ -123,6 +123,25 @@
 - `secure_aggregation.rs` — ZK secure aggregation
 - `algorithm_compliance.rs` — ZK algorithm compliance checks
 
+#### Persistent Library
+
+- `src/halo/library.rs` — system-wide persistent NucleusDB at `~/.agenthalo/library/` that accumulates knowledge from all sessions across projects
+- `src/halo/library_mcp.rs` — read-only MCP tool surface for agents (5 tools: `library_search`, `library_browse`, `library_session_lookup`, `library_sessions`, `library_status`)
+
+Data flows into the Library via the push protocol: session shutdown auto-push, 24-hour heartbeat for long-running sessions, or manual push via dashboard/CLI. Agents query the Library read-only through MCP tools. The push protocol uses watermark-based deltas — only new events since the last push are transferred. Keys are namespaced under `lib:session:`, `lib:summary:`, `lib:evt:`, `lib:idx:agent:`, `lib:idx:date:`, `lib:idx:model:`, `lib:push:watermark:`, and `lib:cost:daily/monthly:`.
+
+#### Workspace profiles and worktree isolation
+
+- `src/halo/workspace_profile.rs` — workspace profile configuration for per-session worktree isolation (profiles stored at `~/.agenthalo/workspace_profiles/`)
+
+When `worktree_isolation: true`, each agent launched from the cockpit or CLI gets its own git worktree. Host paths (skills, MCP configs, agent instructions) are injected into the worktree in three modes:
+
+| Mode | Mechanism | Write behavior |
+|------|-----------|---------------|
+| `readonly` | Copy + `chmod 0o400` | OS denies writes (EACCES) |
+| `approved_write` | Symlink | Edit-gate hook intercepts |
+| `copy` | Copy (no chmod) | Agent owns copy, writes freely |
+
 #### Other HALO modules
 
 - `src/halo/config.rs` — HALO configuration
@@ -153,11 +172,12 @@
 - `src/cockpit/pty_manager.rs` — PTY session management
 - `src/cockpit/ws_bridge.rs` — WebSocket bridge for browser terminals
 - `src/cockpit/session.rs` — cockpit session state
-- `src/cockpit/deploy.rs` — deploy management
+- `src/cockpit/deploy.rs` — deploy management (agent launch with optional worktree isolation via `workspace_profile` field)
 
 ### Container (`src/container/`)
 
 - `src/container/launcher.rs` — container lifecycle management
+- `src/container/worktree.rs` — git worktree lifecycle for agent session isolation (create, inject, verify, cleanup, prune)
 - `src/container/agent_hookup.rs` — agent-to-container hookup
 - `src/container/mesh.rs` / `src/container/mesh_init.rs` — container mesh networking
 - `src/container/coordination.rs` — multi-container coordination
@@ -230,8 +250,8 @@
 ### Product surfaces
 
 - `src/discord/` — Discord recorder, slash commands, backfill, status sidecar
-- `src/mcp/` — MCP tool surfaces (NucleusDB + AgentHALO)
-- `src/dashboard/` — web dashboard (Overview, Genesis, Identity, Security, NucleusDB, Discord, Sessions, Cockpit)
+- `src/mcp/` — MCP tool surfaces (NucleusDB + AgentHALO + Library, 125 tools in standalone server)
+- `src/dashboard/` — web dashboard (Overview, Genesis, Identity, Security, NucleusDB, Discord, Sessions, Cockpit, Worktree, Library)
 - `src/tui/` — terminal UI
 - `src/cli/` — CLI command implementations
 
