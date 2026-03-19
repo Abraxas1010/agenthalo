@@ -4,6 +4,7 @@ pub mod coordination;
 pub mod launcher;
 pub mod mesh;
 pub mod mesh_init;
+pub mod worktree;
 
 pub use agent_hookup::{
     AgentHealth, AgentHookup, AgentResponse, ApiAgentHookup, CliAgentHookup, LocalModelHookup,

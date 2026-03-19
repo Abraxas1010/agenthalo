@@ -171,13 +171,21 @@ pub fn build_state_with_bootstrap(
         eprintln!("warning: failed to load POD grants: {e}");
     }
 
-    let vault = match crate::halo::vault::Vault::open(
-        &crate::halo::config::pq_wallet_path(),
-        &crate::halo::config::vault_path(),
-    ) {
-        Ok(v) => Some(Arc::new(v)),
-        Err(e) => {
-            eprintln!("warning: failed to initialize vault: {e}");
+    let vault = {
+        let wallet_path = crate::halo::config::pq_wallet_path();
+        if wallet_path.exists() {
+            match crate::halo::vault::Vault::open(
+                &wallet_path,
+                &crate::halo::config::vault_path(),
+            ) {
+                Ok(v) => Some(Arc::new(v)),
+                Err(e) => {
+                    eprintln!("warning: failed to initialize vault: {e}");
+                    None
+                }
+            }
+        } else {
+            // No PQ wallet yet — vault unavailable until first `agenthalo setup`.
             None
         }
     };

@@ -74,6 +74,7 @@ pub mod util;
 pub mod vault;
 pub mod viewer;
 pub mod wdk_proxy;
+pub mod workspace_profile;
 pub mod wrap;
 pub mod x402;
 pub mod zk_compute;

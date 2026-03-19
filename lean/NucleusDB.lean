@@ -8,6 +8,7 @@ import NucleusDB.Core.EvidenceFusion
 import NucleusDB.Core.Authorization
 import NucleusDB.Core.Certificates
 import NucleusDB.Core.Invariants
+import NucleusDB.Core.WorktreeIsolation
 import NucleusDB.Core.Ledger
 import NucleusDB.Core.NucleusBridge
 import NucleusDB.Core.NaturalTransformation

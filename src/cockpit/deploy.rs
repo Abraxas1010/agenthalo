@@ -114,6 +114,9 @@ pub struct LaunchRequest {
     pub working_dir: Option<String>,
     #[serde(default)]
     pub admission_mode: Option<String>,
+    /// Workspace profile name for worktree isolation (None = use active profile).
+    #[serde(default)]
+    pub workspace_profile: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -122,6 +125,9 @@ pub struct LaunchResult {
     pub panels: Vec<PanelInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub admission: Option<AdmissionReport>,
+    /// Worktree path if isolation was used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -311,6 +317,57 @@ pub fn launch(
         env_vars.extend(cli_session_env());
     }
 
+    // ── Worktree isolation ──────────────────────────────────────────
+    // Load workspace profile and optionally create an isolated worktree.
+    let default_profile_name = crate::halo::workspace_profile::active_profile_name();
+    let profile_name = req
+        .workspace_profile
+        .as_deref()
+        .unwrap_or(&default_profile_name);
+    let ws_profile = crate::halo::workspace_profile::load_profile(profile_name)
+        .unwrap_or_default();
+
+    let mut worktree_path_out: Option<String> = None;
+    let effective_working_dir: Option<String>;
+
+    if ws_profile.worktree_isolation {
+        // Determine the repo path (requested working dir or cwd).
+        let repo_path = req
+            .working_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let session_id = format!(
+            "{}-{}",
+            now_unix(),
+            &uuid::Uuid::new_v4().as_simple().to_string()[..6]
+        );
+
+        match crate::container::worktree::create_worktree(
+            &repo_path,
+            &ws_profile,
+            agent.id,
+            &session_id,
+        ) {
+            Ok(wt_info) => {
+                let wt_path = wt_info.path.display().to_string();
+                worktree_path_out = Some(wt_path.clone());
+                effective_working_dir = Some(wt_path);
+            }
+            Err(e) => {
+                // If worktree creation fails (e.g., not a git repo), fall back
+                // to the requested working dir with a warning logged.
+                eprintln!("worktree isolation failed, falling back: {e}");
+                effective_working_dir = req.working_dir.clone();
+            }
+        }
+    } else {
+        effective_working_dir = req.working_dir.clone();
+    }
+    // ── End worktree isolation ──────────────────────────────────────
+
     let command = if agent.id == "shell" {
         "/bin/bash".to_string()
     } else {
@@ -322,7 +379,11 @@ pub fn launch(
         .iter()
         .map(|s| (*s).to_string())
         .collect();
-    let pty_working_dir = route_working_dir(agent.id, req.working_dir.as_deref(), &mut args);
+    let pty_working_dir = route_working_dir(
+        agent.id,
+        effective_working_dir.as_deref(),
+        &mut args,
+    );
 
     let id = pty_manager.create_session(
         &command,
@@ -356,6 +417,7 @@ pub fn launch(
         session_id: id,
         panels,
         admission: pre.admission,
+        worktree_path: worktree_path_out,
     })
 }
 

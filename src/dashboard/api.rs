@@ -315,6 +315,21 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/deploy/preflight", post(api_deploy_preflight))
         .route("/deploy/launch", post(api_deploy_launch))
         .route("/deploy/status/{id}", get(api_deploy_status))
+        // Worktree isolation
+        .route("/worktree/profiles", get(api_worktree_profiles))
+        .route(
+            "/worktree/active-profile",
+            get(api_worktree_active_profile).post(api_worktree_set_active),
+        )
+        .route(
+            "/worktree/profile/{name}",
+            get(api_worktree_profile_detail).post(api_worktree_save_profile),
+        )
+        .route("/worktree/list", get(api_worktree_list))
+        .route("/worktree/session/{session_id}/skills", get(api_worktree_skills))
+        .route("/worktree/session/{session_id}/mcp-tools", get(api_worktree_mcp_tools))
+        .route("/worktree/session/{session_id}/instructions", get(api_worktree_instructions))
+        .route("/worktree/session/{session_id}/verify", get(api_worktree_verify))
         .route("/models/status", get(api_models_status))
         .route("/models/choose-local", post(api_models_choose_local))
         .route("/models/unchoose-local", post(api_models_unchoose_local))
@@ -8120,6 +8135,192 @@ async fn api_deploy_status(
         .get_session(&id)
         .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "session not found"))?;
     Ok(Json(json!({ "id": id, "status": session.status() })))
+}
+
+// ── Worktree isolation endpoints ─────────────────────────────────
+
+async fn api_worktree_profiles(
+    AxumState(_state): AxumState<DashboardState>,
+) -> ApiResult {
+    let names = crate::halo::workspace_profile::list_profiles()
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    let active = crate::halo::workspace_profile::active_profile_name();
+    Ok(Json(json!({ "profiles": names, "active": active })))
+}
+
+async fn api_worktree_active_profile(
+    AxumState(_state): AxumState<DashboardState>,
+) -> ApiResult {
+    let profile = crate::halo::workspace_profile::load_active_profile()
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!(profile)))
+}
+
+async fn api_worktree_set_active(
+    AxumState(_state): AxumState<DashboardState>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let name = body
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, "missing 'name' field"))?;
+    crate::halo::workspace_profile::set_active_profile(name)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({ "ok": true, "active": name })))
+}
+
+async fn api_worktree_profile_detail(
+    AxumState(_state): AxumState<DashboardState>,
+    Path(name): Path<String>,
+) -> ApiResult {
+    let profile = crate::halo::workspace_profile::load_profile(&name)
+        .map_err(|e| api_err(StatusCode::NOT_FOUND, &e))?;
+    let errors = profile.validate();
+    Ok(Json(json!({
+        "profile": profile,
+        "validation_errors": errors.iter().map(|e| json!({
+            "field": e.field,
+            "message": e.message,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+async fn api_worktree_save_profile(
+    AxumState(state): AxumState<DashboardState>,
+    Path(name): Path<String>,
+    Json(mut profile): Json<crate::halo::workspace_profile::WorkspaceProfile>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    profile.profile_name = name;
+    let errors = profile.validate();
+    // Allow saving even with source-not-found errors (paths may not exist on
+    // this machine yet), but reject structural errors.
+    let structural_errors: Vec<_> = errors
+        .iter()
+        .filter(|e| !e.field.contains("source"))
+        .collect();
+    if !structural_errors.is_empty() {
+        let msgs: Vec<_> = structural_errors.iter().map(|e| e.to_string()).collect();
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            &format!("validation errors: {}", msgs.join("; ")),
+        ));
+    }
+    crate::halo::workspace_profile::save_profile(&profile)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn api_worktree_list(
+    AxumState(_state): AxumState<DashboardState>,
+) -> ApiResult {
+    let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let worktrees = crate::container::worktree::list_managed_worktrees(
+        &cwd,
+        &profile.worktree_prefix,
+    )
+    .unwrap_or_default();
+    Ok(Json(json!({ "worktrees": worktrees })))
+}
+
+async fn api_worktree_skills(
+    AxumState(_state): AxumState<DashboardState>,
+    Path(session_id): Path<String>,
+) -> ApiResult {
+    let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let worktrees = crate::container::worktree::list_managed_worktrees(
+        &cwd,
+        &profile.worktree_prefix,
+    )
+    .unwrap_or_default();
+    let wt = worktrees
+        .iter()
+        .find(|w| w.session_id == session_id)
+        .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "worktree not found"))?;
+    let skills = crate::container::worktree::scan_injected_skills(&wt.path)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "skills": skills,
+        "source": wt.injections.iter()
+            .find(|i| i.target.contains("skills"))
+            .map(|i| i.source.display().to_string()),
+    })))
+}
+
+async fn api_worktree_mcp_tools(
+    AxumState(_state): AxumState<DashboardState>,
+    Path(session_id): Path<String>,
+) -> ApiResult {
+    let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let worktrees = crate::container::worktree::list_managed_worktrees(
+        &cwd,
+        &profile.worktree_prefix,
+    )
+    .unwrap_or_default();
+    let wt = worktrees
+        .iter()
+        .find(|w| w.session_id == session_id)
+        .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "worktree not found"))?;
+    let mcp_tools = crate::container::worktree::scan_injected_mcp_tools(&wt.path)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "mcp_config": mcp_tools,
+        "source": wt.injections.iter()
+            .find(|i| i.target.contains("mcp"))
+            .map(|i| i.source.display().to_string()),
+    })))
+}
+
+async fn api_worktree_instructions(
+    AxumState(_state): AxumState<DashboardState>,
+    Path(session_id): Path<String>,
+) -> ApiResult {
+    let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let worktrees = crate::container::worktree::list_managed_worktrees(
+        &cwd,
+        &profile.worktree_prefix,
+    )
+    .unwrap_or_default();
+    let wt = worktrees
+        .iter()
+        .find(|w| w.session_id == session_id)
+        .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "worktree not found"))?;
+    let instructions = crate::container::worktree::read_injected_instructions(&wt.path)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "instructions": instructions,
+    })))
+}
+
+async fn api_worktree_verify(
+    AxumState(_state): AxumState<DashboardState>,
+    Path(session_id): Path<String>,
+) -> ApiResult {
+    let profile = crate::halo::workspace_profile::load_active_profile().unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let worktrees = crate::container::worktree::list_managed_worktrees(
+        &cwd,
+        &profile.worktree_prefix,
+    )
+    .unwrap_or_default();
+    let wt = worktrees
+        .iter()
+        .find(|w| w.session_id == session_id)
+        .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "worktree not found"))?;
+    let violations = crate::container::worktree::verify_injections(&wt.path)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "violations": violations,
+        "integrity_ok": violations.is_empty(),
+    })))
 }
 
 async fn api_models_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {

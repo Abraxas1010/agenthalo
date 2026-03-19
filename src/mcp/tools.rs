@@ -4143,6 +4143,7 @@ impl NucleusDbMcpService {
                 mode: req.mode,
                 working_dir: req.working_dir,
                 admission_mode: req.admission_mode,
+                workspace_profile: None,
             },
             &guard.pty_manager,
             guard.vault.as_deref(),
