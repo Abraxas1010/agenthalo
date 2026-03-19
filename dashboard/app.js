@@ -2681,6 +2681,8 @@ async function renderConfig() {
     try { profileForConfig = await api("/profile") || {}; } catch (_e) {}
     try { tierCfgForConfig = await api("/identity/tier") || {}; } catch (_e) {}
     try { genesisForConfig = await api("/genesis/status") || {}; } catch (_e) {}
+    let wtProfile = {};
+    try { wtProfile = await api("/worktree/active-profile") || {}; } catch (_e) {}
 
     const cfgDeviceOk = !!identityCfgForConfig.device_configured;
     const cfgNetworkOk = !!identityCfgForConfig.network_configured;
@@ -2706,6 +2708,7 @@ async function renderConfig() {
       { id: "services", icon: "\uD83D\uDD11", label: "API Keys", status: vaultKeys.some(k => k.configured) ? "ok" : "warn" },
       { id: "models", icon: "\uD83D\uDDA5", label: "Local Models", status: "defer" },
       { id: "paths", icon: "\uD83D\uDCC1", label: "Paths", status: "ok" },
+      { id: "external", icon: "\uD83D\uDD17", label: "External Sources", status: (wtProfile.injections || []).length > 0 ? "ok" : "muted" },
       { id: "integrations", icon: "\uD83D\uDD0C", label: "Integrations", status: "muted" },
       { id: "funding", icon: "\uD83D\uDCB0", label: "Funding", status: "muted" },
     ];
@@ -2914,6 +2917,62 @@ async function renderConfig() {
           <div class="config-section-kicker">Storage, direct LLM keys, and additional tooling</div></div>
         </div>
         ${intHtml}`;
+    } else if (sec === "external") {
+      const injections = Array.isArray(wtProfile.injections) ? wtProfile.injections : [];
+      const injRows = injections.map((inj, i) => {
+        const modeLabel = inj.mode === "readonly" ? "Read-only" : inj.mode === "copy" ? "Copy" : inj.mode === "approved_write" ? "Approved Write" : esc(inj.mode || "readonly");
+        const desc = inj.description || "";
+        const isSkills = (inj.target || "").includes("skills");
+        const isMcp = (inj.target || "").includes("mcp") || (inj.target || "").includes(".mcp");
+        const typeIcon = isSkills ? "\uD83D\uDCDA" : isMcp ? "\u2699\uFE0F" : "\uD83D\uDCC4";
+        const typeLabel = isSkills ? "Skills" : isMcp ? "MCP Tools" : "File";
+        return `<div class="config-row" style="flex-wrap:wrap;gap:8px">
+          <div style="flex:1;min-width:200px">
+            <div class="config-label">${typeIcon} ${esc(typeLabel)}: ${esc(inj.target || "")}</div>
+            <div class="config-desc" style="font-size:10px;word-break:break-all">${esc(inj.source || "")}</div>
+            ${desc ? '<div class="config-desc">' + esc(desc) + '</div>' : ''}
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <span class="badge ${inj.mode === "readonly" ? "badge-ok" : inj.mode === "copy" ? "badge-info" : "badge-warn"}">${esc(modeLabel)}</span>
+            <button class="btn btn-sm wt-inj-remove" data-wt-inj-idx="${i}" title="Remove this injection">Remove</button>
+          </div>
+        </div>`;
+      }).join("");
+
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83D\uDD17</div>
+          <div><div class="config-section-title">External Sources</div>
+          <div class="config-section-kicker">Point to external Skills registries and MCP tool configs. Injected into agent worktrees.</div></div>
+        </div>
+        <div class="config-section-body">
+          <div class="config-row"><div><div class="config-label">Worktree Isolation</div><div class="config-desc">When enabled, each agent session gets its own git worktree with injected paths.</div></div>
+            <label class="mcp-form-check"><input type="checkbox" id="wt-isolation-toggle" ${wtProfile.worktree_isolation ? "checked" : ""}><span>${wtProfile.worktree_isolation ? "Enabled" : "Disabled"}</span></label>
+          </div>
+          <div class="config-row"><div><div class="config-label">Active Profile</div><div class="config-desc" style="font-size:10px">${esc(wtProfile.profile_name || "default")}</div></div></div>
+        </div>
+        <div class="cfg-subsection-label">Injected Paths (${injections.length})</div>
+        <div class="config-section-body">
+          ${injRows || '<div class="config-desc" style="padding:8px">No external sources configured. Add a skills directory or MCP tool config below.</div>'}
+        </div>
+        <div class="cfg-subsection-label">Add New External Source</div>
+        <div class="config-section-body">
+          <div style="display:flex;flex-direction:column;gap:8px;padding:4px 0">
+            <label class="mcp-form-field"><span class="mcp-form-label">Source Path (absolute path on host)</span>
+              <input class="input" id="wt-new-source" placeholder="/home/user/project/.agents/skills"></label>
+            <label class="mcp-form-field"><span class="mcp-form-label">Target Path (relative path in worktree)</span>
+              <input class="input" id="wt-new-target" placeholder=".agents/skills"></label>
+            <label class="mcp-form-field"><span class="mcp-form-label">Access Mode</span>
+              <select class="input" id="wt-new-mode">
+                <option value="readonly" selected>Read-only (recommended)</option>
+                <option value="copy">Copy (agent can modify)</option>
+                <option value="approved_write">Approved Write (symlink, human approval required)</option>
+              </select></label>
+            <label class="mcp-form-field"><span class="mcp-form-label">Description (optional)</span>
+              <input class="input" id="wt-new-desc" placeholder="e.g., Heyting skill registry"></label>
+            <div class="network-form-actions"><button class="btn btn-primary" id="wt-add-injection">Add Source</button></div>
+          </div>
+        </div>`;
     } else if (sec === "funding") {
       sectionHtml = `
         <div class="config-section-heading">
@@ -2963,6 +3022,40 @@ async function renderConfig() {
         renderConfig();
       });
     });
+
+    // ---- External Sources (worktree profile) event bindings ----
+    const wtIsolationToggle = content.querySelector("#wt-isolation-toggle");
+    if (wtIsolationToggle) {
+      wtIsolationToggle.addEventListener("change", async () => {
+        wtProfile.worktree_isolation = wtIsolationToggle.checked;
+        try { await apiPost(`/worktree/profile/${encodeURIComponent(wtProfile.profile_name || "default")}`, wtProfile); } catch (_e) {}
+        renderConfig();
+      });
+    }
+    content.querySelectorAll(".wt-inj-remove").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const idx = Number(btn.dataset.wtInjIdx);
+        if (!Array.isArray(wtProfile.injections)) return;
+        wtProfile.injections.splice(idx, 1);
+        try { await apiPost(`/worktree/profile/${encodeURIComponent(wtProfile.profile_name || "default")}`, wtProfile); } catch (_e) {}
+        renderConfig();
+      });
+    });
+    const wtAddBtn = content.querySelector("#wt-add-injection");
+    if (wtAddBtn) {
+      wtAddBtn.addEventListener("click", async () => {
+        const source = (content.querySelector("#wt-new-source")?.value || "").trim();
+        const target = (content.querySelector("#wt-new-target")?.value || "").trim();
+        const mode = content.querySelector("#wt-new-mode")?.value || "readonly";
+        const desc = (content.querySelector("#wt-new-desc")?.value || "").trim();
+        if (!source || !target) { alert("Source path and target path are required."); return; }
+        if (!Array.isArray(wtProfile.injections)) wtProfile.injections = [];
+        const entry = { source, target, mode, description: desc || undefined };
+        wtProfile.injections.push(entry);
+        try { await apiPost(`/worktree/profile/${encodeURIComponent(wtProfile.profile_name || "default")}`, wtProfile); } catch (e) { alert("Save failed: " + String((e && e.message) || e)); return; }
+        renderConfig();
+      });
+    }
 
     // ---- Auto-open provider from setup redirect ----
     const autoOpenProvider = localStorage.getItem("halo_setup_open_provider");
