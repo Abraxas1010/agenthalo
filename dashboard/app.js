@@ -2726,6 +2726,7 @@ async function renderConfig() {
         <button class="config-quicknav-chip" data-target="config-identity">🪪 Identity</button>
         <button class="config-quicknav-chip" data-target="config-security">🛡 Security</button>
         <button class="config-quicknav-chip" data-target="config-agents">🤖 Agents</button>
+        <button class="config-quicknav-chip" data-target="config-payments">💸 Payments</button>
         <button class="config-quicknav-chip" data-target="config-services">🔑 Services</button>
         <button class="config-quicknav-chip" data-target="config-models">🖥 Models</button>
         <button class="config-quicknav-chip" data-target="config-paths">📁 Paths</button>
@@ -3200,6 +3201,7 @@ async function renderConfig() {
         </div>
       </div>
       <div class="config-section-body">
+        <div id="config-funding-balance" class="card-grid" style="margin-bottom:8px"></div>
         <div class="config-row">
           <div>
             <div class="config-label">AgentPMT Token Purchase</div>
@@ -3244,8 +3246,23 @@ async function renderConfig() {
       }
     }
     await injectConfigModelsSection();
+    await injectConfigFundingBalance();
   } catch (e) {
     content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function injectConfigFundingBalance() {
+  const mount = document.getElementById("config-funding-balance");
+  if (!mount) return;
+  try {
+    const bal = await api("/x402/balance");
+    mount.innerHTML = `
+      <div class="card"><span class="card-label">USDC Balance</span><strong>${esc(String(bal.balance_usdc ?? "—"))}</strong></div>
+      <div class="card"><span class="card-label">Address</span><strong style="font-family:var(--mono);font-size:10px;word-break:break-all">${esc(String(bal.address ?? "—"))}</strong></div>
+      <div class="card"><span class="card-label">Network</span><strong>${esc(String(bal.network ?? "—"))}</strong></div>`;
+  } catch (_) {
+    mount.innerHTML = '<div class="card"><span class="card-label">Balance</span><strong class="muted">x402 not configured</strong></div>';
   }
 }
 
