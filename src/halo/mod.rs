@@ -39,6 +39,7 @@ pub mod http_client;
 pub mod hybrid_kem;
 pub mod identity;
 pub mod identity_ledger;
+pub mod library;
 pub mod local_models;
 pub mod metrics;
 pub mod migration;

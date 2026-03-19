@@ -330,6 +330,15 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/worktree/session/{session_id}/mcp-tools", get(api_worktree_mcp_tools))
         .route("/worktree/session/{session_id}/instructions", get(api_worktree_instructions))
         .route("/worktree/session/{session_id}/verify", get(api_worktree_verify))
+        // Library (persistent knowledge store)
+        .route("/library/status", get(api_library_status))
+        .route("/library/push", post(api_library_push))
+        .route("/library/push-all", post(api_library_push_all))
+        .route("/library/browse", get(api_library_browse))
+        .route("/library/search", post(api_library_search))
+        .route("/library/sessions", get(api_library_sessions))
+        .route("/library/session/{id}", get(api_library_session_detail))
+        .route("/library/push-log", get(api_library_push_log))
         .route("/models/status", get(api_models_status))
         .route("/models/choose-local", post(api_models_choose_local))
         .route("/models/unchoose-local", post(api_models_unchoose_local))
@@ -8321,6 +8330,130 @@ async fn api_worktree_verify(
         "violations": violations,
         "integrity_ok": violations.is_empty(),
     })))
+}
+
+// ── Library (persistent knowledge store) endpoints ──────────────
+
+async fn api_library_status(
+    AxumState(_state): AxumState<DashboardState>,
+) -> ApiResult {
+    if !crate::halo::library::library_exists() {
+        return Ok(Json(json!({ "initialized": false })));
+    }
+    let stats = crate::halo::library::stats()
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({
+        "initialized": true,
+        "stats": stats,
+    })))
+}
+
+async fn api_library_push(
+    AxumState(state): AxumState<DashboardState>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    crate::halo::library::ensure_library()
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    let session_id = body
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, "missing 'session_id'"))?;
+    let result = crate::halo::library::push_session(&state.db_path, session_id)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!(result)))
+}
+
+async fn api_library_push_all(
+    AxumState(state): AxumState<DashboardState>,
+) -> ApiResult {
+    require_sensitive_access(&state)?;
+    crate::halo::library::ensure_library()
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    let results = crate::halo::library::push_all_sessions(&state.db_path)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    let total_events: u64 = results.iter().map(|r| r.events_pushed).sum();
+    Ok(Json(json!({
+        "pushed": results.len(),
+        "total_events": total_events,
+        "results": results,
+    })))
+}
+
+async fn api_library_browse(
+    AxumState(_state): AxumState<DashboardState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    if !crate::halo::library::library_exists() {
+        return Ok(Json(json!({ "records": [], "initialized": false })));
+    }
+    let prefix = params.get("prefix").map(|s| s.as_str()).unwrap_or("lib:");
+    let limit = params
+        .get("limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(50);
+    let offset = params
+        .get("offset")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    let records = crate::halo::library::browse(prefix, limit, offset)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({ "records": records })))
+}
+
+async fn api_library_search(
+    AxumState(_state): AxumState<DashboardState>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    if !crate::halo::library::library_exists() {
+        return Ok(Json(json!({ "results": [], "initialized": false })));
+    }
+    let query = body
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| api_err(StatusCode::BAD_REQUEST, "missing 'query'"))?;
+    let limit = body
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20) as usize;
+    let results = crate::halo::library::search(query, limit)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    let formatted: Vec<_> = results
+        .iter()
+        .map(|(key, value, score)| {
+            json!({ "key": key, "value": value, "score": score })
+        })
+        .collect();
+    Ok(Json(json!({ "results": formatted })))
+}
+
+async fn api_library_sessions(
+    AxumState(_state): AxumState<DashboardState>,
+) -> ApiResult {
+    if !crate::halo::library::library_exists() {
+        return Ok(Json(json!({ "sessions": [], "initialized": false })));
+    }
+    let sessions = crate::halo::library::list_sessions()
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({ "sessions": sessions })))
+}
+
+async fn api_library_session_detail(
+    AxumState(_state): AxumState<DashboardState>,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let session = crate::halo::library::session_lookup(&id)
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?
+        .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "session not found in library"))?;
+    Ok(Json(json!(session)))
+}
+
+async fn api_library_push_log(
+    AxumState(_state): AxumState<DashboardState>,
+) -> ApiResult {
+    let entries = crate::halo::library::push_log()
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    Ok(Json(json!({ "entries": entries })))
 }
 
 async fn api_models_status(AxumState(state): AxumState<DashboardState>) -> ApiResult {
