@@ -570,6 +570,9 @@ pub struct BrowseQuery {
     prefix: Option<String>,
     sort: Option<String>,
     order: Option<String>,
+    /// Filter keys to those belonging to sessions by this agent type (e.g. "claude", "codex").
+    /// Works by looking up session IDs in the `halo:idx:agent:<agent>:` index.
+    agent: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -9015,6 +9018,38 @@ async fn api_nucleusdb_browse(
     let sort_field = params.sort.as_deref().unwrap_or("key");
     let sort_order = params.order.as_deref().unwrap_or("asc");
 
+    // Collect unique agent types from the agent index for the filter dropdown
+    let mut agent_types: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (key, _) in db.keymap.all_keys() {
+        if let Some(rest) = key.strip_prefix("halo:idx:agent:") {
+            if let Some(agent_end) = rest.find(':') {
+                agent_types.insert(rest[..agent_end].to_string());
+            }
+        }
+    }
+
+    // When filtering by agent, collect the set of session IDs belonging to that agent
+    let agent_session_ids: Option<std::collections::HashSet<String>> =
+        if let Some(ref agent_filter) = params.agent {
+            if agent_filter.is_empty() {
+                None
+            } else {
+                let idx_prefix = format!("halo:idx:agent:{}:", agent_filter);
+                let mut sids = std::collections::HashSet::new();
+                for (key, _) in db.keymap.all_keys() {
+                    if let Some(rest) = key.strip_prefix(idx_prefix.as_str()) {
+                        // Format: <timestamp>:<session_id>
+                        if let Some(colon) = rest.find(':') {
+                            sids.insert(rest[colon + 1..].to_string());
+                        }
+                    }
+                }
+                Some(sids)
+            }
+        } else {
+            None
+        };
+
     // Collect all matching key-value pairs with typed information
     let mut items: Vec<(String, Value, usize, String, String)> = Vec::new();
     for (key, idx) in db.keymap.all_keys() {
@@ -9022,6 +9057,38 @@ async fn api_nucleusdb_browse(
             if !pfx.is_empty() && !key.starts_with(pfx.as_str()) {
                 continue;
             }
+        }
+        // Agent filter: only include keys whose session ID matches the agent's sessions
+        if let Some(ref sids) = agent_session_ids {
+            let dominated = key.starts_with("halo:session:")
+                || key.starts_with("halo:event:")
+                || key.starts_with("halo:summary:");
+            if dominated {
+                // Extract session ID from the key
+                let sid = if let Some(rest) = key.strip_prefix("halo:session:") {
+                    rest.split(':').next().unwrap_or("")
+                } else if let Some(rest) = key.strip_prefix("halo:event:") {
+                    rest.split(':').next().unwrap_or("")
+                } else if let Some(rest) = key.strip_prefix("halo:summary:") {
+                    rest.split(':').next().unwrap_or("")
+                } else {
+                    ""
+                };
+                if !sid.is_empty() && !sids.contains(sid) {
+                    continue;
+                }
+            } else if key.starts_with("halo:idx:agent:") {
+                // Only show this agent's index entries
+                let matches = params
+                    .agent
+                    .as_ref()
+                    .map(|a| key.starts_with(&format!("halo:idx:agent:{}:", a)))
+                    .unwrap_or(false);
+                if !matches {
+                    continue;
+                }
+            }
+            // Non-halo keys (skill:, etc.) pass through unfiltered
         }
         let cell = db.state.values.get(idx).copied().unwrap_or(0);
         let tag = db.type_map.get(key);
@@ -9080,6 +9147,7 @@ async fn api_nucleusdb_browse(
         "page": page,
         "page_size": page_size,
         "total_pages": total_pages,
+        "agents": agent_types.into_iter().collect::<Vec<_>>(),
     })))
 }
 

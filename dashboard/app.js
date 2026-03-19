@@ -6487,6 +6487,7 @@ const ndb = {
   sort: "key",
   order: "asc",
   editingKey: null,
+  agentFilter: "",
 };
 
 const ndbSharing = {
@@ -6654,12 +6655,14 @@ async function ndbRenderBrowse() {
   el.innerHTML = '<div style="color:var(--text-muted)">Loading data...</div>';
 
   try {
+    const agentParam = ndb.agentFilter ? `&agent=${encodeURIComponent(ndb.agentFilter)}` : "";
     const data = await api(
-      `/nucleusdb/browse?page=${ndb.page}&page_size=${ndb.pageSize}&prefix=${encodeURIComponent(ndb.prefix)}&sort=${ndb.sort}&order=${ndb.order}`,
+      `/nucleusdb/browse?page=${ndb.page}&page_size=${ndb.pageSize}&prefix=${encodeURIComponent(ndb.prefix)}&sort=${ndb.sort}&order=${ndb.order}${agentParam}`,
     );
     const rows = data.rows || [];
     const total = data.total || 0;
     const totalPages = data.total_pages || 1;
+    const agents = Array.isArray(data.agents) ? data.agents : [];
 
     const sortIcon = (field) => {
       if (ndb.sort !== field) return '<span style="opacity:0.3">&#8597;</span>';
@@ -6668,12 +6671,18 @@ async function ndbRenderBrowse() {
 
     el.innerHTML = `
       <div class="ndb-toolbar">
-        <div style="display:flex;gap:8px;align-items:center;flex:1">
+        <div style="display:flex;gap:8px;align-items:center;flex:1;flex-wrap:wrap">
           <input type="text" id="ndb-search" placeholder="Filter by key prefix..." value="${esc(ndb.prefix)}"
-            style="width:260px;padding:6px 10px;font-size:12px">
+            style="width:220px;padding:6px 10px;font-size:12px">
+          ${agents.length > 0 ? `
+            <select id="ndb-agent-filter" style="padding:5px 8px;font-size:12px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:var(--radius)" onchange="ndbFilterAgent(this.value)">
+              <option value="">All agents</option>
+              ${agents.map(a => `<option value="${esc(a)}" ${ndb.agentFilter === a ? "selected" : ""}>${esc(a)}</option>`).join("")}
+            </select>
+          ` : ""}
           <button class="btn btn-sm" onclick="ndbSearch()">Filter</button>
-          ${ndb.prefix ? `<button class="btn btn-sm" onclick="ndbClearSearch()">Clear</button>` : ""}
-          <span class="ndb-count">${total} key${total !== 1 ? "s" : ""}</span>
+          ${ndb.prefix || ndb.agentFilter ? `<button class="btn btn-sm" onclick="ndbClearSearch()">Clear</button>` : ""}
+          <span class="ndb-count">${total} key${total !== 1 ? "s" : ""}${ndb.agentFilter ? ` (agent: ${esc(ndb.agentFilter)})` : ""}</span>
         </div>
         <div style="display:flex;gap:6px">
           <button class="btn btn-sm btn-primary" onclick="ndbNewKey()">+ New Key</button>
@@ -6809,6 +6818,13 @@ window.ndbSearch = function () {
 
 window.ndbClearSearch = function () {
   ndb.prefix = "";
+  ndb.agentFilter = "";
+  ndb.page = 0;
+  ndbRenderBrowse();
+};
+
+window.ndbFilterAgent = function (agent) {
+  ndb.agentFilter = agent;
   ndb.page = 0;
   ndbRenderBrowse();
 };
@@ -7958,6 +7974,7 @@ async function ndbRenderConfig() {
           <div class="card">
             <div class="card-label">Write Mode</div>
             <div class="card-value" style="font-size:13px">${esc(stats.write_mode)}</div>
+            <div class="card-sub">${stats.write_mode === "AppendOnly" ? "State + log immutable" : "Log immutable, state editable"}</div>
           </div>
           <div class="card">
             <div class="card-label">DB Size</div>
@@ -8020,7 +8037,7 @@ async function ndbRenderConfig() {
         }
 
         <div class="section-header">Write Mode</div>
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:12px">
           <span class="badge ${stats.write_mode === "AppendOnly" ? "badge-warn" : "badge-ok"}" style="font-size:12px">
             ${esc(stats.write_mode)}
           </span>
@@ -8028,11 +8045,16 @@ async function ndbRenderConfig() {
             stats.write_mode !== "AppendOnly"
               ? `
             <button class="btn btn-sm" onclick="ndbSetAppendOnly()">Lock to Append-Only</button>
-            <span style="color:var(--text-dim);font-size:11px">INSERT only. UPDATE/DELETE disabled. Irreversible.</span>
           `
-              : `
-            <span style="color:var(--text-dim);font-size:11px">Database is locked. INSERT only.</span>
-          `
+              : ""
+          }
+        </div>
+        <div style="color:var(--text-dim);font-size:11px;line-height:1.6;margin:8px 0 12px;max-width:620px">
+          ${
+            stats.write_mode !== "AppendOnly"
+              ? `<strong style="color:var(--text)">Normal:</strong> The commit log is always immutable \u2014 every change is recorded with a cryptographic state root and can never be erased. However, the <em>current state</em> can be corrected via UPDATE/DELETE (e.g. fixing a typo or removing a bad record). The history will show both the original value and the correction.
+              <br><strong style="color:var(--text)">Append-Only:</strong> Locks the current state itself so values can never be changed or removed \u2014 only new records can be added. Each commit includes a monotone extension proof guaranteeing no prior data was altered. Use this for agent traces, attestations, and proof certificates where retroactive changes must be impossible. <strong style="color:var(--yellow)">This lock is irreversible.</strong>`
+              : `<strong style="color:var(--text)">Locked.</strong> The database state can only grow \u2014 INSERT is permitted, but UPDATE and DELETE are permanently rejected. Every commit includes a monotone extension proof (SHA-256 seal chain) guaranteeing that no previously committed record has been altered or removed. The commit log and the live state are both immutable.`
           }
         </div>
 
@@ -8062,7 +8084,7 @@ async function ndbRenderConfig() {
 window.ndbSetAppendOnly = async function () {
   if (
     !confirm(
-      "Lock database to AppendOnly mode? This is IRREVERSIBLE. UPDATE and DELETE will be permanently disabled.",
+      "Lock database to Append-Only mode?\n\nThis is IRREVERSIBLE. Once locked:\n- INSERT: allowed (new records can be added)\n- UPDATE/DELETE: permanently rejected\n- Every commit will include a monotone extension proof\n\nUse this when the data must be tamper-proof (agent traces, attestations, proof certificates). Mistakes in the current state cannot be corrected after locking.",
     )
   )
     return;
