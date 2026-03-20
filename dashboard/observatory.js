@@ -420,10 +420,26 @@
     var flyout = document.createElement('div');
     flyout.className = 'obs-cmd-flyout';
     var letterText = badgeEl.querySelector('.obs-cmd-letter').textContent;
+
+    // Get last agent message from THIS panel for forwarding
+    var mgr = window.__cockpitManager;
+    var lastMsg = mgr ? mgr.getLastAgentMessage(self.panelId) : null;
+    var hasLastMsg = lastMsg && lastMsg.length > 0;
+
     var html = '<div class="obs-cmd-flyout-header">' +
       '<span>Push to ' + esc(letterText) + ' (' + esc(targetType) + ')</span>' +
       '<button class="obs-cmd-flyout-close" title="Close">\u2715</button>' +
     '</div>';
+
+    // Forward Last button — prominent at top
+    html += '<div class="obs-cmd-flyout-forward">' +
+      '<button class="obs-cmd-forward-btn' + (hasLastMsg ? '' : ' is-disabled') + '"' +
+      (hasLastMsg ? '' : ' disabled') +
+      ' title="' + (hasLastMsg ? 'Forward last response to Agent ' + esc(letterText) : 'No agent response to forward') + '">' +
+      '\u{1F4E8} Forward Last Response' +
+      '</button>' +
+    '</div>';
+
     html += '<div class="obs-cmd-flyout-presets">';
     MESH_COMMANDS.forEach(function(cmd) {
       var text = cmd.getCommandText(targetType);
@@ -447,6 +463,18 @@
     var cmdTab = this.el.querySelector('.obs-tab-command');
     if (cmdTab) cmdTab.appendChild(flyout);
     flyout.querySelector('.obs-cmd-flyout-close').addEventListener('click', function() { flyout.remove(); });
+
+    // Forward Last handler
+    var forwardBtn = flyout.querySelector('.obs-cmd-forward-btn');
+    if (forwardBtn && hasLastMsg) {
+      forwardBtn.addEventListener('click', function() {
+        dispatchCommand(targetSession, lastMsg);
+        forwardBtn.classList.add('obs-cmd-sent');
+        setTimeout(function() { forwardBtn.classList.remove('obs-cmd-sent'); }, 800);
+        self.showCommandNotice('Forwarded to Agent ' + esc(letterText));
+      });
+    }
+
     flyout.querySelectorAll('.obs-cmd-preset:not(.is-disabled)').forEach(function(btn) {
       btn.addEventListener('click', function() {
         var cmdId = btn.dataset.cmdId;

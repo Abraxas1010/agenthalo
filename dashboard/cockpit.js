@@ -1020,6 +1020,28 @@
     }
 
     /**
+     * Get the last agent message from a panel (chat response or terminal tail).
+     * @param {string} sessionId
+     * @returns {string|null}
+     */
+    getLastAgentMessage(sessionId) {
+      const entry = this.sessions.get(sessionId);
+      if (!entry || !entry.panel) return null;
+      const panel = entry.panel;
+      if (panel.chatMessages && panel.chatMessages.length) {
+        for (var i = panel.chatMessages.length - 1; i >= 0; i--) {
+          if (panel.chatMessages[i].role === 'agent') return panel.chatMessages[i].content;
+        }
+      }
+      if (panel.logBuffer) {
+        var lines = panel.logBuffer.trim().split('\n');
+        var tail = lines.slice(-20).join('\n').trim();
+        return tail || null;
+      }
+      return null;
+    }
+
+    /**
      * Push a command to a panel, auto-detecting chat vs terminal mode.
      * @param {string} sessionId — target session
      * @param {string} text — command text to send
