@@ -40,7 +40,11 @@ _secret: str = ""
 
 
 def _discover_running_server() -> tuple[str, str]:
-    """Scan running agenthalo-mcp-server processes for port and secret."""
+    """Scan running agenthalo-mcp-server processes for port and secret.
+
+    Only accepts processes running the SAME binary as BINARY (prevents
+    connecting to stale builds from previous cargo build sessions).
+    """
     try:
         result = subprocess.run(
             ["pgrep", "-a", "-f", "agenthalo-mcp-server"],
@@ -51,6 +55,9 @@ def _discover_running_server() -> tuple[str, str]:
     except Exception:
         return "", ""
 
+    expected_binary = str(BINARY)
+    stale_pids: list[int] = []
+
     for line in result.stdout.strip().splitlines():
         parts = line.split(None, 1)
         if len(parts) < 2:
@@ -60,6 +67,21 @@ def _discover_running_server() -> tuple[str, str]:
             pid = int(pid_str)
         except ValueError:
             continue
+
+        # Check if this process is running our expected binary
+        cmd_line = parts[1].strip()
+        if expected_binary not in cmd_line:
+            stale_pids.append(pid)
+            continue
+
+        # Verify binary mtime matches on-disk (catches rebuilt-but-same-path)
+        try:
+            proc_exe = Path(f"/proc/{pid}/exe").resolve()
+            if proc_exe != Path(expected_binary).resolve():
+                stale_pids.append(pid)
+                continue
+        except (PermissionError, FileNotFoundError, OSError):
+            pass  # can't verify, proceed optimistically
 
         # Read environment from /proc/<pid>/environ
         try:
@@ -79,6 +101,15 @@ def _discover_running_server() -> tuple[str, str]:
                 return port, secret
         except (PermissionError, FileNotFoundError):
             continue
+
+    # Clean up stale processes from old builds (prevents accumulation)
+    if stale_pids:
+        _log(f"killing {len(stale_pids)} stale mcp-server processes from old builds")
+        for pid in stale_pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
 
     return "", ""
 
@@ -116,12 +147,43 @@ def _is_server_running(port: str) -> bool:
         return False
 
 
+def _kill_stale_servers() -> None:
+    """Kill any agenthalo-mcp-server processes not matching current BINARY."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-a", "-f", "agenthalo-mcp-server"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return
+    except Exception:
+        return
+    expected = str(BINARY)
+    for line in result.stdout.strip().splitlines():
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+            # Kill debug builds and any process not matching our release binary
+            if expected not in parts[1]:
+                os.kill(pid, signal.SIGTERM)
+                _log(f"killed stale mcp-server pid {pid}")
+        except (ValueError, ProcessLookupError, PermissionError):
+            continue
+
+
 def _start_server(port: str) -> None:
-    """Launch agenthalo-mcp-server as a background process."""
+    """Launch agenthalo-mcp-server as a background process.
+
+    Kills any stale server processes from old builds first to prevent
+    agent tool discovery connecting to outdated binaries.
+    """
     global _server_proc
     if not BINARY.exists():
         _log(f"binary not found: {BINARY}")
         return
+    _kill_stale_servers()
     env = dict(os.environ)
     env["AGENTHALO_MCP_PORT"] = port
     if not env.get("AGENTHALO_MCP_SECRET") and not env.get("AGENTHALO_ALLOW_DEV_SECRET"):
