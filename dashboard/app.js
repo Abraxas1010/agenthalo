@@ -214,7 +214,6 @@ const pages = {
   overview: renderOverviewHub,
   sessions: renderSessions,
   config: renderConfig,
-  setup: renderSetup,
   genesis: renderGenesisPage,
   identification: renderIdentificationPage,
   communication: renderCommunicationPage,
@@ -242,6 +241,7 @@ const REMOVED_PAGE_REDIRECTS = {
   deploy: "cockpit",
   containers: "cockpit",
   orchestrator: "cockpit",
+  setup: "config",
 };
 
 const NETWORKS = [
@@ -959,7 +959,7 @@ async function renderP2PClawPage() {
 
     // Briefing auto-refresh
     const briefingTimer = setInterval(async () => {
-      const currentPage = (location.hash.replace("#/", "") || "setup").split("/")[0];
+      const currentPage = (location.hash.replace("#/", "") || "config").split("/")[0];
       if (!["p2pclaw", "networking"].includes(currentPage)) return;
       try {
         const fresh = await api("/p2pclaw/briefing");
@@ -1687,7 +1687,7 @@ async function maybeAutoLaunchAfterSetup(setupState) {
   const ss = setupState || (await fetchSetupState());
   if (!ss || !ss.complete) return false;
   if (sessionStorage.getItem("setup_autolaunch_done")) return false;
-  const currentPage = (location.hash.replace("#/", "") || "setup").split(
+  const currentPage = (location.hash.replace("#/", "") || "config").split(
     "/",
   )[0];
   if (currentPage !== "setup") return false;
@@ -1720,28 +1720,12 @@ async function route() {
   const cryptoReady = await ensureCryptoUnlocked();
   if (!cryptoReady) return;
 
-  const hash = location.hash.replace("#/", "") || "setup";
+  const hash = location.hash.replace("#/", "") || "config";
   const page = hash.split("/")[0];
   const arg = hash.split("/").slice(1).join("/");
   if (REMOVED_PAGE_REDIRECTS[page]) {
     location.hash = `#/${REMOVED_PAGE_REDIRECTS[page]}`;
     return;
-  }
-
-  if (page === "setup" && !window._setupCryptoPromptDone) {
-    const cryptoStatus = await fetchCryptoStatus(true);
-    if (cryptoStatus && cryptoStatus.password_protected) {
-      window._setupCryptoPromptDone = true;
-      if (!cryptoStatus.locked) {
-        try {
-          await apiPost("/crypto/lock", {});
-        } catch (_e) {}
-        _cryptoStatus = null;
-        _cryptoStatusFetchedAt = 0;
-        const relocked = await ensureCryptoUnlocked(true);
-        if (!relocked) return;
-      }
-    }
   }
 
   // Genesis check: if genesis is not completed, attempt silent recovery
@@ -1809,7 +1793,7 @@ document.addEventListener("click", (e) => {
   const parentLink = e.target.closest("#nav-overview-parent");
   if (!parentLink) return;
   // If already on overview page, just toggle expansion without navigation
-  const currentPage = (location.hash.replace("#/", "") || "setup").split(
+  const currentPage = (location.hash.replace("#/", "") || "config").split(
     "/",
   )[0];
   const overviewFamily = [
@@ -2067,19 +2051,8 @@ function parseProviderList(v) {
 window.openSetupGuide = function openSetupGuide(context) {
   const payload = Object.assign({ ts: Date.now() }, context || {});
   localStorage.setItem("halo_setup_context", JSON.stringify(payload));
-  location.hash = "#/setup";
+  location.hash = "#/config";
 };
-
-function consumeSetupContext() {
-  const raw = localStorage.getItem("halo_setup_context");
-  if (!raw) return {};
-  localStorage.removeItem("halo_setup_context");
-  try {
-    return JSON.parse(raw) || {};
-  } catch (_e) {
-    return {};
-  }
-}
 
 window.copySetupText = async function copySetupText(value) {
   try {
@@ -2757,7 +2730,7 @@ window.attestSessionByButton = function (btn) {
 // PAGE: Configuration
 // =============================================================================
 // ---- Config sidebar+main state ----
-let __cfgActiveSection = localStorage.getItem("halo_config_section") || "auth";
+let __cfgActiveSection = localStorage.getItem("halo_config_section") || "agentpmt-cta";
 
 async function renderConfig() {
   content.innerHTML = '<div class="loading">Loading config...</div>';
@@ -2797,19 +2770,25 @@ async function renderConfig() {
     const cfgLedgerEntries = identityCfgForConfig.identity_ledger_entry_count || 0;
 
     // ---- Section definitions with status indicators ----
+    const agentpmtConnected = !!(cfg.wallet_status && cfg.wallet_status.agentpmt_connected);
+    const pmtToolCount = Number(cfg.agentpmt && cfg.agentpmt.tool_count) || Number(pmtToolsResp.count) || 0;
+
     const sections = [
-      { id: "auth", icon: "\uD83D\uDD10", label: "Authentication", status: cfg.authentication.authenticated ? "ok" : "warn" },
-      { id: "identity", icon: "\uD83E\uDEAA", label: "Identity", status: cfgDeviceOk && cfgNetworkOk && cfgGenesisComplete ? "ok" : "warn" },
-      { id: "security", icon: "\uD83D\uDEE1", label: "Crypto Lock", status: crypto.locked ? "warn" : "ok" },
-      { id: "agents", icon: "\uD83E\uDD16", label: "Agents", status: (agentsResp.agents || []).length > 0 ? "ok" : "muted" },
-      { id: "payments", icon: "\uD83D\uDCB8", label: "Payments", status: cfg.x402.enabled ? "ok" : "muted" },
-      { id: "services", icon: "\uD83D\uDD11", label: "API Keys", status: vaultKeys.some(k => k.configured) ? "ok" : "warn" },
-      { id: "models", icon: "\uD83D\uDDA5", label: "Local Models", status: "defer" },
-      { id: "paths", icon: "\uD83D\uDCC1", label: "Paths", status: "ok" },
-      { id: "external", icon: "\uD83D\uDD17", label: "External Sources", status: (wtProfile.injections || []).length > 0 ? "ok" : "muted" },
-      { id: "integrations", icon: "\uD83D\uDD0C", label: "Integrations", status: "muted" },
-      { id: "funding", icon: "\uD83D\uDCB0", label: "Funding", status: "muted" },
-      { id: "navigation", icon: "\uD83D\uDDC2", label: "Navigation", status: "ok" },
+      { id: "agentpmt-cta", icon: "\uD83D\uDE80", label: "AgentPMT", status: agentpmtConnected ? "ok" : "action", group: "core" },
+      { id: "auth", icon: "\uD83D\uDD10", label: "Authentication", status: cfg.authentication.authenticated ? "ok" : "warn", group: "core" },
+      { id: "identity", icon: "\uD83E\uDEAA", label: "Identity", status: cfgDeviceOk && cfgNetworkOk && cfgGenesisComplete ? "ok" : "warn", group: "core" },
+      { id: "cli-agents", icon: "\u2328", label: "Agent CLIs", status: "defer", group: "core" },
+      { id: "security", icon: "\uD83D\uDEE1", label: "Crypto Lock", status: crypto.locked ? "warn" : "ok", group: "security" },
+      { id: "agents", icon: "\uD83E\uDD16", label: "Agents", status: (agentsResp.agents || []).length > 0 ? "ok" : "muted", group: "security" },
+      { id: "payments", icon: "\uD83D\uDCB8", label: "Payments", status: cfg.x402.enabled ? "ok" : "muted", group: "services" },
+      { id: "services", icon: "\uD83D\uDD11", label: "API Keys", status: vaultKeys.some(k => k.configured) ? "ok" : "warn", group: "services" },
+      { id: "models", icon: "\uD83D\uDDA5", label: "Local Models", status: "defer", group: "services" },
+      { id: "paths", icon: "\uD83D\uDCC1", label: "Paths", status: "ok", group: "system" },
+      { id: "external", icon: "\uD83D\uDD17", label: "External Sources", status: (wtProfile.injections || []).length > 0 ? "ok" : "muted", group: "system" },
+      { id: "integrations", icon: "\uD83D\uDD0C", label: "Integrations", status: "muted", group: "system" },
+      { id: "funding", icon: "\uD83D\uDCB0", label: "Funding", status: "muted", group: "system" },
+      { id: "proof-lattice", icon: "\u25C6", label: "Proof Lattice", status: "ok", group: "system" },
+      { id: "navigation", icon: "\uD83D\uDDC2", label: "Navigation", status: "ok", group: "system" },
     ];
 
     // ---- Health summary counts ----
@@ -2819,10 +2798,17 @@ async function renderConfig() {
     const agentCount = (agentsResp.agents || []).length;
 
     // ---- Build sidebar nav items ----
+    const groupLabels = { core: "Core", security: "Security", services: "Services", system: "System" };
+    let lastGroup = "";
     const sidebarHtml = sections.map(s => {
-      const dot = s.status === "ok" ? "cfg-dot-ok" : s.status === "warn" ? "cfg-dot-warn" : "cfg-dot-muted";
+      const dot = s.status === "ok" ? "cfg-dot-ok" : s.status === "warn" || s.status === "action" ? "cfg-dot-warn" : "cfg-dot-muted";
       const active = __cfgActiveSection === s.id ? " is-active" : "";
-      return `<button class="cfg-nav-item${active}" data-cfg-nav="${esc(s.id)}">
+      let prefix = "";
+      if (s.group && s.group !== lastGroup) {
+        lastGroup = s.group;
+        prefix = `<div class="cfg-group-label">${groupLabels[s.group] || s.group}</div>`;
+      }
+      return prefix + `<button class="cfg-nav-item${active}" data-cfg-nav="${esc(s.id)}">
         <span class="cfg-nav-icon">${s.icon}</span>
         <span class="cfg-nav-label">${esc(s.label)}</span>
         <span class="cfg-dot ${dot}"></span>
@@ -2833,7 +2819,129 @@ async function renderConfig() {
     const sec = __cfgActiveSection;
     let sectionHtml = "";
 
-    if (sec === "auth") {
+    if (sec === "agentpmt-cta") {
+      sectionHtml = `
+        <div class="cfg-agentpmt-hero">
+          <div class="cfg-agentpmt-hero-top">
+            <div class="cfg-agentpmt-hero-logo">
+              <img src="img/agentpmt-192.png" alt="AgentPMT" onerror="this.style.display='none'">
+              <div>
+                <div class="cfg-agentpmt-hero-title">THE MARKETPLACE FOR AGENTS</div>
+                <div class="cfg-agentpmt-hero-sub">Your agents deserve better tools.</div>
+              </div>
+            </div>
+            <div class="cfg-agentpmt-free-badge">FREE</div>
+          </div>
+          <div class="cfg-agentpmt-hero-desc">
+            100+ specialty tools, workflows, and APIs &mdash; all accessible via MCP.<br>
+            No upfront dev costs. No code. No subscriptions.
+          </div>
+          <div class="cfg-agentpmt-benefits">
+            <div class="cfg-agentpmt-benefit-card">
+              <div class="cfg-agentpmt-benefit-icon">\uD83D\uDEE0</div>
+              <div class="cfg-agentpmt-benefit-title">100+ MCP Tools</div>
+              <div class="cfg-agentpmt-benefit-desc">Data analysis, code review, web scraping, image gen, and more. Your agents discover and use them autonomously.</div>
+            </div>
+            <div class="cfg-agentpmt-benefit-card">
+              <div class="cfg-agentpmt-benefit-icon">\uD83D\uDCB0</div>
+              <div class="cfg-agentpmt-benefit-title">Budget Controls</div>
+              <div class="cfg-agentpmt-benefit-desc">Set spending limits per agent. USDC stablecoin payments. Smart contract enforcement. Real-time cost tracking.</div>
+            </div>
+            <div class="cfg-agentpmt-benefit-card">
+              <div class="cfg-agentpmt-benefit-icon">\uD83D\uDD10</div>
+              <div class="cfg-agentpmt-benefit-title">Post-Quantum Security</div>
+              <div class="cfg-agentpmt-benefit-desc">ML-KEM encrypted credentials. Scoped agent permissions. Hardware-backed identity.</div>
+            </div>
+          </div>
+          <a href="https://www.agentpmt.com" target="_blank" rel="noopener noreferrer" class="cfg-agentpmt-cta-btn">SIGN UP FREE &rarr;</a>
+          <div class="cfg-agentpmt-status">
+            ${agentpmtConnected
+              ? `<span class="cfg-agentpmt-status-connected">\u2713 Connected${pmtToolCount > 0 ? " &mdash; " + pmtToolCount + " tools ready" : ""}</span>
+                 <a href="#/agentpmt" class="btn btn-sm" style="margin-left:10px">Open AgentPMT Dashboard</a>`
+              : `<span class="cfg-agentpmt-status-disconnected">\u25CB Not connected &mdash; sign up above to get started</span>`}
+          </div>
+          <div class="cfg-agentpmt-creator">
+            Build and monetize your own tools. Earn credits every time your workflow is used. Free developer account included.
+          </div>
+        </div>`;
+    } else if (sec === "cli-agents") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\u2328</div>
+          <div><div class="config-section-title">Agent CLIs</div>
+          <div class="config-section-kicker">Detected agent CLI installations and authentication status</div></div>
+        </div>
+        <div class="config-section-body" id="cfg-cli-agents-mount">
+          <div class="cli-agents-grid" id="cli-agents-grid">
+            <div class="cli-agent-row" data-cli="claude">
+              <div class="cli-agent-info">
+                <div class="cli-agent-name">Claude Code</div>
+                <div class="cli-agent-provider">Anthropic</div>
+              </div>
+              <div class="cli-agent-status" id="cli-status-claude">Detecting...</div>
+              <div class="cli-agent-actions">
+                <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="claude" disabled>Authenticate</button>
+              </div>
+            </div>
+            <div class="cli-agent-row" data-cli="codex">
+              <div class="cli-agent-info">
+                <div class="cli-agent-name">Codex</div>
+                <div class="cli-agent-provider">OpenAI</div>
+              </div>
+              <div class="cli-agent-status" id="cli-status-codex">Detecting...</div>
+              <div class="cli-agent-actions">
+                <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="codex" disabled>Authenticate</button>
+              </div>
+            </div>
+            <div class="cli-agent-row" data-cli="gemini">
+              <div class="cli-agent-info">
+                <div class="cli-agent-name">Gemini CLI</div>
+                <div class="cli-agent-provider">Google</div>
+              </div>
+              <div class="cli-agent-status" id="cli-status-gemini">Detecting...</div>
+              <div class="cli-agent-actions">
+                <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="gemini" disabled>Authenticate</button>
+              </div>
+            </div>
+          </div>
+          ${!(cfg && cfg.container_runtime && cfg.container_runtime.available)
+            ? '<div class="info-banner amber" style="margin-top:10px"><span style="font-weight:600">&#9888; Native session mode active</span> &mdash; Subsidiary agents launch as native local processes.</div>'
+            : '<div style="margin-top:10px;font-size:11px;color:var(--text-dim)"><span style="color:var(--green)">&#10003;</span> Native launcher: <strong>' + esc(cfg.container_runtime.engine || "") + '</strong></div>'
+          }
+          <div id="cli-auth-terminal-wrap" style="display:none;margin-top:14px">
+            <div style="font-size:12px;color:var(--accent);margin-bottom:6px" id="cli-auth-terminal-label">Authentication session</div>
+            <div id="cli-auth-terminal" style="height:260px;border:1px solid var(--border);border-radius:6px;overflow:hidden"></div>
+            <div style="margin-top:8px;display:flex;gap:8px">
+              <button class="btn btn-sm" id="cli-auth-terminal-close">Close Terminal</button>
+            </div>
+          </div>
+        </div>`;
+    } else if (sec === "proof-lattice") {
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\u25C6</div>
+          <div><div class="config-section-title">Proof Lattice</div>
+          <div class="config-section-kicker">3D visualization of verified Lean proof declarations</div></div>
+        </div>
+        <div class="config-section-body">
+          <div class="proof-lattice-wrap" id="proof-lattice-wrap">
+            <div class="proof-lattice-hero" id="proof-lattice-hero">
+              <div id="proof-lattice-three"></div>
+              <div class="proof-lattice-status" id="proof-lattice-status">Initializing proof lattice...</div>
+            </div>
+            <div class="proof-lattice-sidebar" id="proof-lattice-sidebar">
+              <div class="pls-header">Proof Families</div>
+              <div class="pls-families" id="pls-families"></div>
+              <div class="pls-divider"></div>
+              <div class="pls-header">Stats</div>
+              <div class="pls-stats" id="pls-stats"><span class="pls-muted">Loading...</span></div>
+              <div class="pls-divider"></div>
+              <div class="pls-header">Selected Node</div>
+              <div class="pls-selected" id="pls-selected"><span class="pls-muted">Click a node to inspect</span></div>
+            </div>
+          </div>
+        </div>`;
+    } else if (sec === "auth") {
       sectionHtml = `
         <div class="config-section-heading">
           <div class="config-section-icon">\uD83D\uDD10</div>
@@ -2964,7 +3072,7 @@ async function renderConfig() {
         </div>
         <div class="config-section-body">
           ${cfg.vault?.available ? `
-            ${vaultKeysAuthRequired ? `<div class="config-row"><div><div class="config-label">Authentication required</div><div class="config-desc">Unlock sensitive controls first, then add provider API keys.</div></div><button class="btn btn-sm btn-primary" onclick="location.hash='#/setup'">Open Setup</button></div>` : ""}
+            ${vaultKeysAuthRequired ? `<div class="config-row"><div><div class="config-label">Authentication required</div><div class="config-desc">Unlock sensitive controls first, then add provider API keys.</div></div><button class="btn btn-sm btn-primary" onclick="__cfgActiveSection='services';localStorage.setItem('halo_config_section','services');renderConfig()">Configure Keys</button></div>` : ""}
             ${vaultKeys.map(k => {
               const pi = PROVIDER_INFO[String(k.provider || "").toLowerCase()] || {};
               const isRequired = pi.required;
@@ -2972,7 +3080,7 @@ async function renderConfig() {
               const catLabel = pi.category === "storage" ? "Storage" : pi.category === "llm" ? "LLM" : pi.category === "tooling" ? "Tooling" : "";
               return `<div class="config-row config-provider-row"><div><div class="config-label">${esc(pi.name || k.provider)}${isRequired ? ' <span class="badge badge-warn" style="font-size:9px;margin-left:6px">REQUIRED</span>' : ""}${catLabel ? ' <span class="badge badge-info" style="font-size:9px;margin-left:4px">' + esc(catLabel) + "</span>" : ""}</div><div class="config-desc">${esc(k.env_var)} \u00B7 ${k.configured ? "Configured" : "Missing"}${k.tested ? " \u00B7 Tested" : ""}</div>${desc ? '<div class="config-desc" style="font-size:10px;margin-top:2px">' + esc(desc) + "</div>" : ""}</div><div style="display:flex;gap:6px;align-items:center"><button class="btn btn-sm" onclick="vaultSetKey('${esc(k.provider)}','${esc(k.env_var)}')">Set Key</button><button class="btn btn-sm" onclick="vaultTestKey('${esc(k.provider)}')">Test</button><button class="btn btn-sm" onclick="vaultRemoveKey('${esc(k.provider)}')">Remove</button></div></div>`;
             }).join("")}
-          ` : `<div class="config-row"><div><div class="config-label">Vault unavailable</div><div class="config-desc">Create/import a PQ wallet to enable encrypted API key storage.</div></div><button class="btn btn-sm btn-primary" onclick="location.hash='#/setup'">Open Setup</button></div>`}
+          ` : `<div class="config-row"><div><div class="config-label">Vault unavailable</div><div class="config-desc">Create/import a PQ wallet to enable encrypted API key storage.</div></div><button class="btn btn-sm btn-primary" onclick="__cfgActiveSection='services';localStorage.setItem('halo_config_section','services');renderConfig()">Configure Keys</button></div>`}
         </div>`;
     } else if (sec === "models") {
       sectionHtml = `
@@ -3100,7 +3208,6 @@ async function renderConfig() {
     } else if (sec === "navigation") {
       const hiddenItems = Array.isArray(wtProfile.hidden_nav_items) ? wtProfile.hidden_nav_items : [];
       const navItems = [
-        { page: "setup", label: "Setup", icon: "\u2699" },
         { page: "agentpmt", label: "AgentPMT", icon: "\u2699" },
         { page: "overview", label: "Overview", icon: "\u25C6", note: "Hides all sub-pages (Genesis, Identification, Communication, Memories, Flow Chart)" },
         { page: "sessions", label: "Sessions", icon: "\u2630" },
@@ -3248,6 +3355,23 @@ async function renderConfig() {
     // ---- Deferred section loading ----
     if (sec === "models") { await injectConfigModelsSection(); }
     if (sec === "funding") { await injectConfigFundingBalance(); }
+    if (sec === "cli-agents") { await injectConfigCliAgents(); }
+    if (sec === "proof-lattice") { await initConfigProofLattice(); }
+
+    // ---- Provider button handlers (integrations section) ----
+    content.querySelectorAll(".setup-provider-config-btn[data-provider]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const provider = btn.dataset.provider || "";
+        const info = PROVIDER_INFO[provider] || {};
+        openVaultModal(provider, info.envVar || providerDefaultEnv(provider));
+      });
+    });
+    content.querySelectorAll(".setup-provider-test-btn[data-provider]").forEach(btn => {
+      btn.addEventListener("click", () => { window.vaultTestKey(btn.dataset.provider || ""); });
+    });
+    content.querySelectorAll(".setup-provider-disconnect-btn[data-provider]").forEach(btn => {
+      btn.addEventListener("click", () => { window.vaultRemoveKey(btn.dataset.provider || ""); });
+    });
   } catch (e) {
     content.innerHTML = `<div class="loading">Error: ${esc(e.message)}</div>`;
   }
@@ -3315,6 +3439,450 @@ function summarizeManagedBackends(config) {
       .filter(Boolean)
       .join(", ") || "none"
   );
+}
+
+// ========================================================================
+// CONFIG: CLI Agent Detection (deferred loader)
+// ========================================================================
+async function injectConfigCliAgents() {
+  const cliAgents = ["claude", "codex", "gemini"];
+  const cliResolved = {};
+  let cliPollTimer = null;
+  let cliPollCount = 0;
+  const maxCliPolls = 15;
+
+  const setCliStatus = (cli, resp, statusEl, authBtn) => {
+    if (resp.installed) {
+      cliResolved[cli] = true;
+      if (resp.authenticated) {
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
+        if (authBtn) { authBtn.disabled = false; authBtn.textContent = "Re-authenticate"; authBtn.classList.remove("btn-primary"); }
+        return;
+      }
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Found</span> <span style="color:var(--yellow)">(not authenticated)</span>';
+      if (authBtn) { authBtn.disabled = false; authBtn.textContent = "Authenticate"; authBtn.classList.add("btn-primary"); }
+      return;
+    }
+    const pkg = cli === "claude" ? "@anthropic-ai/claude-code" : cli === "codex" ? "@openai/codex" : "@google/gemini-cli";
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--yellow)">Not found</span> <span style="color:var(--text-dim);font-size:11px">Install: <code>npm i -g ' + pkg + '</code></span>';
+    if (authBtn) { authBtn.disabled = true; authBtn.textContent = "Authenticate"; authBtn.classList.add("btn-primary"); }
+  };
+
+  const detectCli = async (cli) => {
+    const statusEl = document.getElementById("cli-status-" + cli);
+    const row = document.querySelector('.cli-agent-row[data-cli="' + cli + '"]');
+    const authBtn = row && row.querySelector(".cli-auth-btn");
+    try {
+      const resp = await api("/cli/detect/" + cli);
+      setCliStatus(cli, resp, statusEl, authBtn);
+    } catch (_e) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-dim)">Detection error</span>';
+    }
+  };
+
+  const stopCliPolling = () => { if (cliPollTimer) { clearInterval(cliPollTimer); cliPollTimer = null; } };
+
+  await Promise.allSettled(cliAgents.map(detectCli));
+
+  if (cliAgents.some(cli => !cliResolved[cli])) {
+    cliPollTimer = setInterval(async () => {
+      cliPollCount++;
+      await Promise.allSettled(cliAgents.filter(cli => !cliResolved[cli]).map(detectCli));
+      if (!cliAgents.some(cli => !cliResolved[cli]) || cliPollCount >= maxCliPolls) stopCliPolling();
+    }, 8000);
+  }
+
+  // Auth button handlers — open PTY terminal for OAuth flow
+  let _cliAuthTerm = null;
+  let _cliAuthFitAddon = null;
+  let _cliAuthWs = null;
+  for (const btn of $$(".cli-auth-btn")) {
+    btn.addEventListener("click", async () => {
+      const cli = btn.dataset.cli;
+      const statusEl = document.getElementById("cli-status-" + cli);
+      btn.disabled = true;
+      btn.textContent = "Starting...";
+      try {
+        const resp = await apiPost("/cli/auth/" + cli, {});
+        if (!resp.session_id) throw new Error("no session returned");
+        const termWrap = document.getElementById("cli-auth-terminal-wrap");
+        const termEl = document.getElementById("cli-auth-terminal");
+        const termLabel = document.getElementById("cli-auth-terminal-label");
+        if (termWrap) termWrap.style.display = "block";
+        if (termLabel) termLabel.textContent = cli.charAt(0).toUpperCase() + cli.slice(1) + " authentication — complete the login in your browser";
+        if (_cliAuthWs) { try { _cliAuthWs.close(); } catch (_e) {} _cliAuthWs = null; }
+        if (_cliAuthTerm) { try { _cliAuthTerm.dispose(); } catch (_e) {} _cliAuthTerm = null; }
+        if (termEl) termEl.innerHTML = "";
+        if (typeof Terminal !== "undefined" && termEl) {
+          _cliAuthTerm = new Terminal({ cursorBlink: true, fontSize: 13, theme: { background: "#0a0a0a", foreground: "#33ff33" } });
+          _cliAuthFitAddon = new FitAddon.FitAddon();
+          _cliAuthTerm.loadAddon(_cliAuthFitAddon);
+          _cliAuthTerm.open(termEl);
+          try { _cliAuthFitAddon.fit(); } catch (_e) {}
+          try { _cliAuthTerm.focus(); } catch (_e) {}
+          const proto = location.protocol === "https:" ? "wss:" : "ws:";
+          const wsUrl = proto + "//" + location.host + "/api/cockpit/sessions/" + resp.session_id + "/ws";
+          _cliAuthWs = new WebSocket(wsUrl);
+          _cliAuthWs.binaryType = "arraybuffer";
+          let _opened = false;
+          _cliAuthWs.onmessage = (ev) => {
+            let text = "";
+            if (ev.data instanceof ArrayBuffer) { const bytes = new Uint8Array(ev.data); _cliAuthTerm.write(bytes); text = new TextDecoder().decode(bytes); }
+            else { _cliAuthTerm.write(ev.data); text = ev.data; }
+            if (!_opened) { const m = text.match(/https:\/\/[^\s\x1b\x07]+/); if (m) { _opened = true; window.open(m[0].replace(/[\x00-\x1f]/g, ""), "_blank", "width=600,height=700,scrollbars=yes"); } }
+          };
+          _cliAuthWs.onclose = async () => {
+            _cliAuthTerm.write("\r\n\x1b[90m--- session ended ---\x1b[0m\r\n");
+            btn.disabled = false;
+            try {
+              const detect = await api("/cli/detect/" + cli);
+              setCliStatus(cli, detect, statusEl, btn);
+            } catch (_e) {
+              if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">&#10003; Authenticated</span>';
+              btn.textContent = "Re-authenticate"; btn.classList.remove("btn-primary");
+            }
+          };
+          _cliAuthTerm.onData((data) => { if (_cliAuthWs && _cliAuthWs.readyState === WebSocket.OPEN) _cliAuthWs.send(data); });
+        }
+      } catch (e) {
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Auth error: ' + esc(String(e.message || e)) + '</span>';
+      }
+      btn.disabled = false;
+      btn.textContent = "Authenticate";
+    });
+  }
+  const closeTermBtn = document.getElementById("cli-auth-terminal-close");
+  if (closeTermBtn) {
+    closeTermBtn.addEventListener("click", () => {
+      if (_cliAuthWs) { try { _cliAuthWs.close(); } catch (_e) {} _cliAuthWs = null; }
+      if (_cliAuthTerm) { try { _cliAuthTerm.dispose(); } catch (_e) {} _cliAuthTerm = null; }
+      const termWrap = document.getElementById("cli-auth-terminal-wrap");
+      if (termWrap) termWrap.style.display = "none";
+    });
+  }
+
+  // Cleanup on section change
+  const observer = new MutationObserver(() => {
+    if (!document.getElementById("cli-agents-grid")) { stopCliPolling(); observer.disconnect(); }
+  });
+  observer.observe(content, { childList: true });
+}
+
+// ========================================================================
+// CONFIG: Proof Lattice Three.js (deferred loader)
+// ========================================================================
+async function initConfigProofLattice() {
+  const latticeContainer = document.getElementById("proof-lattice-three");
+  const latticeStatus = document.getElementById("proof-lattice-status");
+  const sidebarFamilies = document.getElementById("pls-families");
+  const sidebarStats = document.getElementById("pls-stats");
+  const sidebarSelected = document.getElementById("pls-selected");
+  if (!latticeContainer) return;
+
+  try {
+    const THREE = await import("three");
+    const OrbitControls = (await import("three/addons/controls/OrbitControls.js")).OrbitControls;
+    const EffectComposer = (await import("three/addons/postprocessing/EffectComposer.js")).EffectComposer;
+    const RenderPass = (await import("three/addons/postprocessing/RenderPass.js")).RenderPass;
+    const UnrealBloomPass = (await import("three/addons/postprocessing/UnrealBloomPass.js")).UnrealBloomPass;
+
+    let DATA = null;
+    try { const res = await fetch("proof-lattice.json"); if (res.ok) DATA = await res.json(); } catch (_e) {}
+    if (!DATA || !DATA.nodes || DATA.nodes.length === 0) {
+      if (latticeStatus) latticeStatus.textContent = "Proof lattice data unavailable";
+      return;
+    }
+    if (!document.getElementById("proof-lattice-three")) return;
+
+    const FAMILY_COLORS = {
+      Core: 0x22c55e, Comms: 0x16a34a, Identity: 0x4ade80, Genesis: 0x86efac,
+      Security: 0xef4444, Crypto: 0xa78bfa, PaymentChannels: 0x34d399,
+      TrustLayer: 0x10b981, Sheaf: 0x059669, Adversarial: 0xf97316,
+      Transparency: 0x6ee7b7, Commitment: 0x15803d, Contracts: 0xa3e635,
+      Integration: 0x84cc16, Bridge: 0xbbf7d0,
+    };
+    const FAMILY_CSS = {};
+    Object.keys(FAMILY_COLORS).forEach(k => { FAMILY_CSS[k] = "#" + FAMILY_COLORS[k].toString(16).padStart(6, "0"); });
+    const GREEN_EMISSIVE = 0x00ff41;
+    const GREEN_EDGE = 0x22c55e;
+
+    const enabledFamilies = {};
+    (DATA.families || []).forEach(f => { enabledFamilies[f] = true; });
+
+    if (sidebarFamilies) {
+      const famCounts = {};
+      DATA.nodes.forEach(n => { famCounts[n.family] = (famCounts[n.family] || 0) + 1; });
+      sidebarFamilies.innerHTML = (DATA.families || []).map(f => {
+        const c = FAMILY_CSS[f] || "#22c55e";
+        return '<label class="pls-fam-row" data-fam="' + f + '"><span class="pls-fam-dot" style="background:' + c + '"></span><span class="pls-fam-name">' + f + '</span><span class="pls-fam-count">' + (famCounts[f] || 0) + '</span></label>';
+      }).join("");
+    }
+
+    const s = DATA.stats || {};
+    if (sidebarStats) {
+      sidebarStats.innerHTML =
+        '<div class="pls-stat-row"><span>Declarations</span><span>' + (s.total_declarations || DATA.nodes.length) + '</span></div>' +
+        '<div class="pls-stat-row"><span>Edges</span><span>' + (s.total_edges || DATA.edges.length) + '</span></div>' +
+        '<div class="pls-stat-row"><span>Files</span><span>' + (s.total_files || "?") + '</span></div>' +
+        '<div class="pls-stat-row"><span>Theorems</span><span>' + ((s.by_kind || {}).theorem || 0) + '</span></div>' +
+        '<div class="pls-stat-row"><span>Defs</span><span>' + ((s.by_kind || {}).def || 0) + '</span></div>';
+    }
+    if (latticeStatus) latticeStatus.textContent = (s.total_declarations || DATA.nodes.length) + " verified Lean declarations";
+
+    const hero = document.getElementById("proof-lattice-hero");
+    const width = (hero ? hero.clientWidth : latticeContainer.clientWidth) || 600;
+    const height = 320;
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x030a04);
+    const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 100);
+    camera.position.set(0, 0, 2.5);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    latticeContainer.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; controls.dampingFactor = 0.08;
+    controls.enableZoom = true; controls.minDistance = 1; controls.maxDistance = 5;
+    controls.autoRotate = true; controls.autoRotateSpeed = 3.0;
+    const clock = new THREE.Clock();
+
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), 0.9, 0.35, 0.65);
+    composer.addPass(bloomPass);
+
+    scene.add(new THREE.AmbientLight(0x0a4020, 0.6));
+    const directional = new THREE.DirectionalLight(0x20b040, 0.7);
+    directional.position.set(2, 2, 2); scene.add(directional);
+    const backLight = new THREE.DirectionalLight(0x084018, 0.4);
+    backLight.position.set(-2, -1, -2); scene.add(backLight);
+    const pointLight = new THREE.PointLight(0x00ff41, 0.8, 5);
+    scene.add(pointLight);
+
+    const nodes = DATA.nodes;
+    const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y), zs = nodes.map(n => n.z);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+    const rX = maxX - minX || 1, rY = maxY - minY || 1, rZ = maxZ - minZ || 1;
+    function norm(n) { return { nx: (n.x - minX) / rX, ny: (n.y - minY) / rY, nz: (n.z - minZ) / rZ }; }
+    const maxImportance = Math.max(...nodes.map(n => n.importance));
+
+    const nodeGroup = new THREE.Group();
+    const nodeMeshes = [];
+    nodes.forEach(node => {
+      const color = FAMILY_COLORS[node.family] || 0x22c55e;
+      const sizeScale = 0.008 + (node.importance / maxImportance) * 0.012;
+      const geo = new THREE.SphereGeometry(sizeScale, 16, 16);
+      const mat = new THREE.MeshPhongMaterial({ color, transparent: true, opacity: 0.95, emissive: GREEN_EMISSIVE, emissiveIntensity: 0.25, shininess: 80 });
+      const mesh = new THREE.Mesh(geo, mat);
+      const p = norm(node);
+      mesh.position.set((p.nx - 0.5) * 2, (p.ny - 0.5) * 2, (p.nz - 0.5) * 2);
+      mesh._family = node.family; mesh._nodeId = node.id; mesh._importance = node.importance;
+      mesh._originalColor = color; mesh._baseScale = 1;
+      nodeGroup.add(mesh); nodeMeshes.push(mesh);
+    });
+    scene.add(nodeGroup);
+
+    const edgeGroup = new THREE.Group();
+    DATA.edges.forEach(pair => {
+      const nA = nodes[pair[0]], nB = nodes[pair[1]];
+      if (!nA || !nB) return;
+      const a = norm(nA), b = norm(nB);
+      const start = new THREE.Vector3((a.nx - 0.5) * 2, (a.ny - 0.5) * 2, (a.nz - 0.5) * 2);
+      const end = new THREE.Vector3((b.nx - 0.5) * 2, (b.ny - 0.5) * 2, (b.nz - 0.5) * 2);
+      const normImp = ((nA.importance + nB.importance) / 2) / maxImportance;
+      const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+      const dir = new THREE.Vector3().subVectors(end, start).normalize();
+      const perp = new THREE.Vector3(-dir.y, dir.x, dir.z * 0.3).normalize();
+      mid.add(perp.multiplyScalar((0.02 + Math.random() * 0.04) * (Math.random() > 0.5 ? 1 : -1)));
+      const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
+      const tubeGeo = new THREE.TubeGeometry(curve, 12, 0.001 + normImp * 0.003, 6, false);
+      const edgeColor = new THREE.Color(GREEN_EDGE);
+      const tubeMat = new THREE.MeshBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.15 + normImp * 0.45 });
+      const tube = new THREE.Mesh(tubeGeo, tubeMat);
+      tube._famA = nA.family; tube._famB = nB.family; tube._nodeA = pair[0]; tube._nodeB = pair[1];
+      tube._defaultColor = edgeColor.clone(); tube._baseColor = edgeColor.clone(); tube._baseOpacity = tubeMat.opacity;
+      edgeGroup.add(tube);
+    });
+    scene.add(edgeGroup);
+
+    // Ambient particles
+    const particleCount = 150;
+    const pGeo = new THREE.BufferGeometry();
+    const pPos = new Float32Array(particleCount * 3), pCol = new Float32Array(particleCount * 3);
+    for (let pi = 0; pi < particleCount; pi++) {
+      pPos[pi * 3] = (Math.random() - 0.5) * 3; pPos[pi * 3 + 1] = (Math.random() - 0.5) * 3; pPos[pi * 3 + 2] = (Math.random() - 0.5) * 3;
+      const cool = 0.3 + Math.random() * 0.5;
+      pCol[pi * 3] = cool * 0.2; pCol[pi * 3 + 1] = cool; pCol[pi * 3 + 2] = cool * 0.25;
+    }
+    pGeo.setAttribute("position", new THREE.BufferAttribute(pPos, 3));
+    pGeo.setAttribute("color", new THREE.BufferAttribute(pCol, 3));
+    const particles = new THREE.Points(pGeo, new THREE.PointsMaterial({ size: 0.015, transparent: true, opacity: 0.25, vertexColors: true }));
+    scene.add(particles);
+
+    // Raycasting
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    let lastHoveredMesh = null, selectedMesh = null, highlightedFamily = null;
+
+    function showSelectedNode(nodeData) {
+      if (!sidebarSelected) return;
+      if (!nodeData) { sidebarSelected.innerHTML = '<span class="pls-muted">Click a node to inspect</span>'; return; }
+      const c = FAMILY_CSS[nodeData.family] || "#22c55e";
+      sidebarSelected.innerHTML = '<div class="pls-sel-name">' + nodeData.name + '</div><div class="pls-sel-meta"><span class="pls-fam-dot" style="background:' + c + '"></span> ' + nodeData.family + ' &middot; ' + nodeData.kind + '</div><div class="pls-sel-file">' + nodeData.file + ':' + nodeData.line + '</div>';
+    }
+
+    function updateFamilyFilter(fam) {
+      highlightedFamily = fam;
+      nodeMeshes.forEach(mesh => {
+        if (fam === null) { mesh.material.opacity = 0.95; mesh.material.emissiveIntensity = 0.25; mesh.visible = enabledFamilies[mesh._family] !== false; mesh.scale.setScalar(1); mesh._baseScale = 1; }
+        else if (mesh._family === fam) { mesh.material.opacity = 1; mesh.material.emissiveIntensity = 0.5; mesh.visible = true; mesh.scale.setScalar(1.5); mesh._baseScale = 1.5; }
+        else { mesh.material.opacity = 0.12; mesh.material.emissiveIntensity = 0.05; mesh.visible = true; mesh.scale.setScalar(0.5); mesh._baseScale = 0.5; }
+      });
+      edgeGroup.children.forEach(tube => {
+        if (fam === null) { tube.material.opacity = tube._baseOpacity; tube.material.color.copy(tube._defaultColor); tube.visible = enabledFamilies[tube._famA] !== false && enabledFamilies[tube._famB] !== false; }
+        else if (tube._famA === fam || tube._famB === fam) { tube.material.opacity = 0.7; tube.material.color.set(0x4ade80); tube.visible = true; }
+        else { tube.material.opacity = 0.03; tube.material.color.copy(tube._defaultColor); tube.visible = true; }
+      });
+    }
+
+    if (sidebarFamilies) {
+      sidebarFamilies.addEventListener("click", e => {
+        const row = e.target.closest(".pls-fam-row");
+        if (!row) return;
+        const fam = row.dataset.fam;
+        if (highlightedFamily === fam) { row.classList.remove("pls-fam-active"); updateFamilyFilter(null); }
+        else { const prev = sidebarFamilies.querySelector(".pls-fam-active"); if (prev) prev.classList.remove("pls-fam-active"); row.classList.add("pls-fam-active"); updateFamilyFilter(fam); }
+      });
+    }
+
+    renderer.domElement.addEventListener("mousemove", e => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObjects(nodeGroup.children);
+      if (hits.length > 0) {
+        const mesh = hits[0].object;
+        if (mesh !== lastHoveredMesh) {
+          if (lastHoveredMesh) lastHoveredMesh.scale.setScalar(lastHoveredMesh._baseScale || 1);
+          lastHoveredMesh = mesh; mesh.scale.setScalar((mesh._baseScale || 1) * 1.6);
+          const nd = nodes.find(n => n.id === mesh._nodeId); if (nd) showSelectedNode(nd);
+        }
+        renderer.domElement.style.cursor = "pointer";
+      } else {
+        if (lastHoveredMesh) lastHoveredMesh.scale.setScalar(lastHoveredMesh._baseScale || 1);
+        lastHoveredMesh = null; if (!selectedMesh) showSelectedNode(null);
+        renderer.domElement.style.cursor = "grab";
+      }
+    });
+
+    renderer.domElement.addEventListener("click", e => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObjects(nodeGroup.children);
+      if (selectedMesh) { selectedMesh.material.color.setHex(selectedMesh._originalColor); selectedMesh.material.emissive.setHex(GREEN_EMISSIVE); selectedMesh.material.emissiveIntensity = 0.25; }
+      if (hits.length > 0) {
+        selectedMesh = hits[0].object;
+        selectedMesh.material.color.setHex(0xffffff); selectedMesh.material.emissive.setHex(0xbbf7d0); selectedMesh.material.emissiveIntensity = 0.8;
+        const nd = nodes.find(n => n.id === selectedMesh._nodeId); if (nd) showSelectedNode(nd);
+      } else { selectedMesh = null; showSelectedNode(null); }
+    });
+
+    renderer.domElement.style.cursor = "grab";
+
+    // Neural firing animation
+    const firingNodes = new Map(), firingEdges = new Map();
+    const FIRE_DURATION = 0.5, NODE_FIRE_CHANCE = 0.08, EDGE_FIRE_CHANCE = 0.12, PROPAGATION_DELAY = 0.03, CASCADE_CHANCE = 0.5;
+    let elapsedTime = 0, animationId = 0;
+
+    function animate() {
+      animationId = requestAnimationFrame(animate);
+      const delta = clock.getDelta(); elapsedTime += delta; controls.update();
+      const pulse = Math.sin(elapsedTime * 2.5) * 0.5 + 0.5;
+      const slowPulse = Math.sin(elapsedTime * 1.5) * 0.4 + 0.6;
+      pointLight.intensity = 0.3 + pulse * 1.2;
+
+      if (Math.random() < NODE_FIRE_CHANCE) {
+        const idx = Math.floor(Math.random() * nodeMeshes.length);
+        if (!firingNodes.has(idx)) {
+          firingNodes.set(idx, { startTime: elapsedTime, intensity: 0.9 + Math.random() * 0.1 });
+          edgeGroup.children.forEach((tube, edgeIdx) => {
+            if (tube._nodeA === idx || tube._nodeB === idx) {
+              if (!firingEdges.has(edgeIdx)) {
+                firingEdges.set(edgeIdx, { startTime: elapsedTime + PROPAGATION_DELAY, intensity: 0.9 + Math.random() * 0.1 });
+                if (Math.random() < CASCADE_CHANCE) {
+                  const target = tube._nodeA === idx ? tube._nodeB : tube._nodeA;
+                  if (!firingNodes.has(target)) firingNodes.set(target, { startTime: elapsedTime + PROPAGATION_DELAY * 2.5, intensity: 0.75 + Math.random() * 0.2 });
+                }
+              }
+            }
+          });
+        }
+      }
+
+      nodeMeshes.forEach((mesh, i) => {
+        if (!mesh.material) return;
+        const nodePhase = Math.sin(elapsedTime * 2.5 + i * 0.03) * 0.3 + 0.7;
+        let emInt = 0.15 + nodePhase * slowPulse * 0.5;
+        let targetScale = mesh._baseScale || 1;
+        const firing = firingNodes.get(i);
+        if (firing) {
+          const fe = elapsedTime - firing.startTime;
+          if (fe >= 0 && fe < FIRE_DURATION) {
+            const fp = fe / FIRE_DURATION;
+            const fi = fp < 0.12 ? fp / 0.12 : Math.pow(1 - ((fp - 0.12) / 0.88), 1.5);
+            emInt = 0.4 + firing.intensity * fi * 3.0; targetScale = (mesh._baseScale || 1) * (1 + fi * 0.6);
+            mesh.material.emissive.setHex(fi > 0.3 ? 0xbbf7d0 : fi > 0.15 ? 0x86efac : GREEN_EMISSIVE);
+            if (fi > 0.3) mesh.material.color.setHex(0xffffff); else mesh.material.color.setHex(mesh._originalColor);
+          } else if (fe >= FIRE_DURATION) { firingNodes.delete(i); mesh.material.emissive.setHex(GREEN_EMISSIVE); mesh.material.color.setHex(mesh._originalColor); }
+        } else { mesh.material.emissive.setHex(GREEN_EMISSIVE); }
+        mesh.material.emissiveIntensity = emInt;
+        mesh.scale.setScalar(mesh.scale.x + (targetScale - mesh.scale.x) * 0.15);
+      });
+
+      edgeGroup.children.forEach((tube, eIdx) => {
+        const firing = firingEdges.get(eIdx);
+        if (firing) {
+          const fe = elapsedTime - firing.startTime;
+          if (fe >= 0 && fe < FIRE_DURATION) {
+            const fi = Math.exp(-Math.pow(((fe / FIRE_DURATION) * 1.3 - 0.5) / 0.2, 2)) * firing.intensity;
+            if (fi > 0.2) { tube.material.color.setHex(0xbbf7d0); tube.material.opacity = Math.min(1, 0.6 + fi * 0.4); }
+            else if (fi > 0.08) { tube.material.color.setHex(0x4ade80); tube.material.opacity = Math.min(1, 0.4 + fi * 0.4); }
+            else { tube.material.color.copy(tube._baseColor); tube.material.opacity = tube._baseOpacity; }
+          } else if (fe >= FIRE_DURATION) { firingEdges.delete(eIdx); tube.material.color.copy(tube._baseColor); tube.material.opacity = tube._baseOpacity; }
+        }
+      });
+
+      bloomPass.strength = 0.6 + Math.min((firingNodes.size + firingEdges.size) * 0.03, 0.5);
+      particles.rotation.y += delta * 0.08; particles.rotation.x += delta * 0.04;
+      composer.render();
+    }
+    animationId = requestAnimationFrame(animate);
+
+    function onResize() {
+      const h = document.getElementById("proof-lattice-hero");
+      if (!h) return;
+      camera.aspect = (h.clientWidth || 600) / 320;
+      camera.updateProjectionMatrix(); renderer.setSize(h.clientWidth || 600, 320); composer.setSize(h.clientWidth || 600, 320);
+    }
+    window.addEventListener("resize", onResize);
+
+    const latticeObserver = new MutationObserver(() => {
+      if (!document.getElementById("proof-lattice-three")) {
+        cancelAnimationFrame(animationId); window.removeEventListener("resize", onResize);
+        renderer.dispose(); pGeo.dispose(); latticeObserver.disconnect();
+      }
+    });
+    latticeObserver.observe(content, { childList: true });
+  } catch (err) {
+    console.warn("Proof lattice init failed:", err);
+    if (latticeStatus) latticeStatus.textContent = "Proof lattice visualization unavailable";
+  }
 }
 
 window.modelsLoginHuggingFace = async function modelsLoginHuggingFace() {
@@ -3480,3036 +4048,7 @@ function providerDefaultEnv(provider) {
   );
 }
 
-// ========================================================================
-// SETUP V3 — Dual-mode helpers (wizard + dashboard)
-// ========================================================================
-
-let _setupV3WizardStep = 1;
-
-window.toggleSetupSection = function toggleSetupSection(id) {
-  const section = document.getElementById("s-" + id);
-  if (!section) return;
-  section.classList.toggle("open");
-};
-
-window.goSetupStep = function goSetupStep(step) {
-  _setupV3WizardStep = Math.max(1, Math.min(4, step));
-  const steps = document.querySelectorAll(".wizard-step");
-  steps.forEach((el) => {
-    el.classList.toggle("active", el.dataset.step === String(_setupV3WizardStep));
-  });
-  // Update spine dots
-  document.querySelectorAll(".wizard-spine-dot").forEach((dot) => {
-    const n = Number(dot.dataset.step);
-    dot.classList.remove("active", "done");
-    if (n === _setupV3WizardStep) dot.classList.add("active");
-    else if (n < _setupV3WizardStep) dot.classList.add("done");
-  });
-  // Update spine lines
-  document.querySelectorAll(".wizard-spine-line").forEach((line) => {
-    const after = Number(line.dataset.after);
-    line.classList.toggle("filled", after < _setupV3WizardStep);
-  });
-};
-
-window.skipToSetupPower = function skipToSetupPower() {
-  try { localStorage.setItem("halo_setup_mode", "power"); } catch (_e) {}
-  renderSetup();
-};
-
-function updateSetupCompletion(sectionStates) {
-  const doneCount = Object.values(sectionStates).filter(Boolean).length;
-  const total = Object.keys(sectionStates).length;
-  // Update completion bar segments
-  const names = ["cli", "llm", "wallet", "technical"];
-  names.forEach((name) => {
-    const seg = document.querySelector(`.completion-seg[data-section="${name}"]`);
-    if (seg) {
-      seg.classList.remove("done", "partial");
-      if (sectionStates[name] === true) seg.classList.add("done");
-      else if (sectionStates[name] === "partial") seg.classList.add("partial");
-    }
-  });
-  // Update label
-  const label = document.getElementById("completion-label");
-  if (label) label.textContent = `${doneCount}/${total}`;
-  // Update Hal subtitle
-  const sub = document.getElementById("halo-topbar-sub");
-  if (sub) {
-    if (doneCount === total) {
-      sub.textContent = "All systems nominal. Ready to initiate.";
-    } else if (doneCount > 0) {
-      sub.textContent = `Everything's looking good. ${doneCount} of ${total} sections complete.`;
-    } else {
-      sub.textContent = "Let's get set up.";
-    }
-  }
-  // Update overall dot
-  const dot = document.getElementById("halo-overall-dot");
-  if (dot) {
-    dot.classList.remove("g", "a", "r");
-    if (doneCount === total) dot.classList.add("g");
-    else if (doneCount > 0) dot.classList.add("a");
-  }
-  // Update INITIATE button — only needs a CLI authenticated or local model
-  const btn = document.getElementById("setup-initiate-btn");
-  if (btn) {
-    const ready = !!(sectionStates.cli || sectionStates.llm);
-    btn.disabled = !ready;
-    if (!ready) btn.title = "Authenticate at least one CLI or configure a local model";
-    else btn.title = "";
-  }
-}
-
-function setupV3SectionSummaryHtml(id, state) {
-  switch (id) {
-    case "cli": {
-      const c = state.cliConnected || 0;
-      const p = state.cliPending || 0;
-      let pills = "";
-      if (c > 0) pills += `<span class="pill ok">${c} connected</span>`;
-      if (p > 0) pills += `<span class="pill warn">${p} pending</span>`;
-      if (!c && !p) pills = '<span class="pill off">detecting</span>';
-      return pills;
-    }
-    case "identity": {
-      const anchors = (state.deviceDone ? 1 : 0) + (state.networkDone ? 1 : 0) + (state.agentDone ? 1 : 0);
-      return `<span class="pill ${anchors === 3 ? "ok" : anchors > 0 ? "warn" : "off"}">${anchors}/3 anchors</span>`;
-    }
-    case "llm":
-      return state.llmDone
-        ? `<span class="pill ok">${state.llmLabel || "configured"}</span>`
-        : '<span class="pill warn">configure</span>';
-    case "wallet": {
-      let pills = "";
-      pills += state.walletBound
-        ? '<span class="pill ok">bound</span>'
-        : '<span class="pill off">not bound</span>';
-      return pills;
-    }
-    case "technical":
-      return '<span class="pill off">configure</span>';
-    default:
-      return "";
-  }
-}
-
-// ========================================================================
-
-async function renderSetup() {
-  const ctx = consumeSetupContext();
-
-  // Fetch live state
-  let vaultKeys = [];
-  let vaultAvailable = false;
-  try {
-    const vr = await api("/vault/keys");
-    vaultKeys = vr.keys || [];
-    vaultAvailable = true;
-  } catch (_e) {
-    /* vault locked or unavailable */
-  }
-
-  let cfg = null;
-  try {
-    cfg = await api("/config");
-  } catch (_e) {}
-  const authCfg = (cfg && cfg.authentication) || {};
-  const isAuthenticated = !!authCfg.authenticated;
-  const dashboardAuthRequired = !!authCfg.required;
-  const hasWallet = cfg && cfg.pq_wallet;
-  const ss = (cfg && cfg.setup_complete) || {
-    identity: false,
-    wallet: false,
-    agentpmt: false,
-    llm: false,
-    complete: false,
-  };
-  const walletStatus = (cfg && cfg.wallet_status) || {};
-
-  // Build status lookup from vault keys
-  const keyStatus = {};
-  vaultKeys.forEach((k) => {
-    keyStatus[String(k.provider || "").toLowerCase()] = k;
-  });
-
-  function providerStatus(provider) {
-    const v = keyStatus[provider];
-    if (!v) return { configured: false, tested: false };
-    return { configured: !!v.configured, tested: !!v.tested };
-  }
-
-  function statusBadgeHtml(provider) {
-    const s = providerStatus(provider);
-    if (s.tested) return '<span class="badge badge-ok">Verified</span>';
-    if (s.configured)
-      return '<span class="badge badge-warn">Configured (untested)</span>';
-    return '<span class="badge badge-muted">Not configured</span>';
-  }
-
-  function providerCard(provider) {
-    const info = PROVIDER_INFO[provider] || {
-      name: provider,
-      envVar: providerDefaultEnv(provider),
-      keyUrl: "#",
-      description: "",
-    };
-    const s = providerStatus(provider);
-    const docsLink =
-      info.keyUrl && info.keyUrl !== "#"
-        ? `<a class="btn btn-sm" href="${esc(info.keyUrl)}" target="_blank" rel="noopener noreferrer">Get Key</a>`
-        : "";
-    return `
-      <div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
-        <div style="flex:1;min-width:180px">
-          <div style="font-size:13px">${esc(info.name)}</div>
-          <div style="font-size:10px;color:var(--text-dim);margin-top:2px">${esc(info.envVar)}</div>
-          ${info.description ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px">${esc(info.description)}</div>` : ""}
-        </div>
-        <div style="display:flex;gap:6px;align-items:center">
-          ${statusBadgeHtml(provider)}
-          ${docsLink}
-          <button class="btn btn-sm btn-primary setup-provider-config-btn" data-provider="${esc(provider)}">Set Key</button>
-          ${s.configured ? `<button class="btn btn-sm setup-provider-test-btn" data-provider="${esc(provider)}">Test</button>` : ""}
-          ${s.configured ? `<button class="btn btn-sm setup-provider-disconnect-btn" data-provider="${esc(provider)}" title="Remove this key">Disconnect</button>` : ""}
-        </div>
-      </div>
-    `;
-  }
-
-  const optionalLLM = Object.keys(PROVIDER_INFO).filter(
-    (p) => !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "llm",
-  );
-  const optionalStorage = Object.keys(PROVIDER_INFO).filter(
-    (p) =>
-      !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "storage",
-  );
-  const optionalTooling = Object.keys(PROVIDER_INFO).filter(
-    (p) =>
-      !PROVIDER_INFO[p].required && PROVIDER_INFO[p].category === "tooling",
-  );
-
-  // Identity profile/state
-  let savedProfile = { display_name: "", avatar_type: "none" };
-  let identityCfg = { anonymous_mode: false };
-  let tierCfg = { tier: "" };
-  try {
-    savedProfile = await api("/profile");
-  } catch (_e) {}
-  try {
-    identityCfg = (await api("/identity/status")) || identityCfg;
-  } catch (_e) {}
-  try {
-    tierCfg = (await api("/identity/tier")) || tierCfg;
-  } catch (_e) {}
-  const profileSet = !!(
-    savedProfile.display_name &&
-    String(savedProfile.display_name).trim().length > 0
-  );
-
-  // Step states
-  const walletComplete = ss.wallet !== undefined ? ss.wallet : ss.agentpmt;
-  const step1Done = walletComplete;
-  const step2Done = ss.llm;
-  const identityDone =
-    profileSet || !!identityCfg.anonymous_mode || ss.identity;
-  const localIdentityDone = !!isAuthenticated || !!hasWallet;
-  const allDone = ss.complete || (identityDone && walletComplete && step2Done);
-
-  const pmtToolCount = (cfg && cfg.agentpmt && cfg.agentpmt.tool_count) || 0;
-  const agentpmtConnected = !!walletStatus.agentpmt_connected;
-  const agentaddressConnected = !!walletStatus.agentaddress_connected;
-  const agentaddressAddress = String(walletStatus.agentaddress_address || "");
-  const walletPath = agentpmtConnected
-    ? "agentpmt"
-    : agentaddressConnected
-      ? "agentaddress"
-      : "none";
-  const hasAnyWallet = walletPath !== "none";
-  const walletCardDesc =
-    walletPath === "agentaddress"
-      ? "Agent identity ready for autonomous agents"
-      : `Connect to AgentPMT to unlock ${pmtToolCount > 0 ? pmtToolCount + "+" : ""} tools, workflows, and budget management`;
-
-  // Card classes
-  const identityCardClass = identityDone ? "card-done" : "card-active";
-  const c1c = step1Done ? "card-done" : "card-active";
-  const c2c = step1Done
-    ? step2Done
-      ? "card-done"
-      : "card-active"
-    : "card-locked";
-  const c3c = allDone ? "card-done card-celebrate" : "card-locked";
-  const initials =
-    (savedProfile.display_name || "?")
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((w) => w[0])
-      .join("")
-      .slice(0, 2)
-      .toUpperCase() || "?";
-  const hasSavedProfileName =
-    !!savedProfile.name_locked ||
-    !!(savedProfile.display_name && String(savedProfile.display_name).trim());
-  let savedSecurityTier = "";
-  try {
-    savedSecurityTier =
-      localStorage.getItem("halo_identity_security_tier") || "";
-  } catch (_e) {}
-  const securityTierImageByKey = {
-    "max-safe": "img/agenthalosafe_badge.png",
-    "less-safe": "img/agenthalomediumsecurity_badge.png",
-    "low-security": "img/agenthalolowsecurity_badge.png",
-  };
-  const showLowSafetyTierOption = false;
-  const deferIdentityRoadmapTracks = true;
-  const backendDefaultTier = securityTierImageByKey[
-    String(tierCfg.default_tier || "").trim()
-  ]
-    ? String(tierCfg.default_tier).trim()
-    : "max-safe";
-  const serverTier = String(tierCfg.tier || "").trim();
-  // If the server has a tier set, use it. Otherwise ignore localStorage (may be stale from
-  // a previous install) and default to max-safe.
-  const preferredTier = securityTierImageByKey[serverTier]
-    ? serverTier
-    : backendDefaultTier;
-  const appliedSecurityTier = securityTierImageByKey[serverTier]
-    ? serverTier
-    : "";
-  const initialSecurityTier =
-    securityTierImageByKey[preferredTier] &&
-    (showLowSafetyTierOption || preferredTier !== "why-bother")
-      ? preferredTier
-      : backendDefaultTier;
-  if (securityTierImageByKey[serverTier]) {
-    try {
-      localStorage.setItem("halo_identity_security_tier", serverTier);
-    } catch (_e) {}
-  }
-  const identityConfigured = !!(
-    identityCfg.device_configured && identityCfg.network_configured
-  );
-  const willAutoApply =
-    !identityCfg.anonymous_mode &&
-    !identityConfigured &&
-    !tierCfg.configured &&
-    initialSecurityTier === "max-safe";
-  const hideSafetyUI =
-    identityCfg.anonymous_mode ||
-    identityConfigured ||
-    tierCfg.configured ||
-    willAutoApply;
-
-  // Pre-compute LLM step done-state HTML (cannot use IIFE inside template literals)
-  const _step2DoneHtml = (() => {
-    if (!step2Done) return "";
-    const lmChosen =
-      cfg &&
-      cfg.local_models &&
-      cfg.local_models.config &&
-      cfg.local_models.config.local_models_chosen;
-    const lm = (cfg && cfg.local_models) || {};
-    const backendStatus = lm.backend || {};
-    const anyBackendUp = !!backendStatus.healthy;
-    const servedModels = Array.isArray(backendStatus.served_models)
-      ? backendStatus.served_models
-      : [];
-    const backendName = backendStatus.base_url ? "vLLM" : "local backend";
-    if (lmChosen) {
-      const statusLine = anyBackendUp
-        ? '<span style="color:var(--green)">&#9679;</span> Connected &mdash; ' +
-          (servedModels.length
-            ? esc(servedModels.slice(0, 3).join(", ")) +
-              (servedModels.length > 3
-                ? " (+" + (servedModels.length - 3) + ")"
-                : "")
-            : backendName + " ready")
-        : '<span style="color:var(--amber)">&#9679;</span> No backend running &mdash; start a model from the Models tab';
-      return (
-        '<div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">' +
-        '<div style="font-size:28px">&#128421;</div>' +
-        "<div>" +
-        '<div style="font-size:14px;font-weight:600">Local Models</div>' +
-        '<div style="font-size:12px;color:var(--text-dim)">' +
-        statusLine +
-        "</div>" +
-        "</div></div>" +
-        '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
-        '<a href="#/config" class="btn btn-sm btn-primary" style="border-radius:6px">Open Configuration</a>' +
-        '<button class="btn btn-sm setup-disconnect-local-models-btn" style="border-color:var(--red);color:var(--red);border-radius:6px">Disconnect</button>' +
-        "</div>"
-      );
-    }
-    return (
-      '<div class="setup-success-banner"><span class="success-icon">&#10003;</span><span>LLM access configured &mdash; manage providers from Configuration</span></div>' +
-      '<div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
-      '<a href="#/config" class="btn btn-sm btn-primary" style="border-radius:6px">Open Configuration</a>' +
-      "</div>"
-    );
-  })();
-
-  // ---- Determine setup mode: wizard vs dashboard ----
-  const hasValidIdentity = identityDone || localIdentityDone;
-  const savedSetupMode = (() => { try { return localStorage.getItem("halo_setup_mode"); } catch (_e) { return null; } })();
-  const showWizard = !hasValidIdentity && savedSetupMode !== "power";
-
-  // ---- Build section state for completion bar ----
-  const _sectionStates = {
-    cli: false,     // updated after CLI detection
-    llm: step2Done,
-    wallet: walletComplete,
-    technical: false, // manual configure
-  };
-
-  // ---- Reusable HTML blocks ----
-
-  // CLI section body
-  const _cliBodyHtml = `
-      <div class="cli-agents-grid" id="cli-agents-grid">
-        <div class="cli-agent-row" data-cli="claude">
-          <div class="cli-agent-info">
-            <div class="cli-agent-name">Claude Code</div>
-            <div class="cli-agent-provider">Anthropic</div>
-          </div>
-          <div class="cli-agent-status" id="cli-status-claude">Detecting...</div>
-          <div class="cli-agent-actions">
-            <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="claude" disabled>Authenticate</button>
-          </div>
-        </div>
-        <div class="cli-agent-row" data-cli="codex">
-          <div class="cli-agent-info">
-            <div class="cli-agent-name">Codex</div>
-            <div class="cli-agent-provider">OpenAI</div>
-          </div>
-          <div class="cli-agent-status" id="cli-status-codex">Detecting...</div>
-          <div class="cli-agent-actions">
-            <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="codex" disabled>Authenticate</button>
-          </div>
-        </div>
-        <div class="cli-agent-row" data-cli="gemini">
-          <div class="cli-agent-info">
-            <div class="cli-agent-name">Gemini CLI</div>
-            <div class="cli-agent-provider">Google</div>
-          </div>
-          <div class="cli-agent-status" id="cli-status-gemini">Detecting...</div>
-          <div class="cli-agent-actions">
-            <button class="btn btn-sm btn-primary cli-auth-btn" data-cli="gemini" disabled>Authenticate</button>
-          </div>
-        </div>
-      </div>
-      ${!(cfg && cfg.container_runtime && cfg.container_runtime.available)
-        ? `<div class="info-banner amber" style="margin-top:10px">
-            <span style="font-weight:600">&#9888; Native session mode active</span> &mdash;
-            Subsidiary agents launch as native local processes. No Docker/Podman required.
-          </div>`
-        : `<div style="margin-top:10px;font-size:11px;color:var(--halo-text-dim)">
-            <span style="color:var(--halo-green)">&#10003;</span> Native launcher: <strong>${cfg.container_runtime.engine}</strong>
-          </div>`
-      }
-      <div id="cli-auth-terminal-wrap" style="display:none;margin-top:14px">
-        <div style="font-size:12px;color:var(--accent);margin-bottom:6px" id="cli-auth-terminal-label">Authentication session</div>
-        <div id="cli-auth-terminal" style="height:260px;border:1px solid var(--border);border-radius:6px;overflow:hidden"></div>
-        <div style="margin-top:8px;display:flex;gap:8px">
-          <button class="btn btn-sm" id="cli-auth-terminal-close">Close Terminal</button>
-        </div>
-      </div>`;
-
-  // Identity section body
-  const _identityBodyHtml = `
-      <div id="setup-identity">
-        <div class="proof-lattice-wrap" id="proof-lattice-wrap">
-          <div class="proof-lattice-hero" id="proof-lattice-hero">
-            <div id="proof-lattice-three"></div>
-            <div class="proof-lattice-status" id="proof-lattice-status">Initializing proof lattice...</div>
-          </div>
-          <div class="proof-lattice-sidebar" id="proof-lattice-sidebar">
-            <div class="pls-header">Proof Families</div>
-            <div class="pls-families" id="pls-families"></div>
-            <div class="pls-divider"></div>
-            <div class="pls-header">Stats</div>
-            <div class="pls-stats" id="pls-stats"><span class="pls-muted">Loading...</span></div>
-            <div class="pls-divider"></div>
-            <div class="pls-header">Selected Node</div>
-            <div class="pls-selected" id="pls-selected"><span class="pls-muted">Click a node to inspect</span></div>
-          </div>
-        </div>
-        <details class="setup-alt-path" id="setup-device-details" style="margin-top:12px">
-          <summary>Device Identity ${identityCfg.device_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ""}</summary>
-          <div class="alt-body">
-            <div class="device-fingerprint-layout">
-              <div class="device-fingerprint-main" id="device-main-content">
-                ${identityCfg.anonymous_mode
-                  ? '<div style="text-align:center;padding:20px 0"><p style="font-size:12px;color:var(--text-dim)">Anonymous mode active &mdash; device identity disabled.</p></div>'
-                  : identityCfg.device_configured
-                    ? `<div id="device-configured-display">
-                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-                          <span style="font-size:18px;color:var(--green)">&#9432;</span>
-                          <span style="font-size:13px;color:var(--green);font-weight:700">Device Identity Verified</span>
-                        </div>
-                        <div id="device-scan-summary" style="font-size:12px;color:var(--text-muted);line-height:1.8">Loading device details...</div>
-                        <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
-                      </div>`
-                    : `<div id="device-manual-setup">
-                        <div class="identity-option-checklist">
-                          <label class="identity-option-check"><input type="checkbox" id="tier-device-enable"> Enable device identity</label>
-                          <label class="identity-option-check"><input type="checkbox" id="tier-device-components"> Include hardware components</label>
-                          <label class="identity-option-check"><input type="checkbox" id="tier-device-browser"> Include browser fingerprint</label>
-                        </div>
-                        <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">Scan your device for unique hardware identifiers. All data stays local.</p>
-                        <button class="btn btn-primary btn-sm" id="device-scan-btn" style="border-radius:6px;padding:8px 16px;margin-bottom:12px">Scan Device</button>
-                        <div id="device-scan-results" style="display:none;width:100%;max-width:460px">
-                          <div id="device-components-list"></div>
-                          <div id="device-entropy-bar" style="margin:12px 0"></div>
-                          <button class="btn btn-primary btn-sm" id="device-save-btn" style="border-radius:6px;padding:8px 16px">Save Device Identity</button>
-                        </div>
-                        <div id="device-scan-status" style="font-size:12px;margin-top:8px"></div>
-                      </div>`
-                }
-              </div>
-              <div class="device-fingerprint-visual">
-                <img src="img/agenthalofingerprint_panel.png" alt="Device identity" onerror="this.style.display='none'">
-              </div>
-            </div>
-          </div>
-        </details>
-        <details class="setup-alt-path" id="setup-network-details" style="margin-top:12px">
-          <summary>Network Identity ${identityCfg.network_configured ? '<span class="setup-inline-status status-done">&#10003; Complete</span>' : ""}</summary>
-          <div class="alt-body">
-            <div class="network-identity-layout">
-              <div class="network-identity-main" id="network-main-content">
-                ${identityCfg.anonymous_mode
-                  ? '<div style="text-align:center;padding:20px 0"><p style="font-size:12px;color:var(--text-dim)">Anonymous mode active &mdash; network identity disabled.</p></div>'
-                  : identityCfg.network_configured
-                    ? `<div id="network-configured-display">
-                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-                          <span style="font-size:18px;color:var(--green)">&#9432;</span>
-                          <span style="font-size:13px;color:var(--green);font-weight:700">Network Identity Verified</span>
-                        </div>
-                        <div id="network-info" style="font-size:12px;color:var(--text-muted);line-height:1.8">Loading network details...</div>
-                        <div id="network-scan-status" style="font-size:12px;margin-top:8px"></div>
-                      </div>`
-                    : `<div id="network-manual-setup">
-                        <div class="identity-option-checklist">
-                          <label class="identity-option-check"><input type="checkbox" id="share-local-ip"> Share local IP (hashed)</label>
-                          <label class="identity-option-check"><input type="checkbox" id="share-mac"> Share MAC (hashed)</label>
-                        </div>
-                        <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px;max-width:460px">Optionally share network identifiers to strengthen your identity.</p>
-                        <div id="network-info" style="font-size:13px;color:var(--text-dim);width:100%;max-width:460px">Loading network info...</div>
-                        <button class="btn btn-sm btn-primary" id="network-save-btn" style="border-radius:6px;padding:8px 16px;margin-top:10px">Save Network Identity</button>
-                        <p style="font-size:11px;color:var(--text-dim);margin-top:8px;max-width:460px">IP/MAC values are hashed before storage.</p>
-                      </div>`
-                }
-              </div>
-              <div class="network-identity-visual">
-                <img src="img/agenthalonetworkidentity_panel.png" alt="Network identity" onerror="this.style.display='none'">
-              </div>
-            </div>
-          </div>
-        </details>
-        <details class="setup-alt-path" id="setup-social-details" style="margin-top:12px;${deferIdentityRoadmapTracks ? "display:none;" : ""}">
-          <summary>Social Login &amp; OAuth Tokens</summary>
-          <div class="alt-body">
-            <div class="social-identity-layout">
-              <div class="social-identity-main">
-                <div class="identity-option-checklist" id="social-provider-checklist">
-                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="google"> Google</label>
-                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="github"> GitHub</label>
-                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="microsoft"> Microsoft</label>
-                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="discord"> Discord</label>
-                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="apple"> Apple</label>
-                  <label class="identity-option-check"><input type="checkbox" class="social-provider-check" data-provider="facebook"> Facebook</label>
-                </div>
-                <div class="social-connect-controls">
-                  <label class="social-expiry-label" for="social-expiry-days">Token expiry (days)</label>
-                  <input type="number" min="1" max="365" value="30" id="social-expiry-days" class="setup-input social-expiry-input">
-                  <button class="btn btn-primary btn-sm" id="social-connect-selected-btn" style="border-radius:6px;padding:8px 16px">Connect Selected</button>
-                  <button class="btn btn-sm" id="social-revoke-selected-btn" style="border-radius:6px;padding:8px 16px">Revoke Selected</button>
-                </div>
-                <div id="social-provider-status" class="social-provider-status">Loading social identity status...</div>
-              </div>
-            </div>
-          </div>
-        </details>
-        <details class="setup-alt-path" id="setup-super-secure-details" style="margin-top:12px;${deferIdentityRoadmapTracks ? "display:none;" : ""}">
-          <summary>Advanced Verification Tracks</summary>
-          <div class="alt-body">
-            <div class="super-secure-layout">
-              <div class="super-secure-main">
-                <div class="super-secure-item">
-                  <div class="super-secure-item-title">Passkey (WebAuthn)</div>
-                  <p>Requires browser/device registration.</p>
-                  <label class="identity-option-check"><input type="checkbox" id="super-passkey-enabled"> Enabled</label>
-                  <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="passkey">Apply Passkey</button>
-                </div>
-                <div class="super-secure-item">
-                  <div class="super-secure-item-title">Hardware Security Key</div>
-                  <p>Requires a FIDO2 key.</p>
-                  <label class="identity-option-check"><input type="checkbox" id="super-security-key-enabled"> Enabled</label>
-                  <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="security_key">Apply Security Key</button>
-                </div>
-                <div class="super-secure-item">
-                  <div class="super-secure-item-title">Two-Factor Auth (TOTP)</div>
-                  <p>Requires authenticator app.</p>
-                  <label class="identity-option-check"><input type="checkbox" id="super-totp-enabled"> Enabled</label>
-                  <input type="text" id="super-totp-label" class="setup-input" placeholder="Authenticator label (optional)">
-                  <button class="btn btn-sm btn-primary super-secure-save-btn" type="button" data-option="totp">Apply TOTP</button>
-                </div>
-              </div>
-              <div class="super-secure-visual">
-                <div class="super-secure-note">
-                  <div class="super-secure-note-title">External Steps Required</div>
-                  <p>These tracks raise assurance and are recorded immutably.</p>
-                  <div id="super-secure-status" class="social-provider-status" style="margin-top:10px"></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </details>
-        <details class="setup-alt-path" style="margin-top:12px" id="setup-genesis-details">
-          <summary>Genesis Provenance <span id="genesis-status-inline"></span></summary>
-          <div class="alt-body" id="genesis-provenance-body">
-            <div style="font-size:11px;color:var(--halo-text-dim)">Loading genesis data...</div>
-          </div>
-        </details>
-        ${deferIdentityRoadmapTracks ? `
-        <details class="setup-alt-path" style="margin-top:14px" id="agentaddress-section">
-          <summary>Agent Identity <span class="setup-inline-status status-done">&#10003; Complete</span></summary>
-          <div class="alt-body">
-            <div class="agentaddress-layout">
-              <div class="agentaddress-main">
-                <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px">
-                  Your agent identity is auto-generated on first launch.
-                </p>
-                <div id="agentaddress-status" style="font-size:12px;color:var(--text-dim);margin-bottom:10px"></div>
-                <div style="margin-bottom:10px">
-                  <button class="btn btn-sm btn-primary" id="agentidentity-genesis-btn" type="button" style="display:none;font-size:11px;padding:6px 14px;border-radius:5px">Generate from Genesis</button>
-                  <button class="btn btn-sm" id="agentidentity-retry-btn" type="button" style="display:none;font-size:11px;padding:6px 14px;border-radius:5px">Retry Auto Setup</button>
-                </div>
-                <div id="agentaddress-output" style="display:none;border:1px solid var(--border);border-radius:8px;padding:12px;background:rgba(4,14,8,0.45)">
-                  <div style="font-size:12px;color:var(--green);margin-bottom:8px">&#10003; Agent identity ready</div>
-                  <div class="wallet-creds-grid">
-                    <div class="wallet-cred-row">
-                      <strong>Address</strong>
-                      <code id="agentaddress-evm-address"></code>
-                      <button class="btn btn-sm agentaddress-copy-btn" type="button" data-copy-target="agentaddress-evm-address">Copy</button>
-                    </div>
-                  </div>
-                  <div style="margin-top:10px">
-                    <button type="button" id="vault-info-toggle" style="background:none;border:1px solid var(--border);border-radius:5px;color:var(--text-muted);font-size:11px;padding:4px 10px;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
-                      <span class="info-icon" style="font-size:13px">&#9432;</span> Key Storage
-                    </button>
-                    <div id="vault-info-detail" class="setup-info-box" style="display:none;margin-top:8px">
-                      <span>Your private key and recovery phrase are encrypted in the local vault (AES-256-GCM).
-                        CLI: <code style="font-size:10px">agenthalo vault get agent_wallet_private_key</code>.
-                        Vault file: <code style="font-size:10px">~/.agenthalo/vault.enc</code>.</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="agentaddress-visual">
-                <div style="text-align:center;font-size:9px;color:var(--text-dim);margin-bottom:4px">Works on all EVM-compatible chains</div>
-                <img src="img/agenthaloidentity.png" alt="Agent identity" onerror="this.style.display='none'">
-              </div>
-            </div>
-          </div>
-        </details>` : ""}
-      </div>`;
-
-  // LLM section body
-  const _llmBodyHtml = `
-      <div id="setup-llm">
-        ${step2Done
-          ? _step2DoneHtml
-          : `<div class="setup-llm-choice-grid">
-              <div class="setup-llm-option" id="setup-local-models">
-                <div class="setup-llm-option-icon">&#128421;</div>
-                <div class="setup-llm-option-title">Local Models</div>
-                <div class="setup-llm-option-desc">Use your own hardware through vLLM.</div>
-                <button class="btn btn-primary" id="setup-choose-local-models-btn" style="border-radius:8px;padding:10px 24px;font-size:13px;margin-top:auto">Use Local Models</button>
-                <div id="setup-local-models-status" style="margin-top:6px;font-size:11px;min-height:16px"></div>
-              </div>
-            </div>
-            <div class="info-banner green" style="margin-top:10px">
-              &#9432; Cloud providers (OpenRouter, etc.) are available from Configuration.
-            </div>`
-        }
-      </div>`;
-
-  // Wallet section body
-  const _walletBodyHtml = `
-      <div id="setup-wallet">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
-          <div class="dot ${hasAnyWallet ? "g" : ""}"></div>
-          <span style="font-size:11px;color:var(--halo-text)">Wallet Presence</span>
-          <span class="pill ${hasAnyWallet ? "ok" : "off"}">${hasAnyWallet ? "bound" : "not bound"}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
-          <div class="dot ${agentpmtConnected ? "g" : ""}"></div>
-          <span style="font-size:11px;color:var(--halo-text)">AgentPMT</span>
-          <span class="pill ${agentpmtConnected ? "ok" : "off"}">${agentpmtConnected ? "connected" : "not configured"}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
-          <div class="dot ${agentaddressConnected ? "g" : ""}"></div>
-          <span style="font-size:11px;color:var(--halo-text)">Agent Wallet</span>
-          <span class="pill ${agentaddressConnected ? "ok" : "off"}">${agentaddressConnected ? "active" : "not configured"}</span>
-          ${agentaddressAddress ? `<span style="font-size:9px;color:var(--halo-text-dim)">${esc(agentaddressAddress.slice(0, 10))}...</span>` : ""}
-        </div>
-        ${step1Done
-          ? `<div class="info-banner green">
-              &#10003; ${walletPath === "agentpmt"
-                ? `AgentPMT connected${pmtToolCount > 0 ? " &mdash; " + pmtToolCount + " tools ready" : ""}`
-                : `Agent wallet connected${agentaddressAddress ? " &mdash; " + esc(agentaddressAddress) : ""}`}
-            </div>
-            ${walletPath === "agentpmt"
-              ? `<div style="margin-top:12px"><button class="btn btn-sm" id="setup-disconnect-agentpmt" style="border-color:var(--red);color:var(--red);font-size:10px">Disconnect</button></div>`
-              : `<div style="margin-top:12px;text-align:center">
-                  <button class="btn btn-primary" id="setup-agentpmt-initiate" style="padding:10px 28px;font-size:12px;border-radius:6px;font-weight:600;letter-spacing:0.5px">&#9883; Connect AgentPMT</button>
-                </div>`
-            }`
-          : `<div style="text-align:center;padding:16px 0">
-              <p style="font-size:12px;color:var(--halo-text-dim);margin-bottom:14px">Connect to AgentPMT to unlock 100+ tools, budget controls, and workflows.</p>
-              <button class="btn btn-primary" id="setup-agentpmt-setup-now" style="padding:10px 28px;font-size:12px;border-radius:6px;font-weight:600">SET UP NOW</button>
-            </div>`
-        }
-      </div>`;
-
-  // Technical options section body
-  const _technicalBodyHtml = `
-      <div>
-        <div class="s-row">
-          <div class="dot g"></div>
-          <span class="name">MCP Tools</span>
-          <span class="meta">Agent tool proxy</span>
-          <a href="#/mcp-tools" class="btn btn-sm" style="font-size:10px;padding:3px 10px">Open</a>
-        </div>
-        <div class="s-row">
-          <div class="dot g"></div>
-          <span class="name">Proof Gate (HeytingLean)</span>
-          <span class="meta">Formal verification</span>
-          <a href="#/proof-gate" class="btn btn-sm" style="font-size:10px;padding:3px 10px">Open</a>
-        </div>
-        <div class="s-row">
-          <div class="dot ${cfg && cfg.nucleusdb_available ? "g" : ""}"></div>
-          <span class="name">NucleusDB</span>
-          <span class="meta">Verifiable storage</span>
-          <a href="#/nucleusdb" class="btn btn-sm" style="font-size:10px;padding:3px 10px">Open</a>
-        </div>
-        <div class="info-banner green" style="margin-top:8px">
-          &#9432; Advanced configuration is always available from the <a href="#/config" style="color:var(--halo-green)">Configuration</a> page.
-        </div>
-      </div>`;
-
-  // ---- Decide which sections to auto-expand ----
-  const _autoExpand = {
-    cli: true,  // always show CLIs on load
-    llm: !step2Done,
-    wallet: !walletComplete,
-    technical: false,
-  };
-
-  if (showWizard) {
-    // ---- WIZARD VIEW (4 steps: Welcome, LLM, Wallet, Review) ----
-    content.innerHTML = `
-    <div class="wizard-wrap setup-v3">
-      <div class="wizard-spine">
-        <div class="wizard-spine-dot active" data-step="1" onclick="goSetupStep(1)">1</div>
-        <div class="wizard-spine-line" data-after="1"></div>
-        <div class="wizard-spine-dot" data-step="2" onclick="goSetupStep(2)">2</div>
-        <div class="wizard-spine-line" data-after="2"></div>
-        <div class="wizard-spine-dot" data-step="3" onclick="goSetupStep(3)">3</div>
-        <div class="wizard-spine-line" data-after="3"></div>
-        <div class="wizard-spine-dot" data-step="4" onclick="goSetupStep(4)">4</div>
-      </div>
-      <div class="wizard-skip"><a onclick="skipToSetupPower()">I know what I'm doing &rarr; Skip to power view</a></div>
-
-      <!-- Step 1: Welcome -->
-      <div class="wizard-step active" data-step="1">
-        <div class="wizard-hal">
-          <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
-          <div class="wizard-hal-bubble">Welcome. I'm Hal. Let's get your agent environment properly set up.</div>
-        </div>
-        <div class="opt-grid" style="grid-template-columns:1fr 1fr;margin:16px 0">
-          <div class="opt-card sel" onclick="this.classList.add('sel');this.nextElementSibling.classList.remove('sel')">
-            <div class="opt-card-icon">&#128736;</div>
-            <div class="opt-card-name">Build with agents</div>
-            <div class="opt-card-desc">Set up for developing and deploying AI agents</div>
-          </div>
-          <div class="opt-card" onclick="this.classList.add('sel');this.previousElementSibling.classList.remove('sel')">
-            <div class="opt-card-icon">&#9654;</div>
-            <div class="opt-card-name">Run existing agents</div>
-            <div class="opt-card-desc">Connect to an existing agent configuration</div>
-          </div>
-        </div>
-        <div class="info-banner green">&#9432; Identity and advanced settings are available from <a href="#/config" style="color:var(--halo-green)">Configuration</a>.</div>
-        <div class="wizard-nav">
-          <div></div>
-          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(2)">GET STARTED</button>
-        </div>
-      </div>
-
-      <!-- Step 2: LLM Provider -->
-      <div class="wizard-step" data-step="2">
-        <div class="wizard-hal">
-          <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
-          <div class="wizard-hal-bubble">Your agents need language model access. Choose how they should connect.</div>
-        </div>
-        ${_llmBodyHtml}
-        <div class="wizard-nav">
-          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(1)">BACK</button>
-          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(3)">CONTINUE</button>
-        </div>
-      </div>
-
-      <!-- Step 3: Wallet -->
-      <div class="wizard-step" data-step="3">
-        <div class="wizard-hal">
-          <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
-          <div class="wizard-hal-bubble">Your wallet was auto-derived from your Genesis identity. Here's the status.</div>
-        </div>
-        ${_walletBodyHtml}
-        <div class="wizard-nav">
-          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(2)">BACK</button>
-          <button class="wizard-btn wizard-btn-next" onclick="goSetupStep(4)">CONTINUE</button>
-        </div>
-      </div>
-
-      <!-- Step 4: Review -->
-      <div class="wizard-step" data-step="4">
-        <div class="wizard-hal">
-          <div class="wizard-hal-avatar"><img src="img/agent_halo_logo.png" alt="Hal" onerror="this.outerHTML='H'"></div>
-          <div class="wizard-hal-bubble">All set. Let's build.</div>
-        </div>
-        <div class="wizard-review-grid">
-          <div class="wizard-review-card">
-            <div class="label">Agent CLIs</div>
-            <div class="value" id="wizard-review-cli">Detecting...</div>
-          </div>
-          <div class="wizard-review-card">
-            <div class="label">LLM Provider</div>
-            <div class="value">${step2Done ? "Configured" : "Not set"}</div>
-          </div>
-          <div class="wizard-review-card">
-            <div class="label">Wallet</div>
-            <div class="value">${hasAnyWallet ? esc(agentaddressAddress ? agentaddressAddress.slice(0, 10) + "..." : "Bound") : "Not bound"}</div>
-          </div>
-        </div>
-        <div class="initiate-wrap" style="border:none;padding-top:16px">
-          <button class="init-btn" id="setup-initiate-btn" onclick="location.hash='#/agentpmt'">INITIATE</button>
-        </div>
-        <div class="wizard-nav" style="border:none">
-          <button class="wizard-btn wizard-btn-back" onclick="goSetupStep(3)">BACK</button>
-          <div></div>
-        </div>
-      </div>
-    </div>`;
-    _setupV3WizardStep = 1;
-  } else {
-    // ---- DASHBOARD VIEW (Power User) ----
-    content.innerHTML = `
-    <div class="setup-v3">
-      <!-- Top Bar -->
-      <div class="halo-topbar">
-        <div class="halo-topbar-avatar">
-          <img src="img/agenthalo_ready.png" alt="Hal" onerror="this.outerHTML='H'">
-        </div>
-        <div class="halo-topbar-text">
-          <div class="halo-topbar-title">H.A.L.O. Setup</div>
-          <div class="halo-topbar-sub" id="halo-topbar-sub">Loading...</div>
-        </div>
-        <div class="halo-topbar-meta">
-          <span class="version-label">${esc((cfg && cfg.version) || "v0.3.0")}</span>
-          <div class="dot" id="halo-overall-dot"></div>
-        </div>
-      </div>
-
-      <!-- Completion Bar -->
-      <div class="completion-bar" id="setup-completion-bar">
-        <div class="completion-seg${_sectionStates.cli ? " done" : ""}" data-section="cli"></div>
-        <div class="completion-seg${_sectionStates.llm ? " done" : ""}" data-section="llm"></div>
-        <div class="completion-seg${_sectionStates.wallet ? " done" : ""}" data-section="wallet"></div>
-        <div class="completion-seg" data-section="technical"></div>
-        <span class="completion-label" id="completion-label"></span>
-      </div>
-
-      <!-- Section 1: Agent CLIs -->
-      <div class="section${_autoExpand.cli ? " open" : ""}" id="s-cli">
-        <div class="sec-head" onclick="toggleSetupSection('cli')">
-          <span class="arrow">&#x25B6;</span>
-          <span class="sec-title">AGENT CLIs</span>
-          <div class="sec-summary" id="sec-summary-cli"><span class="pill off">detecting</span></div>
-        </div>
-        <div class="sec-body" id="body-cli">${_cliBodyHtml}</div>
-      </div>
-
-      <!-- Section 2: LLM Provider -->
-      <div class="section${_autoExpand.llm ? " open" : ""}" id="s-llm">
-        <div class="sec-head" onclick="toggleSetupSection('llm')">
-          <span class="arrow">&#x25B6;</span>
-          <span class="sec-title">LLM PROVIDER</span>
-          <div class="sec-summary" id="sec-summary-llm">
-            ${setupV3SectionSummaryHtml("llm", { llmDone: step2Done, llmLabel: step2Done ? "configured" : "" })}
-          </div>
-        </div>
-        <div class="sec-body" id="body-llm">${_llmBodyHtml}</div>
-      </div>
-
-      <!-- Section 4: Wallet -->
-      <div class="section${_autoExpand.wallet ? " open" : ""}" id="s-wallet">
-        <div class="sec-head" onclick="toggleSetupSection('wallet')">
-          <span class="arrow">&#x25B6;</span>
-          <span class="sec-title">WALLET</span>
-          <div class="sec-summary" id="sec-summary-wallet">
-            ${setupV3SectionSummaryHtml("wallet", { walletBound: hasAnyWallet })}
-          </div>
-        </div>
-        <div class="sec-body" id="body-wallet">${_walletBodyHtml}</div>
-      </div>
-
-      <!-- Section 5: Technical Options -->
-      <div class="section${_autoExpand.technical ? " open" : ""}" id="s-technical">
-        <div class="sec-head" onclick="toggleSetupSection('technical')">
-          <span class="arrow">&#x25B6;</span>
-          <span class="sec-title">TECHNICAL OPTIONS</span>
-          <div class="sec-summary" id="sec-summary-technical">
-            <span class="pill off">configure</span>
-          </div>
-        </div>
-        <div class="sec-body" id="body-technical">${_technicalBodyHtml}</div>
-      </div>
-
-      <!-- INITIATE Button -->
-      <div class="initiate-wrap">
-        <button class="init-btn" id="setup-initiate-btn" onclick="location.hash='#/agentpmt'">INITIATE</button>
-      </div>
-    </div>`;
-
-    // Run initial completion update
-    updateSetupCompletion(_sectionStates);
-  }
-
-  // ---- Proof lattice Three.js visualization (green theme + sidebar) ----
-  (async () => {
-    var latticeContainer = document.getElementById("proof-lattice-three");
-    var latticeStatus = document.getElementById("proof-lattice-status");
-    var sidebarFamilies = document.getElementById("pls-families");
-    var sidebarStats = document.getElementById("pls-stats");
-    var sidebarSelected = document.getElementById("pls-selected");
-    if (!latticeContainer) return;
-
-    try {
-      var THREE = await import("three");
-      var OrbitControls = (await import("three/addons/controls/OrbitControls.js")).OrbitControls;
-      var EffectComposer = (await import("three/addons/postprocessing/EffectComposer.js")).EffectComposer;
-      var RenderPass = (await import("three/addons/postprocessing/RenderPass.js")).RenderPass;
-      var UnrealBloomPass = (await import("three/addons/postprocessing/UnrealBloomPass.js")).UnrealBloomPass;
-
-      // Load proof lattice data (built from AgentHALO Lean proofs)
-      var DATA = null;
-      try {
-        var res = await fetch("proof-lattice.json");
-        if (res.ok) DATA = await res.json();
-      } catch (_e) {}
-
-      if (!DATA || !DATA.nodes || DATA.nodes.length === 0) {
-        if (latticeStatus) latticeStatus.textContent = "Proof lattice data unavailable";
-        return;
-      }
-      if (!document.getElementById("proof-lattice-three")) return;
-
-      // ---- GREEN family color palette ----
-      var FAMILY_COLORS = {
-        Core:            0x22c55e,  // Green-500
-        Comms:           0x16a34a,  // Green-600
-        Identity:        0x4ade80,  // Green-400
-        Genesis:         0x86efac,  // Green-300
-        Security:        0xef4444,  // Red (danger stays red)
-        Crypto:          0xa78bfa,  // Violet
-        PaymentChannels: 0x34d399,  // Emerald
-        TrustLayer:      0x10b981,  // Emerald-500
-        Sheaf:           0x059669,  // Emerald-600
-        Adversarial:     0xf97316,  // Orange (threat)
-        Transparency:    0x6ee7b7,  // Emerald-300
-        Commitment:      0x15803d,  // Green-700
-        Contracts:       0xa3e635,  // Lime
-        Integration:     0x84cc16,  // Lime-500
-        Bridge:          0xbbf7d0,  // Green-200
-      };
-      var FAMILY_CSS = {};
-      Object.keys(FAMILY_COLORS).forEach(function(k) {
-        FAMILY_CSS[k] = "#" + FAMILY_COLORS[k].toString(16).padStart(6, "0");
-      });
-
-      // Green emissive base color
-      var GREEN_EMISSIVE = 0x00ff41;
-      var GREEN_EDGE = 0x22c55e;
-
-      // ---- Populate sidebar ----
-      var enabledFamilies = {};
-      (DATA.families || []).forEach(function(f) { enabledFamilies[f] = true; });
-
-      if (sidebarFamilies) {
-        var famHtml = "";
-        var famCounts = {};
-        DATA.nodes.forEach(function(n) { famCounts[n.family] = (famCounts[n.family] || 0) + 1; });
-        (DATA.families || []).forEach(function(f) {
-          var c = FAMILY_CSS[f] || "#22c55e";
-          var cnt = famCounts[f] || 0;
-          famHtml += '<label class="pls-fam-row" data-fam="' + f + '">'
-            + '<span class="pls-fam-dot" style="background:' + c + '"></span>'
-            + '<span class="pls-fam-name">' + f + '</span>'
-            + '<span class="pls-fam-count">' + cnt + '</span>'
-            + '</label>';
-        });
-        sidebarFamilies.innerHTML = famHtml;
-      }
-
-      var s = DATA.stats || {};
-      if (sidebarStats) {
-        sidebarStats.innerHTML =
-          '<div class="pls-stat-row"><span>Declarations</span><span>' + (s.total_declarations || DATA.nodes.length) + '</span></div>'
-          + '<div class="pls-stat-row"><span>Edges</span><span>' + (s.total_edges || DATA.edges.length) + '</span></div>'
-          + '<div class="pls-stat-row"><span>Files</span><span>' + (s.total_files || "?") + '</span></div>'
-          + '<div class="pls-stat-row"><span>Theorems</span><span>' + ((s.by_kind || {}).theorem || 0) + '</span></div>'
-          + '<div class="pls-stat-row"><span>Lemmas</span><span>' + ((s.by_kind || {}).lemma || 0) + '</span></div>'
-          + '<div class="pls-stat-row"><span>Defs</span><span>' + ((s.by_kind || {}).def || 0) + '</span></div>'
-          + '<div class="pls-stat-row"><span>Structures</span><span>' + ((s.by_kind || {}).structure || 0) + '</span></div>';
-      }
-
-      if (latticeStatus) {
-        latticeStatus.textContent = (s.total_declarations || DATA.nodes.length) + " verified Lean declarations";
-      }
-
-      // ---- Three.js scene (green theme) ----
-      var hero = document.getElementById("proof-lattice-hero");
-      var width = (hero ? hero.clientWidth : latticeContainer.clientWidth) || 600;
-      var height = 320;
-
-      var scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x030a04); // Very dark green-black
-
-      var camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 100);
-      camera.position.set(0, 0, 2.5);
-
-      var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setSize(width, height);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      latticeContainer.appendChild(renderer.domElement);
-
-      var controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.08;
-      controls.enableZoom = true;
-      controls.minDistance = 1;
-      controls.maxDistance = 5;
-      controls.autoRotate = true;
-      controls.autoRotateSpeed = 3.0;
-
-      var clock = new THREE.Clock();
-
-      // Post-processing bloom (green tinted)
-      var composer = new EffectComposer(renderer);
-      composer.addPass(new RenderPass(scene, camera));
-      var bloomPass = new UnrealBloomPass(
-        new THREE.Vector2(width, height), 0.9, 0.35, 0.65
-      );
-      composer.addPass(bloomPass);
-
-      // Lighting — green-tinted
-      var ambient = new THREE.AmbientLight(0x0a4020, 0.6);
-      scene.add(ambient);
-      var directional = new THREE.DirectionalLight(0x20b040, 0.7);
-      directional.position.set(2, 2, 2);
-      scene.add(directional);
-      var backLight = new THREE.DirectionalLight(0x084018, 0.4);
-      backLight.position.set(-2, -1, -2);
-      scene.add(backLight);
-      var pointLight = new THREE.PointLight(0x00ff41, 0.8, 5);
-      pointLight.position.set(0, 0, 0);
-      scene.add(pointLight);
-
-      // Normalize positions
-      var nodes = DATA.nodes;
-      var xs = nodes.map(function(n) { return n.x; });
-      var ys = nodes.map(function(n) { return n.y; });
-      var zs = nodes.map(function(n) { return n.z; });
-      var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
-      var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
-      var minZ = Math.min.apply(null, zs), maxZ = Math.max.apply(null, zs);
-      var rX = maxX - minX || 1, rY = maxY - minY || 1, rZ = maxZ - minZ || 1;
-      function norm(n) {
-        return { nx: (n.x - minX) / rX, ny: (n.y - minY) / rY, nz: (n.z - minZ) / rZ };
-      }
-      var maxImportance = Math.max.apply(null, nodes.map(function(n) { return n.importance; }));
-
-      // Nodes
-      var nodeGroup = new THREE.Group();
-      var nodeMeshes = [];
-      nodes.forEach(function(node) {
-        var color = FAMILY_COLORS[node.family] || 0x22c55e;
-        var sizeScale = 0.008 + (node.importance / maxImportance) * 0.012;
-        var geo = new THREE.SphereGeometry(sizeScale, 16, 16);
-        var mat = new THREE.MeshPhongMaterial({
-          color: color, transparent: true, opacity: 0.95,
-          emissive: GREEN_EMISSIVE, emissiveIntensity: 0.25, shininess: 80,
-        });
-        var mesh = new THREE.Mesh(geo, mat);
-        var p = norm(node);
-        mesh.position.set((p.nx - 0.5) * 2, (p.ny - 0.5) * 2, (p.nz - 0.5) * 2);
-        mesh._family = node.family;
-        mesh._nodeId = node.id;
-        mesh._importance = node.importance;
-        mesh._originalColor = color;
-        mesh._baseScale = 1;
-        nodeGroup.add(mesh);
-        nodeMeshes.push(mesh);
-      });
-      scene.add(nodeGroup);
-
-      // Edges — green tubes
-      var edgeGroup = new THREE.Group();
-      DATA.edges.forEach(function(pair) {
-        var nA = nodes[pair[0]], nB = nodes[pair[1]];
-        if (!nA || !nB) return;
-        var a = norm(nA), b = norm(nB);
-        var start = new THREE.Vector3((a.nx - 0.5) * 2, (a.ny - 0.5) * 2, (a.nz - 0.5) * 2);
-        var end = new THREE.Vector3((b.nx - 0.5) * 2, (b.ny - 0.5) * 2, (b.nz - 0.5) * 2);
-        var edgeImp = (nA.importance + nB.importance) / 2;
-        var normImp = edgeImp / maxImportance;
-
-        var mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
-        var dir = new THREE.Vector3().subVectors(end, start).normalize();
-        var perp = new THREE.Vector3(-dir.y, dir.x, dir.z * 0.3).normalize();
-        var offset = 0.02 + Math.random() * 0.04;
-        mid.add(perp.multiplyScalar(offset * (Math.random() > 0.5 ? 1 : -1)));
-
-        var curve = new THREE.QuadraticBezierCurve3(start, mid, end);
-        var tubeRadius = 0.001 + normImp * 0.003;
-        var tubeGeo = new THREE.TubeGeometry(curve, 12, tubeRadius, 6, false);
-        var edgeColor = new THREE.Color(GREEN_EDGE);
-        var tubeMat = new THREE.MeshBasicMaterial({
-          color: edgeColor, transparent: true, opacity: 0.15 + normImp * 0.45,
-        });
-        var tube = new THREE.Mesh(tubeGeo, tubeMat);
-        tube._nodeA = pair[0]; tube._nodeB = pair[1];
-        tube._famA = nA.family; tube._famB = nB.family;
-        tube._defaultColor = edgeColor.clone();
-        tube._baseColor = edgeColor.clone();
-        tube._baseOpacity = tubeMat.opacity;
-        edgeGroup.add(tube);
-      });
-      scene.add(edgeGroup);
-
-      // Ambient particles — green dust
-      var particleCount = 150;
-      var pGeo = new THREE.BufferGeometry();
-      var pPos = new Float32Array(particleCount * 3);
-      var pCol = new Float32Array(particleCount * 3);
-      for (var pi = 0; pi < particleCount; pi++) {
-        pPos[pi * 3] = (Math.random() - 0.5) * 3;
-        pPos[pi * 3 + 1] = (Math.random() - 0.5) * 3;
-        pPos[pi * 3 + 2] = (Math.random() - 0.5) * 3;
-        var cool = 0.3 + Math.random() * 0.5;
-        pCol[pi * 3] = cool * 0.2;      // Low red
-        pCol[pi * 3 + 1] = cool;         // High green
-        pCol[pi * 3 + 2] = cool * 0.25;  // Low blue
-      }
-      pGeo.setAttribute("position", new THREE.BufferAttribute(pPos, 3));
-      pGeo.setAttribute("color", new THREE.BufferAttribute(pCol, 3));
-      var particles = new THREE.Points(pGeo, new THREE.PointsMaterial({
-        size: 0.015, transparent: true, opacity: 0.25, vertexColors: true,
-      }));
-      scene.add(particles);
-
-      // ---- Raycasting for node selection ----
-      var raycaster = new THREE.Raycaster();
-      var mouse = new THREE.Vector2();
-      var lastHoveredMesh = null;
-      var selectedMesh = null;
-      var highlightedFamily = null;
-
-      function showSelectedNode(nodeData) {
-        if (!sidebarSelected) return;
-        if (!nodeData) {
-          sidebarSelected.innerHTML = '<span class="pls-muted">Click a node to inspect</span>';
-          return;
-        }
-        var c = FAMILY_CSS[nodeData.family] || "#22c55e";
-        sidebarSelected.innerHTML =
-          '<div class="pls-sel-name">' + nodeData.name + '</div>'
-          + '<div class="pls-sel-meta"><span class="pls-fam-dot" style="background:' + c + '"></span> ' + nodeData.family + ' &middot; ' + nodeData.kind + '</div>'
-          + '<div class="pls-sel-file">' + nodeData.file + ':' + nodeData.line + '</div>'
-          + '<div class="pls-sel-imp">Importance: ' + nodeData.importance.toFixed(1) + '</div>';
-      }
-
-      function updateFamilyFilter(fam) {
-        highlightedFamily = fam;
-        var highlightColor = new THREE.Color(0x4ade80);
-        nodeMeshes.forEach(function(mesh) {
-          var mat = mesh.material;
-          if (fam === null) {
-            mat.opacity = 0.95;
-            mat.emissiveIntensity = 0.25;
-            mesh.visible = enabledFamilies[mesh._family] !== false;
-            mesh.scale.setScalar(1);
-            mesh._baseScale = 1;
-          } else if (mesh._family === fam) {
-            mat.opacity = 1;
-            mat.emissiveIntensity = 0.5;
-            mesh.visible = true;
-            mesh.scale.setScalar(1.5);
-            mesh._baseScale = 1.5;
-          } else {
-            mat.opacity = 0.12;
-            mat.emissiveIntensity = 0.05;
-            mesh.visible = true;
-            mesh.scale.setScalar(0.5);
-            mesh._baseScale = 0.5;
-          }
-        });
-        edgeGroup.children.forEach(function(tube) {
-          var mat = tube.material;
-          if (fam === null) {
-            mat.opacity = tube._baseOpacity;
-            mat.color.copy(tube._defaultColor);
-            tube.visible = enabledFamilies[tube._famA] !== false && enabledFamilies[tube._famB] !== false;
-          } else if (tube._famA === fam || tube._famB === fam) {
-            mat.opacity = 0.7;
-            mat.color.copy(highlightColor);
-            tube.visible = true;
-          } else {
-            mat.opacity = 0.03;
-            mat.color.copy(tube._defaultColor);
-            tube.visible = true;
-          }
-        });
-      }
-
-      // Family click handler on sidebar
-      if (sidebarFamilies) {
-        sidebarFamilies.addEventListener("click", function(e) {
-          var row = e.target.closest(".pls-fam-row");
-          if (!row) return;
-          var fam = row.dataset.fam;
-          if (highlightedFamily === fam) {
-            // Toggle off — show all
-            row.classList.remove("pls-fam-active");
-            updateFamilyFilter(null);
-          } else {
-            // Deactivate previous
-            var prev = sidebarFamilies.querySelector(".pls-fam-active");
-            if (prev) prev.classList.remove("pls-fam-active");
-            row.classList.add("pls-fam-active");
-            updateFamilyFilter(fam);
-          }
-        });
-      }
-
-      renderer.domElement.addEventListener("mousemove", function(e) {
-        var rect = renderer.domElement.getBoundingClientRect();
-        mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-        mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-        raycaster.setFromCamera(mouse, camera);
-        var hits = raycaster.intersectObjects(nodeGroup.children);
-        if (hits.length > 0) {
-          var mesh = hits[0].object;
-          if (mesh !== lastHoveredMesh) {
-            if (lastHoveredMesh && lastHoveredMesh.material) {
-              lastHoveredMesh.scale.setScalar(lastHoveredMesh._baseScale || 1);
-            }
-            lastHoveredMesh = mesh;
-            mesh.scale.setScalar((mesh._baseScale || 1) * 1.6);
-            // Show hover info
-            var nd = nodes.find(function(n) { return n.id === mesh._nodeId; });
-            if (nd) showSelectedNode(nd);
-          }
-          renderer.domElement.style.cursor = "pointer";
-        } else {
-          if (lastHoveredMesh && lastHoveredMesh.material) {
-            lastHoveredMesh.scale.setScalar(lastHoveredMesh._baseScale || 1);
-          }
-          lastHoveredMesh = null;
-          if (!selectedMesh) showSelectedNode(null);
-          renderer.domElement.style.cursor = "grab";
-        }
-      });
-
-      renderer.domElement.addEventListener("click", function(e) {
-        var rect = renderer.domElement.getBoundingClientRect();
-        mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-        mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-        raycaster.setFromCamera(mouse, camera);
-        var hits = raycaster.intersectObjects(nodeGroup.children);
-        // Reset previous selection
-        if (selectedMesh && selectedMesh.material) {
-          selectedMesh.material.color.setHex(selectedMesh._originalColor);
-          selectedMesh.material.emissive.setHex(GREEN_EMISSIVE);
-          selectedMesh.material.emissiveIntensity = 0.25;
-        }
-        if (hits.length > 0) {
-          var mesh = hits[0].object;
-          selectedMesh = mesh;
-          mesh.material.color.setHex(0xffffff);
-          mesh.material.emissive.setHex(0xbbf7d0);
-          mesh.material.emissiveIntensity = 0.8;
-          var nd = nodes.find(function(n) { return n.id === mesh._nodeId; });
-          if (nd) showSelectedNode(nd);
-        } else {
-          selectedMesh = null;
-          showSelectedNode(null);
-        }
-      });
-
-      renderer.domElement.addEventListener("mouseleave", function() {
-        if (lastHoveredMesh && lastHoveredMesh.material) {
-          lastHoveredMesh.scale.setScalar(lastHoveredMesh._baseScale || 1);
-        }
-        lastHoveredMesh = null;
-        renderer.domElement.style.cursor = "grab";
-      });
-
-      renderer.domElement.style.cursor = "grab";
-
-      // ---- Neural firing state ----
-      var firingNodes = new Map();
-      var firingEdges = new Map();
-      var FIRE_DURATION = 0.5;
-      var NODE_FIRE_CHANCE = 0.08;
-      var EDGE_FIRE_CHANCE = 0.12;
-      var PROPAGATION_DELAY = 0.03;
-      var CASCADE_CHANCE = 0.5;
-      var elapsedTime = 0;
-      var animationId = 0;
-
-      function animate() {
-        animationId = requestAnimationFrame(animate);
-        var delta = clock.getDelta();
-        elapsedTime += delta;
-        controls.update();
-
-        var pulse = Math.sin(elapsedTime * 2.5) * 0.5 + 0.5;
-        var slowPulse = Math.sin(elapsedTime * 1.5) * 0.4 + 0.6;
-        pointLight.intensity = 0.3 + pulse * 1.2;
-
-        // Neural firing
-        if (Math.random() < NODE_FIRE_CHANCE) {
-          var idx = Math.floor(Math.random() * nodeMeshes.length);
-          if (!firingNodes.has(idx)) {
-            firingNodes.set(idx, { startTime: elapsedTime, intensity: 0.9 + Math.random() * 0.1 });
-            edgeGroup.children.forEach(function(tube, edgeIdx) {
-              if (tube._nodeA === idx || tube._nodeB === idx) {
-                if (!firingEdges.has(edgeIdx)) {
-                  firingEdges.set(edgeIdx, {
-                    startTime: elapsedTime + PROPAGATION_DELAY,
-                    intensity: 0.9 + Math.random() * 0.1,
-                    direction: tube._nodeA === idx ? 1 : -1
-                  });
-                  if (Math.random() < CASCADE_CHANCE) {
-                    var target = tube._nodeA === idx ? tube._nodeB : tube._nodeA;
-                    if (!firingNodes.has(target)) {
-                      firingNodes.set(target, {
-                        startTime: elapsedTime + PROPAGATION_DELAY * 2.5,
-                        intensity: 0.75 + Math.random() * 0.2
-                      });
-                    }
-                  }
-                }
-              }
-            });
-          }
-        }
-        if (Math.random() < EDGE_FIRE_CHANCE) {
-          var rIdx = Math.floor(Math.random() * edgeGroup.children.length);
-          if (!firingEdges.has(rIdx)) {
-            firingEdges.set(rIdx, {
-              startTime: elapsedTime, intensity: 0.7 + Math.random() * 0.3,
-              direction: Math.random() > 0.5 ? 1 : -1
-            });
-          }
-        }
-
-        // Update firing nodes — GREEN flashes
-        nodeMeshes.forEach(function(mesh, i) {
-          if (!mesh.material) return;
-          var nodePhase = Math.sin(elapsedTime * 2.5 + i * 0.03) * 0.3 + 0.7;
-          var emInt = 0.15 + nodePhase * slowPulse * 0.5;
-          var emColor = GREEN_EMISSIVE;
-          var targetScale = mesh._baseScale || 1;
-
-          var firing = firingNodes.get(i);
-          if (firing) {
-            var fe = elapsedTime - firing.startTime;
-            if (fe >= 0 && fe < FIRE_DURATION) {
-              var fp = fe / FIRE_DURATION;
-              var fi = fp < 0.12 ? fp / 0.12 : Math.pow(1 - ((fp - 0.12) / 0.88), 1.5);
-              emInt = 0.4 + firing.intensity * fi * 3.0;
-              targetScale = (mesh._baseScale || 1) * (1 + fi * 0.6);
-              if (fi > 0.3) {
-                mesh.material.emissive.setHex(0xbbf7d0); // Bright green for bloom
-                mesh.material.color.setHex(0xffffff);
-              } else if (fi > 0.15) {
-                mesh.material.emissive.setHex(0x86efac); // Medium green
-                mesh.material.color.setHex(mesh._originalColor);
-              } else {
-                mesh.material.emissive.setHex(emColor);
-                mesh.material.color.setHex(mesh._originalColor);
-              }
-            } else if (fe >= FIRE_DURATION) {
-              firingNodes.delete(i);
-              mesh.material.emissive.setHex(emColor);
-              mesh.material.color.setHex(mesh._originalColor);
-            }
-          } else {
-            mesh.material.emissive.setHex(emColor);
-          }
-          mesh.material.emissiveIntensity = emInt;
-          var cs = mesh.scale.x;
-          mesh.scale.setScalar(cs + (targetScale - cs) * 0.15);
-        });
-
-        // Update firing edges — GREEN pulses
-        edgeGroup.children.forEach(function(tube, eIdx) {
-          var mat = tube.material;
-          var firing = firingEdges.get(eIdx);
-          if (firing) {
-            var fe = elapsedTime - firing.startTime;
-            if (fe >= 0 && fe < FIRE_DURATION) {
-              var fp = fe / FIRE_DURATION;
-              var pp = fp * 1.3;
-              var fi = Math.exp(-Math.pow((pp - 0.5) / 0.2, 2)) * firing.intensity;
-              if (fi > 0.2) {
-                mat.color.setHex(0xbbf7d0); // Bright green flash
-                mat.opacity = Math.min(1, 0.6 + fi * 0.4);
-              } else if (fi > 0.08) {
-                mat.color.setHex(0x4ade80); // Medium green
-                mat.opacity = Math.min(1, 0.4 + fi * 0.4);
-              } else {
-                mat.color.copy(tube._baseColor || new THREE.Color(GREEN_EDGE));
-                if (typeof tube._baseOpacity === "number") mat.opacity = tube._baseOpacity;
-              }
-            } else if (fe >= FIRE_DURATION) {
-              firingEdges.delete(eIdx);
-              mat.color.copy(tube._baseColor || new THREE.Color(GREEN_EDGE));
-              if (typeof tube._baseOpacity === "number") mat.opacity = tube._baseOpacity;
-            }
-          }
-        });
-
-        var activeFirings = firingNodes.size + firingEdges.size;
-        bloomPass.strength = 0.6 + Math.min(activeFirings * 0.03, 0.5);
-        if (activeFirings > 0) {
-          pointLight.intensity = 0.4 + pulse * 1.0 + activeFirings * 0.04;
-          pointLight.color.setHex(0x86efac);
-        } else {
-          pointLight.color.setHex(0x00ff41);
-        }
-        ambient.intensity = 0.25 + slowPulse * 0.4;
-        particles.rotation.y += delta * 0.08;
-        particles.rotation.x += delta * 0.04;
-
-        composer.render();
-      }
-      animationId = requestAnimationFrame(animate);
-
-      // Resize
-      function onResize() {
-        var h = document.getElementById("proof-lattice-hero");
-        if (!h) return;
-        var w = h.clientWidth || 600;
-        var ht = 320;
-        camera.aspect = w / ht;
-        camera.updateProjectionMatrix();
-        renderer.setSize(w, ht);
-        composer.setSize(w, ht);
-      }
-      window.addEventListener("resize", onResize);
-
-      // Cleanup on page navigation
-      var latticeObserver = new MutationObserver(function() {
-        if (!document.getElementById("proof-lattice-three")) {
-          cancelAnimationFrame(animationId);
-          window.removeEventListener("resize", onResize);
-          renderer.dispose();
-          pGeo.dispose();
-          latticeObserver.disconnect();
-        }
-      });
-      latticeObserver.observe(content, { childList: true });
-
-    } catch (err) {
-      console.warn("Proof lattice Three.js init failed:", err);
-      if (latticeStatus) latticeStatus.textContent = "Proof lattice visualization unavailable";
-    }
-  })();
-
-  // ---- Auto-detect and apply identity (always run everything available) ----
-  (async () => {
-    try {
-      const idStatus = await api("/identity/status");
-      let changed = false;
-      if (!idStatus.device_configured) {
-        try {
-          await apiPost("/identity/device", { enable: true, components: true, browser: true });
-          changed = true;
-        } catch (_e) {}
-      }
-      if (!idStatus.network_configured) {
-        try {
-          const networkMeta = await api("/identity/network");
-          await apiPost("/identity/network", {
-            share_local_ip: true,
-            share_public_ip: false,
-            share_mac: true,
-            local_ip: networkMeta.local_ip || null,
-            mac_addresses: networkMeta.mac_address ? [networkMeta.mac_address] : [],
-          });
-          changed = true;
-        } catch (_e) {}
-      }
-      // Auto-apply max-safe tier if not yet configured
-      try {
-        const tier = await api("/identity/tier");
-        if (!tier.configured) {
-          await apiPost("/identity/tier", { tier: "max-safe", applied_by: "auto_setup" });
-          changed = true;
-        }
-      } catch (_e) {}
-      if (changed && !window.__agenthaloSetupAutoRefreshPending) {
-        window.__agenthaloSetupAutoRefreshPending = true;
-        window._invalidateSetupState?.();
-        setTimeout(async () => {
-          try {
-            await fetchSetupState(true);
-            const currentPage = (location.hash.replace("#/", "") || "setup").split("/")[0];
-            if (currentPage === "setup") {
-              await renderSetup();
-              updateNavLockState();
-            }
-          } catch (_e) {
-          } finally {
-            window.__agenthaloSetupAutoRefreshPending = false;
-          }
-        }, 0);
-      }
-    } catch (_e) {}
-  })();
-
-  // ---- Populate configured identity displays ----
-  if (identityCfg.device_configured && !identityCfg.anonymous_mode) {
-    const deviceSummary = document.getElementById("device-scan-summary");
-    if (deviceSummary) {
-      (async () => {
-        try {
-          const deviceData = await api("/identity/device");
-          let html = "";
-          (deviceData.components || []).forEach((c) => {
-            const icon = c.stable ? "&#10003;" : "&#9888;";
-            const color = c.stable ? "var(--green)" : "var(--yellow)";
-            html += `<div style="display:flex;align-items:center;gap:6px;padding:2px 0"><span style="color:${color}">${icon}</span> <span>${esc(c.name)}</span> <span style="color:var(--text-dim);font-size:11px">${c.entropy_bits || 0} bits</span></div>`;
-          });
-          const totalEntropy = (deviceData.components || []).reduce(
-            (s, c) => s + (c.entropy_bits || 0),
-            0,
-          );
-          html += `<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">Entropy: <strong>${totalEntropy} bits</strong> | Tier: <strong>${esc(deviceData.tier || "unknown")}</strong></div>`;
-          deviceSummary.innerHTML = html;
-        } catch (_e) {
-          deviceSummary.innerHTML =
-            '<span style="color:var(--text-dim)">Device identity saved.</span>';
-        }
-      })();
-    }
-  }
-  if (identityCfg.network_configured && !identityCfg.anonymous_mode) {
-    const networkInfo = document.getElementById("network-info");
-    if (networkInfo) {
-      (async () => {
-        try {
-          const networkData = await api("/identity/network");
-          networkInfo.innerHTML = `
-            <div style="display:flex;align-items:center;gap:6px;padding:2px 0"><span style="color:var(--green)">&#10003;</span> Local IP: <strong>${esc(networkData.local_ip || "not shared")}</strong></div>
-            <div style="display:flex;align-items:center;gap:6px;padding:2px 0"><span style="color:var(--green)">&#10003;</span> MAC: <strong>${esc(networkData.mac_address || "not shared")}</strong></div>
-          `;
-          networkInfo.dataset.loaded = "1";
-        } catch (_e) {
-          networkInfo.innerHTML =
-            '<span style="color:var(--text-dim)">Network identity saved.</span>';
-        }
-      })();
-    }
-  }
-
-  // ---- Wire up interactive elements ----
-
-  // --- CLI Agent Detect & Auth ---
-  (async () => {
-    const cliAgents = ["claude", "codex", "gemini"];
-    const cliResolved = {};
-    let cliPollTimer = null;
-    let cliPollCount = 0;
-    const maxCliPolls = 15;
-
-    const _cliAuthCount = { n: 0 };
-    const setCliStatus = (cli, resp, statusEl, authBtn) => {
-      if (resp.installed) {
-        cliResolved[cli] = true;
-        if (resp.authenticated) {
-          _cliAuthCount.n++;
-          // Update section state + completion bar
-          _sectionStates.cli = true;
-          updateSetupCompletion(_sectionStates);
-          // Also update CLI section summary
-          const summEl = document.getElementById("sec-summary-cli");
-          if (summEl) summEl.innerHTML = setupV3SectionSummaryHtml("cli", { cliConnected: _cliAuthCount.n, cliPending: 0 });
-          if (statusEl)
-            statusEl.innerHTML =
-              '<span style="color:var(--green)">&#10003; Authenticated</span>';
-          if (authBtn) {
-            authBtn.disabled = false;
-            authBtn.textContent = "Re-authenticate";
-            authBtn.classList.remove("btn-primary");
-          }
-          return;
-        }
-        if (statusEl)
-          statusEl.innerHTML =
-            '<span style="color:var(--green)">&#10003; Found</span> <span style="color:var(--yellow)">(not authenticated)</span>';
-        if (authBtn) {
-          authBtn.disabled = false;
-          authBtn.textContent = "Authenticate";
-          authBtn.classList.add("btn-primary");
-        }
-        return;
-      }
-      if (statusEl) {
-        const pkg =
-          cli === "claude"
-            ? "@anthropic-ai/claude-code"
-            : cli === "codex"
-              ? "@openai/codex"
-              : "@google/gemini-cli";
-        statusEl.innerHTML =
-          '<span style="color:var(--yellow)">Not found</span> ' +
-          '<span style="color:var(--text-dim);font-size:11px">Install: <code>npm i -g ' +
-          pkg +
-          "</code></span>";
-      }
-      if (authBtn) {
-        authBtn.disabled = true;
-        authBtn.textContent = "Authenticate";
-        authBtn.classList.add("btn-primary");
-      }
-    };
-
-    const detectCli = async (cli) => {
-      const statusEl = document.getElementById("cli-status-" + cli);
-      const row = document.querySelector(
-        '.cli-agent-row[data-cli="' + cli + '"]',
-      );
-      const authBtn = row && row.querySelector(".cli-auth-btn");
-      try {
-        const resp = await api("/cli/detect/" + cli);
-        setCliStatus(cli, resp, statusEl, authBtn);
-      } catch (_e) {
-        if (statusEl)
-          statusEl.innerHTML =
-            '<span style="color:var(--text-dim)">Detection error</span>';
-      }
-    };
-
-    const stopCliPolling = () => {
-      if (cliPollTimer) {
-        clearInterval(cliPollTimer);
-        cliPollTimer = null;
-      }
-    };
-
-    const maybeStartCliPolling = () => {
-      if (!cliAgents.some((cli) => !cliResolved[cli])) {
-        stopCliPolling();
-        return;
-      }
-      if (cliPollTimer) return;
-      cliPollTimer = setInterval(async () => {
-        cliPollCount += 1;
-        await Promise.allSettled(
-          cliAgents.filter((cli) => !cliResolved[cli]).map(detectCli),
-        );
-        if (
-          !cliAgents.some((cli) => !cliResolved[cli]) ||
-          cliPollCount >= maxCliPolls
-        ) {
-          stopCliPolling();
-        }
-      }, 8000);
-    };
-
-    await Promise.allSettled(cliAgents.map(detectCli));
-    maybeStartCliPolling();
-
-    // Auth button handlers — open a PTY terminal for OAuth flow
-    let _cliAuthTerm = null;
-    let _cliAuthFitAddon = null;
-    let _cliAuthWs = null;
-    for (const btn of $$(".cli-auth-btn")) {
-      btn.addEventListener("click", async () => {
-        const cli = btn.dataset.cli;
-        const statusEl = document.getElementById("cli-status-" + cli);
-        btn.disabled = true;
-        btn.textContent = "Starting...";
-        try {
-          const resp = await apiPost("/cli/auth/" + cli, {});
-          if (!resp.session_id) throw new Error("no session returned");
-          // Show embedded terminal for the auth session
-          const termWrap = document.getElementById("cli-auth-terminal-wrap");
-          const termEl = document.getElementById("cli-auth-terminal");
-          const termLabel = document.getElementById("cli-auth-terminal-label");
-          if (termWrap) termWrap.style.display = "block";
-          if (termLabel)
-            termLabel.textContent =
-              cli.charAt(0).toUpperCase() +
-              cli.slice(1) +
-              " authentication — complete the login in your browser";
-          // Clean up any previous terminal
-          if (_cliAuthWs) {
-            try {
-              _cliAuthWs.close();
-            } catch (_e) {}
-            _cliAuthWs = null;
-          }
-          if (_cliAuthTerm) {
-            try {
-              _cliAuthTerm.dispose();
-            } catch (_e) {}
-            _cliAuthTerm = null;
-          }
-          if (termEl) termEl.innerHTML = "";
-          // Create xterm instance
-          if (typeof Terminal !== "undefined" && termEl) {
-            _cliAuthTerm = new Terminal({
-              cursorBlink: true,
-              fontSize: 13,
-              theme: { background: "#0a0a0a", foreground: "#33ff33" },
-            });
-            _cliAuthFitAddon = new FitAddon.FitAddon();
-            _cliAuthTerm.loadAddon(_cliAuthFitAddon);
-            _cliAuthTerm.open(termEl);
-            try {
-              _cliAuthFitAddon.fit();
-            } catch (_e) {}
-            try {
-              _cliAuthTerm.focus();
-            } catch (_e) {}
-            termEl.onmousedown = () => {
-              try {
-                _cliAuthTerm && _cliAuthTerm.focus();
-              } catch (_e) {}
-            };
-            // Connect WebSocket
-            const proto = location.protocol === "https:" ? "wss:" : "ws:";
-            const wsUrl =
-              proto +
-              "//" +
-              location.host +
-              "/api/cockpit/sessions/" +
-              resp.session_id +
-              "/ws";
-            _cliAuthWs = new WebSocket(wsUrl);
-            _cliAuthWs.binaryType = "arraybuffer";
-            _cliAuthWs.onopen = () => {
-              try {
-                _cliAuthTerm && _cliAuthTerm.focus();
-              } catch (_e) {}
-            };
-            let _cliAuthOpened = false;
-            _cliAuthWs.onmessage = (ev) => {
-              let text = "";
-              if (ev.data instanceof ArrayBuffer) {
-                const bytes = new Uint8Array(ev.data);
-                _cliAuthTerm.write(bytes);
-                text = new TextDecoder().decode(bytes);
-              } else {
-                _cliAuthTerm.write(ev.data);
-                text = ev.data;
-              }
-              // Auto-open OAuth URLs in a popup window
-              if (!_cliAuthOpened) {
-                const m = text.match(/https:\/\/[^\s\x1b\x07]+/);
-                if (m) {
-                  _cliAuthOpened = true;
-                  const authUrl = m[0].replace(/[\x00-\x1f]/g, "");
-                  window.open(
-                    authUrl,
-                    "_blank",
-                    "width=600,height=700,scrollbars=yes",
-                  );
-                }
-              }
-            };
-            _cliAuthWs.onclose = async () => {
-              _cliAuthTerm.write(
-                "\r\n\x1b[90m--- session ended ---\x1b[0m\r\n",
-              );
-              btn.disabled = false;
-              // Re-poll detect to verify actual auth status from token files
-              try {
-                const detect = await api("/cli/detect/" + cli);
-                if (detect.authenticated) {
-                  if (statusEl)
-                    statusEl.innerHTML =
-                      '<span style="color:var(--green)">&#10003; Authenticated</span>';
-                  btn.textContent = "Re-authenticate";
-                  btn.classList.remove("btn-primary");
-                } else {
-                  if (statusEl)
-                    statusEl.innerHTML =
-                      '<span style="color:var(--green)">&#10003; Found</span> <span style="color:var(--red)">(auth failed)</span>';
-                  btn.textContent = "Authenticate";
-                  btn.classList.add("btn-primary");
-                }
-              } catch (_e) {
-                // Fallback: show as authenticated (session completed)
-                if (statusEl)
-                  statusEl.innerHTML =
-                    '<span style="color:var(--green)">&#10003; Authenticated</span>';
-                btn.textContent = "Re-authenticate";
-                btn.classList.remove("btn-primary");
-              }
-            };
-            _cliAuthTerm.onData((data) => {
-              if (_cliAuthWs && _cliAuthWs.readyState === WebSocket.OPEN) {
-                _cliAuthWs.send(data);
-              }
-            });
-          }
-        } catch (e) {
-          if (statusEl)
-            statusEl.innerHTML =
-              '<span style="color:var(--red)">Auth error: ' +
-              esc(String(e.message || e)) +
-              "</span>";
-        }
-        btn.disabled = false;
-        btn.textContent = "Authenticate";
-      });
-    }
-    // Close terminal button
-    const closeTermBtn = document.getElementById("cli-auth-terminal-close");
-    if (closeTermBtn) {
-      closeTermBtn.addEventListener("click", () => {
-        if (_cliAuthWs) {
-          try {
-            _cliAuthWs.close();
-          } catch (_e) {}
-          _cliAuthWs = null;
-        }
-        if (_cliAuthTerm) {
-          try {
-            _cliAuthTerm.dispose();
-          } catch (_e) {}
-          _cliAuthTerm = null;
-        }
-        const termWrap = document.getElementById("cli-auth-terminal-wrap");
-        if (termWrap) termWrap.style.display = "none";
-      });
-    }
-  })();
-
-  // Auto-check AgentPMT credentials from vault on setup page load
-  if (!agentpmtConnected) {
-    (async () => {
-      try {
-        const credCheck = await apiPost("/agentpmt/credential-check", {});
-        if (credCheck && credCheck.credentials_found && credCheck.connected) {
-          // Credentials found in vault — refresh the setup page to show connected state
-          window._invalidateSetupState && window._invalidateSetupState();
-          await fetchSetupState(true);
-          await renderSetup();
-          updateNavLockState();
-        }
-      } catch (_e) { /* silent — just a check */ }
-    })();
-  }
-
-  const setupNowBtn = document.getElementById("setup-agentpmt-setup-now");
-  if (setupNowBtn) {
-    setupNowBtn.addEventListener("click", () => {
-      window.location.hash = "#/agentpmt";
-    });
-  }
-
-  const initiateBtn = document.getElementById("setup-agentpmt-initiate");
-  if (initiateBtn) {
-    initiateBtn.addEventListener("click", () => {
-      window.location.hash = "#/agentpmt";
-    });
-  }
-
-  // AgentPMT disconnect
-  const disconnectPmtBtn = document.getElementById("setup-disconnect-agentpmt");
-  if (disconnectPmtBtn) {
-    disconnectPmtBtn.addEventListener("click", async () => {
-      if (
-        !confirm(
-          "Disconnect your AgentPMT account? This removes your token and disables the tool proxy.",
-        )
-      )
-        return;
-      disconnectPmtBtn.disabled = true;
-      disconnectPmtBtn.textContent = "Disconnecting...";
-      try {
-        await apiPost("/agentpmt/disconnect", {});
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        alert("Disconnect failed: " + (e.message || e));
-        disconnectPmtBtn.disabled = false;
-        disconnectPmtBtn.textContent = "Disconnect My Account";
-      }
-    });
-  }
-
-  // AgentAddress state + handlers
-  const agentAddressStatus = document.getElementById("agentaddress-status");
-  const agentAddressOutput = document.getElementById("agentaddress-output");
-  const agentAddressField = (id, val) => {
-    const node = document.getElementById(id);
-    if (node) node.textContent = val || "";
-  };
-  const setAgentAddressOutput = (payload) => {
-    const address = String(payload.evmAddress || payload.evm_address || "");
-    const privateKey = String(
-      payload.evmPrivateKey || payload.evm_private_key || "",
-    );
-    const mnemonic = String(payload.mnemonic || "");
-    if (agentAddressOutput) {
-      const shouldShow = !!(address || privateKey || mnemonic);
-      agentAddressOutput.style.display = shouldShow ? "block" : "none";
-    }
-    agentAddressField("agentaddress-evm-address", address);
-    // Private key and mnemonic are vault-stored only — never shown in UI.
-    if (address) {
-      window.__haloGeneratedAgentAddress = Object.assign(
-        window.__haloGeneratedAgentAddress || {},
-        { evmAddress: address },
-      );
-    }
-  };
-
-  const autoRetryBtn = document.getElementById("agentidentity-retry-btn");
-  const genesisGenerateBtn = document.getElementById(
-    "agentidentity-genesis-btn",
-  );
-  if (agentaddressConnected && agentAddressStatus) {
-    agentAddressStatus.innerHTML =
-      '<span style="color:var(--green)">&#10003; Identity ready and secured.</span>';
-  } else if (agentAddressStatus) {
-    agentAddressStatus.innerHTML =
-      '<span style="color:var(--text-dim)">Provisioning agent identity...</span>';
-  }
-  if (
-    window.__haloGeneratedAgentAddress &&
-    typeof window.__haloGeneratedAgentAddress === "object"
-  ) {
-    setAgentAddressOutput(window.__haloGeneratedAgentAddress);
-  } else if (agentaddressConnected && agentaddressAddress) {
-    setAgentAddressOutput({ evmAddress: agentaddressAddress });
-  }
-
-  const autoProvisionState =
-    window.__haloIdentityAutoProvision ||
-    (window.__haloIdentityAutoProvision = {
-      inFlight: false,
-      attempted: false,
-    });
-  const needsAddress = !agentaddressConnected;
-
-  const maybeShowRetry = (show) => {
-    if (!autoRetryBtn) return;
-    autoRetryBtn.style.display = show ? "" : "none";
-  };
-
-  const maybeShowGenesisGenerate = (show) => {
-    if (!genesisGenerateBtn) return;
-    genesisGenerateBtn.style.display = show ? "" : "none";
-  };
-
-  const runAutoProvision = async (force = false, preferredSource = null) => {
-    if (autoProvisionState.inFlight) return;
-    if (!needsAddress && !force) return;
-    if (!needsAddress || (!force && autoProvisionState.attempted)) return;
-
-    autoProvisionState.inFlight = true;
-    autoProvisionState.attempted = true;
-    maybeShowRetry(false);
-    try {
-      if (agentAddressStatus) {
-        agentAddressStatus.innerHTML =
-          '<span style="color:var(--text-dim)">Generating agent identity...</span>';
-      }
-      const genesisReady = await fetchGenesisStatus();
-      const source = preferredSource || (genesisReady ? "genesis" : "external");
-      maybeShowGenesisGenerate(!agentaddressConnected && genesisReady);
-      const resp = await apiPost("/agentaddress/generate", {
-        persist_public_address: true,
-        source,
-      });
-      const generatedAddress = resp && resp.data ? resp.data : null;
-      if (generatedAddress) {
-        setAgentAddressOutput(generatedAddress);
-        if (agentAddressStatus) {
-          const mode = source === "genesis" ? " (genesis-derived)" : "";
-          agentAddressStatus.innerHTML = `<span style="color:var(--green)">&#10003; Identity ready and secured${mode}.</span>`;
-        }
-      }
-      window._invalidateSetupState();
-      await fetchSetupState(true);
-      await renderSetup();
-      updateNavLockState();
-    } catch (e) {
-      if (agentAddressStatus) {
-        agentAddressStatus.innerHTML = `<span style="color:var(--red)">Identity setup failed: ${esc(String(e.message || e))}</span>`;
-      }
-      maybeShowRetry(true);
-    } finally {
-      autoProvisionState.inFlight = false;
-    }
-  };
-
-  if (autoRetryBtn) {
-    autoRetryBtn.addEventListener("click", async () => {
-      autoProvisionState.attempted = false;
-      await runAutoProvision(true);
-    });
-  }
-  if (genesisGenerateBtn) {
-    genesisGenerateBtn.addEventListener("click", async () => {
-      autoProvisionState.attempted = false;
-      await runAutoProvision(true, "genesis");
-    });
-  }
-  try {
-    const genesisReady = await fetchGenesisStatus();
-    maybeShowGenesisGenerate(!agentaddressConnected && genesisReady);
-  } catch (_e) {
-    maybeShowGenesisGenerate(false);
-  }
-  await runAutoProvision(false);
-
-  // --- Genesis Provenance section ---
-  (async () => {
-    const genesisBody = document.getElementById("genesis-provenance-body");
-    const genesisInline = document.getElementById("genesis-status-inline");
-    if (!genesisBody) return;
-    try {
-      const gs = await api("/genesis/status");
-      if (!gs || !gs.completed) {
-        genesisBody.innerHTML = '<div style="font-size:11px;color:var(--halo-text-dim)">Genesis ceremony not yet completed.</div>';
-        return;
-      }
-      if (genesisInline) genesisInline.innerHTML = '<span class="setup-inline-status status-done">&#10003; Complete</span>';
-      const sources = Array.isArray(gs.entropy_sources) ? gs.entropy_sources : [];
-      const sourceRows = sources.map(s => {
-        const label = esc(String(s.name || s.source || "Unknown"));
-        const meta = esc(String(s.detail || s.pulse_id || s.round || s.id || ""));
-        return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--halo-border)">
-          <div class="dot g" style="width:5px;height:5px"></div>
-          <span style="font-size:11px;color:var(--halo-text);min-width:90px">${label}</span>
-          <span style="font-size:10px;color:var(--halo-text-dim);font-family:monospace">${meta}</span>
-        </div>`;
-      }).join("");
-      const seedHash = String(gs.seed_hash_sha256 || gs.seed_hash || "").slice(0, 24);
-      const combinedEntropy = String(gs.combined_entropy_sha256 || "").slice(0, 24);
-      const didUri = String(gs.did_uri || "");
-      const twineType = String(gs.twine_signature_type || gs.signature_type || "Ed25519");
-      genesisBody.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:2px">
-          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--halo-border)">
-            <div class="dot g" style="width:5px;height:5px"></div>
-            <span style="font-size:11px;color:var(--halo-text);min-width:90px">Seed Hash</span>
-            <span style="font-size:10px;color:var(--halo-text-dim);font-family:monospace">${esc(seedHash)}${seedHash ? "..." : "N/A"}</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--halo-border)">
-            <div class="dot g" style="width:5px;height:5px"></div>
-            <span style="font-size:11px;color:var(--halo-text);min-width:90px">DID</span>
-            <span style="font-size:10px;color:var(--halo-text-dim);font-family:monospace;word-break:break-all">${esc(didUri) || "N/A"}</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--halo-border)">
-            <div class="dot g" style="width:5px;height:5px"></div>
-            <span style="font-size:11px;color:var(--halo-text);min-width:90px">Twine</span>
-            <span style="font-size:10px;color:var(--halo-text-dim);font-family:monospace">${esc(twineType)}</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--halo-border)">
-            <div class="dot g" style="width:5px;height:5px"></div>
-            <span style="font-size:11px;color:var(--halo-text);min-width:90px">Combined Entropy</span>
-            <span style="font-size:10px;color:var(--halo-text-dim);font-family:monospace">${esc(combinedEntropy)}${combinedEntropy ? "..." : "N/A"}</span>
-          </div>
-          <div style="margin-top:6px;padding-top:4px;font-size:10px;color:var(--halo-text-dim);text-transform:uppercase;letter-spacing:0.5px">Entropy Sources</div>
-          ${sourceRows || '<div style="font-size:11px;color:var(--halo-text-dim)">No entropy sources found</div>'}
-        </div>
-      `;
-    } catch (_e) {
-      genesisBody.innerHTML = '<div style="font-size:11px;color:var(--halo-text-dim)">Genesis data unavailable.</div>';
-    }
-  })();
-
-  // --- Key Storage toggle for vault info box (delegation, registered once) ---
-  if (!content._haloVaultInfoHandler) {
-    content._haloVaultInfoHandler = true;
-    content.addEventListener("click", (e) => {
-      const toggle = e.target.closest("#vault-info-toggle");
-      if (!toggle) return;
-      const detail = document.getElementById("vault-info-detail");
-      if (!detail) return;
-      const showing = detail.style.display !== "none";
-      detail.style.display = showing ? "none" : "block";
-      toggle.innerHTML = showing
-        ? '<span class="info-icon" style="font-size:13px">&#9432;</span> Key Storage'
-        : '<span class="info-icon" style="font-size:13px">&#9432;</span> Hide';
-    });
-  }
-
-  // --- Copy buttons for wallet credentials ---
-  for (const btn of $$(".agentaddress-copy-btn")) {
-    btn.addEventListener("click", () => {
-      const targetId = btn.dataset.copyTarget;
-      const el = document.getElementById(targetId);
-      if (el && el.textContent) {
-        navigator.clipboard
-          .writeText(el.textContent)
-          .then(() => {
-            const orig = btn.textContent;
-            btn.textContent = "Copied!";
-            setTimeout(() => {
-              btn.textContent = orig;
-            }, 1500);
-          })
-          .catch(() => {});
-      }
-    });
-  }
-
-  // --- Identity handlers ---
-
-  const profileSaveBtn = document.getElementById("profile-save-btn");
-  const profileNameInput = document.getElementById("profile-name-input");
-  if (profileSaveBtn && profileNameInput) {
-    profileSaveBtn.addEventListener("click", async () => {
-      const locked = profileNameInput.hasAttribute("readonly");
-      if (locked) {
-        profileNameInput.removeAttribute("readonly");
-        profileNameInput.dataset.locked = "false";
-        profileNameInput.classList.remove("profile-name-locked");
-        profileSaveBtn.dataset.renamePending = "1";
-        profileSaveBtn.textContent = "Save Name";
-        profileNameInput.focus();
-        profileNameInput.select();
-        return;
-      }
-      const name = (profileNameInput.value || "").trim();
-      if (!name) return;
-      const rename = profileSaveBtn.dataset.renamePending === "1";
-      profileSaveBtn.disabled = true;
-      profileSaveBtn.textContent = "Saving...";
-      try {
-        await apiPost("/profile", {
-          display_name: name,
-          avatar_type: "initials",
-          rename,
-        });
-        profileNameInput.setAttribute("readonly", "readonly");
-        profileNameInput.dataset.locked = "true";
-        profileNameInput.classList.add("profile-name-locked");
-        profileSaveBtn.dataset.renamePending = "0";
-        profileSaveBtn.textContent = "Rename Key";
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        alert("Save failed: " + (e.message || e));
-        profileSaveBtn.disabled = false;
-        profileSaveBtn.textContent = "Save Name";
-      }
-    });
-  }
-
-  const securityBadgeNode = document.getElementById("identity-security-badge");
-  const securityTierButtons = Array.from(
-    content.querySelectorAll(".security-tier-btn"),
-  );
-  const tierStatusNode = document.getElementById("identity-tier-status");
-  const tierDeviceEnable = document.getElementById("tier-device-enable");
-  const tierDeviceComponents = document.getElementById(
-    "tier-device-components",
-  );
-  const tierDeviceBrowser = document.getElementById("tier-device-browser");
-  const shareLocalIpInput = document.getElementById("share-local-ip");
-  const shareMacInput = document.getElementById("share-mac");
-  const socialProviderChecks = Array.from(
-    content.querySelectorAll(".social-provider-check[data-provider]"),
-  );
-  const socialStatusNode = document.getElementById("social-provider-status");
-  const socialConnectSelectedBtn = document.getElementById(
-    "social-connect-selected-btn",
-  );
-  const socialRevokeSelectedBtn = document.getElementById(
-    "social-revoke-selected-btn",
-  );
-  const socialExpiryInput = document.getElementById("social-expiry-days");
-  const superPasskeyInput = document.getElementById("super-passkey-enabled");
-  const superSecurityKeyInput = document.getElementById(
-    "super-security-key-enabled",
-  );
-  const superTotpInput = document.getElementById("super-totp-enabled");
-  const superTotpLabelInput = document.getElementById("super-totp-label");
-  const superSecureStatusNode = document.getElementById("super-secure-status");
-  let activeSecurityTier = initialSecurityTier;
-  let applyingTierPreset = false;
-  let cachedNetworkIdentity = null;
-  let cachedSocialStatus = null;
-  const setTierStatus = (message, tone = "info") => {
-    if (!tierStatusNode) return;
-    tierStatusNode.textContent = message || "";
-    tierStatusNode.classList.remove("is-ok", "is-warn", "is-error");
-    if (tone === "ok") tierStatusNode.classList.add("is-ok");
-    else if (tone === "warn") tierStatusNode.classList.add("is-warn");
-    else if (tone === "error") tierStatusNode.classList.add("is-error");
-  };
-  const applyTierCheckboxPreset = (tier) => {
-    if (tierDeviceEnable) tierDeviceEnable.checked = true;
-    if (tierDeviceComponents) tierDeviceComponents.checked = true;
-    if (tierDeviceBrowser) tierDeviceBrowser.checked = tier === "max-safe";
-    if (shareLocalIpInput) shareLocalIpInput.checked = true;
-    if (shareMacInput) shareMacInput.checked = tier === "max-safe";
-    if (!deferIdentityRoadmapTracks) {
-      socialProviderChecks.forEach((cb) => {
-        const provider = cb.dataset.provider || "";
-        if (tier === "max-safe") cb.checked = provider === "google";
-        else if (tier === "less-safe")
-          cb.checked = provider === "google" || provider === "github";
-        else cb.checked = false;
-      });
-      if (superPasskeyInput) superPasskeyInput.checked = tier === "max-safe";
-      if (superSecurityKeyInput)
-        superSecurityKeyInput.checked = tier === "max-safe";
-      if (superTotpInput) superTotpInput.checked = true;
-    }
-    const scannedComponentChecks = content.querySelectorAll(
-      'input[name="hw-comp"]',
-    );
-    scannedComponentChecks.forEach((cb) => {
-      if (cb.value === "browser_fingerprint") cb.checked = tier === "max-safe";
-      else cb.checked = true;
-    });
-  };
-  const ensureNetworkIdentityLoaded = async (forceRefresh = false) => {
-    if (cachedNetworkIdentity && !forceRefresh) return cachedNetworkIdentity;
-    const infoNode = document.getElementById("network-info");
-    if (infoNode) infoNode.textContent = "Detecting network info...";
-    const resp = await api("/identity/network");
-    cachedNetworkIdentity = resp || {};
-    if (infoNode) {
-      infoNode.innerHTML = `
-        <div style="margin-bottom:6px">Local IP: <strong>${esc(resp.local_ip || "not detected")}</strong></div>
-        <div>MAC: <strong>${esc(resp.mac_address || "not detected")}</strong></div>
-      `;
-      infoNode.dataset.loaded = "1";
-    }
-    return cachedNetworkIdentity;
-  };
-  const setTierButtonsBusy = (busy) => {
-    securityTierButtons.forEach((btn) => {
-      btn.disabled = busy;
-    });
-    if (socialConnectSelectedBtn) socialConnectSelectedBtn.disabled = busy;
-    if (socialRevokeSelectedBtn) socialRevokeSelectedBtn.disabled = busy;
-  };
-  const setSocialStatus = (message, tone = "ok") => {
-    if (!socialStatusNode) return;
-    socialStatusNode.textContent = String(message || "");
-    socialStatusNode.style.color =
-      tone === "error"
-        ? "var(--red)"
-        : tone === "warn"
-          ? "var(--yellow)"
-          : "var(--green)";
-  };
-  const refreshSocialStatus = async () => {
-    if (deferIdentityRoadmapTracks) return;
-    try {
-      const resp = await api("/identity/social");
-      cachedSocialStatus = resp;
-      const providers = resp.providers || [];
-      const summaries = [];
-      socialProviderChecks.forEach((cb) => {
-        const provider = cb.dataset.provider || "";
-        const row = providers.find(
-          (p) => String(p.provider || "").toLowerCase() === provider,
-        );
-        if (!row) return;
-        cb.checked = !!row.selected;
-        const state = row.active
-          ? "active"
-          : row.expired
-            ? "expired"
-            : "inactive";
-        summaries.push(`${provider}: ${state}`);
-      });
-      if (socialStatusNode) {
-        const valid = resp.ledger && resp.ledger.chain_valid;
-        const head =
-          resp.ledger && resp.ledger.head_hash
-            ? String(resp.ledger.head_hash).slice(0, 16)
-            : "none";
-        socialStatusNode.innerHTML = `
-          <div style="margin-bottom:6px">Chain: <strong style="color:${valid ? "var(--green)" : "var(--red)"}">${valid ? "VALID" : "INVALID"}</strong> | Head: <code>${esc(head)}</code></div>
-          <div style="font-size:12px;color:var(--text-dim)">${esc(summaries.join(" | ") || "No social providers configured")}</div>
-        `;
-      }
-    } catch (e) {
-      setSocialStatus(
-        `Failed to load social status: ${String(e.message || e)}`,
-        "error",
-      );
-    }
-  };
-  const startSocialOAuth = async (
-    provider,
-    expiresDays,
-    fromTier = false,
-    strict = false,
-  ) => {
-    try {
-      const days = Number(expiresDays || 30);
-      const resp = await api(
-        `/identity/social/oauth/start/${encodeURIComponent(provider)}?expires_in_days=${Math.max(1, Math.min(365, days))}`,
-      );
-      if (resp.oauth_bridge_supported && resp.oauth_url) {
-        const popup = window.open("", "_blank", "width=540,height=760");
-        if (popup && !popup.closed) {
-          try {
-            popup.opener = null;
-          } catch (_e) {}
-          popup.location.href = resp.oauth_url;
-          setSocialStatus(`${provider} OAuth opened in new tab.`, "ok");
-          if (fromTier)
-            setTierStatus(
-              "Google OAuth flow opened automatically for max-safe mode.",
-              "ok",
-            );
-          return true;
-        }
-        setSocialStatus(
-          `Popup blocked. Redirecting this tab to ${provider} OAuth.`,
-          "warn",
-        );
-        if (fromTier)
-          setTierStatus(
-            "Popup blocked; redirecting this tab to OAuth.",
-            "warn",
-          );
-        window.location.href = resp.oauth_url;
-        return true;
-      } else {
-        const loginUrl = resp.manual_login_url || "https://agenthalo.dev";
-        const popup = window.open(loginUrl, "_blank", "noopener,noreferrer");
-        if (!popup) {
-          throw new Error("popup blocked");
-        }
-        const token = window.prompt(
-          `Paste your ${provider} OAuth token to connect:`,
-        );
-        if (token && token.trim()) {
-          await apiPost("/identity/social/connect", {
-            provider,
-            token: token.trim(),
-            source: "manual_popup",
-            selected: true,
-            expires_in_days: Math.max(1, Math.min(365, days)),
-          });
-          setSocialStatus(`${provider} connected.`, "ok");
-          await refreshSocialStatus();
-          return true;
-        }
-        setSocialStatus(`${provider} login skipped.`, "warn");
-        if (fromTier)
-          setTierStatus(
-            `${provider} login skipped; preset continued without it.`,
-            "warn",
-          );
-        return false;
-      }
-    } catch (e) {
-      setSocialStatus(
-        `Failed to start ${provider} login: ${String(e.message || e)}`,
-        "error",
-      );
-      if (fromTier)
-        setTierStatus(
-          `${provider} login failed; preset continued without it.`,
-          "warn",
-        );
-      if (strict) throw e;
-      return false;
-    }
-  };
-  if (window.__haloSocialOauthListener) {
-    window.removeEventListener("message", window.__haloSocialOauthListener);
-  }
-  window.__haloSocialOauthListener = async (event) => {
-    const data = event && event.data;
-    if (!data || data.type !== "agenthalo-social-oauth") return;
-    if (data.status === "ok") {
-      setSocialStatus(data.message || "OAuth login connected.", "ok");
-      await refreshSocialStatus();
-      window._invalidateSetupState();
-      await fetchSetupState(true);
-      updateNavLockState();
-    } else {
-      setSocialStatus(data.message || "OAuth login failed.", "error");
-    }
-  };
-  window.addEventListener("message", window.__haloSocialOauthListener);
-  const refreshSuperSecureStatus = async () => {
-    if (deferIdentityRoadmapTracks) return;
-    try {
-      const resp = await api("/identity/super-secure");
-      if (superPasskeyInput) superPasskeyInput.checked = !!resp.passkey_enabled;
-      if (superSecurityKeyInput)
-        superSecurityKeyInput.checked = !!resp.security_key_enabled;
-      if (superTotpInput) superTotpInput.checked = !!resp.totp_enabled;
-      if (superTotpLabelInput)
-        superTotpLabelInput.value = resp.totp_label || "";
-      if (superSecureStatusNode) {
-        superSecureStatusNode.innerHTML = `<span style="color:var(--text-dim)">Passkey: ${resp.passkey_enabled ? "on" : "off"} | Security Key: ${resp.security_key_enabled ? "on" : "off"} | TOTP: ${resp.totp_enabled ? "on" : "off"}</span>`;
-      }
-    } catch (e) {
-      if (superSecureStatusNode)
-        superSecureStatusNode.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
-    }
-  };
-  if (socialConnectSelectedBtn) {
-    socialConnectSelectedBtn.addEventListener("click", async () => {
-      const selected = socialProviderChecks
-        .filter((cb) => cb.checked)
-        .map((cb) => cb.dataset.provider || "")
-        .filter(Boolean);
-      if (!selected.length) {
-        setSocialStatus("Select at least one provider.", "warn");
-        return;
-      }
-      const days = Number(socialExpiryInput?.value || 30);
-      for (const provider of selected) {
-        await startSocialOAuth(provider, days, false);
-      }
-      await refreshSocialStatus();
-    });
-  }
-  if (socialRevokeSelectedBtn) {
-    socialRevokeSelectedBtn.addEventListener("click", async () => {
-      const selected = socialProviderChecks
-        .filter((cb) => cb.checked)
-        .map((cb) => cb.dataset.provider || "")
-        .filter(Boolean);
-      if (!selected.length) {
-        setSocialStatus("Select providers to revoke.", "warn");
-        return;
-      }
-      for (const provider of selected) {
-        try {
-          await apiPost("/identity/social/revoke", {
-            provider,
-            reason: "dashboard_revoke",
-          });
-        } catch (e) {
-          setSocialStatus(
-            `Failed revoke for ${provider}: ${String(e.message || e)}`,
-            "error",
-          );
-        }
-      }
-      setSocialStatus("Selected social providers revoked.", "ok");
-      await refreshSocialStatus();
-    });
-  }
-  content
-    .querySelectorAll(".super-secure-save-btn[data-option]")
-    .forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const option = btn.dataset.option || "";
-        let enabled = false;
-        const metadata = {};
-        if (option === "passkey") enabled = !!superPasskeyInput?.checked;
-        else if (option === "security_key")
-          enabled = !!superSecurityKeyInput?.checked;
-        else if (option === "totp") {
-          enabled = !!superTotpInput?.checked;
-          if (superTotpLabelInput?.value)
-            metadata.label = superTotpLabelInput.value.trim();
-        }
-        try {
-          await apiPost("/identity/super-secure", {
-            option,
-            enabled,
-            metadata,
-          });
-          if (superSecureStatusNode)
-            superSecureStatusNode.innerHTML = `<span style="color:var(--green)">${esc(option)} updated.</span>`;
-          await refreshSuperSecureStatus();
-        } catch (e) {
-          if (superSecureStatusNode)
-            superSecureStatusNode.innerHTML = `<span style="color:var(--red)">Failed ${esc(option)}: ${esc(String(e.message || e))}</span>`;
-        }
-      });
-    });
-  const applyTierPreset = async (tier) => {
-    if (applyingTierPreset) return;
-    applyingTierPreset = true;
-    setTierButtonsBusy(true);
-    const stepFailures = [];
-    const bestEffort = async (label, fn) => {
-      try {
-        return await fn();
-      } catch (e) {
-        stepFailures.push(`${label}: ${String((e && e.message) || e)}`);
-        return null;
-      }
-    };
-    try {
-      applyTierCheckboxPreset(tier);
-
-      if (anonCheck && anonCheck.checked) {
-        await bestEffort("anonymous_mode_disable", async () => {
-          await apiPost("/identity/anonymous", { enabled: false });
-          anonCheck.checked = false;
-          if (anonShell) anonShell.classList.remove("is-active");
-          if (anonLaunchBtn) {
-            anonLaunchBtn.classList.remove("is-armed");
-            anonLaunchBtn.textContent = "Engage";
-            anonLaunchBtn.setAttribute("aria-pressed", "false");
-          }
-        });
-      }
-
-      const enableDevice = !!tierDeviceEnable?.checked;
-      const includeComponents = !!tierDeviceComponents?.checked;
-      const includeBrowser = !!tierDeviceBrowser?.checked;
-      const shareLocalIp = !!shareLocalIpInput?.checked;
-      const shareMac = !!shareMacInput?.checked;
-
-      if (enableDevice) {
-        await bestEffort("device_identity_save", async () => {
-          const deviceMeta = await api("/identity/device");
-          lastDeviceScan = deviceMeta;
-          const selectedComponents = includeComponents
-            ? (deviceMeta.components || []).map((c) => c.name).filter(Boolean)
-            : [];
-          let browserFp = null;
-          if (includeBrowser) {
-            const thumbmark = window.ThumbmarkJS;
-            if (thumbmark && typeof thumbmark.getFingerprint === "function") {
-              try {
-                browserFp = await thumbmark.getFingerprint();
-              } catch (_e) {}
-            }
-          }
-          await apiPost("/identity/device", {
-            browser_fingerprint: includeBrowser ? browserFp : null,
-            selected_components: selectedComponents,
-          });
-        });
-      }
-
-      await bestEffort("network_identity_save", async () => {
-        const networkMeta = await ensureNetworkIdentityLoaded(true);
-        await apiPost("/identity/network", {
-          share_local_ip: shareLocalIp,
-          share_public_ip: false,
-          share_mac: shareMac,
-          local_ip: shareLocalIp ? networkMeta.local_ip || null : null,
-          mac_addresses:
-            shareMac && networkMeta.mac_address
-              ? [networkMeta.mac_address]
-              : [],
-        });
-      });
-
-      if (!deferIdentityRoadmapTracks) {
-        // Apply super-secure selections immediately to backend state.
-        await bestEffort("super_secure_passkey", async () =>
-          apiPost("/identity/super-secure", {
-            option: "passkey",
-            enabled: !!superPasskeyInput?.checked,
-            metadata: {},
-          }),
-        );
-        await bestEffort("super_secure_security_key", async () =>
-          apiPost("/identity/super-secure", {
-            option: "security_key",
-            enabled: !!superSecurityKeyInput?.checked,
-            metadata: {},
-          }),
-        );
-        await bestEffort("super_secure_totp", async () =>
-          apiPost("/identity/super-secure", {
-            option: "totp",
-            enabled: !!superTotpInput?.checked,
-            metadata: { label: superTotpLabelInput?.value || "" },
-          }),
-        );
-      }
-
-      await bestEffort("security_tier_persist", async () => {
-        await apiPost("/identity/tier", {
-          tier,
-          applied_by: "dashboard_setup",
-          step_failures: stepFailures.length,
-        });
-      });
-
-      if (tier === "max-safe") {
-        if (!deferIdentityRoadmapTracks) {
-          const days = Number(socialExpiryInput?.value || 30);
-          await bestEffort("social_google_oauth", async () => {
-            const ok = await startSocialOAuth("google", days, true, true);
-            if (!ok) {
-              throw new Error("oauth not completed");
-            }
-          });
-        }
-        setTierStatus(
-          stepFailures.length
-            ? `Max-safe preset applied with ${stepFailures.length} skipped step(s).`
-            : deferIdentityRoadmapTracks
-              ? "Max-safe preset applied. Deferred identity tracks remain disabled."
-              : "Max-safe preset applied. Google social login launched automatically.",
-          stepFailures.length ? "warn" : "ok",
-        );
-      } else {
-        setTierStatus(
-          stepFailures.length
-            ? `Balanced preset applied with ${stepFailures.length} skipped step(s).`
-            : "Balanced preset applied with automatic identity setup.",
-          stepFailures.length ? "warn" : "ok",
-        );
-      }
-      // Immediately hide safety UI for responsive feedback
-      const _tierShell = document.getElementById("safety-tier-shell");
-      const _intentLabel = document.getElementById("safety-intent-label");
-      const _anonShell = document.getElementById("anon-mode-shell");
-      if (_tierShell) _tierShell.style.display = "none";
-      if (_intentLabel) _intentLabel.style.display = "none";
-      if (_anonShell) _anonShell.style.display = "none";
-
-      window._invalidateSetupState();
-      await fetchSetupState(true);
-      updateNavLockState();
-      // Re-render to show configured state (verified cards, rescan button)
-      await renderSetup();
-    } catch (e) {
-      setTierStatus(
-        `Preset continued with skipped step(s): ${String(e.message || e)}`,
-        "warn",
-      );
-    } finally {
-      applyingTierPreset = false;
-      setTierButtonsBusy(false);
-    }
-  };
-  const setSecurityTier = (tier, persist = true) => {
-    const nextSrc = securityTierImageByKey[tier];
-    if (!nextSrc) return;
-    applyTierCheckboxPreset(tier);
-    securityTierButtons.forEach((btn) =>
-      btn.classList.toggle("is-selected", btn.dataset.tier === tier),
-    );
-    if (persist) {
-      try {
-        localStorage.setItem("halo_identity_security_tier", tier);
-      } catch (_e) {}
-    }
-    if (!securityBadgeNode) {
-      activeSecurityTier = tier;
-      return;
-    }
-    if (
-      activeSecurityTier === tier &&
-      securityBadgeNode.getAttribute("src") === nextSrc
-    )
-      return;
-    activeSecurityTier = tier;
-    securityBadgeNode.classList.add("is-swapping");
-    window.setTimeout(() => {
-      securityBadgeNode.onload = () => {
-        securityBadgeNode.classList.remove("is-swapping");
-        securityBadgeNode.onload = null;
-      };
-      securityBadgeNode.onerror = () => {
-        securityBadgeNode.classList.remove("is-swapping");
-        securityBadgeNode.onerror = null;
-      };
-      securityBadgeNode.setAttribute("src", nextSrc);
-      window.setTimeout(
-        () => securityBadgeNode.classList.remove("is-swapping"),
-        200,
-      );
-    }, 45);
-  };
-  securityTierButtons.forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const tier = btn.dataset.tier || "";
-      setSecurityTier(tier, true);
-      await applyTierPreset(tier);
-    });
-  });
-  await refreshSocialStatus();
-  await refreshSuperSecureStatus();
-  setSecurityTier(initialSecurityTier, false);
-
-  // Auto-apply "As Safe As Possible" on first visit if no tier has been set yet
-  if (willAutoApply) {
-    // Buttons start hidden to avoid flash; apply the preset in the background.
-    setTimeout(() => applyTierPreset("max-safe"), 250);
-  }
-
-  // --- Rescan Identity button handler ---
-  const rescanBtn = document.getElementById("identity-rescan-btn");
-  if (rescanBtn) {
-    rescanBtn.addEventListener("click", async () => {
-      rescanBtn.disabled = true;
-      rescanBtn.textContent = "Resetting...";
-      try {
-        // Toggle anonymous mode on then off to clear device/network identity
-        await apiPost("/identity/anonymous", { enabled: true });
-        await apiPost("/identity/anonymous", { enabled: false });
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        alert("Reset failed: " + (e.message || e));
-        rescanBtn.disabled = false;
-        rescanBtn.textContent = "Rescan Identity";
-      }
-    });
-  }
-
-  let lastDeviceScan = null;
-  const deviceScanBtn = document.getElementById("device-scan-btn");
-  if (deviceScanBtn) {
-    deviceScanBtn.addEventListener("click", async () => {
-      deviceScanBtn.disabled = true;
-      deviceScanBtn.textContent = "Scanning...";
-      const statusNode = document.getElementById("device-scan-status");
-      try {
-        const resp = await api("/identity/device");
-        lastDeviceScan = resp;
-        const resultsNode = document.getElementById("device-scan-results");
-        const listNode = document.getElementById("device-components-list");
-        if (resultsNode && listNode) {
-          let html = "";
-          let totalEntropy = 0;
-          (resp.components || []).forEach((c) => {
-            totalEntropy += Number(c.entropy_bits || 0);
-            html += `
-              <label class="hw-component" style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">
-                <input type="checkbox" name="hw-comp" value="${esc(c.name)}" checked>
-                <span style="color:var(--text);min-width:120px">${esc(c.name)}</span>
-                <span style="color:var(--text-dim);font-size:11px">${Number(c.entropy_bits || 0)} bits${c.stable ? "" : " (unstable)"}</span>
-              </label>
-            `;
-          });
-
-          let browserFp = null;
-          const thumbmark = window.ThumbmarkJS;
-          if (thumbmark && typeof thumbmark.getFingerprint === "function") {
-            try {
-              browserFp = await thumbmark.getFingerprint();
-            } catch (_e) {}
-          }
-
-          if (browserFp) {
-            html += `
-              <label class="hw-component" style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">
-                <input type="checkbox" name="hw-comp" value="browser_fingerprint" checked data-browser-fp="${esc(browserFp)}">
-                <span style="color:var(--text);min-width:120px">browser_fingerprint</span>
-                <span style="color:var(--text-dim);font-size:11px">32 bits</span>
-              </label>
-            `;
-            totalEntropy += 32;
-          }
-
-          listNode.innerHTML = html;
-          const barNode = document.getElementById("device-entropy-bar");
-          if (barNode) {
-            const pct = Math.max(0, Math.min(100, (totalEntropy / 256) * 100));
-            const color =
-              pct > 60
-                ? "var(--green)"
-                : pct > 30
-                  ? "var(--yellow)"
-                  : "var(--red)";
-            barNode.innerHTML = `
-              <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">Entropy: ${totalEntropy} bits</div>
-              <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
-                <div style="width:${pct}%;height:100%;background:${color};border-radius:3px;transition:width 0.3s"></div>
-              </div>
-            `;
-          }
-          resultsNode.style.display = "block";
-        }
-        if (statusNode)
-          statusNode.innerHTML = `<span style="color:var(--green)">Found ${(resp.components || []).length} components (tier: ${esc(resp.tier || "unknown")})</span>`;
-      } catch (e) {
-        if (statusNode)
-          statusNode.innerHTML = `<span style="color:var(--red)">Scan failed: ${esc(String(e.message || e))}</span>`;
-      }
-      deviceScanBtn.disabled = false;
-      deviceScanBtn.textContent =
-        identityCfg.device_configured || !!lastDeviceScan
-          ? "Rescan Device"
-          : "Scan Device";
-    });
-  }
-
-  const deviceSaveBtn = document.getElementById("device-save-btn");
-  if (deviceSaveBtn) {
-    deviceSaveBtn.addEventListener("click", async () => {
-      deviceSaveBtn.disabled = true;
-      deviceSaveBtn.textContent = "Saving...";
-      const checked = content.querySelectorAll('input[name="hw-comp"]:checked');
-      const selected = [];
-      let browserFp = null;
-      checked.forEach((cb) => {
-        if (cb.value === "browser_fingerprint") {
-          browserFp = cb.dataset.browserFp || null;
-        } else {
-          selected.push(cb.value);
-        }
-      });
-      try {
-        await apiPost("/identity/device", {
-          browser_fingerprint: browserFp,
-          selected_components: selected,
-        });
-        const statusNode = document.getElementById("device-scan-status");
-        if (statusNode)
-          statusNode.innerHTML =
-            '<span style="color:var(--green)">&#10003; Device identity saved.</span>';
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        alert("Save failed: " + (e.message || e));
-      }
-      deviceSaveBtn.disabled = false;
-      deviceSaveBtn.textContent = "Save Device Identity";
-    });
-  }
-
-  const anonCheck = document.getElementById("anonymous-mode-check");
-  const anonShell = document.getElementById("anon-mode-shell");
-  const anonLaunchBtn = document.getElementById("anonymous-mode-launch-btn");
-  if (anonCheck) {
-    const syncAnonUi = () => {
-      const enabled = !!anonCheck.checked;
-      if (anonShell) anonShell.classList.toggle("is-active", enabled);
-      if (anonLaunchBtn) {
-        anonLaunchBtn.classList.toggle("is-armed", enabled);
-        anonLaunchBtn.textContent = enabled ? "Disengage" : "Engage";
-        anonLaunchBtn.setAttribute("aria-pressed", enabled ? "true" : "false");
-      }
-    };
-
-    syncAnonUi();
-    if (anonLaunchBtn) {
-      anonLaunchBtn.addEventListener("click", () => {
-        if (anonLaunchBtn.disabled) return;
-        anonCheck.checked = !anonCheck.checked;
-        syncAnonUi();
-        anonCheck.dispatchEvent(new Event("change", { bubbles: true }));
-      });
-    }
-
-    anonCheck.addEventListener("change", async () => {
-      if (anonLaunchBtn) {
-        anonLaunchBtn.disabled = true;
-        anonLaunchBtn.classList.add("is-loading");
-      }
-      // Immediately hide safety buttons when engaging anonymous mode
-      if (anonCheck.checked) {
-        const tierShell = document.getElementById("safety-tier-shell");
-        const intentLabel = document.getElementById("safety-intent-label");
-        if (tierShell) tierShell.style.display = "none";
-        if (intentLabel) intentLabel.style.display = "none";
-      }
-      try {
-        await apiPost("/identity/anonymous", { enabled: anonCheck.checked });
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        alert("Failed: " + (e.message || e));
-        anonCheck.checked = !anonCheck.checked;
-        syncAnonUi();
-      } finally {
-        if (anonLaunchBtn) {
-          anonLaunchBtn.disabled = false;
-          anonLaunchBtn.classList.remove("is-loading");
-        }
-      }
-    });
-  }
-
-  const netDetails = document.getElementById("setup-network-details");
-  if (netDetails) {
-    netDetails.addEventListener("toggle", async () => {
-      if (!netDetails.open) return;
-      const infoNode = document.getElementById("network-info");
-      if (!infoNode || infoNode.dataset.loaded) return;
-      try {
-        await ensureNetworkIdentityLoaded();
-      } catch (e) {
-        infoNode.innerHTML = `<span style="color:var(--red)">Failed to detect: ${esc(String(e.message || e))}</span>`;
-      }
-    });
-  }
-  const networkSaveBtn = document.getElementById("network-save-btn");
-  if (networkSaveBtn) {
-    networkSaveBtn.addEventListener("click", async () => {
-      networkSaveBtn.disabled = true;
-      networkSaveBtn.textContent = "Saving...";
-      let rerendered = false;
-      const infoNode = document.getElementById("network-info");
-      try {
-        const resp = await ensureNetworkIdentityLoaded();
-        const shareLocalIp =
-          !!document.getElementById("share-local-ip")?.checked;
-        const shareMac = !!document.getElementById("share-mac")?.checked;
-        const macAddresses =
-          shareMac && resp.mac_address ? [resp.mac_address] : [];
-        await apiPost("/identity/network", {
-          share_local_ip: shareLocalIp,
-          share_public_ip: false,
-          share_mac: shareMac,
-          local_ip: shareLocalIp ? resp.local_ip || null : null,
-          mac_addresses: macAddresses,
-        });
-        if (infoNode)
-          infoNode.innerHTML +=
-            '<div style="margin-top:8px;color:var(--green);font-size:12px">&#10003; Network identity saved.</div>';
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-        rerendered = true;
-      } catch (e) {
-        if (infoNode)
-          infoNode.innerHTML += `<div style="margin-top:8px;color:var(--red);font-size:12px">Failed to save: ${esc(String(e.message || e))}</div>`;
-      } finally {
-        if (!rerendered && networkSaveBtn.isConnected) {
-          networkSaveBtn.disabled = false;
-          networkSaveBtn.textContent = identityCfg.network_configured
-            ? "Update Network Identity"
-            : "Save Network Identity";
-        }
-      }
-    });
-  }
-
-  // Provider "Set Key" buttons
-  content
-    .querySelectorAll(".setup-provider-config-btn[data-provider]")
-    .forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const provider = btn.dataset.provider || "";
-        const info = PROVIDER_INFO[provider] || {};
-        openVaultModal(provider, info.envVar || providerDefaultEnv(provider));
-      });
-    });
-
-  // Provider "Test" buttons
-  content
-    .querySelectorAll(".setup-provider-test-btn[data-provider]")
-    .forEach((btn) => {
-      btn.addEventListener("click", () => {
-        window.vaultTestKey(btn.dataset.provider || "");
-      });
-    });
-
-  // Provider "Disconnect" buttons
-  content
-    .querySelectorAll(".setup-provider-disconnect-btn[data-provider]")
-    .forEach((btn) => {
-      btn.addEventListener("click", () => {
-        window.vaultRemoveKey(btn.dataset.provider || "");
-      });
-    });
-
-  // "Use Local Models" button handler
-  const chooseLocalBtn = content.querySelector(
-    "#setup-choose-local-models-btn",
-  );
-  if (chooseLocalBtn) {
-    chooseLocalBtn.addEventListener("click", async () => {
-      const statusEl = content.querySelector("#setup-local-models-status");
-      chooseLocalBtn.disabled = true;
-      chooseLocalBtn.textContent = "Setting up...";
-      try {
-        await apiPost("/models/choose-local", {});
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        if (statusEl) {
-          statusEl.innerHTML = `<span style="color:var(--red)">Failed: ${esc(String(e.message || e))}</span>`;
-        }
-        chooseLocalBtn.disabled = false;
-        chooseLocalBtn.textContent = "Use Local Models";
-      }
-    });
-  }
-
-  // "Disconnect" local models button handler
-  const disconnectLocalBtn = content.querySelector(
-    ".setup-disconnect-local-models-btn",
-  );
-  if (disconnectLocalBtn) {
-    disconnectLocalBtn.addEventListener("click", async () => {
-      disconnectLocalBtn.disabled = true;
-      disconnectLocalBtn.textContent = "Disconnecting...";
-      try {
-        await apiPost("/models/unchoose-local", {});
-        window._invalidateSetupState();
-        await fetchSetupState(true);
-        await renderSetup();
-        updateNavLockState();
-      } catch (e) {
-        alert(`Failed to disconnect local models: ${String(e.message || e)}`);
-        disconnectLocalBtn.disabled = false;
-        disconnectLocalBtn.textContent = "Disconnect";
-      }
-    });
-  }
-
-  // Auto-open provider modal if redirected from config
-  const autoOpenProvider = localStorage.getItem("halo_setup_open_provider");
-  if (autoOpenProvider) {
-    localStorage.removeItem("halo_setup_open_provider");
-    const info = PROVIDER_INFO[autoOpenProvider];
-    if (info)
-      openVaultModal(
-        autoOpenProvider,
-        info.envVar || providerDefaultEnv(autoOpenProvider),
-      );
-  }
-}
+// (Setup V3 helpers removed — merged into Config)
 
 window.toggleWrap = async function (agent, enable) {
   try {
@@ -6565,7 +4104,7 @@ function openVaultModal(provider, envVar) {
       window._invalidateSetupState();
       await fetchSetupState(true);
       // Re-render current page
-      const curPage = (location.hash.replace("#/", "") || "setup").split(
+      const curPage = (location.hash.replace("#/", "") || "config").split(
         "/",
       )[0];
       if (pages[curPage]) await pages[curPage]();
@@ -6590,7 +4129,7 @@ window.vaultTestKey = async function (provider) {
     else alert(`${provider}: ${res.error || "validation failed"}`);
     window._invalidateSetupState();
     await fetchSetupState(true);
-    const curPage = (location.hash.replace("#/", "") || "setup").split("/")[0];
+    const curPage = (location.hash.replace("#/", "") || "config").split("/")[0];
     if (pages[curPage]) await pages[curPage]();
     updateNavLockState();
   } catch (e) {
@@ -6604,7 +4143,7 @@ window.vaultRemoveKey = async function (provider) {
     await apiDelete(`/vault/keys/${encodeURIComponent(provider)}`);
     window._invalidateSetupState();
     await fetchSetupState(true);
-    const curPage = (location.hash.replace("#/", "") || "setup").split("/")[0];
+    const curPage = (location.hash.replace("#/", "") || "config").split("/")[0];
     if (pages[curPage]) await pages[curPage]();
     updateNavLockState();
   } catch (e) {
