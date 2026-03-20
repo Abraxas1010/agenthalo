@@ -106,6 +106,19 @@ Per-agent git worktrees with host path injection.
 - cockpit, mesh, wallet-routing, proxy telemetry, and native session orchestration are first-class product surfaces, not legacy exclusions
 - Library auto-push must not block session completion — failures are logged, not fatal
 
+## System Architecture Diagram (Pre-Push Gate)
+
+The file `dashboard/agenthalo-system-diagram.html` contains 15 Mermaid diagrams documenting the full system architecture. A pre-push hook (`scripts/check_diagram_freshness.sh`) blocks pushes if the diagram hasn't been reviewed within 14 days.
+
+**Before pushing**, if the diagram is stale or you've made structural changes:
+1. Compare each diagram section against the current codebase
+2. Update any Mermaid diagrams that no longer match
+3. Update `DIAGRAM_REVIEW_DATE` in the HTML comment header to today's date
+4. Update `DIAGRAM_REVIEWER` to your identity
+5. Update the "Reviewed:" badge in the `<header>` element
+
+Key sections to check: Binary Targets (vs Cargo.toml), Module Architecture (vs src/), Dashboard Frontend (vs dashboard/*.js), MCP Tool Surface (vs tool registrations), Complete File Map (vs file tree).
+
 ## Handoff
 
 When you finish a non-trivial change, report:

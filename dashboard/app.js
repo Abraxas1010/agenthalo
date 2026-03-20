@@ -106,6 +106,29 @@ function renderLeanPageRoute() {
   }
 }
 
+function renderFlowchartPage() {
+  content.innerHTML = `
+    <div style="display:flex;flex-direction:column;height:100%;padding:0">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border);flex-shrink:0">
+        <div>
+          <div style="font-size:18px;font-weight:700">System Architecture</div>
+          <div style="font-size:12px;color:var(--text-dim)">Agent H.A.L.O. / NucleusDB &mdash; full system diagram</div>
+        </div>
+        <a class="btn btn-sm" href="agenthalo-system-diagram.html" target="_blank" rel="noopener noreferrer" style="font-size:12px">
+          Open in New Tab &#8599;
+        </a>
+      </div>
+      <div style="flex:1;min-height:0">
+        <iframe
+          src="agenthalo-system-diagram.html"
+          title="AgentHALO System Architecture"
+          style="width:100%;height:100%;border:none;display:block"
+          loading="lazy"
+        ></iframe>
+      </div>
+    </div>`;
+}
+
 async function renderAgentPmt() {
   const content = $("#content");
   let cfg = null;
@@ -174,6 +197,7 @@ const pages = {
   identification: renderIdentificationPage,
   communication: renderCommunicationPage,
   "nucleusdb-docs": renderNucleusDBDocsPage,
+  flowchart: renderFlowchartPage,
   networking: renderP2PClawPage,
   p2pclaw: renderP2PClawPage,
   trust: renderTrust,
@@ -1739,6 +1763,7 @@ async function route() {
     "identification",
     "communication",
     "nucleusdb-docs",
+    "flowchart",
   ];
   const shouldExpand = overviewFamily.includes(page);
   const parentLink = document.getElementById("nav-overview-parent");
@@ -1767,6 +1792,7 @@ document.addEventListener("click", (e) => {
     "identification",
     "communication",
     "nucleusdb-docs",
+    "flowchart",
   ];
   if (overviewFamily.includes(currentPage)) {
     const isExpanded = parentLink.classList.contains("nav-expanded");
@@ -1784,23 +1810,43 @@ document.addEventListener("click", (e) => {
 });
 
 // ---- Lean nav visibility (hidden until path is configured) ----
-async function __updateLeanNavVisibility() {
-  const leanNav = document.querySelector('[data-page="lean"]');
-  if (!leanNav) return;
-  const li = leanNav.closest('li');
-  if (!li) return;
+async function __updateNavVisibility() {
   try {
     const profile = await api('/worktree/active-profile');
-    const hasPath = !!(profile && profile.lean_project_path && profile.lean_project_path.trim());
-    li.style.display = hasPath ? '' : 'none';
+    const hidden = Array.isArray(profile && profile.hidden_nav_items) ? profile.hidden_nav_items : [];
+    const hasLean = !!(profile && profile.lean_project_path && profile.lean_project_path.trim());
+    // Apply visibility to all nav items
+    document.querySelectorAll('.nav-links [data-page]').forEach(link => {
+      const page = link.getAttribute('data-page');
+      const li = link.closest('li');
+      if (!li) return;
+      if (page === 'lean') {
+        // Lean is hidden if no path OR explicitly hidden
+        li.style.display = (!hasLean || hidden.includes(page)) ? 'none' : '';
+      } else if (page === 'config') {
+        // Config is always visible (cannot hide the settings page)
+        li.style.display = '';
+      } else {
+        li.style.display = hidden.includes(page) ? 'none' : '';
+      }
+    });
+    // Also hide sub-items if their parent is hidden
+    document.querySelectorAll('.nav-sub-item[data-parent]').forEach(li => {
+      const parent = li.getAttribute('data-parent');
+      if (hidden.includes(parent)) {
+        li.style.display = 'none';
+      }
+    });
   } catch (_) {
-    li.style.display = 'none';
+    // On error, show everything
   }
 }
-window.__updateLeanNavVisibility = __updateLeanNavVisibility;
+// Keep backward compat alias
+window.__updateLeanNavVisibility = __updateNavVisibility;
+window.__updateNavVisibility = __updateNavVisibility;
 
 window.addEventListener("hashchange", route);
-window.addEventListener("DOMContentLoaded", () => { route(); __updateLeanNavVisibility(); });
+window.addEventListener("DOMContentLoaded", () => { route(); __updateNavVisibility(); });
 
 // -- CRT Effects Toggle -------------------------------------------------------
 function toggleCRT() {
@@ -2737,6 +2783,7 @@ async function renderConfig() {
       { id: "external", icon: "\uD83D\uDD17", label: "External Sources", status: (wtProfile.injections || []).length > 0 ? "ok" : "muted" },
       { id: "integrations", icon: "\uD83D\uDD0C", label: "Integrations", status: "muted" },
       { id: "funding", icon: "\uD83D\uDCB0", label: "Funding", status: "muted" },
+      { id: "navigation", icon: "\uD83D\uDDC2", label: "Navigation", status: "ok" },
     ];
 
     // ---- Health summary counts ----
@@ -3024,6 +3071,43 @@ async function renderConfig() {
         <div style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.5;padding:0 4px">
           All tools, workflows, and agent configurations are accessible exclusively through AgentPMT MCP.
         </div>`;
+    } else if (sec === "navigation") {
+      const hiddenItems = Array.isArray(wtProfile.hidden_nav_items) ? wtProfile.hidden_nav_items : [];
+      const navItems = [
+        { page: "setup", label: "Setup", icon: "\u2699" },
+        { page: "agentpmt", label: "AgentPMT", icon: "\u2699" },
+        { page: "overview", label: "Overview", icon: "\u25C6", note: "Hides all sub-pages (Genesis, Identification, Communication, Memories, Flow Chart)" },
+        { page: "sessions", label: "Sessions", icon: "\u2630" },
+        { page: "trust", label: "Trust", icon: "\u2713" },
+        { page: "proof-gate", label: "Proof Gate", icon: "\uD83D\uDEE1" },
+        { page: "nucleusdb", label: "NucleusDB", icon: "\u2622" },
+        { page: "cockpit", label: "Cockpit", icon: "\u25B6" },
+        { page: "orchestration", label: "Orchestration", icon: "\u267B" },
+        { page: "p2pclaw", label: "P2PCLAW", icon: "\u263C" },
+        { page: "mcp-tools", label: "MCP Tools", icon: "\u2692" },
+        { page: "skills", label: "Skills", icon: "\u270E" },
+        { page: "lean", label: "Lean", icon: "\u2112", note: "Also requires Lean Project Path to be set in External Sources" },
+      ];
+      const rows = navItems.map(item => {
+        const isHidden = hiddenItems.includes(item.page);
+        return `<div class="config-row">
+          <div><div class="config-label">${esc(item.icon)} ${esc(item.label)}</div>
+          ${item.note ? '<div class="config-desc">' + esc(item.note) + '</div>' : ''}</div>
+          <button class="toggle ${isHidden ? '' : 'on'}" data-nav-toggle="${esc(item.page)}"></button>
+        </div>`;
+      }).join("");
+      sectionHtml = `
+        <div class="config-section-heading">
+          <div class="config-section-icon">\uD83D\uDDC2</div>
+          <div><div class="config-section-title">Navigation</div>
+          <div class="config-section-kicker">Show or hide pages in the dashboard sidebar. Configuration is always visible.</div></div>
+        </div>
+        <div class="config-section-body">
+          ${rows}
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.5;padding:0 4px">
+          Changes take effect immediately. Hidden pages are still accessible via direct URL.
+        </div>`;
     }
 
     content.innerHTML = `<div class="mcp-shell cfg-shell">
@@ -3115,6 +3199,23 @@ async function renderConfig() {
         openVaultModal(providerEntry.provider, providerEntry.env_var || providerDefaultEnv(providerEntry.provider));
       }
     }
+
+    // ---- Navigation toggle bindings ----
+    content.querySelectorAll("[data-nav-toggle]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const page = btn.dataset.navToggle;
+        if (!Array.isArray(wtProfile.hidden_nav_items)) wtProfile.hidden_nav_items = [];
+        const idx = wtProfile.hidden_nav_items.indexOf(page);
+        if (idx >= 0) {
+          wtProfile.hidden_nav_items.splice(idx, 1);
+        } else {
+          wtProfile.hidden_nav_items.push(page);
+        }
+        try { await apiPost(`/worktree/profile/${encodeURIComponent(wtProfile.profile_name || "default")}`, wtProfile); } catch (_e) {}
+        if (typeof __updateNavVisibility === 'function') __updateNavVisibility();
+        renderConfig();
+      });
+    });
 
     // ---- Deferred section loading ----
     if (sec === "models") { await injectConfigModelsSection(); }

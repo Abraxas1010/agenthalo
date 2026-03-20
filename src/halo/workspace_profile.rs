@@ -144,6 +144,9 @@ pub struct WorkspaceProfile {
     /// Absolute path to a Lean project directory for the Lean file browser.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lean_project_path: Option<String>,
+    /// Nav items hidden in the dashboard sidebar (by data-page key).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_nav_items: Vec<String>,
     #[serde(default)]
     pub injections: Vec<Injection>,
     #[serde(default)]
@@ -175,6 +178,7 @@ impl Default for WorkspaceProfile {
             worktree_isolation: false,
             external_write_policy: ExternalWritePolicy::default(),
             lean_project_path: None,
+            hidden_nav_items: Vec::new(),
             worktree_base: default_worktree_base(),
             worktree_prefix: default_worktree_prefix(),
             worktree_branch: default_worktree_branch(),
