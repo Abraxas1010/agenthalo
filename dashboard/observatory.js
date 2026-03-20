@@ -45,6 +45,71 @@
 
   function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
+  // ── Mesh Command Registry ──────────────────────────────────
+  var MESH_COMMANDS = [
+    {
+      id: 'clear', label: 'Clear', icon: '\u{1F9F9}',
+      getCommandText: function(agentType) {
+        if (agentType === 'shell' || agentType === 'custom') return 'clear';
+        return '/clear';
+      },
+    },
+    {
+      id: 'compact', label: 'Compact', icon: '\u{1F4E6}',
+      getCommandText: function(agentType) {
+        if (agentType === 'shell' || agentType === 'custom') return null;
+        if (agentType === 'gemini') return null;
+        return '/compact';
+      },
+    },
+    {
+      id: 'credo', label: 'Credo', icon: '\u{1F4DC}',
+      getCommandText: function(agentType) {
+        if (agentType === 'shell' || agentType === 'custom') return null;
+        return 'Invoke .agents/CREDO.md and recalibrate';
+      },
+    },
+    {
+      id: 'audit', label: 'Hostile Audit', icon: '\u{1F50D}',
+      getCommandText: function(agentType) {
+        if (agentType === 'shell' || agentType === 'custom') return null;
+        return 'Run adversarial audit on the last commit using the adversarial-audit skill';
+      },
+    },
+  ];
+
+  function computeDirection(mySlot, theirSlot) {
+    if (!mySlot || !theirSlot) return '\u25CF';
+    var dx = (theirSlot.x + theirSlot.w / 2) - (mySlot.x + mySlot.w / 2);
+    var dy = (theirSlot.y + theirSlot.h / 2) - (mySlot.y + mySlot.h / 2);
+    if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return '\u25CF';
+    if (Math.abs(dx) >= Math.abs(dy)) return dx > 0 ? '\u261E' : '\u261C';
+    return dy > 0 ? '\u261F' : '\u261D';
+  }
+
+  function dispatchCommand(sessionId, commandText) {
+    var mgr = window.__cockpitManager;
+    if (!mgr || typeof mgr.pushCommandToPanel !== 'function') return false;
+    return mgr.pushCommandToPanel(sessionId, commandText);
+  }
+
+  function getCurrentSlots() {
+    var layouts = window.__cockpitLayouts;
+    if (!layouts) return [{ x: 0, y: 0, w: 1, h: 1 }];
+    var mgr = window.__cockpitManager;
+    var key = (mgr && mgr.layout) || '1';
+    return layouts[key] || layouts['1'] || [{ x: 0, y: 0, w: 1, h: 1 }];
+  }
+
+  function getAgentColorClass(agentType) {
+    var t = (agentType || '').toLowerCase();
+    if (t === 'claude') return 'agent-claude';
+    if (t === 'gemini') return 'agent-gemini';
+    if (t === 'codex') return 'agent-codex';
+    if (t === 'shell' || t === 'custom') return 'agent-shell';
+    return 'agent-other';
+  }
+
   // ══════════════════════════════════════════════════════════════
   // ObservatoryDrawer — one per CockpitPanel
   // ══════════════════════════════════════════════════════════════
@@ -61,25 +126,69 @@
     var self = this;
     var el = document.createElement('div');
     el.className = 'obs-drawer' + (this.collapsed ? ' collapsed' : '');
+
+    // Build self-command buttons HTML
+    var selfBtnsHtml = '';
+    var registry = window.__haloAgentLetters || {};
+    var myInfo = registry[this.panelId];
+    var myAgentType = (myInfo && myInfo.agentType) || 'agent';
+    MESH_COMMANDS.forEach(function(cmd) {
+      var text = cmd.getCommandText(myAgentType);
+      var isDisabled = text === null;
+      selfBtnsHtml += '<button class="obs-cmd-self-btn"' +
+        ' data-cmd-id="' + cmd.id + '"' +
+        (isDisabled ? ' disabled' : '') +
+        ' title="' + esc(cmd.label) + (isDisabled ? ' (N/A for ' + esc(myAgentType) + ')' : '') + '">' +
+        '<span class="obs-cmd-icon">' + cmd.icon + '</span>' +
+        '<span>' + esc(cmd.label) + '</span>' +
+      '</button>';
+    });
+
     el.innerHTML =
       '<div class="obs-drawer-tab" title="Observatory">' +
         '<span class="obs-drawer-tab-icon">\u{1F52D}</span>' +
       '</div>' +
       '<div class="obs-drawer-panel">' +
-        '<div class="obs-drawer-header">' +
-          '<span class="obs-drawer-title">Observatory</span>' +
+        '<div class="obs-drawer-tabs">' +
+          '<button class="obs-drawer-tab-btn is-active" data-obs-tab="observe" title="Observe">\u{1F52D}</button>' +
+          '<button class="obs-drawer-tab-btn" data-obs-tab="command" title="Mesh Commands">\u261E</button>' +
         '</div>' +
-        '<div class="obs-drawer-buttons">' +
-          VIZ_TYPES.map(function(v) {
-            var hasEndpoint = !!v.endpoint;
-            return '<button class="obs-viz-btn' + (hasEndpoint ? ' has-endpoint' : '') + '" data-viz="' + v.id + '"' +
-              (hasEndpoint ? '' : ' disabled') +
-              ' title="' + v.label + (hasEndpoint ? ' — click to load' : ' — waiting for agent data') + '">' +
-              '<span class="obs-viz-icon">' + v.icon + '</span>' +
-              '<span class="obs-viz-label">' + v.label + '</span>' +
-              '<span class="obs-viz-dot"></span>' +
-            '</button>';
-          }).join('') +
+        '<div class="obs-tab-content" data-obs-content="observe">' +
+          '<div class="obs-drawer-header">' +
+            '<span class="obs-drawer-title">Observatory</span>' +
+          '</div>' +
+          '<div class="obs-drawer-buttons">' +
+            VIZ_TYPES.map(function(v) {
+              var hasEndpoint = !!v.endpoint;
+              return '<button class="obs-viz-btn' + (hasEndpoint ? ' has-endpoint' : '') + '" data-viz="' + v.id + '"' +
+                (hasEndpoint ? '' : ' disabled') +
+                ' title="' + v.label + (hasEndpoint ? ' \u2014 click to load' : ' \u2014 waiting for agent data') + '">' +
+                '<span class="obs-viz-icon">' + v.icon + '</span>' +
+                '<span class="obs-viz-label">' + v.label + '</span>' +
+                '<span class="obs-viz-dot"></span>' +
+              '</button>';
+            }).join('') +
+          '</div>' +
+        '</div>' +
+        '<div class="obs-tab-content obs-tab-command" data-obs-content="command" style="display:none">' +
+          '<div class="obs-cmd-section">' +
+            '<div class="obs-cmd-section-title">Self</div>' +
+            '<div class="obs-cmd-self-grid">' + selfBtnsHtml + '</div>' +
+          '</div>' +
+          '<div class="obs-cmd-section">' +
+            '<div class="obs-cmd-section-title">Push to Agent</div>' +
+            '<div class="obs-cmd-agent-grid"></div>' +
+          '</div>' +
+          '<div class="obs-cmd-section">' +
+            '<button class="obs-cmd-broadcast-btn" title="Send to all agents">\u{1F4E1} Broadcast All</button>' +
+            '<div class="obs-cmd-broadcast-input" style="display:none">' +
+              '<textarea class="obs-cmd-custom-input" rows="2" placeholder="Message to all agents\u2026"></textarea>' +
+              '<div style="display:flex;gap:3px;margin-top:3px">' +
+                '<button class="obs-cmd-broadcast-send">Send</button>' +
+                '<button class="obs-cmd-broadcast-cancel">Cancel</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
         '</div>' +
       '</div>';
 
@@ -89,21 +198,31 @@
       el.classList.toggle('collapsed', self.collapsed);
     });
 
-    // Button clicks
+    // Tab switching
+    el.querySelectorAll('.obs-drawer-tab-btn').forEach(function(tabBtn) {
+      tabBtn.addEventListener('click', function() {
+        var target = tabBtn.dataset.obsTab;
+        el.querySelectorAll('.obs-drawer-tab-btn').forEach(function(b) { b.classList.toggle('is-active', b === tabBtn); });
+        el.querySelectorAll('.obs-tab-content').forEach(function(c) {
+          c.style.display = c.dataset.obsContent === target ? '' : 'none';
+        });
+        if (target === 'command') self.refreshAgentGrid();
+      });
+    });
+
+    // Viz button clicks (existing logic — unchanged)
     el.querySelectorAll('.obs-viz-btn').forEach(function(btn) {
       var vizType = btn.dataset.viz;
       var vizMeta = VIZ_TYPES.find(function(v) { return v.id === vizType; });
       self.btnMap[vizType] = btn;
       btn.addEventListener('click', function() {
-        // If there's pending agent data, use that
         if (self.pendingData[vizType]) {
           self.openWindow(vizType, self.pendingData[vizType]);
           return;
         }
-        // If this type has an API endpoint, fetch directly
         if (vizMeta && vizMeta.endpoint) {
           btn.disabled = true;
-          btn.title = vizMeta.label + ' — loading...';
+          btn.title = vizMeta.label + ' \u2014 loading...';
           fetch(vizMeta.endpoint)
             .then(function(res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
             .then(function(data) {
@@ -111,14 +230,76 @@
               self.openWindow(vizType, data);
             })
             .catch(function(err) {
-              btn.title = vizMeta.label + ' — error: ' + err.message;
+              btn.title = vizMeta.label + ' \u2014 error: ' + err.message;
             })
             .finally(function() {
               btn.disabled = false;
-              btn.title = vizMeta.label + ' — click to load';
+              btn.title = vizMeta.label + ' \u2014 click to load';
             });
         }
       });
+    });
+
+    // Self-command button clicks
+    el.querySelectorAll('.obs-cmd-self-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        if (btn.disabled) return;
+        var cmdId = btn.dataset.cmdId;
+        var cmd = MESH_COMMANDS.find(function(c) { return c.id === cmdId; });
+        if (!cmd) return;
+        var reg = window.__haloAgentLetters || {};
+        var info = reg[self.panelId];
+        var aType = (info && info.agentType) || 'agent';
+        var text = cmd.getCommandText(aType);
+        if (!text) return;
+        dispatchCommand(self.panelId, text);
+        btn.classList.add('obs-cmd-sent');
+        setTimeout(function() { btn.classList.remove('obs-cmd-sent'); }, 800);
+      });
+    });
+
+    // Broadcast button
+    var broadcastBtn = el.querySelector('.obs-cmd-broadcast-btn');
+    var broadcastInput = el.querySelector('.obs-cmd-broadcast-input');
+    var broadcastSend = el.querySelector('.obs-cmd-broadcast-send');
+    var broadcastCancel = el.querySelector('.obs-cmd-broadcast-cancel');
+    var broadcastTextarea = broadcastInput ? broadcastInput.querySelector('textarea') : null;
+
+    if (broadcastBtn) {
+      broadcastBtn.addEventListener('click', function() {
+        broadcastInput.style.display = '';
+        broadcastBtn.style.display = 'none';
+        if (broadcastTextarea) broadcastTextarea.focus();
+      });
+    }
+    if (broadcastCancel) {
+      broadcastCancel.addEventListener('click', function() {
+        broadcastInput.style.display = 'none';
+        broadcastBtn.style.display = '';
+        if (broadcastTextarea) broadcastTextarea.value = '';
+      });
+    }
+    if (broadcastSend) {
+      broadcastSend.addEventListener('click', function() {
+        var text = broadcastTextarea ? broadcastTextarea.value.trim() : '';
+        if (!text) return;
+        var reg = window.__haloAgentLetters || {};
+        var sent = 0;
+        Object.keys(reg).forEach(function(sessionId) {
+          if (sessionId === self.panelId) return;
+          if (dispatchCommand(sessionId, text)) sent++;
+        });
+        self.showCommandNotice('Broadcast sent to ' + sent + ' agent(s)');
+        broadcastTextarea.value = '';
+        broadcastInput.style.display = 'none';
+        broadcastBtn.style.display = '';
+      });
+    }
+
+    // Listen for agent letter changes
+    document.addEventListener('halo-agent-letters-changed', function() {
+      self.refreshAgentGrid();
+      self.refreshSelfButtons();
     });
 
     this.el = el;
@@ -180,6 +361,126 @@
 
     renderViz(vizType, data, win.querySelector('.obs-float-body'));
     allWindows.set(winId, { el: win, panelId: this.panelId, vizType: vizType });
+  };
+
+  // ── Mesh Command Methods ──────────────────────────────────
+
+  ObservatoryDrawer.prototype.refreshSelfButtons = function() {
+    if (!this.el) return;
+    var reg = window.__haloAgentLetters || {};
+    var info = reg[this.panelId];
+    var aType = (info && info.agentType) || 'agent';
+    this.el.querySelectorAll('.obs-cmd-self-btn').forEach(function(btn) {
+      var cmdId = btn.dataset.cmdId;
+      var cmd = MESH_COMMANDS.find(function(c) { return c.id === cmdId; });
+      if (!cmd) return;
+      btn.disabled = cmd.getCommandText(aType) === null;
+    });
+  };
+
+  ObservatoryDrawer.prototype.refreshAgentGrid = function() {
+    if (!this.el) return;
+    var self = this;
+    var container = this.el.querySelector('.obs-cmd-agent-grid');
+    if (!container) return;
+    var registry = window.__haloAgentLetters || {};
+    var slots = getCurrentSlots();
+    var myEntry = registry[this.panelId];
+    var mySlotIdx = myEntry ? myEntry.slotIndex : 0;
+    var mySlot = slots[mySlotIdx % slots.length];
+    var html = '';
+    Object.keys(registry).forEach(function(sessionId) {
+      if (sessionId === self.panelId) return;
+      var info = registry[sessionId];
+      var theirSlot = slots[(info.slotIndex || 0) % slots.length];
+      var arrow = computeDirection(mySlot, theirSlot);
+      var colorClass = getAgentColorClass(info.agentType);
+      html +=
+        '<button class="obs-cmd-agent-badge ' + colorClass + '"' +
+        ' data-target-session="' + esc(sessionId) + '"' +
+        ' data-target-type="' + esc(info.agentType || 'agent') + '"' +
+        ' title="Push command to Agent ' + esc(info.letter) + ' (' + esc(info.agentType) + ')">' +
+          '<span class="obs-cmd-arrow">' + arrow + '</span>' +
+          '<span class="obs-cmd-letter">' + esc(info.letter) + '</span>' +
+        '</button>';
+    });
+    if (!html) html = '<div class="obs-cmd-empty">No other agents active</div>';
+    container.innerHTML = html;
+    container.querySelectorAll('.obs-cmd-agent-badge').forEach(function(badge) {
+      badge.addEventListener('click', function() { self.openCommandFlyout(badge); });
+    });
+  };
+
+  ObservatoryDrawer.prototype.openCommandFlyout = function(badgeEl) {
+    var self = this;
+    var targetSession = badgeEl.dataset.targetSession;
+    var targetType = badgeEl.dataset.targetType;
+    var existing = this.el.querySelector('.obs-cmd-flyout');
+    if (existing) existing.remove();
+    var flyout = document.createElement('div');
+    flyout.className = 'obs-cmd-flyout';
+    var letterText = badgeEl.querySelector('.obs-cmd-letter').textContent;
+    var html = '<div class="obs-cmd-flyout-header">' +
+      '<span>Push to ' + esc(letterText) + ' (' + esc(targetType) + ')</span>' +
+      '<button class="obs-cmd-flyout-close" title="Close">\u2715</button>' +
+    '</div>';
+    html += '<div class="obs-cmd-flyout-presets">';
+    MESH_COMMANDS.forEach(function(cmd) {
+      var text = cmd.getCommandText(targetType);
+      var disabled = text === null;
+      html += '<button class="obs-cmd-preset' + (disabled ? ' is-disabled' : '') + '"' +
+        ' data-cmd-id="' + cmd.id + '"' +
+        (disabled ? ' disabled' : '') +
+        ' title="' + esc(cmd.label) + (disabled ? ' (N/A for ' + esc(targetType) + ')' : '') + '">' +
+        cmd.icon + ' ' + esc(cmd.label) +
+      '</button>';
+    });
+    html += '</div>';
+    html += '<div class="obs-cmd-flyout-custom">' +
+      '<textarea class="obs-cmd-custom-input" rows="2" placeholder="Custom message\u2026"></textarea>' +
+      '<button class="obs-cmd-custom-send">Send</button>' +
+    '</div>';
+    flyout.innerHTML = html;
+    var rect = badgeEl.getBoundingClientRect();
+    var drawerRect = this.el.getBoundingClientRect();
+    flyout.style.top = Math.max(0, (rect.top - drawerRect.top)) + 'px';
+    var cmdTab = this.el.querySelector('.obs-tab-command');
+    if (cmdTab) cmdTab.appendChild(flyout);
+    flyout.querySelector('.obs-cmd-flyout-close').addEventListener('click', function() { flyout.remove(); });
+    flyout.querySelectorAll('.obs-cmd-preset:not(.is-disabled)').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var cmdId = btn.dataset.cmdId;
+        var cmd = MESH_COMMANDS.find(function(c) { return c.id === cmdId; });
+        if (!cmd) return;
+        var text = cmd.getCommandText(targetType);
+        if (text) {
+          dispatchCommand(targetSession, text);
+          btn.classList.add('obs-cmd-sent');
+          setTimeout(function() { btn.classList.remove('obs-cmd-sent'); }, 800);
+        }
+      });
+    });
+    var customInput = flyout.querySelector('.obs-cmd-custom-input');
+    flyout.querySelector('.obs-cmd-custom-send').addEventListener('click', function() {
+      var text = customInput.value.trim();
+      if (!text) return;
+      dispatchCommand(targetSession, text);
+      customInput.value = '';
+      self.showCommandNotice('Sent to Agent ' + esc(letterText));
+    });
+  };
+
+  ObservatoryDrawer.prototype.showCommandNotice = function(msg) {
+    var notice = this.el.querySelector('.obs-cmd-notice');
+    if (!notice) {
+      notice = document.createElement('div');
+      notice.className = 'obs-cmd-notice';
+      var cmdTab = this.el.querySelector('.obs-tab-command');
+      if (cmdTab) cmdTab.appendChild(notice);
+    }
+    notice.textContent = msg;
+    notice.classList.add('is-visible');
+    setTimeout(function() { notice.classList.remove('is-visible'); }, 2000);
   };
 
   // ══════════════════════════════════════════════════════════════

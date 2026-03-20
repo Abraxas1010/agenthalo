@@ -955,10 +955,12 @@
 
     _publishLetterRegistry() {
       const registry = {};
+      const entries = [...this.sessions.values()];
       this.agentLetters.forEach((letter, sessionId) => {
         const entry = this.sessions.get(sessionId);
         const agentType = entry?.panel?.agentType || entry?.agentType || 'agent';
-        registry[sessionId] = { letter, agentType };
+        const idx = entries.indexOf(entry);
+        registry[sessionId] = { letter, agentType, slotIndex: idx };
       });
       window.__haloAgentLetters = registry;
       document.dispatchEvent(new CustomEvent('halo-agent-letters-changed', {
@@ -1015,6 +1017,31 @@
         agents.push({ sessionId: id, letter, agentType, agentId: entry.agentId || id });
       });
       return agents;
+    }
+
+    /**
+     * Push a command to a panel, auto-detecting chat vs terminal mode.
+     * @param {string} sessionId — target session
+     * @param {string} text — command text to send
+     * @returns {boolean} — true if sent successfully
+     */
+    pushCommandToPanel(sessionId, text) {
+      const entry = this.sessions.get(sessionId);
+      if (!entry || !entry.panel) return false;
+      const panel = entry.panel;
+      if (panel.type === 'chat') {
+        const agentId = panel.agentId || panel.agentType || 'claude';
+        fetch('/api/orchestrator/task', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent_id: agentId, task: text, timeout_secs: 600, wait: false }),
+        }).catch(() => {});
+        return true;
+      }
+      if (panel.ws && panel.ws.readyState === WebSocket.OPEN) {
+        return panel.sendTerminalText(text, true);
+      }
+      return false;
     }
 
     mount(hostEl) {
@@ -3567,6 +3594,8 @@
     manager: null,
     mount(hostEl) {
       if (!this.manager) this.manager = new CockpitManager();
+      window.__cockpitManager = this.manager;
+      window.__cockpitLayouts = LAYOUTS;
       this.manager.mount(hostEl);
     },
     queueLaunch(launchResult) {
