@@ -358,7 +358,7 @@ pub(crate) fn default_vector_memory_governor_config() -> GovernorConfig {
         eps_min: 1.0,
         eps_max: 512.0,
         target: default_vector_ceiling() as f64,
-        formal_basis: "HeytingLean.Bridge.Sharma.AetherGovernor.validatorRegime".to_string(),
+        formal_basis: "NucleusDB.Core.Invariants.AetherGovernor.validatorRegime".to_string(),
         ki: 0.001,
         kb: 0.0316, // sqrt(0.001)
         adaptive: Some(crate::governor::AdaptiveGainSchedule::default()),

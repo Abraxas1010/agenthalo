@@ -83,6 +83,16 @@ pub struct MemoryRecord {
     pub text: String,
     pub source: Option<String>,
     pub created: String,
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+}
+
+/// Optional context for enriching memory embeddings and metadata.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryContext {
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub ttl_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -100,6 +110,8 @@ pub struct MemoryStats {
     pub total_dims: usize,
     pub model: String,
     pub index_size: usize,
+    pub auto_capture_count: usize,
+    pub expired_pending_gc: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -122,11 +134,23 @@ impl MemoryStore {
         &self.embedding_model
     }
 
+    /// Store a memory with optional context. The legacy 3-arg form is preserved
+    /// via `store_memory`; the full-context form is `store_memory_ctx`.
     pub fn store_memory(
         &self,
         db: &mut NucleusDb,
         text: &str,
         source: Option<&str>,
+    ) -> Result<MemoryRecord, String> {
+        self.store_memory_ctx(db, text, source, &MemoryContext::default())
+    }
+
+    pub fn store_memory_ctx(
+        &self,
+        db: &mut NucleusDb,
+        text: &str,
+        source: Option<&str>,
+        ctx: &MemoryContext,
     ) -> Result<MemoryRecord, String> {
         let memory_text = text.trim();
         if memory_text.is_empty() {
@@ -160,13 +184,17 @@ impl MemoryStore {
                     text: existing,
                     source: existing_source.or_else(|| source_clean.map(ToString::to_string)),
                     created: existing_created,
+                    session_id: ctx.session_id.clone(),
+                    agent_id: ctx.agent_id.clone(),
                 });
             }
         }
 
+        // Build embedding input with optional context prefix for richer retrieval
+        let embed_input = build_embed_input(memory_text, ctx);
         let embedding = self
             .embedding_model
-            .embed(memory_text, "search_document: ")
+            .embed(&embed_input, "search_document: ")
             .map_err(|e| format!("embed memory: {e}"))?;
         if embedding.len() != DEFAULT_EMBEDDING_DIMS {
             return Err(format!(
@@ -180,6 +208,9 @@ impl MemoryStore {
             "created": now,
             "dims": DEFAULT_EMBEDDING_DIMS,
             "model": self.embedding_model.model_name(),
+            "session_id": ctx.session_id,
+            "agent_id": ctx.agent_id,
+            "ttl_secs": ctx.ttl_secs,
         });
 
         let (idx_text, cell_text) = db
@@ -209,6 +240,8 @@ impl MemoryStore {
             text: memory_text.to_string(),
             source: source_clean.map(ToString::to_string),
             created: now,
+            session_id: ctx.session_id.clone(),
+            agent_id: ctx.agent_id.clone(),
         })
     }
 
@@ -269,7 +302,7 @@ impl MemoryStore {
                     _ => return None,
                 };
                 let meta_key = format!("{base_key}{MEMORY_META_SUFFIX}");
-                let (source, created) = match db.get_typed_touching(&meta_key) {
+                let (source, created, expired) = match db.get_typed_touching(&meta_key) {
                     Some(TypedValue::Json(meta)) => {
                         let source = meta
                             .get("source")
@@ -279,10 +312,12 @@ impl MemoryStore {
                             .get("created")
                             .and_then(|v| v.as_str())
                             .map(ToString::to_string);
-                        (source, created)
+                        let expired = is_memory_expired(&meta);
+                        (source, created, expired)
                     }
-                    _ => (None, None),
+                    _ => (None, None, false),
                 };
+                if expired { return None; } // F9: TTL-based expiry
                 Some(RecallCandidate {
                     key: base_key.to_string(),
                     text,
@@ -374,30 +409,45 @@ impl MemoryStore {
 
     fn pairwise_biencoder_similarity(
         &self,
-        expanded_query: &str,
+        _expanded_query: &str,
         document: &str,
         query_vec: &[f64],
     ) -> Result<f64, String> {
-        // Pairwise bi-encoder scoring pass (NOT a cross-encoder). We embed
-        // query+document text together and compare that embedding to the query
-        // embedding, then fuse with other signals.
-        let joint_input =
-            format!("query: {expanded_query}\n\ncandidate_document: {document}\n\nrelevance:");
-        let pair_vec = self.embedding_model.embed(&joint_input, "search_query: ")?;
-        let distance = crate::embeddings::cosine_distance(query_vec, &pair_vec)?;
+        // F6: Improved asymmetric bi-encoder scoring. Embed the document's first
+        // sentence with the query task prefix, then measure cosine similarity to
+        // the query vector. This uses Nomic's asymmetric prefixes properly rather
+        // than concatenating query+document into one string.
+        let first_sentence = document
+            .split(|c: char| c == '.' || c == '\n')
+            .next()
+            .unwrap_or(document)
+            .trim();
+        let doc_as_query_vec = self
+            .embedding_model
+            .embed(first_sentence, "search_query: ")?;
+        let distance = crate::embeddings::cosine_distance(query_vec, &doc_as_query_vec)?;
         Ok(distance_to_similarity(distance))
     }
 
     pub fn stats(&self, db: &NucleusDb) -> MemoryStats {
-        let total_memories = db
-            .keymap
-            .all_keys()
-            .filter(|(k, _)| {
-                k.starts_with(MEMORY_KEY_PREFIX)
-                    && !k.ends_with(MEMORY_META_SUFFIX)
-                    && !k.ends_with(MEMORY_VECTOR_SUFFIX)
-            })
-            .count();
+        let mut total_memories = 0usize;
+        let mut auto_capture_count = 0usize;
+        let mut expired_pending_gc = 0usize;
+        for (k, _) in db.keymap.all_keys() {
+            if !k.starts_with(MEMORY_KEY_PREFIX) || k.ends_with(MEMORY_META_SUFFIX) || k.ends_with(MEMORY_VECTOR_SUFFIX) {
+                continue;
+            }
+            total_memories += 1;
+            let meta_key = format!("{k}{MEMORY_META_SUFFIX}");
+            if let Some(TypedValue::Json(meta)) = db.get_typed(&meta_key) {
+                if meta.get("source").and_then(|v| v.as_str()).map(|s| s.starts_with("auto:")).unwrap_or(false) {
+                    auto_capture_count += 1;
+                }
+                if is_memory_expired(&meta) {
+                    expired_pending_gc += 1;
+                }
+            }
+        }
         let index_size = db
             .vector_index
             .all_keys()
@@ -409,8 +459,62 @@ impl MemoryStore {
             total_dims: db.vector_index.dims().unwrap_or(DEFAULT_EMBEDDING_DIMS),
             model: self.embedding_model.model_name().to_string(),
             index_size,
+            auto_capture_count,
+            expired_pending_gc,
         }
     }
+
+    /// F1: Capture a tool call result as auto-memory
+    pub fn capture_tool_call(
+        &self,
+        db: &mut NucleusDb,
+        tool_name: &str,
+        summary: &str,
+        session_id: Option<&str>,
+    ) -> Result<MemoryRecord, String> {
+        let text = format!("[Tool: {tool_name}] {summary}");
+        let ctx = MemoryContext {
+            session_id: session_id.map(ToString::to_string),
+            agent_id: None,
+            ttl_secs: Some(604800), // 7 days default for auto-captured
+        };
+        self.store_memory_ctx(db, &text, Some(&format!("auto:{tool_name}")), &ctx)
+    }
+}
+
+/// Build enriched embedding input with optional context prefix (F3)
+fn build_embed_input(text: &str, ctx: &MemoryContext) -> String {
+    let mut parts = Vec::new();
+    if let Some(ref sid) = ctx.session_id {
+        parts.push(format!("session:{sid}"));
+    }
+    if let Some(ref aid) = ctx.agent_id {
+        parts.push(format!("agent:{aid}"));
+    }
+    if parts.is_empty() {
+        text.to_string()
+    } else {
+        format!("[{}] {}", parts.join(" "), text)
+    }
+}
+
+/// Check if a memory has expired based on TTL (F9)
+fn is_memory_expired(meta: &Value) -> bool {
+    let ttl = match meta.get("ttl_secs").and_then(|v| v.as_u64()) {
+        Some(t) => t,
+        None => return false, // no TTL = permanent
+    };
+    let created_str = match meta.get("created").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return false,
+    };
+    let created = match chrono::DateTime::parse_from_rfc3339(created_str) {
+        Ok(dt) => dt,
+        Err(_) => return false,
+    };
+    let now = Utc::now();
+    let elapsed = now.signed_duration_since(created).num_seconds();
+    elapsed > 0 && (elapsed as u64) > ttl
 }
 
 pub fn key_for_text(text: &str) -> String {
@@ -424,25 +528,39 @@ pub fn chunk_document(document: &str) -> Vec<String> {
     const HARD_WORD_LIMIT: usize = 2048;
     const MIN_CHARS: usize = 20;
 
-    let mut sections: Vec<String> = Vec::new();
+    // F7: Track current heading so chunks include their section context
+    let mut sections: Vec<(Option<String>, String)> = Vec::new(); // (heading, body)
+    let mut current_heading: Option<String> = None;
     let mut current = Vec::<String>::new();
     for line in document.lines() {
-        if is_heading_boundary(line) && !current.is_empty() {
-            sections.push(current.join("\n").trim().to_string());
-            current.clear();
+        if is_heading_boundary(line) {
+            if !current.is_empty() {
+                sections.push((current_heading.clone(), current.join("\n").trim().to_string()));
+                current.clear();
+            }
+            current_heading = Some(line.trim().to_string());
         }
         current.push(line.to_string());
     }
     if !current.is_empty() {
-        sections.push(current.join("\n").trim().to_string());
+        sections.push((current_heading, current.join("\n").trim().to_string()));
     }
     if sections.is_empty() {
-        sections.push(document.to_string());
+        sections.push((None, document.to_string()));
     }
 
     let mut chunks = Vec::new();
-    for section in sections {
+    for (heading, section) in sections {
         let mut bucket = String::new();
+        // F7: Prepend heading context to non-heading chunks
+        let heading_prefix = heading
+            .as_ref()
+            .map(|h| {
+                let clean = h.trim_start_matches('#').trim();
+                if clean.is_empty() { String::new() } else { format!("[Section: {clean}] ") }
+            })
+            .unwrap_or_default();
+
         for paragraph in section.split("\n\n") {
             let p = paragraph.trim();
             if p.is_empty() {
@@ -452,7 +570,7 @@ pub fn chunk_document(document: &str) -> Vec<String> {
             if words > HARD_WORD_LIMIT {
                 let tokens = p.split_whitespace().collect::<Vec<_>>();
                 for slice in tokens.chunks(HARD_WORD_LIMIT) {
-                    let candidate = slice.join(" ");
+                    let candidate = format!("{}{}", heading_prefix, slice.join(" "));
                     if candidate.len() >= MIN_CHARS {
                         chunks.push(candidate);
                     }
@@ -463,7 +581,12 @@ pub fn chunk_document(document: &str) -> Vec<String> {
             let current_words = bucket.split_whitespace().count();
             if !bucket.is_empty() && current_words + words > SOFT_WORD_LIMIT {
                 if bucket.len() >= MIN_CHARS {
-                    chunks.push(bucket.trim().to_string());
+                    let prefixed = if bucket.starts_with('[') || bucket.starts_with('#') {
+                        bucket.trim().to_string()
+                    } else {
+                        format!("{}{}", heading_prefix, bucket.trim())
+                    };
+                    chunks.push(prefixed);
                 }
                 bucket.clear();
             }
@@ -473,7 +596,12 @@ pub fn chunk_document(document: &str) -> Vec<String> {
             bucket.push_str(p);
         }
         if bucket.len() >= MIN_CHARS {
-            chunks.push(bucket.trim().to_string());
+            let prefixed = if bucket.starts_with('[') || bucket.starts_with('#') {
+                bucket.trim().to_string()
+            } else {
+                format!("{}{}", heading_prefix, bucket.trim())
+            };
+            chunks.push(prefixed);
         }
     }
 
@@ -683,6 +811,47 @@ fn expand_query_hyde_local(query: &str) -> String {
     if lower.contains("proof") || lower.contains("verify") || lower.contains("guarantee") {
         expansions.push("formal proof artifact");
         expansions.push("machine-verifiable certificate");
+    }
+    // F5: Expanded domain vocabulary (15+ additional mappings)
+    if lower.contains("security") || lower.contains("crypto") || lower.contains("encrypt") {
+        expansions.push("cryptographic primitives");
+        expansions.push("key management and rotation");
+        expansions.push("confidential computation");
+    }
+    if lower.contains("agent") || lower.contains("session") || lower.contains("memory") {
+        expansions.push("conversation recall and context");
+        expansions.push("agent lifecycle state");
+        expansions.push("persistent memory store");
+    }
+    if lower.contains("network") || lower.contains("mesh") || lower.contains("peer") {
+        expansions.push("distributed peer-to-peer protocol");
+        expansions.push("gossip and broadcast");
+        expansions.push("mesh connectivity");
+    }
+    if lower.contains("identity") || lower.contains("did") || lower.contains("credential") {
+        expansions.push("decentralized identifier");
+        expansions.push("verifiable credential presentation");
+        expansions.push("self-sovereign identity");
+    }
+    if lower.contains("trust") || lower.contains("attestation") {
+        expansions.push("verified evidence chain");
+        expansions.push("formal trust anchor");
+        expansions.push("attestation certificate");
+    }
+    if lower.contains("payment") || lower.contains("channel") || lower.contains("settlement") {
+        expansions.push("payment channel network");
+        expansions.push("HTLC and liquidity routing");
+        expansions.push("on-chain settlement");
+    }
+    if lower.contains("vector") || lower.contains("embed") || lower.contains("similarity") {
+        expansions.push("vector embedding index");
+        expansions.push("cosine similarity search");
+        expansions.push("semantic retrieval");
+    }
+    if lower.contains("lean") || lower.contains("theorem") || lower.contains("formal") {
+        expansions.push("Lean 4 formalization");
+        expansions.push("machine-checked theorem");
+        expansions.push("type-theoretic proof");
     }
     expansions.sort_unstable();
     expansions.dedup();

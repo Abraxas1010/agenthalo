@@ -208,6 +208,9 @@ async fn test_mcp_memory_recall() {
         .memory_store(Parameters(MemoryStoreRequest {
             text: "MCP memory tool stores and seals chunked text".to_string(),
             source: Some("session:mcp".to_string()),
+            session_id: Some("test-session-001".to_string()),
+            agent_id: Some("claude".to_string()),
+            ttl_secs: None,
         }))
         .await
         .expect("memory_store");

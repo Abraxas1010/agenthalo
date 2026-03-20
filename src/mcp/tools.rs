@@ -179,6 +179,12 @@ pub struct MemoryStoreRequest {
     pub text: String,
     /// Optional source label (e.g. session id, user note).
     pub source: Option<String>,
+    /// Optional session ID for contextual embedding enrichment.
+    pub session_id: Option<String>,
+    /// Optional agent ID for contextual embedding enrichment.
+    pub agent_id: Option<String>,
+    /// Optional TTL in seconds. After expiry, memory is excluded from recall.
+    pub ttl_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2837,12 +2843,17 @@ impl NucleusDbMcpService {
         }
         let text_owned = text.to_string();
         let source = req.source.clone();
+        let ctx = crate::memory::MemoryContext {
+            session_id: req.session_id.clone(),
+            agent_id: req.agent_id.clone(),
+            ttl_secs: req.ttl_secs,
+        };
         let state = self.state.clone();
         let response = tokio::task::spawn_blocking(move || {
             let mut guard = state.blocking_lock();
             let memory_store = guard.memory_store.clone();
             let record = memory_store
-                .store_memory(&mut guard.db, &text_owned, source.as_deref())
+                .store_memory_ctx(&mut guard.db, &text_owned, source.as_deref(), &ctx)
                 .map_err(|e| McpError::invalid_params(e, None))?;
             persist_snapshot_and_sync_wal(&guard.db_path, &guard.wal_path, &guard.db).map_err(
                 |e| McpError::internal_error(format!("persist memory store failed: {e:?}"), None),
