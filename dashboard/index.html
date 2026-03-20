@@ -64,6 +64,8 @@
     <ul class="nav-links">
       <li><a href="#/setup" class="nav-link active" data-page="setup">
         <span class="nav-icon">&#9883;</span> Setup</a></li>
+      <li><a href="#/system-monitor" class="nav-link" data-page="system-monitor">
+        <span class="nav-icon">&#9881;</span> System Monitor</a></li>
       <li><a href="#/agentpmt" class="nav-link" data-page="agentpmt">
         <span class="nav-icon">&#9883;</span> AgentPMT</a></li>
       <li><a href="#/overview" class="nav-link nav-parent" data-page="overview" id="nav-overview-parent">
@@ -122,5 +124,7 @@
   <script src="lean.js"></script>
   <script src="observatory.js"></script>
   <script src="proof-explorer.js"></script>
+  <!-- System Monitor: lazy-loaded, off by default. Enable in Config → System Monitor -->
+  <script src="system-monitor.js" defer></script>
 </body>
 </html>

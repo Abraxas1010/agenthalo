@@ -614,12 +614,12 @@
     '</div>';
   }
 
-  // ── Clusters (D3 packed bubble chart + expandable list) ────
+  // ── Clusters (D3 packed bubble chart + expandable list + mini proof explorer) ─
   function renderClusters(data, el) {
     var clusters = data.clusters || [];
     if (!clusters.length) { el.innerHTML = '<p>No cluster data.</p>'; return; }
 
-    // D3 packed bubble chart
+    // D3 packed bubble chart — circles are clickable to open mini proof explorer
     if (typeof d3 !== 'undefined' && clusters.length > 1) {
       var width = 660, height = 400;
       var svg = d3.select(el).append('svg')
@@ -629,13 +629,18 @@
 
       var root = d3.hierarchy({ name: 'root', children: clusters.map(function(c) {
         return { name: c.name, value: Math.max(1, c.total_lines), files: c.files.length,
-                 sorrys: c.total_sorrys, health: c.health_score };
+                 fileList: c.files, sorrys: c.total_sorrys, health: c.health_score };
       })}).sum(function(d) { return d.value || 0; });
 
       d3.pack().size([width, height]).padding(4)(root);
 
       var leaf = svg.selectAll('g').data(root.leaves()).join('g')
-        .attr('transform', function(d) { return 'translate(' + d.x + ',' + d.y + ')'; });
+        .attr('transform', function(d) { return 'translate(' + d.x + ',' + d.y + ')'; })
+        .style('cursor', 'pointer')
+        .on('click', function(event, d) {
+          event.stopPropagation();
+          openMiniProofExplorer(d.data.name, d.data.fileList || []);
+        });
 
       leaf.append('circle')
         .attr('r', function(d) { return d.r; })
@@ -652,7 +657,8 @@
       leaf.append('title').text(function(d) {
         return d.data.name + '\n' + d.data.files + ' files, ' + (d.value || 0).toLocaleString() + ' lines' +
           (d.data.sorrys > 0 ? '\n' + d.data.sorrys + ' sorrys' : '') +
-          '\nHealth: ' + ((d.data.health || 1) * 100).toFixed(0) + '%';
+          '\nHealth: ' + ((d.data.health || 1) * 100).toFixed(0) + '%' +
+          '\nClick to explore';
       });
 
       leaf.filter(function(d) { return d.r > 20; })
@@ -661,22 +667,23 @@
         .attr('dy', '0.3em')
         .attr('font-size', function(d) { return Math.min(11, Math.max(6, d.r / 4)); })
         .attr('fill', 'rgba(200,220,180,0.9)')
+        .style('pointer-events', 'none')
         .text(function(d) { var n = d.data.name.split('.').pop(); return n.length > 12 ? n.slice(0, 10) + '..' : n; });
 
-      // File count inside smaller text
       leaf.filter(function(d) { return d.r > 30; })
         .append('text')
         .attr('text-anchor', 'middle')
         .attr('dy', '1.5em')
         .attr('font-size', function(d) { return Math.min(8, Math.max(5, d.r / 6)); })
         .attr('fill', 'rgba(200,220,180,0.5)')
+        .style('pointer-events', 'none')
         .text(function(d) { return d.data.files + ' files'; });
 
       el.appendChild(document.createElement('hr'));
       el.lastElementChild.style.cssText = 'border:none;border-top:1px solid var(--border-dim);margin:12px 0 8px';
     }
 
-    // Expandable text list below the chart
+    // Expandable text list — clicking the name opens mini proof explorer
     var listDiv = document.createElement('div');
     listDiv.style.maxHeight = '200px';
     listDiv.style.overflowY = 'auto';
@@ -686,7 +693,8 @@
       div.className = 'obs-cluster';
       div.innerHTML =
         '<div class="obs-cluster-header">' +
-          '<span class="obs-cluster-name">' + esc(c.name) + '</span>' +
+          '<span class="obs-cluster-name" data-cluster-explore="1" style="cursor:pointer">' + esc(c.name) + '</span>' +
+          '<span class="obs-cluster-expand" title="Expand file list" style="cursor:pointer;margin-left:6px;color:var(--text-dim);font-size:9px">\u25BC</span>' +
           '<span class="obs-cluster-meta">' + c.files.length + ' files, ' + (c.total_lines || 0).toLocaleString() + ' lines' +
             (c.total_sorrys > 0 ? ', <span class="obs-sorry-badge">' + c.total_sorrys + ' sorry</span>' : '') +
           '</span>' +
@@ -695,10 +703,190 @@
           c.files.slice(0, 20).map(function(f) { return '<div class="obs-cluster-file">' + esc(f) + '</div>'; }).join('') +
           (c.files.length > 20 ? '<div class="obs-cluster-file" style="color:var(--text-dim)">... and ' + (c.files.length - 20) + ' more</div>' : '') +
         '</div>';
-      div.querySelector('.obs-cluster-header').addEventListener('click', function() { div.classList.toggle('expanded'); });
+      // Click name → mini proof explorer
+      div.querySelector('[data-cluster-explore]').addEventListener('click', function(e) {
+        e.stopPropagation();
+        openMiniProofExplorer(c.name, c.files);
+      });
+      // Click expand arrow → toggle file list
+      div.querySelector('.obs-cluster-expand').addEventListener('click', function(e) {
+        e.stopPropagation();
+        div.classList.toggle('expanded');
+      });
       listDiv.appendChild(div);
     });
     el.appendChild(listDiv);
+  }
+
+  // ── Mini Proof Explorer popup ─────────────────────────────
+  // Opens a floating window with a small 2D canvas showing nodes for one cluster.
+  // Data comes from the proof-lattice.json (static) or Observatory API (live).
+  function openMiniProofExplorer(clusterName, files) {
+    var winId = 'mini-pe:' + clusterName;
+    // Close existing if open
+    if (allWindows.has(winId)) {
+      var ex = allWindows.get(winId);
+      ex.el.remove();
+      allWindows.delete(winId);
+    }
+
+    var win = createFloatingWindow(winId, clusterName + ' — Proof Lattice', function() {
+      allWindows.delete(winId);
+    });
+    var body = win.querySelector('.obs-float-body');
+    body.innerHTML = '<div class="obs-loading">Loading lattice for ' + esc(clusterName) + '...</div>';
+
+    // Try to load proof-lattice.json, filter to this cluster
+    fetch('/proof-lattice.json?v=1')
+      .then(function(r) { if (!r.ok) throw new Error('no data'); return r.json(); })
+      .then(function(lattice) {
+        if (!lattice.items || !lattice.items.length) throw new Error('empty');
+        // Filter items matching this cluster by family or file path prefix
+        var matchFiles = new Set(files.map(function(f) { return f.toLowerCase(); }));
+        var clusterShort = clusterName.split('.').pop();
+        var filtered = [];
+        var idxMap = {};
+        lattice.items.forEach(function(it, i) {
+          var isMatch = (it.family || '').toLowerCase() === clusterShort.toLowerCase()
+            || matchFiles.has((it.path || '').toLowerCase());
+          if (isMatch) {
+            idxMap[i] = filtered.length;
+            filtered.push(it);
+          }
+        });
+        if (!filtered.length) throw new Error('no matching nodes');
+        // Build edges for filtered subset
+        var edges = [];
+        (lattice.edges || []).forEach(function(e) {
+          if (idxMap[e[0]] !== undefined && idxMap[e[1]] !== undefined) {
+            edges.push([idxMap[e[0]], idxMap[e[1]]]);
+          }
+        });
+        renderMiniCanvas(body, filtered, edges, clusterName);
+      })
+      .catch(function() {
+        // Fallback: render file list as simple nodes from Observatory data
+        var items = files.map(function(f, i) {
+          var angle = (i / files.length) * Math.PI * 2;
+          var r = 0.25 + Math.random() * 0.2;
+          return {
+            name: f.split('/').pop().replace('.lean', ''),
+            path: f,
+            pos: { x: 0.5 + Math.cos(angle) * r, y: 0.5 + Math.sin(angle) * r },
+            family: clusterName.split('.').pop()
+          };
+        });
+        renderMiniCanvas(body, items, [], clusterName);
+      });
+
+    allWindows.set(winId, { el: win });
+  }
+
+  // Render a 3D Three.js proof lattice for a filtered subset (mini version)
+  function renderMiniCanvas(container, items, edges, title) {
+    container.innerHTML = '';
+    if (!items.length) { container.innerHTML = '<p style="color:var(--text-dim)">No nodes for this cluster.</p>'; return; }
+
+    // 3D mount
+    var mount = document.createElement('div');
+    mount.style.cssText = 'width:100%;height:340px;background:#050508;border-radius:4px;position:relative';
+    container.appendChild(mount);
+
+    // Stats + detail below
+    var stats = document.createElement('div');
+    stats.style.cssText = 'font-size:10px;color:var(--text-dim);padding:6px 0 0;font-family:var(--font)';
+    stats.textContent = items.length + ' nodes, ' + edges.length + ' edges in ' + title;
+    container.appendChild(stats);
+    var detail = document.createElement('div');
+    detail.style.cssText = 'font-size:11px;min-height:28px;padding:4px 0;color:var(--text-dim)';
+    container.appendChild(detail);
+
+    // Hint
+    var hint = document.createElement('div');
+    hint.style.cssText = 'position:absolute;top:6px;left:8px;font-size:9px;color:rgba(0,238,0,0.3);font-family:monospace;z-index:2;pointer-events:none';
+    hint.textContent = 'Drag orbit \u00B7 Scroll zoom \u00B7 Hover for details';
+    mount.appendChild(hint);
+
+    var colors = ['#00ee00','#00ccff','#39ff14','#00ff88','#7fff00','#00fa9a','#32cd32','#48d1cc','#66cdaa','#00bfff'];
+
+    requestAnimationFrame(function() {
+      import('/vendor/three.module.js').then(function(THREE) {
+        return import('/vendor/three-addons/OrbitControls.js').then(function(mod) {
+          var OrbitControls = mod.OrbitControls;
+          var w = mount.clientWidth || 500, h = mount.clientHeight || 340;
+          var scene = new THREE.Scene();
+          scene.background = new THREE.Color(0x050508);
+          scene.fog = new THREE.FogExp2(0x050508, 0.2);
+          var camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 100);
+          camera.position.set(0, 0, 2.2);
+          var renderer = new THREE.WebGLRenderer({ antialias: true });
+          renderer.setSize(w, h);
+          mount.appendChild(renderer.domElement);
+
+          var geom = new THREE.SphereGeometry(0.04, 14, 14);
+          var meshArr = [];
+          items.forEach(function(it, i) {
+            var col = new THREE.Color(colors[i % colors.length]);
+            var mat = new THREE.MeshPhongMaterial({ color: col, emissive: col, emissiveIntensity: 0.35 });
+            var mesh = new THREE.Mesh(geom, mat);
+            var p = it.pos3 || it.pos || { x: Math.random(), y: Math.random(), z: Math.random() * 0.5 + 0.25 };
+            mesh.position.set((p.x - 0.5) * 2, ((p.y || 0.5) - 0.5) * 2, ((p.z || 0.5) - 0.5) * 2);
+            mesh._idx = i;
+            scene.add(mesh);
+            meshArr.push(mesh);
+          });
+          // Edges — thick and bright
+          edges.forEach(function(e) {
+            var a = items[e[0]], b = items[e[1]];
+            if (!a || !b) return;
+            var pa = a.pos3 || a.pos || { x: 0.5, y: 0.5, z: 0.5 };
+            var pb = b.pos3 || b.pos || { x: 0.5, y: 0.5, z: 0.5 };
+            var edgeCol = new THREE.Color(colors[e[0] % colors.length]);
+            var lm = new THREE.LineBasicMaterial({ color: edgeCol, transparent: true, opacity: 0.6, linewidth: 2 });
+            var lg = new THREE.BufferGeometry().setFromPoints([
+              new THREE.Vector3((pa.x-.5)*2,((pa.y||.5)-.5)*2,((pa.z||.5)-.5)*2),
+              new THREE.Vector3((pb.x-.5)*2,((pb.y||.5)-.5)*2,((pb.z||.5)-.5)*2)
+            ]);
+            scene.add(new THREE.Line(lg, lm));
+          });
+          scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+          var pl = new THREE.PointLight(0xffffff, 0.5, 10); pl.position.set(2, 2, 2); scene.add(pl);
+          var controls = new OrbitControls(camera, renderer.domElement);
+          controls.enableDamping = true; controls.dampingFactor = 0.08;
+
+          var raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2();
+          renderer.domElement.addEventListener('mousemove', function(ev) {
+            var r = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((ev.clientX - r.left) / r.width) * 2 - 1;
+            mouse.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            var hits = raycaster.intersectObjects(meshArr);
+            if (hits.length) {
+              var it = items[hits[0].object._idx];
+              detail.innerHTML = '<span style="color:var(--green)">' + esc(it.name || '') + '</span>' +
+                (it.path ? ' <span style="color:var(--text-dim);font-size:9px">' + esc(it.path) + '</span>' : '') +
+                (it.kind ? ' <span style="color:var(--text-dim)">[' + esc(it.kind) + ']</span>' : '');
+              renderer.domElement.style.cursor = 'pointer';
+            } else {
+              detail.textContent = '';
+              renderer.domElement.style.cursor = 'grab';
+            }
+          });
+
+          var animId = 0;
+          var tick = function() { controls.update(); renderer.render(scene, camera); animId = requestAnimationFrame(tick); };
+          tick();
+          // Cleanup when window is closed — the floating window's onClose will remove the DOM
+          // which stops the animation frame naturally, but let's be explicit:
+          var obs = new MutationObserver(function() {
+            if (!document.body.contains(mount)) { cancelAnimationFrame(animId); renderer.dispose(); obs.disconnect(); }
+          });
+          obs.observe(document.body, { childList: true, subtree: true });
+        });
+      }).catch(function(e) {
+        mount.innerHTML = '<div style="color:var(--red);padding:20px;font-size:11px">3D unavailable: ' + esc(e.message) + '</div>';
+      });
+    });
   }
 
   // ── Sorrys (location list) ────────────────────────────────

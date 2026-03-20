@@ -115,6 +115,19 @@ function renderProofExplorerRoute() {
   }
 }
 
+function renderSystemMonitorRoute() {
+  // Stop any previous monitor polling when navigating away
+  if (typeof window.stopSystemMonitor === "function") {
+    window.stopSystemMonitor();
+  }
+  if (typeof window.renderSystemMonitorPage === "function") {
+    window.renderSystemMonitorPage();
+  } else {
+    content.innerHTML =
+      '<div class="loading">System Monitor module not loaded.</div>';
+  }
+}
+
 function renderFlowchartPage() {
   content.innerHTML = `
     <div style="display:flex;flex-direction:column;height:100%;padding:0">
@@ -218,6 +231,7 @@ const pages = {
   skills: renderSkillsPageRoute,
   lean: renderLeanPageRoute,
   "proof-explorer": renderProofExplorerRoute,
+  "system-monitor": renderSystemMonitorRoute,
   agentpmt: renderAgentPmt,
 };
 
@@ -1699,6 +1713,8 @@ async function maybeAutoLaunchAfterSetup(setupState) {
 async function route() {
   // Clean up particle animation when leaving NucleusDB page
   if (window._destroyHeroParticles) window._destroyHeroParticles();
+  // Stop System Monitor polling when navigating away
+  if (typeof window.stopSystemMonitor === 'function') window.stopSystemMonitor();
   const overlay = $("#genesis-overlay");
 
   const cryptoReady = await ensureCryptoUnlocked();
@@ -3097,6 +3113,8 @@ async function renderConfig() {
         { page: "mcp-tools", label: "MCP Tools", icon: "\u2692" },
         { page: "skills", label: "Skills", icon: "\u270E" },
         { page: "lean", label: "Lean", icon: "\u2112", note: "Also requires Lean Project Path to be set in External Sources" },
+        { page: "proof-explorer", label: "Proof Explorer", icon: "\u25C6" },
+        { page: "system-monitor", label: "System Monitor", icon: "\u2699", note: "DGX Spark hardware monitoring. Shows simulation when not on DGX hardware." },
       ];
       const rows = navItems.map(item => {
         const isHidden = hiddenItems.includes(item.page);

@@ -181,46 +181,63 @@ function __leanRenderHealthBar() {
   const hc = h >= 0.8 ? 'good' : h >= 0.4 ? 'warn' : 'bad';
   const hColor = hc === 'good' ? 'var(--green)' : hc === 'warn' ? 'var(--amber)' : 'var(--red)';
 
-  return `<div class="lean-obs-bar">
-    <div class="lean-obs-stats">
-      <div class="lean-obs-stat">
-        <div class="lean-obs-stat-val" style="color:${hColor}">${(h * 100).toFixed(1)}%</div>
-        <div class="lean-obs-stat-lbl">Health</div>
+  const vizTools = [
+    { id: 'treemap',    icon: '\u{1F5FA}', label: 'Health Treemap',     desc: 'Squarified file map sized by lines, colored by health status' },
+    { id: 'depgraph',   icon: '\u{1F578}', label: 'Dependency Graph',   desc: 'Force-directed module dependency network with zoom and drag' },
+    { id: 'clusters',   icon: '\u{1F52C}', label: 'Module Clusters',    desc: 'Packed bubble chart of module groups — click to explore in 3D' },
+    { id: 'sorrys',     icon: '\u{26A0}',  label: 'Sorry Tracker',      desc: 'All incomplete proofs with file locations and declaration context' },
+    { id: 'complexity',  icon: '\u{1F4CA}', label: 'Complexity Analysis', desc: 'Top declarations ranked by size — find the most complex proofs' },
+  ];
+
+  return `<div class="lean-obs-hero">
+    <div class="lean-obs-hero-top">
+      <div class="lean-obs-hero-title">
+        <span class="lean-obs-hero-icon">\u{1F52D}</span>
+        <div>
+          <div class="lean-obs-hero-heading">Observatory</div>
+          <div class="lean-obs-hero-sub">Lean project health &amp; visualization</div>
+        </div>
       </div>
-      <div class="lean-obs-stat">
-        <div class="lean-obs-stat-val">${__leanFmtNum(obs.total_files)}</div>
-        <div class="lean-obs-stat-lbl">Files</div>
-      </div>
-      <div class="lean-obs-stat">
-        <div class="lean-obs-stat-val">${__leanFmtNum(obs.total_lines)}</div>
-        <div class="lean-obs-stat-lbl">Lines</div>
-      </div>
-      <div class="lean-obs-stat">
-        <div class="lean-obs-stat-val">${__leanFmtNum(obs.total_decls)}</div>
-        <div class="lean-obs-stat-lbl">Declarations</div>
-      </div>
-      <div class="lean-obs-stat">
-        <div class="lean-obs-stat-val" style="color:${obs.total_sorrys > 0 ? 'var(--red)' : 'var(--green)'}">${obs.total_sorrys}</div>
-        <div class="lean-obs-stat-lbl">Sorrys</div>
-      </div>
-      <div class="lean-obs-stat">
-        <div class="lean-obs-stat-val">${__leanFmtNum(obs.clusters_count)}</div>
-        <div class="lean-obs-stat-lbl">Clusters</div>
-      </div>
-      <div class="lean-obs-stat">
-        <div class="lean-obs-stat-val">${obs.scan_time_ms}ms</div>
-        <div class="lean-obs-stat-lbl">Scan</div>
+      <div class="lean-obs-stats-row">
+        <div class="lean-obs-stat-pill" style="border-color:${hColor}">
+          <span class="lean-obs-stat-val" style="color:${hColor}">${(h * 100).toFixed(0)}%</span>
+          <span class="lean-obs-stat-lbl">Health</span>
+        </div>
+        <div class="lean-obs-stat-pill">
+          <span class="lean-obs-stat-val">${__leanFmtNum(obs.total_files)}</span>
+          <span class="lean-obs-stat-lbl">Files</span>
+        </div>
+        <div class="lean-obs-stat-pill">
+          <span class="lean-obs-stat-val">${__leanFmtNum(obs.total_lines)}</span>
+          <span class="lean-obs-stat-lbl">Lines</span>
+        </div>
+        <div class="lean-obs-stat-pill">
+          <span class="lean-obs-stat-val">${__leanFmtNum(obs.total_decls)}</span>
+          <span class="lean-obs-stat-lbl">Decls</span>
+        </div>
+        <div class="lean-obs-stat-pill" style="border-color:${obs.total_sorrys > 0 ? 'var(--red)' : 'var(--green)'}">
+          <span class="lean-obs-stat-val" style="color:${obs.total_sorrys > 0 ? 'var(--red)' : 'var(--green)'}">${obs.total_sorrys}</span>
+          <span class="lean-obs-stat-lbl">Sorrys</span>
+        </div>
+        <div class="lean-obs-stat-pill">
+          <span class="lean-obs-stat-val">${__leanFmtNum(obs.clusters_count)}</span>
+          <span class="lean-obs-stat-lbl">Modules</span>
+        </div>
       </div>
     </div>
     <div class="lean-obs-progress">
       <div class="lean-obs-progress-fill ${hc}" style="width:${(h * 100).toFixed(1)}%"></div>
     </div>
-    <div class="lean-obs-viz-btns">
-      <button class="lean-obs-viz-btn${__leanState.obsActiveViz === 'treemap' ? ' active' : ''}" data-obs-page="treemap" title="Health Treemap">Treemap</button>
-      <button class="lean-obs-viz-btn${__leanState.obsActiveViz === 'depgraph' ? ' active' : ''}" data-obs-page="depgraph" title="Dependency Graph">Dependencies</button>
-      <button class="lean-obs-viz-btn${__leanState.obsActiveViz === 'clusters' ? ' active' : ''}" data-obs-page="clusters" title="Module Clusters">Clusters</button>
-      <button class="lean-obs-viz-btn${__leanState.obsActiveViz === 'sorrys' ? ' active' : ''}" data-obs-page="sorrys" title="Sorry Locations">Sorrys</button>
-      <button class="lean-obs-viz-btn${__leanState.obsActiveViz === 'complexity' ? ' active' : ''}" data-obs-page="complexity" title="Complexity">Complexity</button>
+    <div class="lean-obs-tool-grid">
+      ${vizTools.map(v => `
+        <button class="lean-obs-tool-card${__leanState.obsActiveViz === v.id ? ' active' : ''}" data-obs-page="${v.id}">
+          <div class="lean-obs-tool-icon">${v.icon}</div>
+          <div class="lean-obs-tool-body">
+            <div class="lean-obs-tool-label">${v.label}</div>
+            <div class="lean-obs-tool-desc">${v.desc}</div>
+          </div>
+        </button>
+      `).join('')}
     </div>
   </div>`;
 }

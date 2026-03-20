@@ -432,6 +432,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         // Metered IPFS storage (customer-facing, same auth as /v1/chat/completions)
         .route("/v1/storage/pin", post(api_metered_pin_json))
         .route("/v1/storage/pins", get(api_metered_list_pins))
+        // System Monitor (hardware stats)
+        .route("/system/snapshot", get(api_system_snapshot))
         // Observatory (HeytingLean codebase health)
         .route("/observatory/status", get(api_observatory_status))
         .route("/observatory/scan", post(api_observatory_scan))
@@ -11812,6 +11814,159 @@ mod tests {
 // ---------------------------------------------------------------------------
 // Observatory (HeytingLean codebase health via lean-xray)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// System Monitor (real hardware stats via nvidia-smi + /proc)
+// ---------------------------------------------------------------------------
+
+async fn api_system_snapshot() -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(|| {
+        let mut data = serde_json::Map::new();
+
+        // GPU via nvidia-smi
+        if let Ok(output) = std::process::Command::new("nvidia-smi")
+            .args([
+                "--query-gpu=name,temperature.gpu,utilization.gpu,power.draw,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let parts: Vec<&str> = stdout.trim().split(", ").collect();
+                if parts.len() >= 6 {
+                    data.insert("gpu_name".into(), json!(parts[0].trim()));
+                    data.insert(
+                        "gpu_temp_c".into(),
+                        json!(parts[1].trim().parse::<f64>().unwrap_or(0.0)),
+                    );
+                    data.insert(
+                        "gpu_pct".into(),
+                        json!(parts[2].trim().parse::<f64>().unwrap_or(0.0)),
+                    );
+                    data.insert(
+                        "gpu_power_w".into(),
+                        json!(parts[3].trim().parse::<f64>().unwrap_or(0.0)),
+                    );
+                    data.insert("gpu_mem_used".into(), json!(parts[4].trim()));
+                    data.insert("gpu_mem_total".into(), json!(parts[5].trim()));
+                }
+                data.insert("is_dgx".into(), json!(stdout.contains("GB10")));
+            }
+        }
+
+        // CPU cores count
+        let cpu_count = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        data.insert("cpu_cores".into(), json!(cpu_count));
+
+        // Memory via /proc/meminfo
+        if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+            let mut mem_total: u64 = 0;
+            let mut mem_available: u64 = 0;
+            for line in meminfo.lines() {
+                if let Some(val) = line.strip_prefix("MemTotal:") {
+                    mem_total = val.trim().split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                } else if let Some(val) = line.strip_prefix("MemAvailable:") {
+                    mem_available = val.trim().split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                }
+            }
+            data.insert("mem_total_kb".into(), json!(mem_total));
+            data.insert("mem_available_kb".into(), json!(mem_available));
+            data.insert("mem_used_kb".into(), json!(mem_total.saturating_sub(mem_available)));
+        }
+
+        // Load average
+        if let Ok(loadavg) = std::fs::read_to_string("/proc/loadavg") {
+            let parts: Vec<&str> = loadavg.split_whitespace().collect();
+            if parts.len() >= 3 {
+                data.insert("load_1m".into(), json!(parts[0].parse::<f64>().unwrap_or(0.0)));
+                data.insert("load_5m".into(), json!(parts[1].parse::<f64>().unwrap_or(0.0)));
+                data.insert("load_15m".into(), json!(parts[2].parse::<f64>().unwrap_or(0.0)));
+            }
+        }
+
+        // Per-core CPU from /proc/stat
+        if let Ok(stat) = std::fs::read_to_string("/proc/stat") {
+            let mut cores = Vec::new();
+            for line in stat.lines() {
+                if line.starts_with("cpu") && !line.starts_with("cpu ") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 5 {
+                        let user: u64 = parts[1].parse().unwrap_or(0);
+                        let nice: u64 = parts[2].parse().unwrap_or(0);
+                        let system: u64 = parts[3].parse().unwrap_or(0);
+                        let idle: u64 = parts[4].parse().unwrap_or(0);
+                        let total = user + nice + system + idle;
+                        let busy = user + nice + system;
+                        let pct = if total > 0 { (busy as f64 / total as f64) * 100.0 } else { 0.0 };
+                        cores.push(json!({"id": cores.len(), "pct": pct}));
+                    }
+                }
+            }
+            data.insert("cores".into(), json!(cores));
+        }
+
+        // Thermal zones
+        let mut thermals = Vec::new();
+        for i in 0..20 {
+            let type_path = format!("/sys/class/thermal/thermal_zone{i}/type");
+            let temp_path = format!("/sys/class/thermal/thermal_zone{i}/temp");
+            if let (Ok(zone_type), Ok(temp_str)) =
+                (std::fs::read_to_string(&type_path), std::fs::read_to_string(&temp_path))
+            {
+                let temp_mc: f64 = temp_str.trim().parse().unwrap_or(0.0);
+                thermals.push(json!({
+                    "label": zone_type.trim(),
+                    "temp_c": temp_mc / 1000.0,
+                }));
+            } else {
+                break;
+            }
+        }
+        data.insert("thermals".into(), json!(thermals));
+        // Top processes by CPU
+        if let Ok(output) = std::process::Command::new("ps")
+            .args(["aux", "--sort=-%cpu"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let procs: Vec<serde_json::Value> = stdout
+                    .lines()
+                    .skip(1) // header
+                    .take(15) // top 15
+                    .filter_map(|line| {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 11 {
+                            Some(json!({
+                                "user": parts[0],
+                                "pid": parts[1],
+                                "cpu": parts[2],
+                                "mem": parts[3],
+                                "vsz": parts[4],
+                                "rss": parts[5],
+                                "cmd": parts[10..].join(" "),
+                            }))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                data.insert("processes".into(), json!(procs));
+            }
+        }
+
+        data.insert("timestamp".into(), json!(chrono::Utc::now().to_rfc3339()));
+
+        serde_json::Value::Object(data)
+    })
+    .await
+    .unwrap_or_else(|_| json!({"error": "task failed"}));
+
+    Json(result)
+}
 
 /// Cached lean-xray scan result. Shared across all observatory handlers.
 static OBSERVATORY_CACHE: std::sync::LazyLock<

@@ -145,7 +145,9 @@ pub struct WorkspaceProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lean_project_path: Option<String>,
     /// Nav items hidden in the dashboard sidebar (by data-page key).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Always serialized (even when empty) so the dashboard JS can distinguish
+    /// "no field" (use defaults) from "empty array" (show everything).
+    #[serde(default)]
     pub hidden_nav_items: Vec<String>,
     #[serde(default)]
     pub injections: Vec<Injection>,
