@@ -432,6 +432,16 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         // Metered IPFS storage (customer-facing, same auth as /v1/chat/completions)
         .route("/v1/storage/pin", post(api_metered_pin_json))
         .route("/v1/storage/pins", get(api_metered_list_pins))
+        // Observatory (HeytingLean codebase health)
+        .route("/observatory/status", get(api_observatory_status))
+        .route("/observatory/scan", post(api_observatory_scan))
+        .route("/observatory/treemap", get(api_observatory_treemap))
+        .route("/observatory/depgraph", get(api_observatory_depgraph))
+        .route("/observatory/complexity", get(api_observatory_complexity))
+        .route("/observatory/clusters", get(api_observatory_clusters))
+        .route("/observatory/sorrys", get(api_observatory_sorrys))
+        .route("/observatory/frontier", get(api_observatory_frontier))
+        .route("/observatory/file", get(api_observatory_file))
         // JSON 404 fallback for unmatched /api/* routes.
         .fallback(api_fallback_not_found)
         .with_state(state)
@@ -11796,5 +11806,306 @@ mod tests {
         assert_eq!(payload["container_hookup"]["kind"], "cli");
         assert_eq!(payload["container_hookup"]["cli_name"], "claude");
         assert_eq!(payload["working_dir"], "/tmp/work");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Observatory (HeytingLean codebase health via lean-xray)
+// ---------------------------------------------------------------------------
+
+/// Cached lean-xray scan result. Shared across all observatory handlers.
+static OBSERVATORY_CACHE: std::sync::LazyLock<
+    tokio::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>,
+> = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(None));
+
+/// Max age before auto-rescan (5 minutes).
+const OBSERVATORY_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Path to the HeytingLean project. Overridable via HEYTINGLEAN_DIR env var.
+fn observatory_lean_dir() -> String {
+    std::env::var("HEYTINGLEAN_DIR")
+        .unwrap_or_else(|_| "/home/abraxas/Work/heyting/lean".to_string())
+}
+
+/// Path to the lean-xray binary. Overridable via LEAN_XRAY_BIN env var.
+fn lean_xray_bin() -> String {
+    std::env::var("LEAN_XRAY_BIN").unwrap_or_else(|_| {
+        // Try the release build in the repo first
+        let in_repo =
+            std::path::Path::new("/home/abraxas/Work/agenthalo/lean-xray/target/release/lean-xray");
+        if in_repo.exists() {
+            return in_repo.to_string_lossy().to_string();
+        }
+        "lean-xray".to_string()
+    })
+}
+
+/// Run lean-xray and return the full ProjectReport JSON.
+async fn run_lean_xray() -> Result<serde_json::Value, String> {
+    let bin = lean_xray_bin();
+    let dir = observatory_lean_dir();
+
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(&bin)
+            .args(["--dir", &dir, "--json"])
+            .output()
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))?
+    .map_err(|e| format!("Failed to run lean-xray: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("lean-xray failed: {stderr}"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout).map_err(|e| format!("Failed to parse lean-xray output: {e}"))
+}
+
+/// Get cached report or run a fresh scan if stale.
+async fn get_cached_report() -> Result<serde_json::Value, String> {
+    let mut cache = OBSERVATORY_CACHE.lock().await;
+    if let Some((ts, ref data)) = *cache {
+        if ts.elapsed() < OBSERVATORY_MAX_AGE {
+            return Ok(data.clone());
+        }
+    }
+    let data = run_lean_xray().await?;
+    *cache = Some((std::time::Instant::now(), data.clone()));
+    Ok(data)
+}
+
+async fn api_observatory_status() -> impl IntoResponse {
+    match get_cached_report().await {
+        Ok(data) => {
+            let summary = serde_json::json!({
+                "total_files": data["total_files"],
+                "total_lines": data["total_lines"],
+                "total_sorrys": data["total_sorrys"],
+                "total_decls": data["total_decls"],
+                "health_score": data["health_score"],
+                "scan_time_ms": data["scan_time_ms"],
+                "clusters_count": data["clusters"].as_array().map(|a| a.len()).unwrap_or(0),
+            });
+            Json(summary).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+            .into_response(),
+    }
+}
+
+async fn api_observatory_scan() -> impl IntoResponse {
+    // Force a fresh scan (invalidate cache)
+    {
+        let mut cache = OBSERVATORY_CACHE.lock().await;
+        *cache = None;
+    }
+    match get_cached_report().await {
+        Ok(data) => {
+            let summary = serde_json::json!({
+                "total_files": data["total_files"],
+                "total_sorrys": data["total_sorrys"],
+                "health_score": data["health_score"],
+                "scan_time_ms": data["scan_time_ms"],
+                "status": "scanned",
+            });
+            Json(summary).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+            .into_response(),
+    }
+}
+
+async fn api_observatory_treemap() -> impl IntoResponse {
+    match get_cached_report().await {
+        Ok(data) => {
+            // Return file list with health and size data for treemap rendering
+            let files = data["files"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .map(|f| {
+                            serde_json::json!({
+                                "path": f["path"],
+                                "lines": f["lines"],
+                                "sorry_count": f["sorry_count"],
+                                "decl_count": f["decl_count"],
+                                "health_score": f["health"]["score"],
+                                "health_status": f["health"]["status"],
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            Json(serde_json::json!({ "files": files })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+            .into_response(),
+    }
+}
+
+async fn api_observatory_depgraph() -> impl IntoResponse {
+    match get_cached_report().await {
+        Ok(data) => Json(serde_json::json!({
+            "nodes": data["dependency_graph"]["nodes"],
+            "edges": data["dependency_graph"]["edges"],
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+            .into_response(),
+    }
+}
+
+async fn api_observatory_complexity() -> impl IntoResponse {
+    match get_cached_report().await {
+        Ok(data) => {
+            // Collect all declarations with their sizes, return top 30
+            let mut decls: Vec<serde_json::Value> = Vec::new();
+            if let Some(files) = data["files"].as_array() {
+                for f in files {
+                    let path = f["path"].as_str().unwrap_or("");
+                    if let Some(ds) = f["declarations"].as_array() {
+                        for d in ds {
+                            let size = d["line_end"]
+                                .as_u64()
+                                .unwrap_or(0)
+                                .saturating_sub(d["line_start"].as_u64().unwrap_or(0))
+                                .max(1);
+                            decls.push(serde_json::json!({
+                                "name": d["name"],
+                                "kind": d["kind"],
+                                "file": path,
+                                "line_start": d["line_start"],
+                                "size": size,
+                                "has_sorry": d["has_sorry"],
+                            }));
+                        }
+                    }
+                }
+            }
+            decls.sort_by(|a, b| {
+                b["size"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .cmp(&a["size"].as_u64().unwrap_or(0))
+            });
+            decls.truncate(30);
+            Json(serde_json::json!({ "top_declarations": decls })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+            .into_response(),
+    }
+}
+
+async fn api_observatory_clusters() -> impl IntoResponse {
+    match get_cached_report().await {
+        Ok(data) => Json(serde_json::json!({ "clusters": data["clusters"] })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+            .into_response(),
+    }
+}
+
+async fn api_observatory_sorrys() -> impl IntoResponse {
+    match get_cached_report().await {
+        Ok(data) => {
+            let mut sorrys: Vec<serde_json::Value> = Vec::new();
+            if let Some(files) = data["files"].as_array() {
+                for f in files {
+                    if f["sorry_count"].as_u64().unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    let path = f["path"].as_str().unwrap_or("");
+                    if let Some(ds) = f["declarations"].as_array() {
+                        for d in ds {
+                            if d["has_sorry"].as_bool() == Some(true) {
+                                sorrys.push(serde_json::json!({
+                                    "file": path,
+                                    "line": d["line_start"],
+                                    "decl_name": d["name"],
+                                    "kind": d["kind"],
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+            Json(serde_json::json!({ "sorrys": sorrys, "count": sorrys.len() })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+            .into_response(),
+    }
+}
+
+async fn api_observatory_frontier() -> impl IntoResponse {
+    // Frontier = sorrys whose file's imports are all sorry-free
+    match get_cached_report().await {
+        Ok(data) => {
+            // Build sorry-free set
+            let sorry_free: std::collections::HashSet<String> = data["files"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|f| f["sorry_count"].as_u64().unwrap_or(0) == 0)
+                        .filter_map(|f| f["path"].as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut frontier: Vec<serde_json::Value> = Vec::new();
+            if let Some(files) = data["files"].as_array() {
+                for f in files {
+                    if f["sorry_count"].as_u64().unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    // Check if all imports are sorry-free (simplified: by module name matching)
+                    // This is an approximation — real frontier needs full graph analysis
+                    let path = f["path"].as_str().unwrap_or("");
+                    if let Some(ds) = f["declarations"].as_array() {
+                        for d in ds {
+                            if d["has_sorry"].as_bool() == Some(true) {
+                                frontier.push(serde_json::json!({
+                                    "file": path,
+                                    "line": d["line_start"],
+                                    "decl_name": d["name"],
+                                    "kind": d["kind"],
+                                    "goal_state": null,  // Enriched by LSP in future
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+            Json(serde_json::json!({ "frontier": frontier, "count": frontier.len() }))
+                .into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ObservatoryFileQuery {
+    path: String,
+}
+
+async fn api_observatory_file(
+    Query(q): Query<ObservatoryFileQuery>,
+) -> impl IntoResponse {
+    match get_cached_report().await {
+        Ok(data) => {
+            if let Some(files) = data["files"].as_array() {
+                if let Some(file) = files.iter().find(|f| f["path"].as_str() == Some(&q.path)) {
+                    return Json(file.clone()).into_response();
+                }
+            }
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": format!("File not found: {}", q.path) })),
+            )
+                .into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+            .into_response(),
     }
 }

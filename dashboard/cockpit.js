@@ -75,6 +75,14 @@
       this.el.appendChild(header);
       this.el.appendChild(this.body);
 
+      // Attach Observatory drawer to this panel
+      if (window.Observatory && typeof window.Observatory.createDrawer === 'function') {
+        this.obsDrawer = window.Observatory.createDrawer(id);
+        const drawerEl = this.obsDrawer.render();
+        this.el.appendChild(drawerEl);
+        this.el._obsDrawer = this.obsDrawer;
+      }
+
       header.addEventListener('dblclick', () => this.el.classList.toggle('maximized'));
       header.querySelector('[data-action="new"]').addEventListener('click', (ev) => {
         ev.preventDefault();
@@ -169,10 +177,37 @@
         } else if (role === 'error') {
           msg.innerHTML = `<div class="chat-msg-bubble chat-bubble-error"><pre class="chat-agent-text">${escapeHtml(content)}</pre></div>${metaHtml}`;
         } else {
-          msg.innerHTML = `<div class="chat-msg-bubble chat-bubble-agent"><pre class="chat-agent-text">${escapeHtml(content)}</pre></div>${metaHtml}`;
+          // Parse Observatory blocks from agent output:
+          //   ```observatory:vizType\n{json}\n```
+          // Extract them, push to Observatory drawer, show remaining text in chat
+          let textContent = content;
+          const obsRegex = /```observatory:(\w+)\s*\n([\s\S]*?)```/g;
+          let match;
+          while ((match = obsRegex.exec(content)) !== null) {
+            const vizType = match[1];
+            const jsonStr = match[2].trim();
+            try {
+              const data = JSON.parse(jsonStr);
+              if (panelSelf.obsDrawer) {
+                panelSelf.obsDrawer.pushData(vizType, data);
+              }
+            } catch (_e) { /* ignore malformed JSON */ }
+            textContent = textContent.replace(match[0], '');
+          }
+          textContent = textContent.trim();
+          if (textContent) {
+            msg.innerHTML = `<div class="chat-msg-bubble chat-bubble-agent"><pre class="chat-agent-text">${escapeHtml(textContent)}</pre></div>${metaHtml}`;
+          } else {
+            msg.innerHTML = `<div class="chat-msg-bubble chat-bubble-agent"><pre class="chat-agent-text" style="color:var(--green)">📊 Visualization sent to Observatory panel →</pre></div>${metaHtml}`;
+          }
         }
         thread.appendChild(msg);
         thread.scrollTop = thread.scrollHeight;
+        // Track messages for context-aware Observatory prompts
+        if (role !== 'thinking') {
+          panelSelf.chatMessages.push({ role, content: String(content || '').slice(0, 500) });
+          if (panelSelf.chatMessages.length > 30) panelSelf.chatMessages.shift();
+        }
         return msg;
       };
       const hydrateHistory = (items) => {
@@ -237,6 +272,65 @@
         const value = String(input?.value || '').trim();
         if (!value) return;
         input.value = '';
+        // Route "visual <type>" or "/visual <type>" — fetch Observatory data and push to drawer
+        const visualMatch = value.match(/^\/?\s*visual\s+(\w+)\s*$/i);
+        if (visualMatch && panelSelf.obsDrawer) {
+          const vizType = visualMatch[1].toLowerCase();
+          const vizEndpoints = {
+            goals: '/api/observatory/frontier',
+            prooftree: null,
+            depgraph: '/api/observatory/depgraph',
+            treemap: '/api/observatory/treemap',
+            tactics: null,
+            latex: null,
+            flowchart: null,
+            table: '/api/observatory/complexity',
+            dashboard: '/api/observatory/status',
+            sorrys: '/api/observatory/sorrys',
+            clusters: '/api/observatory/clusters',
+            frontier: '/api/observatory/frontier',
+            complexity: '/api/observatory/complexity',
+          };
+          appendMessage('user', value);
+          const endpoint = vizEndpoints[vizType];
+          if (endpoint) {
+            // Direct fetch — no agent needed
+            appendMessage('agent', `Loading ${vizType} visualization...`, 'local');
+            try {
+              const res = await fetch(endpoint);
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const data = await res.json();
+              panelSelf.obsDrawer.pushData(vizType, data);
+            } catch (e) {
+              appendMessage('error', `Observatory fetch failed: ${e.message}`);
+            }
+            return;
+          }
+          // Agent-generated types — construct a context-aware prompt
+          // that references the conversation history
+          const recentHistory = (panelSelf.chatMessages || []).slice(-10)
+            .filter(m => m.role !== 'thinking')
+            .map(m => `[${m.role}]: ${(m.content || '').slice(0, 300)}`)
+            .join('\n');
+          const contextPreamble = recentHistory
+            ? `CONVERSATION CONTEXT (review this to determine what to visualize):\n${recentHistory}\n\nBased on the above conversation, `
+            : 'There is no prior conversation context. Ask the user what file or theorem to visualize, OR ';
+          const vizPrompts = {
+            goals: contextPreamble + 'show the current proof goal state. Look at what file, theorem, or sorry we have been discussing. If you have access to lean_goal or lean_diagnostics, call them for the actual goal. Output as:\n```observatory:goals\n{"goals": [{"hyps": [{"name": "var_name", "type": "type_expr"}], "target": "goal_type"}]}\n```\nUse REAL data from the conversation — the actual hypotheses, the actual target type. Do not use placeholder data.',
+            prooftree: contextPreamble + 'show the proof tactic trace. Review the conversation for tactics that were attempted (successful or failed). Output as:\n```observatory:prooftree\n{"steps": [{"tactic": "the_actual_tactic", "goal_before": "actual_goal_state", "goal_after": "actual_result_or_null", "status": "success_or_failed", "message": "error_msg_if_failed"}]}\n```\nReconstruct the REAL trace from our conversation, not a template.',
+            tactics: contextPreamble + 'suggest tactics for the current proof goal. Look at what we are trying to prove and what has already been tried. Use premise retrieval or search if available. Output as:\n```observatory:tactics\n{"tactics": [{"tactic": "actual_tactic_text", "confidence": 0.85, "source": "where_you_found_this", "description": "why_this_might_work"}]}\n```\nRank by relevance to the SPECIFIC goal in our conversation. Include at least 3 suggestions.',
+            latex: contextPreamble + 'display the theorem or definition we are working on as rendered mathematics. Extract the ACTUAL statement from the file or conversation. Output as:\n```observatory:latex\n{"blocks": [{"label": "Actual Theorem Name (file:line)", "latex": "\\\\forall x, ...", "display": true}]}\n```\nConvert the real Lean notation to LaTeX. Include the current subgoal if we are mid-proof.',
+            flowchart: contextPreamble + 'show a proof strategy flowchart for the current work. Based on what we have discussed, map out the proof structure — what the main goal is, what cases or subgoals exist, what tactics apply to each. Output as:\n```observatory:flowchart\n{"mermaid": "graph TD\\n  A[Main Goal] -->|tactic| B[Subgoal 1]\\n  ..."}\n```\nUse the ACTUAL goals and tactics from our conversation.',
+          };
+          const prompt = vizPrompts[vizType];
+          if (prompt) {
+            sendTask(prompt);
+          } else {
+            appendMessage('agent', `Unknown visualization type: "${vizType}"\nAvailable: ${Object.keys(vizEndpoints).concat(Object.keys(vizPrompts)).join(', ')}`, 'local');
+          }
+          return;
+        }
+
         // Route /skill <name> commands — load prompt template and send as task
         const skillMatch = value.match(/^\/skill\s+(\S+)(?:\s+([\s\S]*))?$/i);
         if (skillMatch) {

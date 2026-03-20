@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Observatory Renderer Test Harness</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="observatory.css">
+  <link rel="stylesheet" href="vendor/katex.min.css">
+  <script src="chart.min.js"></script>
+  <script src="vendor/d3.v7.min.js"></script>
+  <script src="vendor/katex.min.js"></script>
+  <script src="vendor/mermaid.min.js"></script>
+  <script src="observatory.js"></script>
+  <style>
+    body { background: #0a0e08; color: #c8dcb4; font-family: 'Share Tech Mono', monospace; padding: 20px; }
+    h1 { color: #ffb830; font-size: 18px; margin-bottom: 20px; }
+    h2 { color: #00ee00; font-size: 14px; margin: 24px 0 8px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .test-container {
+      border: 1px solid #2a3a1a;
+      border-radius: 6px;
+      background: rgba(8, 12, 5, 0.98);
+      margin-bottom: 16px;
+      min-height: 200px;
+      padding: 12px;
+      position: relative;
+    }
+    .test-status { font-size: 11px; color: #8ba87a; margin-top: 4px; }
+    .test-status.pass { color: #00ee00; }
+    .test-status.fail { color: #ff3030; }
+    :root {
+      --text: #c8dcb4;
+      --text-dim: #8ba87a;
+      --accent: #ffb830;
+      --green: #00ee00;
+      --red: #ff3030;
+      --amber: #ffb830;
+      --border: #2a3a1a;
+      --border-dim: #1a2a12;
+      --bg-card: #0d1408;
+      --font: 'Share Tech Mono', monospace;
+    }
+  </style>
+</head>
+<body>
+  <h1>Observatory Renderer Test Harness — Visual Audit</h1>
+  <p style="color:#8ba87a;font-size:12px;margin-bottom:20px">Each section below renders a viz type with realistic ATP data. Inspect visually.</p>
+
+  <h2>1. Goals (KaTeX-rendered proof obligations)</h2>
+  <div class="test-container" id="test-goals"></div>
+  <div class="test-status" id="status-goals"></div>
+
+  <h2>2. Proof Tree (tactic trace)</h2>
+  <div class="test-container" id="test-prooftree"></div>
+  <div class="test-status" id="status-prooftree"></div>
+
+  <h2>3. Dependency Graph (D3 force-directed)</h2>
+  <div class="test-container" id="test-depgraph" style="min-height:460px"></div>
+  <div class="test-status" id="status-depgraph"></div>
+
+  <h2>4. Treemap (D3 squarified)</h2>
+  <div class="test-container" id="test-treemap" style="min-height:440px"></div>
+  <div class="test-status" id="status-treemap"></div>
+
+  <h2>5. Tactics (suggestion list)</h2>
+  <div class="test-container" id="test-tactics"></div>
+  <div class="test-status" id="status-tactics"></div>
+
+  <h2>6. Math / LaTeX (KaTeX)</h2>
+  <div class="test-container" id="test-latex"></div>
+  <div class="test-status" id="status-latex"></div>
+
+  <h2>7. Flowchart (Mermaid)</h2>
+  <div class="test-container" id="test-flowchart"></div>
+  <div class="test-status" id="status-flowchart"></div>
+
+  <h2>8. Data Table (sortable)</h2>
+  <div class="test-container" id="test-table"></div>
+  <div class="test-status" id="status-table"></div>
+
+  <script>
+    if (typeof mermaid !== 'undefined') {
+      mermaid.initialize({ startOnLoad: false, theme: 'dark', themeVariables: {
+        primaryColor: '#1a3a12', primaryTextColor: '#c8dcb4', primaryBorderColor: '#2a5a1a',
+        lineColor: '#00ee00', secondaryColor: '#0d1408', tertiaryColor: '#0a0e08'
+      }});
+    }
+
+    function runTest(id, vizType, data) {
+      var el = document.getElementById('test-' + id);
+      var status = document.getElementById('status-' + id);
+      try {
+        Observatory.renderViz(vizType, data, el);
+        status.textContent = 'PASS — rendered ' + vizType;
+        status.className = 'test-status pass';
+      } catch (e) {
+        status.textContent = 'FAIL — ' + e.message;
+        status.className = 'test-status fail';
+      }
+    }
+
+    // 1. Goals
+    runTest('goals', 'goals', {
+      goals: [
+        {
+          hyps: [
+            { name: 'ctx', type: 'Context' },
+            { name: 'a', type: 'Atom' },
+            { name: 'b', type: 'Atom' },
+            { name: 'h₁', type: 'support a (Program.cons (a, [b]) Program.empty)' },
+            { name: 'h₂', type: '∀ (P : Prop), P → P' }
+          ],
+          target: '∃ (σ : Subst), derives ctx (apply σ (a →  b)) ∧ support b σ.range'
+        },
+        {
+          hyps: [
+            { name: 'n', type: 'ℕ' },
+            { name: 'ih', type: '∀ m : ℕ, m < n → fibonacci m < 2 ^ m' }
+          ],
+          target: 'fibonacci n < 2 ^ n'
+        }
+      ]
+    });
+
+    // 2. Proof Tree
+    runTest('prooftree', 'prooftree', {
+      steps: [
+        { tactic: 'intro h', goal_before: '⊢ P → Q → P', goal_after: 'h : P ⊢ Q → P', status: 'success' },
+        { tactic: 'intro _hq', goal_before: 'h : P ⊢ Q → P', goal_after: 'h : P, _hq : Q ⊢ P', status: 'success' },
+        { tactic: 'exact h', goal_before: 'h : P, _hq : Q ⊢ P', goal_after: null, status: 'success', message: 'Goals accomplished 🎉' },
+      ]
+    });
+
+    // 3. Dependency Graph
+    runTest('depgraph', 'depgraph', {
+      nodes: [
+        { id: 'HeytingLean.Core', group: 0 },
+        { id: 'HeytingLean.PTS.Main', group: 1 },
+        { id: 'HeytingLean.PTS.Derives', group: 1 },
+        { id: 'HeytingLean.PTS.Bridge', group: 1 },
+        { id: 'HeytingLean.PTS.Contextual.Main', group: 2 },
+        { id: 'HeytingLean.PTS.Contextual.SemanticSupport', group: 2 },
+        { id: 'HeytingLean.PTS.Contextual.Derives', group: 2 },
+        { id: 'HeytingLean.PTS.Contextual.Bridge', group: 2 },
+        { id: 'HeytingLean.Nucleus', group: 3 },
+        { id: 'HeytingLean.Ontology', group: 4 },
+        { id: 'Mathlib.Tactic', group: 5 },
+        { id: 'Mathlib.Data.List', group: 5 },
+        { id: 'HeytingLean.ATP.Core', group: 6 },
+        { id: 'HeytingLean.ATP.Prover', group: 6 },
+        { id: 'HeytingLean.LoF.Core', group: 7 },
+      ],
+      edges: [
+        ['HeytingLean.PTS.Main', 'HeytingLean.Core'],
+        ['HeytingLean.PTS.Derives', 'HeytingLean.Core'],
+        ['HeytingLean.PTS.Bridge', 'HeytingLean.PTS.Derives'],
+        ['HeytingLean.PTS.Bridge', 'HeytingLean.PTS.Main'],
+        ['HeytingLean.PTS.Contextual.Main', 'HeytingLean.PTS.Main'],
+        ['HeytingLean.PTS.Contextual.SemanticSupport', 'HeytingLean.PTS.Contextual.Main'],
+        ['HeytingLean.PTS.Contextual.Derives', 'HeytingLean.PTS.Contextual.Main'],
+        ['HeytingLean.PTS.Contextual.Derives', 'HeytingLean.PTS.Derives'],
+        ['HeytingLean.PTS.Contextual.Bridge', 'HeytingLean.PTS.Contextual.Derives'],
+        ['HeytingLean.PTS.Contextual.Bridge', 'HeytingLean.PTS.Bridge'],
+        ['HeytingLean.Nucleus', 'HeytingLean.Core'],
+        ['HeytingLean.Ontology', 'HeytingLean.Nucleus'],
+        ['HeytingLean.ATP.Core', 'HeytingLean.Core'],
+        ['HeytingLean.ATP.Core', 'Mathlib.Tactic'],
+        ['HeytingLean.ATP.Prover', 'HeytingLean.ATP.Core'],
+        ['HeytingLean.LoF.Core', 'HeytingLean.Core'],
+        ['HeytingLean.PTS.Main', 'Mathlib.Data.List'],
+      ]
+    });
+
+    // 4. Treemap
+    runTest('treemap', 'treemap', {
+      files: [
+        { path: 'HeytingLean/Ontology/DriverChain.lean', lines: 100915, health_score: 0.95, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/PTS/Contextual/Derives.lean', lines: 1765, health_score: 1.0, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/PTS/Contextual/Bridge.lean', lines: 754, health_score: 1.0, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/Noneism/ProofTheory/Soundness/KripkeFO.lean', lines: 12047, health_score: 0.9, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/ATP/DifferentiableATP/KAN.lean', lines: 890, health_score: 0.7, health_status: 'warning', sorry_count: 2 },
+        { path: 'HeytingLean/ATP/EvolutionarySearch.lean', lines: 2300, health_score: 0.85, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/Topology/Knot/BracketR3.lean', lines: 9592, health_score: 0.6, health_status: 'warning', sorry_count: 5 },
+        { path: 'HeytingLean/Core.lean', lines: 500, health_score: 1.0, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/Nucleus.lean', lines: 1200, health_score: 1.0, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/LoF/Core.lean', lines: 3400, health_score: 0.92, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/HeytingVeil/Intake/Demo.lean', lines: 31733, health_score: 0.88, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/Chem/Materials/SpaceGroups.lean', lines: 6328, health_score: 0.3, health_status: 'critical', sorry_count: 12 },
+        { path: 'HeytingLean/PTS/BaseExtension/Main.lean', lines: 420, health_score: 1.0, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/PTS/BaseExtension/Contextual/Main.lean', lines: 380, health_score: 1.0, health_status: 'clean', sorry_count: 0 },
+        { path: 'HeytingLean/Tests/Integration.lean', lines: 2100, health_score: 0.95, health_status: 'clean', sorry_count: 0 },
+      ]
+    });
+
+    // 5. Tactics
+    runTest('tactics', 'tactics', {
+      tactics: [
+        { tactic: 'simp [List.mem_cons_iff, support_cons]', confidence: 0.92, source: 'Mathlib premise retrieval', description: 'Simplify using list membership and support constructor lemmas' },
+        { tactic: 'exact ih (n - 1) (by omega)', confidence: 0.78, source: 'KAN-trained tactic predictor', description: 'Apply induction hypothesis with arithmetic bound' },
+        { tactic: 'constructor <;> assumption', confidence: 0.65, source: 'Evolutionary search (gen 3)', description: 'Split conjunction and close both subgoals from hypotheses' },
+        { tactic: 'rw [derives_iff_support] at h₁ ⊢', confidence: 0.51, source: 'Bridge theorem (PTS.Bridge.lean:412)', description: 'Rewrite using the derives↔support equivalence' },
+        { tactic: 'apply Context.mono (by exact le_refl _)', confidence: 0.33, source: 'Premise graph (depth 2)', description: 'Monotonicity of context with reflexive ordering' },
+      ]
+    });
+
+    // 6. LaTeX
+    runTest('latex', 'latex', {
+      blocks: [
+        { label: 'Nucleus Operator (Definition)', latex: 'R : \\Omega \\to \\Omega \\quad \\text{where} \\quad R(a \\to b) = R(a) \\to R(b)', display: true },
+        { label: 'Fixed Point Property', latex: '\\Omega_R = \\{ x \\in \\Omega \\mid R(x) = x \\}', display: true },
+        { label: 'Support-Search Equivalence (Main Theorem)', latex: '\\forall\\, \\Gamma, A.\\quad \\text{support}(\\Gamma, A) \\iff \\text{search}(\\Gamma, A)', display: true },
+        { label: 'Induction Hypothesis', latex: '\\forall\\, m < n,\\; \\text{fib}(m) < 2^m \\implies \\text{fib}(n) < 2^n', display: true },
+      ]
+    });
+
+    // 7. Flowchart
+    runTest('flowchart', 'flowchart', {
+      mermaid: 'graph TD\n' +
+        '  A["⊢ P → Q → P"] -->|intro h| B["h : P ⊢ Q → P"]\n' +
+        '  B -->|intro hq| C["h : P, hq : Q ⊢ P"]\n' +
+        '  C -->|exact h| D["✓ No goals"]\n' +
+        '  style A fill:#1a3a12,stroke:#00ee00\n' +
+        '  style D fill:#0a2a0a,stroke:#00ee00,color:#00ff41\n'
+    });
+
+    // 8. Table
+    runTest('table', 'table', {
+      columns: ['Declaration', 'Kind', 'File', 'Lines', 'Sorry', 'Health'],
+      rows: [
+        ['support_iff_search', 'theorem', 'PTS/Bridge.lean', 142, 'No', '1.00'],
+        ['derives_cons', 'theorem', 'PTS/Derives.lean', 38, 'No', '1.00'],
+        ['Context.mono', 'theorem', 'PTS/Contextual/Main.lean', 25, 'No', '1.00'],
+        ['imp_forward_axiom', 'axiom', 'PTS/Bridge.lean', 3, 'N/A', '0.40'],
+        ['search_cut', 'theorem', 'PTS/Contextual/Bridge.lean', 89, 'YES', '0.60'],
+        ['fibonacci_bound', 'theorem', 'ATP/Core.lean', 210, 'No', '0.95'],
+        ['kan_predict', 'def', 'ATP/DifferentiableATP/KAN.lean', 156, 'YES', '0.70'],
+        ['nucleus_grafting', 'theorem', 'NucleusGrafting/Certificate.lean', 67, 'No', '1.00'],
+      ]
+    });
+  </script>
+</body>
+</html>

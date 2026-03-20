@@ -2,13 +2,12 @@
 
 /* ================================================================
    Lean Project Browser — AgentHALO Dashboard
-   Scans a configured Lean project directory and displays all .lean
-   files organized by module hierarchy. Read-only file viewer.
+   Integrated with HeytingLean Observatory for health visualizations.
    ================================================================ */
 
 const __leanState = {
-  activeTab: 'project', // 'project' or a library name
-  tabs: [],             // [{id, name, root, totalFiles, tree}]
+  activeTab: 'project',
+  tabs: [],
   tree: null,
   totalFiles: 0,
   root: '',
@@ -21,17 +20,16 @@ const __leanState = {
   searchQuery: '',
   modalContent: null,
   modalTitle: '',
+  // Observatory data
+  obsStatus: null,
+  obsFileData: null,
+  obsActiveViz: null, // 'treemap' | 'depgraph' | 'clusters' | null
 };
 
 function __leanEsc(value) {
   if (window.__escapeHtml) return window.__escapeHtml(value);
   if (value == null) return '';
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function __leanFmtSize(bytes) {
@@ -39,6 +37,10 @@ function __leanFmtSize(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+function __leanFmtNum(n) { return (n || 0).toLocaleString(); }
+
+// ---- API calls ----
 
 async function __leanScan() {
   __leanState.loading = true;
@@ -51,18 +53,15 @@ async function __leanScan() {
     if (!res.ok) {
       __leanState.error = res.message || 'Scan failed';
       __leanState.tree = null;
-      __leanState.totalFiles = 0;
     } else {
       __leanState.tree = res.tree;
       __leanState.totalFiles = res.total_files || 0;
       __leanState.root = res.root || '';
-      // Build tabs: project + discovered libraries
       __leanState.tabs = [{ id: 'project', name: 'Project', root: res.root, totalFiles: res.total_files, tree: res.tree }];
       const libs = res.libraries || [];
       for (const lib of libs) {
         __leanState.tabs.push({ id: `lib:${lib.name}`, name: lib.name, root: lib.root, totalFiles: lib.total_files, tree: lib.tree });
       }
-      // Auto-expand first level of active tab
       const activeTree = __leanActiveTree();
       if (activeTree?.children) {
         for (const child of activeTree.children) {
@@ -75,7 +74,26 @@ async function __leanScan() {
     __leanState.tree = null;
   }
   __leanState.loading = false;
+  // Fetch Observatory status in parallel
+  __leanFetchObsStatus();
   __leanRender();
+}
+
+async function __leanFetchObsStatus() {
+  try {
+    const res = await fetch('/api/observatory/status');
+    if (res.ok) __leanState.obsStatus = await res.json();
+  } catch (_e) {}
+}
+
+async function __leanFetchObsFile(path) {
+  try {
+    const res = await fetch(`/api/observatory/file?path=${encodeURIComponent(path)}`);
+    if (res.ok) {
+      __leanState.obsFileData = await res.json();
+      __leanRender();
+    }
+  } catch (_e) {}
 }
 
 function __leanActiveTree() {
@@ -90,6 +108,7 @@ function __leanActiveTab() {
 async function __leanLoadFile(path) {
   __leanState.fileLoading = true;
   __leanState.selectedFile = path;
+  __leanState.obsFileData = null;
   __leanRender();
   try {
     const api = window.api;
@@ -100,6 +119,8 @@ async function __leanLoadFile(path) {
   }
   __leanState.fileLoading = false;
   __leanRender();
+  // Fetch Observatory data for this file
+  __leanFetchObsFile(path);
 }
 
 // ---- Tree rendering ----
@@ -151,18 +172,71 @@ function __leanRenderTreeNode(node, depth, parentPath) {
   return '';
 }
 
+// ---- Observatory health bar ----
+
+function __leanRenderHealthBar() {
+  const obs = __leanState.obsStatus;
+  if (!obs) return '';
+  const h = obs.health_score || 0;
+  const hc = h >= 0.8 ? 'good' : h >= 0.4 ? 'warn' : 'bad';
+  const hColor = hc === 'good' ? 'var(--green)' : hc === 'warn' ? 'var(--amber)' : 'var(--red)';
+
+  return `<div class="lean-obs-bar">
+    <div class="lean-obs-stats">
+      <div class="lean-obs-stat">
+        <div class="lean-obs-stat-val" style="color:${hColor}">${(h * 100).toFixed(1)}%</div>
+        <div class="lean-obs-stat-lbl">Health</div>
+      </div>
+      <div class="lean-obs-stat">
+        <div class="lean-obs-stat-val">${__leanFmtNum(obs.total_files)}</div>
+        <div class="lean-obs-stat-lbl">Files</div>
+      </div>
+      <div class="lean-obs-stat">
+        <div class="lean-obs-stat-val">${__leanFmtNum(obs.total_lines)}</div>
+        <div class="lean-obs-stat-lbl">Lines</div>
+      </div>
+      <div class="lean-obs-stat">
+        <div class="lean-obs-stat-val">${__leanFmtNum(obs.total_decls)}</div>
+        <div class="lean-obs-stat-lbl">Declarations</div>
+      </div>
+      <div class="lean-obs-stat">
+        <div class="lean-obs-stat-val" style="color:${obs.total_sorrys > 0 ? 'var(--red)' : 'var(--green)'}">${obs.total_sorrys}</div>
+        <div class="lean-obs-stat-lbl">Sorrys</div>
+      </div>
+      <div class="lean-obs-stat">
+        <div class="lean-obs-stat-val">${__leanFmtNum(obs.clusters_count)}</div>
+        <div class="lean-obs-stat-lbl">Clusters</div>
+      </div>
+      <div class="lean-obs-stat">
+        <div class="lean-obs-stat-val">${obs.scan_time_ms}ms</div>
+        <div class="lean-obs-stat-lbl">Scan</div>
+      </div>
+    </div>
+    <div class="lean-obs-progress">
+      <div class="lean-obs-progress-fill ${hc}" style="width:${(h * 100).toFixed(1)}%"></div>
+    </div>
+    <div class="lean-obs-viz-btns">
+      <button class="lean-obs-viz-btn${__leanState.obsActiveViz === 'treemap' ? ' active' : ''}" data-obs-page="treemap" title="Health Treemap">Treemap</button>
+      <button class="lean-obs-viz-btn${__leanState.obsActiveViz === 'depgraph' ? ' active' : ''}" data-obs-page="depgraph" title="Dependency Graph">Dependencies</button>
+      <button class="lean-obs-viz-btn${__leanState.obsActiveViz === 'clusters' ? ' active' : ''}" data-obs-page="clusters" title="Module Clusters">Clusters</button>
+      <button class="lean-obs-viz-btn${__leanState.obsActiveViz === 'sorrys' ? ' active' : ''}" data-obs-page="sorrys" title="Sorry Locations">Sorrys</button>
+      <button class="lean-obs-viz-btn${__leanState.obsActiveViz === 'complexity' ? ' active' : ''}" data-obs-page="complexity" title="Complexity">Complexity</button>
+    </div>
+  </div>`;
+}
+
 // ---- File detail panel ----
 
 function __leanRenderDetail() {
   if (!__leanState.selectedFile) {
-    return `<div class="card lean-detail-empty">
+    return `<div class="lean-detail-empty">
       <div style="font-size:36px;opacity:0.3;margin-bottom:12px">\u2112</div>
-      <div class="card-label">Select a File</div>
-      <div class="card-sub">Click any .lean file in the tree to preview it here.</div>
+      <div class="lean-detail-empty-title">Select a File</div>
+      <div class="lean-detail-empty-sub">Click any .lean file in the tree to preview it here.</div>
     </div>`;
   }
   if (__leanState.fileLoading) {
-    return '<div class="card"><div class="loading">Loading file...</div></div>';
+    return '<div class="lean-detail-loading">Loading file...</div>';
   }
   const path = __leanState.selectedFile;
   const parts = path.split('/');
@@ -172,46 +246,107 @@ function __leanRenderDetail() {
   const lineCount = content.split('\n').length;
   const sizeBytes = new TextEncoder().encode(content).length;
 
-  // Extract imports and theorem/def names for quick overview
   const imports = [];
   const declarations = [];
+  let sorryCount = 0;
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
     if (trimmed.startsWith('import ')) imports.push(trimmed.slice(7).trim());
     const declMatch = trimmed.match(/^(theorem|lemma|def|instance|structure|class|inductive|axiom|opaque|abbrev)\s+(\S+)/);
     if (declMatch) declarations.push({ kind: declMatch[1], name: declMatch[2] });
+    if (/\bsorry\b/.test(trimmed)) sorryCount++;
   }
 
-  return `<div class="card lean-detail">
+  // Observatory file health (if available)
+  const obsFile = __leanState.obsFileData;
+  const health = obsFile?.health;
+  const healthPct = health ? (health.score * 100).toFixed(0) : null;
+  const healthCls = health ? (health.score >= 0.8 ? 'good' : health.score >= 0.4 ? 'warn' : 'bad') : '';
+
+  return `<div class="lean-detail">
     <div class="lean-detail-header">
-      <div class="lean-detail-filename">${__leanEsc(fileName)}</div>
-      <button class="btn btn-sm btn-primary" id="lean-view-full">View Full File</button>
+      <div>
+        <div class="lean-detail-filename">${__leanEsc(fileName)}</div>
+        <div class="lean-detail-module">${__leanEsc(modulePath)}</div>
+      </div>
+      <div class="lean-detail-actions">
+        ${healthPct !== null ? `<span class="lean-health-badge ${healthCls}" title="File health: ${healthPct}%">${healthPct}%</span>` : ''}
+        <button class="btn btn-sm" id="lean-view-full">View Full</button>
+      </div>
     </div>
-    <div class="lean-detail-module">${__leanEsc(modulePath)}</div>
     <div class="lean-detail-meta">
-      <div><span>Lines</span><strong>${lineCount}</strong></div>
+      <div><span>Lines</span><strong>${__leanFmtNum(lineCount)}</strong></div>
       <div><span>Size</span><strong>${__leanFmtSize(sizeBytes)}</strong></div>
       <div><span>Imports</span><strong>${imports.length}</strong></div>
       <div><span>Declarations</span><strong>${declarations.length}</strong></div>
+      <div><span>Sorrys</span><strong style="color:${sorryCount > 0 ? 'var(--red)' : 'var(--green)'}">${sorryCount}</strong></div>
+      ${health ? `<div><span>Health</span><strong style="color:${healthCls === 'good' ? 'var(--green)' : healthCls === 'warn' ? 'var(--amber)' : 'var(--red)'}">${healthPct}%</strong></div>` : ''}
     </div>
     ${declarations.length ? `<div class="lean-detail-section">
-      <div class="lean-detail-section-label">Declarations</div>
-      <div class="lean-decl-list">${declarations.slice(0, 50).map(d =>
-        `<div class="lean-decl"><span class="lean-decl-kind">${__leanEsc(d.kind)}</span> <span class="lean-decl-name">${__leanEsc(d.name)}</span></div>`
-      ).join('')}${declarations.length > 50 ? `<div class="lean-decl" style="color:var(--text-dim)">... +${declarations.length - 50} more</div>` : ''}</div>
+      <div class="lean-detail-section-label">Declarations <span class="lean-count-badge">${declarations.length}</span></div>
+      <div class="lean-decl-grid">${declarations.slice(0, 60).map(d =>
+        `<div class="lean-decl-row"><span class="lean-decl-kind lean-kind-${d.kind}">${__leanEsc(d.kind)}</span><span class="lean-decl-name">${__leanEsc(d.name)}</span></div>`
+      ).join('')}${declarations.length > 60 ? `<div class="lean-decl-row" style="color:var(--text-dim)">... +${declarations.length - 60} more</div>` : ''}</div>
     </div>` : ''}
     ${imports.length ? `<div class="lean-detail-section">
-      <div class="lean-detail-section-label">Imports</div>
+      <div class="lean-detail-section-label">Imports <span class="lean-count-badge">${imports.length}</span></div>
       <div class="lean-import-list">${imports.slice(0, 20).map(i =>
         `<div class="lean-import">${__leanEsc(i)}</div>`
       ).join('')}${imports.length > 20 ? `<div class="lean-import" style="color:var(--text-dim)">+${imports.length - 20} more</div>` : ''}</div>
     </div>` : ''}
     <div class="lean-detail-section">
       <div class="lean-detail-section-label">Preview</div>
-      <pre class="lean-preview">${__leanEsc(content.slice(0, 2000))}${content.length > 2000 ? '\n... (truncated)' : ''}</pre>
+      <pre class="lean-preview">${__leanEsc(content.slice(0, 3000))}${content.length > 3000 ? '\n... (truncated)' : ''}</pre>
     </div>
   </div>`;
 }
+
+// ---- Observatory visualization panel ----
+
+function __leanRenderVizPanel() {
+  const viz = __leanState.obsActiveViz;
+  if (!viz) return '';
+  return `<div class="lean-viz-panel card" id="lean-viz-container">
+    <div class="lean-viz-header">
+      <div class="lean-viz-title">${__leanEsc(viz.charAt(0).toUpperCase() + viz.slice(1))}</div>
+      <button class="btn btn-sm" id="lean-viz-close">\u2715</button>
+    </div>
+    <div class="lean-viz-body" id="lean-viz-body">
+      <div class="loading">Loading visualization...</div>
+    </div>
+  </div>`;
+}
+
+async function __leanLoadViz(vizType) {
+  const endpoints = {
+    treemap: '/api/observatory/treemap',
+    depgraph: '/api/observatory/depgraph',
+    clusters: '/api/observatory/clusters',
+    sorrys: '/api/observatory/sorrys',
+    complexity: '/api/observatory/complexity',
+  };
+  const endpoint = endpoints[vizType];
+  if (!endpoint) return;
+
+  __leanState.obsActiveViz = vizType;
+  __leanRender();
+
+  try {
+    const res = await fetch(endpoint);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const body = document.getElementById('lean-viz-body');
+    if (body && window.Observatory && typeof window.Observatory.renderViz === 'function') {
+      body.innerHTML = '';
+      window.Observatory.renderViz(vizType, data, body);
+    }
+  } catch (e) {
+    const body = document.getElementById('lean-viz-body');
+    if (body) body.innerHTML = `<div class="obs-error">Error: ${__leanEsc(e.message)}</div>`;
+  }
+}
+
+// ---- Modal ----
 
 function __leanRenderModal() {
   if (__leanState.modalContent === null) return '';
@@ -243,7 +378,6 @@ function __leanRender() {
   const content = document.querySelector('#content');
   if (!content) return;
 
-  // Preserve scroll positions across re-renders
   const treeEl = document.querySelector('.lean-tree');
   const savedTreeScroll = treeEl ? treeEl.scrollTop : 0;
   const savedMainScroll = content.scrollTop;
@@ -267,11 +401,9 @@ function __leanRender() {
   const tree = activeTab ? activeTab.tree : __leanState.tree;
   const treeHtml = tree ? (tree.children || []).map(c => __leanRenderTreeNode(c, 0, '')).join('') : '';
   const detailHtml = __leanRenderDetail();
-  const tabCount = __leanState.tabs.length;
   const activeFiles = activeTab ? activeTab.totalFiles : __leanState.totalFiles;
   const activeRoot = activeTab ? activeTab.root : __leanState.root;
 
-  // Tab bar
   const tabsHtml = __leanState.tabs.length > 1 ? `<div class="lean-tabs">${__leanState.tabs.map(t => {
     const isActive = t.id === __leanState.activeTab;
     const label = t.id === 'project' ? 'Project' : t.name;
@@ -280,37 +412,25 @@ function __leanRender() {
     </button>`;
   }).join('')}</div>` : '';
 
-  content.innerHTML = `<div class="lean-shell">
-    <aside class="card lean-sidebar">
-      <div class="lean-sidebar-header">
-        <div class="card-label">Lean Files</div>
-        <div class="card-sub">${(activeFiles || 0).toLocaleString()} files</div>
-        <button class="btn btn-sm" id="lean-rescan-btn" title="Rescan project">\u21BB Scan</button>
-      </div>
-      ${tabsHtml}
-      <input id="lean-search" class="input" placeholder="Filter files..." value="${__leanEsc(__leanState.searchQuery)}" style="margin:6px 0">
-      <div class="lean-tree">${treeHtml || '<div class="card-sub" style="padding:8px">No files found.</div>'}</div>
-    </aside>
-    <section class="lean-main">
-      <section class="card">
-        <div class="mcp-header">
-          <div>
-            <div class="page-title">Lean ${activeTab?.id === 'project' ? 'Project' : activeTab?.name || 'Project'} Browser</div>
-            <div class="muted">${__leanEsc(activeRoot)}</div>
-          </div>
-          <div style="display:flex;gap:10px">
-            <div class="mcp-summary-card"><span>Files</span><strong>${(activeFiles || 0).toLocaleString()}</strong></div>
-            <div class="mcp-summary-card"><span>Modules</span><strong>${tree?.children?.filter(c => c.type === 'dir').length || 0}</strong></div>
-            ${tabCount > 1 ? `<div class="mcp-summary-card"><span>Libraries</span><strong>${tabCount - 1}</strong></div>` : ''}
-          </div>
+  content.innerHTML = `<div class="lean-page">
+    ${__leanRenderHealthBar()}
+    ${__leanRenderVizPanel()}
+    <div class="lean-shell">
+      <aside class="card lean-sidebar">
+        <div class="lean-sidebar-header">
+          <div class="card-label">Lean Files</div>
+          <div class="card-sub">${__leanFmtNum(activeFiles)} files</div>
+          <button class="btn btn-sm" id="lean-rescan-btn" title="Rescan">\u21BB</button>
         </div>
-      </section>
-      <section class="lean-content">${detailHtml}</section>
-    </section>
+        ${tabsHtml}
+        <input id="lean-search" class="input" placeholder="Filter files... (/)" value="${__leanEsc(__leanState.searchQuery)}" style="margin:6px 0">
+        <div class="lean-tree">${treeHtml || '<div class="card-sub" style="padding:8px">No files found.</div>'}</div>
+      </aside>
+      <section class="lean-main">${detailHtml}</section>
+    </div>
     ${__leanRenderModal()}
   </div>`;
 
-  // Restore scroll positions
   const newTree = document.querySelector('.lean-tree');
   if (newTree) newTree.scrollTop = savedTreeScroll;
   content.scrollTop = savedMainScroll;
@@ -349,6 +469,7 @@ function __leanBindEvents() {
     __leanState.expandedDirs.clear();
     __leanState.selectedFile = null;
     __leanState.fileContent = null;
+    __leanState.obsStatus = null;
     __leanScan();
   });
 
@@ -366,7 +487,6 @@ function __leanBindEvents() {
   document.querySelectorAll('[data-lean-file]').forEach(el => {
     el.addEventListener('click', () => {
       let path = el.dataset.leanFile;
-      // For library tabs, prefix the path with lib:<name>/
       const activeTab = __leanActiveTab();
       if (activeTab && activeTab.id.startsWith('lib:')) {
         const libName = activeTab.id.slice(4);
@@ -376,14 +496,33 @@ function __leanBindEvents() {
     });
   });
 
-  // View full file popup
+  // View full file
   document.querySelector('#lean-view-full')?.addEventListener('click', () => {
     __leanState.modalContent = __leanState.fileContent || '';
     __leanState.modalTitle = __leanState.selectedFile || 'Lean File';
     __leanRender();
   });
 
-  // Close modal
+  // Observatory viz buttons
+  document.querySelectorAll('[data-obs-page]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const viz = btn.dataset.obsPage;
+      if (__leanState.obsActiveViz === viz) {
+        __leanState.obsActiveViz = null;
+        __leanRender();
+      } else {
+        __leanLoadViz(viz);
+      }
+    });
+  });
+
+  // Close viz panel
+  document.querySelector('#lean-viz-close')?.addEventListener('click', () => {
+    __leanState.obsActiveViz = null;
+    __leanRender();
+  });
+
+  // Modal close
   document.querySelector('#lean-modal-close')?.addEventListener('click', () => {
     __leanState.modalContent = null;
     __leanRender();
@@ -401,9 +540,9 @@ function __leanBindEvents() {
     document.addEventListener('keydown', (ev) => {
       const page = (location.hash.replace('#/', '') || 'setup').split('/')[0];
       if (page !== 'lean') return;
-      if (ev.key === 'Escape' && __leanState.modalContent !== null) {
-        __leanState.modalContent = null;
-        __leanRender();
+      if (ev.key === 'Escape') {
+        if (__leanState.modalContent !== null) { __leanState.modalContent = null; __leanRender(); }
+        else if (__leanState.obsActiveViz) { __leanState.obsActiveViz = null; __leanRender(); }
       }
       if (ev.key === '/' && !ev.ctrlKey && !ev.metaKey && __leanState.modalContent === null) {
         const input = document.querySelector('#lean-search');

@@ -1,0 +1,622 @@
+/* HeytingLean Observatory — Per-Panel Push-Based Visualization */
+
+/* ── Per-Panel Drawer (right edge of each CockpitPanel) ──── */
+
+.obs-drawer {
+  position: absolute;
+  right: 0;
+  top: 24px; /* below panel header */
+  bottom: 80px; /* above Send/Clear composer area */
+  width: 180px;
+  display: flex;
+  flex-direction: row;
+  z-index: 15;
+  pointer-events: auto;
+  transition: width 0.2s ease;
+}
+
+.obs-drawer.collapsed {
+  width: 28px;
+}
+
+.obs-drawer-tab {
+  width: 28px;
+  min-width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-left: 1px solid var(--border);
+  background: rgba(8, 12, 5, 0.92);
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.obs-drawer-tab:hover {
+  background: rgba(255, 184, 48, 0.08);
+}
+
+.obs-drawer-tab-icon {
+  font-size: 14px;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+.obs-drawer-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: rgba(8, 12, 5, 0.95);
+  overflow: hidden;
+}
+
+.obs-drawer.collapsed .obs-drawer-panel {
+  display: none;
+}
+
+.obs-drawer-header {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-dim);
+}
+
+.obs-drawer-title {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.obs-drawer-buttons {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* ── Visualization Buttons ───────────────────────────────── */
+
+.obs-viz-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.15);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 10px;
+  cursor: default;
+  text-align: left;
+  transition: all 0.15s;
+  position: relative;
+}
+
+.obs-viz-btn:disabled {
+  opacity: 0.4;
+}
+
+/* Data-backed buttons are always clickable (dimmer than active, but not disabled) */
+.obs-viz-btn.has-endpoint {
+  opacity: 0.75;
+  cursor: pointer;
+  border-color: rgba(0, 238, 0, 0.2);
+}
+
+.obs-viz-btn.has-endpoint:hover {
+  opacity: 1;
+  border-color: var(--green);
+  color: var(--green);
+  background: rgba(0, 238, 0, 0.06);
+}
+
+/* Summary cards */
+.obs-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.obs-summary-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  background: rgba(13, 20, 8, 0.7);
+  text-align: center;
+}
+
+.obs-summary-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1.2;
+}
+
+.obs-summary-value.health-good { color: var(--green); }
+.obs-summary-value.health-warn { color: var(--amber); }
+.obs-summary-value.health-bad { color: var(--red); }
+
+.obs-summary-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 3px;
+}
+
+/* Sorry badges */
+.obs-sorry-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(255, 48, 48, 0.15);
+  color: var(--red);
+  border: 1px solid rgba(255, 48, 48, 0.3);
+}
+
+.obs-viz-btn.has-data {
+  border-color: var(--accent);
+  color: var(--accent);
+  cursor: pointer;
+  opacity: 1;
+  animation: obs-pulse 1.5s ease-in-out 2;
+}
+
+.obs-viz-btn.has-data:hover {
+  background: rgba(255, 184, 48, 0.12);
+  box-shadow: 0 0 8px rgba(255, 184, 48, 0.15);
+}
+
+.obs-viz-btn.window-open {
+  border-color: var(--green);
+  color: var(--green);
+  opacity: 0.6;
+}
+
+@keyframes obs-pulse {
+  0%, 100% { box-shadow: none; }
+  50% { box-shadow: 0 0 10px rgba(255, 184, 48, 0.3); }
+}
+
+.obs-viz-icon {
+  font-size: 12px;
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.obs-viz-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.obs-viz-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: transparent;
+}
+
+.obs-viz-btn.has-data .obs-viz-dot {
+  background: var(--accent);
+}
+
+.obs-viz-btn.window-open .obs-viz-dot {
+  background: var(--green);
+}
+
+/* ── Floating Visualization Windows ──────────────────────── */
+
+.obs-float-window {
+  position: fixed;
+  z-index: 600;
+  display: flex;
+  flex-direction: column;
+  min-width: 360px;
+  min-height: 280px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: rgba(8, 12, 5, 0.98);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55), 0 0 14px rgba(255, 184, 48, 0.06);
+  overflow: hidden;
+}
+
+.obs-float-window.obs-float-maximized {
+  left: 20px !important;
+  top: 20px !important;
+  width: calc(100vw - 40px) !important;
+  height: calc(100vh - 40px) !important;
+  z-index: 700 !important;
+}
+
+.obs-float-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(13, 20, 8, 0.96);
+  cursor: move;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.obs-float-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.obs-float-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.obs-float-actions button {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+}
+
+.obs-float-close:hover {
+  border-color: var(--red);
+  color: var(--red);
+  background: rgba(255, 48, 48, 0.15);
+}
+
+.obs-float-maximize:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.obs-float-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  position: relative;
+}
+
+.obs-float-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  opacity: 0.3;
+}
+
+.obs-float-resize:hover {
+  opacity: 1;
+  background: rgba(255, 184, 48, 0.2);
+}
+
+/* CRT on floating windows */
+body:not(.no-crt) .obs-float-body::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.1) 0px, transparent 1px, transparent 2px);
+  z-index: 10;
+}
+
+/* ── Proof Tree ──────────────────────────────────────────── */
+
+.obs-proof-trace {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.obs-proof-step {
+  display: flex;
+  gap: 10px;
+  padding: 8px;
+  border-left: 3px solid var(--border-dim);
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 0 4px 4px 0;
+}
+
+.obs-step-ok { border-left-color: var(--green); }
+.obs-step-fail { border-left-color: var(--red); }
+.obs-step-pending { border-left-color: var(--amber); }
+
+.obs-step-num {
+  min-width: 24px;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-weight: 700;
+  padding-top: 2px;
+}
+
+.obs-step-body { flex: 1; min-width: 0; }
+
+.obs-step-tactic code {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.obs-step-goal, .obs-step-result {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow-x: auto;
+}
+
+.obs-step-msg {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* Tree-style rendering */
+.obs-tree-container { padding: 8px; }
+
+.obs-tree-node {
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  margin: 4px 0 4px 16px;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.obs-tree-node.obs-node-proved { border-left: 3px solid var(--green); }
+.obs-tree-node.obs-node-sorry { border-left: 3px solid var(--red); }
+.obs-tree-node.obs-node-open { border-left: 3px solid var(--amber); }
+
+.obs-tree-label { font-size: 11px; overflow-x: auto; }
+.obs-tree-children { margin-left: 8px; }
+
+/* ── Goals ───────────────────────────────────────────────── */
+
+.obs-goal-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.obs-goal-idx {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.obs-goal-hyps {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-dim);
+  margin-bottom: 4px;
+}
+
+.obs-hyp {
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.obs-hyp-name {
+  font-weight: 600;
+  color: var(--green);
+}
+
+.obs-goal-turnstile {
+  font-size: 16px;
+  color: var(--accent);
+  text-align: center;
+  padding: 4px 0;
+  font-weight: 700;
+}
+
+.obs-goal-target {
+  font-size: 14px;
+  padding: 4px;
+  overflow-x: auto;
+}
+
+.obs-goal-single {
+  padding: 16px;
+  font-size: 16px;
+  overflow-x: auto;
+}
+
+.obs-success {
+  color: var(--green);
+  font-size: 14px;
+  text-align: center;
+  padding: 24px;
+}
+
+/* ── Tactics ─────────────────────────────────────────────── */
+
+.obs-tactics-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.obs-tactic-row {
+  display: flex;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.obs-tactic-rank {
+  min-width: 28px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+
+.obs-tactic-body { flex: 1; min-width: 0; }
+
+.obs-tactic-code {
+  font-size: 12px;
+  color: var(--green);
+  font-weight: 600;
+}
+
+.obs-tactic-desc {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.obs-tactic-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  height: 6px;
+}
+
+.obs-tactic-bar > div {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--green);
+  max-width: 100%;
+}
+
+.obs-tactic-bar > span {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.obs-tactic-source {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+/* ── Math (KaTeX) ────────────────────────────────────────── */
+
+.obs-math-display {
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  margin-bottom: 8px;
+}
+
+.obs-math-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+/* KaTeX color override for dark theme */
+.obs-float-body .katex { color: var(--text); }
+.obs-float-body .katex .mord { color: inherit; }
+
+/* ── Tables ──────────────────────────────────────────────── */
+
+.obs-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: auto;
+  background: rgba(13, 20, 8, 0.6);
+  max-height: 100%;
+}
+
+.obs-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.obs-table-wrap th,
+.obs-table-wrap td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-dim);
+  text-align: left;
+  font-size: 11px;
+}
+
+.obs-table-wrap th {
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  position: sticky;
+  top: 0;
+  background: rgba(13, 20, 8, 0.95);
+  cursor: pointer;
+  user-select: none;
+}
+
+.obs-table-wrap th:hover { color: var(--accent); }
+.obs-table-wrap tr:hover { background: rgba(255, 184, 48, 0.04); }
+
+/* ── Generic ─────────────────────────────────────────────── */
+
+.obs-error {
+  padding: 16px;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.obs-code {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: auto;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* D3 SVG in floating windows */
+.obs-float-body svg {
+  max-width: 100%;
+}
+
+/* ── Responsive ──────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .obs-drawer { display: none; }
+  .obs-float-window {
+    left: 5px !important;
+    top: 5px !important;
+    width: calc(100vw - 10px) !important;
+    height: calc(100vh - 60px) !important;
+  }
+}

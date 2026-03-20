@@ -106,6 +106,56 @@ Per-agent git worktrees with host path injection.
 - cockpit, mesh, wallet-routing, proxy telemetry, and native session orchestration are first-class product surfaces, not legacy exclusions
 - Library auto-push must not block session completion — failures are logged, not fatal
 
+## HeytingLean Observatory
+
+The cockpit includes the HeytingLean Observatory — a collapsible right-side drawer
+with buttons that spawn independent, draggable, floating visualization windows for
+codebase health (treemap, dependency graph, complexity, clusters, sorrys, frontier).
+
+**Backend**: `lean-xray/` scans the Lean project in <1s (3,700+ files). API at `/api/observatory/*`.
+
+**Persistent LSP (lean-lsp-mcp)**: When available, the Observatory enriches per-file
+data with ground truth from the Lean LSP:
+
+- Checking if code compiles: prefer `lean_diagnostics` over `lake build`
+- Getting goal states: use `lean_goal` with file_path and line
+- Testing tactics: use `lean_multi_attempt` to try several at once
+- Finding theorems: use `lean_leansearch` or `lean_loogle`
+- Getting type info: use `lean_hover` at any position
+
+Only use `lake build` when you need to rebuild the entire project
+(e.g., after modifying lakefile.lean or adding a new dependency).
+
+**Sending visualizations to the cockpit Observatory panel:**
+
+When running inside a cockpit agent panel, you can push rich visualizations to the
+user's Observatory drawer by including fenced blocks in your output:
+
+````
+```observatory:goals
+{"goals": [{"hyps": [{"name": "h", "type": "P"}], "target": "P → Q"}]}
+```
+````
+
+Available viz types and their expected JSON shapes:
+
+| Type | Description | JSON shape |
+|------|-------------|------------|
+| `goals` | Proof goal state with KaTeX math | `{"goals": [{"hyps": [{"name":"","type":""}], "target": ""}]}` |
+| `prooftree` | Tactic trace / proof steps | `{"steps": [{"tactic":"","goal_before":"","goal_after":"","status":"success"}]}` |
+| `depgraph` | D3 force-directed dependency graph | `{"nodes": [{"id":"","group":0}], "edges": [["from","to"]]}` |
+| `treemap` | D3 squarified file health treemap | `{"files": [{"path":"","lines":0,"health_score":1,"health_status":"clean","sorry_count":0}]}` |
+| `tactics` | Tactic suggestions with confidence | `{"tactics": [{"tactic":"","confidence":0.9,"source":"","description":""}]}` |
+| `latex` | KaTeX math equations | `{"blocks": [{"label":"","latex":"","display":true}]}` |
+| `flowchart` | Mermaid diagram | `{"mermaid": "graph TD\\n A-->B"}` |
+| `table` | Sortable data table | `{"columns": ["A","B"], "rows": [["x","y"]]}` |
+
+The Observatory drawer auto-unfurls when data arrives. The user clicks the lit button
+to open a floating window. Multiple windows can be open simultaneously.
+
+For sorry elimination, check `lean_observatory_frontier` first — it returns sorrys
+whose dependencies are all proved, with actual goal states from the LSP.
+
 ## System Architecture Diagram (Pre-Push Gate)
 
 The file `dashboard/agenthalo-system-diagram.html` contains 15 Mermaid diagrams documenting the full system architecture. A pre-push hook (`scripts/check_diagram_freshness.sh`) blocks pushes if the diagram hasn't been reviewed within 14 days.
