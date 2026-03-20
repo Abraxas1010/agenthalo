@@ -370,23 +370,23 @@
     root.appendChild(eventSection);
     loadEventLog();
 
-    // Thermal Entropy (TRNG)
+    // Thermal Entropy (TRNG) — real data from entropy_avail
     var entropySection = document.createElement('div'); entropySection.className='sm-section';
-    entropySection.innerHTML = '<div class="sm-sec-hdr">\u{1F3B2} Thermal Entropy (TRNG) <span class="sm-sec-sub">Hardware-seeded entropy source</span></div><div id="sm-entropy-body" style="padding:12px"><div style="color:var(--text-dim);font-size:11px">Loading...</div></div>';
+    entropySection.innerHTML = '<div class="sm-sec-hdr">\u{1F3B2} Thermal Entropy (TRNG) <span class="sm-sec-sub">Hardware-seeded entropy source</span></div><div id="sm-entropy-body" class="sm-panel-pad"><div class="sm-dim">Loading...</div></div>';
     root.appendChild(entropySection);
-    loadThermalEntropy();
+    updateThermalEntropy(d);
 
-    // Thermal Dynamics
+    // Thermal Dynamics — real thermal gradient data
     var thermDynSection = document.createElement('div'); thermDynSection.className='sm-section';
-    thermDynSection.innerHTML = '<div class="sm-sec-hdr">\u{1F525} Thermal Dynamics <span class="sm-sec-sub">Power and thermal gradient analysis</span></div><div id="sm-therm-dyn-body" style="padding:12px"><div style="color:var(--text-dim);font-size:11px">Loading...</div></div>';
+    thermDynSection.innerHTML = '<div class="sm-sec-hdr">\u{1F525} Thermal Dynamics <span class="sm-sec-sub">Power and thermal gradient analysis</span></div><div id="sm-therm-dyn-body" class="sm-panel-pad"><div class="sm-dim">Loading...</div></div>';
     root.appendChild(thermDynSection);
-    renderThermalDynamics(d);
+    updateThermalDynamics(d);
 
-    // Hardware Materials Ledger
-    var materialsSection = document.createElement('div'); materialsSection.className='sm-section';
-    materialsSection.innerHTML = '<div class="sm-sec-hdr">\u{2699} Hardware Materials Ledger <span class="sm-sec-sub">Component materials and provenance</span></div><div id="sm-materials-body" style="padding:12px"><div style="color:var(--text-dim);font-size:11px">Loading...</div></div>';
-    root.appendChild(materialsSection);
-    renderMaterialsLedger();
+    // Hardware Reference Specs (clearly labeled as reference, not live telemetry)
+    var hwSection = document.createElement('div'); hwSection.className='sm-section';
+    hwSection.innerHTML = '<div class="sm-sec-hdr">\u{1F4CB} DGX Spark Reference Specs <span class="sm-sec-sub">Official hardware specifications</span></div><div id="sm-hwspecs-body" class="sm-panel-pad"><div class="sm-dim">Loading...</div></div>';
+    root.appendChild(hwSection);
+    renderHardwareSpecs();
 
     // Specs
     var specs = document.createElement('div'); specs.className='sm-specs';
@@ -422,6 +422,8 @@
     updateGaugeCard('sm-card-gpu', d.gpu_pct, 'GPU', Math.round(d.gpu_temp_c)+'\u00B0C \u00B7 '+(d.gpu_power_w||0)+'W', st.hist.gpu);
     updateCores(d.cores);
     updateThermalMap(d);
+    updateThermalEntropy(d);
+    updateThermalDynamics(d);
   }
 
   function toggleLive() {
@@ -497,61 +499,58 @@
     }
   }
 
-  async function loadThermalEntropy() {
+  // Uses real entropy_avail from /proc/sys/kernel/random/entropy_avail (via snapshot API)
+  function updateThermalEntropy(d) {
     var body = document.querySelector('#sm-entropy-body');
     if(!body) return;
-    // Entropy from /dev/random
-    try {
-      var avail = 'N/A';
-      // Try reading entropy_avail on server side - fall back to showing the concept
-      body.innerHTML = '<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">'+
-        '<div style="text-align:center"><div style="font-size:20px">\u{1F3B2}</div><div style="font-size:9px;color:var(--text-dim);margin-top:2px">Kernel Pool</div></div>'+
-        '<div style="flex:1;min-width:150px"><div style="font-size:11px;font-weight:600;color:var(--green);margin-bottom:4px">Thermal Entropy (TRNG)</div>'+
-        '<div style="font-size:10px;color:var(--text-dim);line-height:1.4">Hardware-seeded entropy from DGX Spark thermal noise. Used for PUF challenges and proof nonces.</div>'+
-        '<div style="display:flex;gap:6px;margin-top:6px"><span class="sm-status-badge ok">Healthy</span><span class="sm-status-badge info">Lean Certified</span></div></div></div>';
-    } catch(_) { body.innerHTML = '<div style="color:var(--text-dim);font-size:11px">Entropy source unavailable</div>'; }
+    var ent = d.entropy_avail;
+    var healthy = ent !== undefined && ent > 256;
+    var entKb = ent !== undefined ? (ent / 8 / 1024).toFixed(2) : 'N/A';
+    body.innerHTML = '<div class="sm-panel-flex">' +
+      '<div class="sm-panel-icon">\u{1F3B2}</div>' +
+      '<div class="sm-panel-body">' +
+        '<div class="sm-panel-row"><span class="sm-val-lg" style="color:' + (healthy ? 'var(--green)' : 'var(--amber)') + '">' + (ent !== undefined ? ent.toLocaleString() : 'N/A') + '</span><span class="sm-val-unit">bits available</span></div>' +
+        '<div class="sm-panel-row sm-dim">' + entKb + ' KB entropy pool \u2022 Hardware-seeded from DGX Spark thermal noise</div>' +
+        '<div class="sm-panel-row" style="margin-top:6px">' +
+          '<span class="sm-status-badge ' + (healthy ? 'ok' : 'warn') + '">' + (healthy ? 'Healthy' : 'Low') + '</span>' +
+          '<span class="sm-status-badge info">Kernel TRNG</span>' +
+        '</div>' +
+      '</div></div>';
   }
 
-  function renderMaterialsLedger() {
-    var body = document.querySelector('#sm-materials-body');
-    if(!body) return;
-    // Hardware materials from DGX Spark specs
-    var materials = [
-      { component:'GB10 Grace Blackwell Superchip', category:'Compute', confidence:'High', materials:'silicon 5G (Samsung), copper 4.0 (Samtec), active metal compound (generic C4 bump)' },
-      { component:'System memory LPDDR5X', category:'Memory', confidence:'High', materials:'silicon DRAM, copper micro-TSV, lead-free solder (generic BGA)' },
-      { component:'Blackwell GPU', category:'Compute', confidence:'Medium', materials:'silicon 5G (Samsung), copper 4.0 (Samtec), gold bond wire (CoWoS package)' },
-    ];
-    var html = '<table style="width:100%;border-collapse:collapse;font-size:10px"><thead><tr>'+
-      '<th style="text-align:left;padding:6px;color:var(--text-dim);font-size:9px;border-bottom:1px solid var(--border)">Component</th>'+
-      '<th style="text-align:left;padding:6px;color:var(--text-dim);font-size:9px;border-bottom:1px solid var(--border)">Category</th>'+
-      '<th style="text-align:left;padding:6px;color:var(--text-dim);font-size:9px;border-bottom:1px solid var(--border)">Confidence</th>'+
-      '<th style="text-align:left;padding:6px;color:var(--text-dim);font-size:9px;border-bottom:1px solid var(--border)">Materials</th>'+
-      '</tr></thead><tbody>';
-    materials.forEach(function(m) {
-      html += '<tr style="border-top:1px solid rgba(255,255,255,0.02)"><td style="padding:6px;color:var(--text)">'+esc(m.component)+'</td>'+
-        '<td style="padding:6px;color:var(--text-dim)">'+esc(m.category)+'</td>'+
-        '<td style="padding:6px"><span style="color:'+(m.confidence==='High'?'var(--green)':'var(--amber)')+'">'+esc(m.confidence)+'</span></td>'+
-        '<td style="padding:6px;color:var(--text-dim);font-size:9px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(m.materials)+'">'+esc(m.materials)+'</td></tr>';
-    });
-    html += '</tbody></table>';
-    body.innerHTML = html;
-  }
-
-  function renderThermalDynamics(d) {
+  function updateThermalDynamics(d) {
     var body = document.querySelector('#sm-therm-dyn-body');
     if(!body) return;
     var zones = d.thermals || [];
-    if(!zones.length) { body.innerHTML = '<div style="color:var(--text-dim);font-size:11px">No thermal data</div>'; return; }
+    if(!zones.length) { body.innerHTML = '<div class="sm-dim">No thermal data</div>'; return; }
     var avgTemp = zones.reduce(function(s,z){return s+(z.temp_c||0);},0)/zones.length;
     var maxTemp = Math.max.apply(null, zones.map(function(z){return z.temp_c||0;}));
+    var minTemp = Math.min.apply(null, zones.map(function(z){return z.temp_c||0;}));
     var gpuPower = d.gpu_power_w || 0;
-    // Thermal dynamics arrows
-    var html = '<div style="display:flex;gap:24px;align-items:center;justify-content:center;padding:8px 0;flex-wrap:wrap">'+
-      '<div style="text-align:center"><div style="font-size:18px;color:var(--green)">\u2191</div><div style="font-size:16px;font-weight:700;color:var(--green)">'+avgTemp.toFixed(1)+'\u00B0C</div><div style="font-size:9px;color:var(--text-dim)">Avg Temp</div></div>'+
-      '<div style="text-align:center"><div style="font-size:18px;color:var(--accent)">\u2191</div><div style="font-size:16px;font-weight:700;color:var(--accent)">'+gpuPower.toFixed(1)+'W</div><div style="font-size:9px;color:var(--text-dim)">Power In</div></div>'+
-      '<div style="text-align:center"><div style="font-size:18px;color:var(--text-dim)">\u26A0</div><div style="font-size:16px;font-weight:700;color:var(--text-dim)">'+(maxTemp-avgTemp).toFixed(1)+'\u00B0</div><div style="font-size:9px;color:var(--text-dim)">\u0394 Max-Avg</div></div>'+
+    var spread = maxTemp - minTemp;
+    var spreadColor = spread > 20 ? 'var(--red)' : spread > 10 ? 'var(--amber)' : 'var(--green)';
+    var uptime = d.uptime_secs ? (d.uptime_secs/3600).toFixed(1) + 'h' : 'N/A';
+    body.innerHTML = '<div class="sm-dynamics-grid">' +
+      '<div class="sm-dyn-card"><div class="sm-dyn-arrow" style="color:var(--green)">\u2191</div><div class="sm-dyn-val" style="color:var(--green)">' + avgTemp.toFixed(1) + '\u00B0C</div><div class="sm-dyn-label">Avg Temp</div></div>' +
+      '<div class="sm-dyn-card"><div class="sm-dyn-arrow" style="color:var(--accent)">\u26A1</div><div class="sm-dyn-val" style="color:var(--accent)">' + gpuPower.toFixed(1) + 'W</div><div class="sm-dyn-label">GPU Power</div></div>' +
+      '<div class="sm-dyn-card"><div class="sm-dyn-arrow" style="color:' + tempC(maxTemp,'cpu') + '">\u2B06</div><div class="sm-dyn-val" style="color:' + tempC(maxTemp,'cpu') + '">' + maxTemp.toFixed(1) + '\u00B0C</div><div class="sm-dyn-label">Peak Temp</div></div>' +
+      '<div class="sm-dyn-card"><div class="sm-dyn-arrow" style="color:' + spreadColor + '">\u2194</div><div class="sm-dyn-val" style="color:' + spreadColor + '">' + spread.toFixed(1) + '\u00B0</div><div class="sm-dyn-label">\u0394 Spread</div></div>' +
+      '<div class="sm-dyn-card"><div class="sm-dyn-arrow" style="color:var(--text-dim)">\u23F1</div><div class="sm-dyn-val">' + uptime + '</div><div class="sm-dyn-label">Uptime</div></div>' +
     '</div>';
-    body.innerHTML = html;
+  }
+
+  // DGX Spark reference specs — clearly labeled as reference, not live data
+  function renderHardwareSpecs() {
+    var body = document.querySelector('#sm-hwspecs-body');
+    if(!body) return;
+    body.innerHTML = '<table class="sm-tbl"><thead><tr><th>Component</th><th>Specification</th><th>Details</th></tr></thead><tbody>' +
+      '<tr><td>GPU</td><td class="sm-val">NVIDIA Blackwell GB10</td><td class="sm-dim">5nm, CoWoS packaging</td></tr>' +
+      '<tr><td>CPU</td><td class="sm-val">Grace ARM (20-core)</td><td class="sm-dim">10\u00D7 Cortex-X925 + 10\u00D7 Cortex-A725</td></tr>' +
+      '<tr><td>Memory</td><td class="sm-val">128 GB LPDDR5X</td><td class="sm-dim">Unified CPU+GPU, 273 GB/s</td></tr>' +
+      '<tr><td>Storage</td><td class="sm-val">NVMe SSD</td><td class="sm-dim">PCIe Gen5</td></tr>' +
+      '<tr><td>AI Performance</td><td class="sm-val">1 PFLOP FP4</td><td class="sm-dim">1,000 TOPS inference</td></tr>' +
+      '<tr><td>Network</td><td class="sm-val">ConnectX-7</td><td class="sm-dim">Up to 400 Gb/s</td></tr>' +
+    '</tbody></table>';
   }
 
   window.renderSystemMonitorPage = async function(){

@@ -8028,3 +8028,28 @@ textarea.p2p-input {
 .sm-status-badge.warn { background:rgba(255,184,48,0.1);color:var(--amber);border:1px solid rgba(255,184,48,0.3); }
 .sm-status-badge.info { background:rgba(0,180,220,0.1);color:#00bfff;border:1px solid rgba(0,180,220,0.3); }
 .sm-status-badge.fail { background:rgba(239,68,68,0.1);color:var(--red);border:1px solid rgba(239,68,68,0.3); }
+
+/* Cyberpunk Fallout styling for System Monitor panels */
+.sm-panel-pad { padding:14px; }
+.sm-panel-flex { display:flex;gap:14px;align-items:flex-start; }
+.sm-panel-icon { font-size:24px;flex-shrink:0;width:36px;text-align:center;padding-top:2px; }
+.sm-panel-body { flex:1;min-width:0; }
+.sm-panel-row { display:flex;align-items:center;gap:8px;flex-wrap:wrap; }
+.sm-val-lg { font-size:18px;font-weight:700;font-family:var(--font-mono); }
+.sm-val-unit { font-size:10px;color:var(--text-dim); }
+.sm-val { font-family:var(--font-mono);color:var(--text-bright); }
+.sm-dim { font-size:10px;color:var(--text-dim);line-height:1.4; }
+
+/* Thermal Dynamics grid */
+.sm-dynamics-grid { display:grid;grid-template-columns:repeat(auto-fit, minmax(100px, 1fr));gap:8px; }
+.sm-dyn-card { text-align:center;border:1px solid var(--border);border-radius:6px;padding:10px 6px;background:rgba(0,0,0,0.2);transition:border-color 0.3s; }
+.sm-dyn-card:hover { border-color:var(--green); }
+.sm-dyn-arrow { font-size:18px;margin-bottom:2px; }
+.sm-dyn-val { font-size:16px;font-weight:700;font-family:var(--font-mono); }
+.sm-dyn-label { font-size:8px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.06em;margin-top:2px; }
+
+/* Consistent table styling for all panels */
+.sm-tbl { width:100%;border-collapse:collapse;font-size:10px; }
+.sm-tbl th { text-align:left;padding:6px 8px;color:var(--text-dim);font-size:9px;text-transform:uppercase;letter-spacing:0.04em;border-bottom:1px solid var(--border); }
+.sm-tbl td { padding:5px 8px;border-bottom:1px solid rgba(255,255,255,0.02);color:var(--text); }
+.sm-tbl tr:hover { background:rgba(0,238,0,0.015); }

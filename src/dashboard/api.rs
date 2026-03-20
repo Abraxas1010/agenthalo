@@ -12000,6 +12000,18 @@ async fn api_system_snapshot() -> impl IntoResponse {
             }
         }
 
+        // Entropy available
+        if let Ok(ent) = std::fs::read_to_string("/proc/sys/kernel/random/entropy_avail") {
+            data.insert("entropy_avail".into(), json!(ent.trim().parse::<u64>().unwrap_or(0)));
+        }
+
+        // Uptime
+        if let Ok(uptime) = std::fs::read_to_string("/proc/uptime") {
+            if let Some(secs) = uptime.split_whitespace().next() {
+                data.insert("uptime_secs".into(), json!(secs.parse::<f64>().unwrap_or(0.0)));
+            }
+        }
+
         data.insert("timestamp".into(), json!(chrono::Utc::now().to_rfc3339()));
 
         serde_json::Value::Object(data)
