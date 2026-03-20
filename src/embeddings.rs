@@ -465,4 +465,26 @@ mod tests {
             }
         }
     }
+
+    /// F8: Integration test with real ONNX model (runs only when model files exist).
+    #[test]
+    #[ignore] // Run with: cargo test -- --ignored test_onnx_semantic_discrimination
+    fn test_onnx_semantic_discrimination() {
+        let model = EmbeddingModel::new(DEFAULT_MODEL_NAME, DEFAULT_EMBEDDING_DIMS);
+        if !model.model_files_present() {
+            eprintln!("SKIP: ONNX model files not present at {:?}", model.model_dir());
+            return;
+        }
+        let db_vec = model.embed("NucleusDB stores vectors for semantic similarity search", "search_document: ").expect("embed db");
+        let similar = model.embed("database similarity search over vector embeddings", "search_document: ").expect("embed similar");
+        let unrelated = model.embed("banana smoothie recipe with tropical fruit", "search_document: ").expect("embed unrelated");
+
+        let d_similar = cosine_distance(&db_vec, &similar).expect("dist similar");
+        let d_unrelated = cosine_distance(&db_vec, &unrelated).expect("dist unrelated");
+
+        assert!(d_similar < 0.4, "semantically similar texts should be close: got {d_similar}");
+        assert!(d_unrelated > 0.5, "unrelated texts should be far: got {d_unrelated}");
+        assert!(d_similar < d_unrelated, "similar should be closer than unrelated: {d_similar} vs {d_unrelated}");
+        eprintln!("ONNX semantic discrimination: similar={d_similar:.4}, unrelated={d_unrelated:.4}");
+    }
 }

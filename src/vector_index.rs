@@ -157,6 +157,17 @@ impl VectorIndex {
         k: usize,
         metric: DistanceMetric,
     ) -> Result<Vec<SearchResult>, String> {
+        self.search_with_prefix(query, k, metric, None)
+    }
+
+    /// Search with optional key prefix filter (F2: avoids scoring non-matching vectors).
+    pub fn search_with_prefix(
+        &self,
+        query: &[f64],
+        k: usize,
+        metric: DistanceMetric,
+        prefix: Option<&str>,
+    ) -> Result<Vec<SearchResult>, String> {
         if self.vectors.is_empty() {
             return Ok(vec![]);
         }
@@ -169,9 +180,23 @@ impl VectorIndex {
             }
         }
 
-        let mut scored: Vec<(String, f64)> = self
-            .vectors
-            .iter()
+        let iter: Box<dyn Iterator<Item = (&String, &Vec<f64>)>> = match prefix {
+            Some(pfx) => {
+                // BTreeMap range scan: only iterate keys starting with prefix
+                let range_start = pfx.to_string();
+                let mut range_end = pfx.to_string();
+                // Increment last byte to get exclusive upper bound
+                if let Some(last) = range_end.pop() {
+                    range_end.push(char::from(last as u8 + 1));
+                    Box::new(self.vectors.range(range_start..range_end))
+                } else {
+                    Box::new(self.vectors.iter())
+                }
+            }
+            None => Box::new(self.vectors.iter()),
+        };
+
+        let mut scored: Vec<(String, f64)> = iter
             .map(|(key, vec)| {
                 let dist = compute_distance(query, vec, metric);
                 (key.clone(), dist)
@@ -207,9 +232,20 @@ impl VectorIndex {
         k: usize,
         metric: DistanceMetric,
     ) -> Result<Vec<SearchResult>, String> {
+        self.search_with_access_prefix(query, k, metric, None)
+    }
+
+    /// Search with liveness recording and optional key prefix filter.
+    pub fn search_with_access_prefix(
+        &mut self,
+        query: &[f64],
+        k: usize,
+        metric: DistanceMetric,
+        prefix: Option<&str>,
+    ) -> Result<Vec<SearchResult>, String> {
         let now = now_unix();
         self.apply_time_maintenance(now);
-        let results = self.search(query, k, metric)?;
+        let results = self.search_with_prefix(query, k, metric, prefix)?;
         for result in &results {
             self.evictor.record_access(&result.key);
         }

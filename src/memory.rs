@@ -283,17 +283,17 @@ impl MemoryStore {
         let candidate_k = (k * cfg.candidate_multiplier)
             .max(k)
             .min(cfg.max_candidates);
-        let search_results = db.vector_index.search_with_access(
+        // F2: Use prefix-filtered search — only score mem:chunk:* vectors, not all vectors
+        let mem_vec_prefix = format!("{MEMORY_KEY_PREFIX}");
+        let search_results = db.vector_index.search_with_access_prefix(
             &query_vec,
-            db.vector_index.len(),
+            candidate_k,
             crate::vector_index::DistanceMetric::Cosine,
+            Some(&mem_vec_prefix),
         )?;
         let mut candidates = search_results
             .into_iter()
-            .filter(|result| {
-                result.key.starts_with(MEMORY_KEY_PREFIX)
-                    && result.key.ends_with(MEMORY_VECTOR_SUFFIX)
-            })
+            .filter(|result| result.key.ends_with(MEMORY_VECTOR_SUFFIX))
             .filter_map(|result| {
                 let base_key = result.key.strip_suffix(MEMORY_VECTOR_SUFFIX)?;
                 let typed = db.get_typed_touching(base_key)?;
