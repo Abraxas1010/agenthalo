@@ -399,7 +399,7 @@
         '<button class="obs-cmd-agent-badge ' + colorClass + '"' +
         ' data-target-session="' + esc(sessionId) + '"' +
         ' data-target-type="' + esc(info.agentType || 'agent') + '"' +
-        ' title="Push command to Agent ' + esc(info.letter) + ' (' + esc(info.agentType) + ')">' +
+        ' title="Click: forward last response to ' + esc(info.letter) + ' \u00B7 Right-click: commands">' +
           '<span class="obs-cmd-arrow">' + arrow + '</span>' +
           '<span class="obs-cmd-letter">' + esc(info.letter) + '</span>' +
         '</button>';
@@ -407,7 +407,26 @@
     if (!html) html = '<div class="obs-cmd-empty">No other agents active</div>';
     container.innerHTML = html;
     container.querySelectorAll('.obs-cmd-agent-badge').forEach(function(badge) {
-      badge.addEventListener('click', function() { self.openCommandFlyout(badge); });
+      badge.addEventListener('click', function() {
+        // Single click = forward last agent message immediately
+        var targetSession = badge.dataset.targetSession;
+        var letterText = badge.querySelector('.obs-cmd-letter').textContent;
+        var mgr = window.__cockpitManager;
+        var lastMsg = mgr ? mgr.getLastAgentMessage(self.panelId) : null;
+        if (!lastMsg) {
+          self.showCommandNotice('No agent response to forward');
+          return;
+        }
+        dispatchCommand(targetSession, lastMsg);
+        badge.classList.add('obs-cmd-sent');
+        setTimeout(function() { badge.classList.remove('obs-cmd-sent'); }, 800);
+        self.showCommandNotice('Forwarded to Agent ' + letterText);
+      });
+      // Right-click = open command flyout with presets + custom
+      badge.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        self.openCommandFlyout(badge);
+      });
     });
   };
 
