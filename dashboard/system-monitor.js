@@ -72,9 +72,9 @@
     var mT = mem.total_kb || 1, mU = mem.used_kb || 0;
     var thermals = (d.thermal || []).map(function(t) { return { temp_c: t.temp_c || 0 }; });
 
+    // CPU% from real per-core delta utilization (not load_1m which is a 60s smoothed average)
     var cpuPct = 0;
-    if (d.load_1m && cores.length) cpuPct = Math.min(100, (d.load_1m / cores.length) * 100);
-    else if (cores.length) cpuPct = cores.reduce(function(s,c){return s+c.pct;},0) / cores.length;
+    if (cores.length) cpuPct = cores.reduce(function(s,c){return s+c.pct;},0) / cores.length;
 
     var mapped = {
       cpu_pct: cpuPct,
@@ -117,7 +117,19 @@
       st.isDgx = !!d.is_dgx; st.sim = !st.isDgx;
       var mT=d.mem_total_kb||1, mU=d.mem_used_kb||0;
       d.mem_pct=(mU/mT)*100; d.mem_used_gb=(mU/1048576).toFixed(1); d.mem_total_gb=(mT/1048576).toFixed(1);
-      d.cpu_pct = d.load_1m && d.cpu_cores ? Math.min(100, (parseFloat(d.load_1m) / d.cpu_cores) * 100) : 0;
+      // Compute delta-based per-core CPU% from raw total/busy counters (HTTP fallback)
+      if (d.cores && d.cores.length && st._prevHttpCores && st._prevHttpCores.length === d.cores.length) {
+        d.cores.forEach(function(c, i) {
+          var prev = st._prevHttpCores[i];
+          if (prev && prev.total !== undefined && c.total !== undefined) {
+            var dT = c.total - prev.total, dB = c.busy - prev.busy;
+            c.pct = dT > 0 ? Math.max(0, Math.min(100, (dB / dT) * 100)) : 0;
+          }
+        });
+      }
+      if (d.cores) st._prevHttpCores = d.cores.map(function(c) { return { total: c.total, busy: c.busy }; });
+      // CPU% = mean of per-core utilization (delta-based when available)
+      d.cpu_pct = d.cores && d.cores.length ? d.cores.reduce(function(s,c){return s+(c.pct||0);},0) / d.cores.length : 0;
       d.gpu_pct=d.gpu_pct||0; d.gpu_name=d.gpu_name||'GPU'; d.gpu_temp_c=d.gpu_temp_c||0; d.gpu_power_w=d.gpu_power_w||0;
       return d;
     } catch(_) { st.sim=true; st.isDgx=false; return simData(); }
@@ -294,9 +306,11 @@
   // ── Update helpers ─────────────────────────────────────────
   function updateGaugeCard(cardId, pct, label, sub, sparkData) {
     var card = document.getElementById(cardId); if (!card) return;
-    var gWrap = card.querySelector('.sm-gauge-wrap');
-    if (gWrap) gaugeDOM(cardId+'-g', pct, label, sub);
-    else { var ga = card.querySelector('.sm-gauge-area'); if(ga){ga.innerHTML='';ga.appendChild(gaugeDOM(cardId+'-g',pct,label,sub));} }
+    var gaugeArea = card.querySelector('.sm-gauge-area'); if (!gaugeArea) return;
+    var newGauge = gaugeDOM(cardId+'-g', pct, label, sub);
+    // If cache hit and element still in DOM, gaugeDOM updated in-place (nothing to do).
+    // If cache miss (stale/first render), gaugeDOM created a new element — append it.
+    if (!gaugeArea.contains(newGauge)) { gaugeArea.innerHTML = ''; gaugeArea.appendChild(newGauge); }
     var sa = card.querySelector('.sm-spark-area');
     if (sa) { var se = sparkDOM(cardId+'-s', sparkData); if(!sa.contains(se)){sa.innerHTML='';sa.appendChild(se);} }
   }
@@ -369,7 +383,7 @@
   }
 
   function updateAll(d) {
-    updateGaugeCard('sm-card-cpu', d.cpu_pct, 'CPU', (d.load_1m||'0')+' / '+(d.cpu_cores||20)+' cores', st.hist.cpu);
+    updateGaugeCard('sm-card-cpu', d.cpu_pct, 'CPU', Math.round(d.cpu_pct)+'% \u2022 '+(d.cpu_cores||20)+' cores', st.hist.cpu);
     updateGaugeCard('sm-card-mem', d.mem_pct, 'MEMORY', (d.mem_used_gb||'0')+' / '+(d.mem_total_gb||'0')+' GiB', st.hist.mem);
     updateGaugeCard('sm-card-gpu', d.gpu_pct, 'GPU', Math.round(d.gpu_temp_c)+'\u00B0C \u00B7 '+(d.gpu_power_w||0)+'W', st.hist.gpu);
     updateCores(d.cores);
@@ -404,7 +418,9 @@
 
   // ── Initial render ─────────────────────────────────────────
   function initialRender(d) {
-    var root=document.getElementById('sysmon-root');if(!root)return;root.innerHTML='';
+    var root=document.getElementById('sysmon-root');if(!root)return;
+    // Clear DOM and all caches (prevents stale refs after rebuild)
+    root.innerHTML=''; st.gaugeCache={}; st.sparkCache={};
     if(st.sim){var wm=document.createElement('div');wm.className='sysmon-watermark';wm.textContent='SIMULATION';root.appendChild(wm);}
 
     var hdr=document.createElement('div');hdr.className='sm-hdr';
@@ -420,7 +436,7 @@
       var ga=document.createElement('div');ga.className='sm-gauge-area';
       var pct=id==='cpu'?d.cpu_pct:id==='mem'?d.mem_pct:d.gpu_pct;
       var label=id==='cpu'?'CPU':id==='mem'?'MEMORY':'GPU';
-      var sub=id==='cpu'?(d.load_1m||'0')+' / '+(d.cpu_cores||20)+' cores':id==='mem'?(d.mem_used_gb||'0')+' / '+(d.mem_total_gb||'0')+' GiB':Math.round(d.gpu_temp_c)+'\u00B0C \u00B7 '+(d.gpu_power_w||0)+'W';
+      var sub=id==='cpu'?Math.round(d.cpu_pct)+'% \u2022 '+(d.cpu_cores||20)+' cores':id==='mem'?(d.mem_used_gb||'0')+' / '+(d.mem_total_gb||'0')+' GiB':Math.round(d.gpu_temp_c)+'\u00B0C \u00B7 '+(d.gpu_power_w||0)+'W';
       ga.appendChild(gaugeDOM('sm-card-'+id+'-g',pct,label,sub));card.appendChild(ga);
       var sa=document.createElement('div');sa.className='sm-spark-area';sa.appendChild(sparkDOM('sm-card-'+id+'-s',st.hist[id==='mem'?'mem':id]));card.appendChild(sa);
       var ed=document.createElement('div');ed.className='sm-expand';
