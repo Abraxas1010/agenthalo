@@ -25,12 +25,17 @@
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var url = proto + '//' + location.host + '/api/system/stream';
     try {
+      console.log('[sysmon-ws] Connecting to', url);
       var ws = new WebSocket(url);
       st.ws = ws;
       ws.onopen = function() {
+        console.log('[sysmon-ws] Connected — switching to 500ms WebSocket updates');
         st.wsConnected = true;
-        // Stop HTTP polling — WS is faster
+        // Stop HTTP polling — WS is 4x faster
         if (st.timer) { clearInterval(st.timer); st.timer = null; }
+        // Update status badge
+        var badge = document.querySelector('.sm-hdr-r .sm-pill');
+        if (badge) { badge.className = 'sm-pill sm-pill-accent'; badge.textContent = '\u26A1 WebSocket 500ms'; }
         var dot = document.querySelector('.sm-live-dot');
         if (dot) { dot.className = 'sm-live-dot on'; }
       };
@@ -38,17 +43,16 @@
         try {
           var msg = JSON.parse(ev.data);
           if (msg.type === 'snapshot' && msg.data) handleWsSnapshot(msg.data);
-        } catch(e) {}
+        } catch(e) { console.error('[sysmon-ws] Parse error:', e); }
       };
       ws.onclose = function() {
+        console.log('[sysmon-ws] Disconnected — falling back to HTTP polling');
         st.wsConnected = false;
         st.ws = null;
-        // Fall back to HTTP polling
         if (st.live && !st.timer) st.timer = setInterval(httpTick, POLL_MS);
-        // Reconnect after 2s
         if (st.live) st.wsReconnect = setTimeout(connectWs, 2000);
       };
-      ws.onerror = function() {};
+      ws.onerror = function(e) { console.error('[sysmon-ws] Error:', e); };
     } catch(e) {
       // WebSocket not available, stay on HTTP polling
     }
@@ -224,7 +228,7 @@
     prog.setAttribute('transform','rotate(135 '+cx+' '+cy+')');
     // CRITICAL: set dashoffset via style (not attribute) so CSS transition fires on updates
     prog.style.strokeDashoffset = off;
-    prog.style.transition = 'stroke-dashoffset 0.4s ease-out, stroke 0.3s ease, filter 0.3s ease';
+    prog.style.transition = 'stroke-dashoffset 0.2s ease-out, stroke 0.2s ease, filter 0.2s ease';
     prog.style.filter = 'drop-shadow(0 0 8px ' + color + ')';
     svg.appendChild(prog);
 
