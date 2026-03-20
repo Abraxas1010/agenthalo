@@ -11,8 +11,8 @@ You may choose ONE of the following licenses:
    - No right to use the "Apoth3osis-Certified" mark.
 
 2) Apoth3osis Small Business License 1.0 (CSBL)
-   - Free for organizations with prior-tax-year gross revenue under USD 1,000,000 (2025 dollars) and fewer than 100 workers.
-   - Thresholds indexed annually to CPI-U (Series CUUR0000SA0).
+   - Free for organizations that meet ALL of: (a) prior-tax-year gross revenue under USD 1,000,000 (2025 dollars), (b) fewer than 10 workers, and (c) less than USD 100,000 (2025 dollars) in lifetime Aggregate External Financing (equity, convertible instruments, venture debt, etc.).
+   - Revenue and financing thresholds indexed annually to CPI-U (Series CUUR0000SA0).
    - No right to use the "Apoth3osis-Certified" mark.
 
 3) Apoth3osis Enterprise Commercial License 1.0 (CECL)
