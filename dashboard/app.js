@@ -106,6 +106,15 @@ function renderLeanPageRoute() {
   }
 }
 
+function renderProofExplorerRoute() {
+  if (typeof window.renderProofExplorerPage === "function") {
+    window.renderProofExplorerPage();
+  } else {
+    content.innerHTML =
+      '<div class="loading">Proof Explorer module not loaded.</div>';
+  }
+}
+
 function renderFlowchartPage() {
   content.innerHTML = `
     <div style="display:flex;flex-direction:column;height:100%;padding:0">
@@ -208,6 +217,7 @@ const pages = {
   "mcp-tools": renderMcpToolsPageRoute,
   skills: renderSkillsPageRoute,
   lean: renderLeanPageRoute,
+  "proof-explorer": renderProofExplorerRoute,
   agentpmt: renderAgentPmt,
 };
 
