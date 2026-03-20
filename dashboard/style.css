@@ -8021,3 +8021,10 @@ textarea.p2p-input {
 .sm-spec { border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center;background:var(--bg-card); }
 .sm-spec span { display:block;font-size:8px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em; }
 .sm-spec strong { display:block;font-size:12px;color:var(--green);margin-top:3px; }
+
+/* Status badges */
+.sm-status-badge { display:inline-block;padding:2px 8px;border-radius:4px;font-size:9px;font-weight:600;letter-spacing:0.04em; }
+.sm-status-badge.ok { background:rgba(0,238,0,0.1);color:var(--green);border:1px solid rgba(0,238,0,0.3); }
+.sm-status-badge.warn { background:rgba(255,184,48,0.1);color:var(--amber);border:1px solid rgba(255,184,48,0.3); }
+.sm-status-badge.info { background:rgba(0,180,220,0.1);color:#00bfff;border:1px solid rgba(0,180,220,0.3); }
+.sm-status-badge.fail { background:rgba(239,68,68,0.1);color:var(--red);border:1px solid rgba(239,68,68,0.3); }
