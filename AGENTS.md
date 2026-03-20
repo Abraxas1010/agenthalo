@@ -91,8 +91,20 @@ Per-agent git worktrees with host path injection.
 - **Dashboard API**: `/api/worktree/profiles`, `/api/worktree/active-profile`, `/api/worktree/profile/{name}`, `/api/worktree/list`, `/api/worktree/session/{id}/skills|mcp-tools|instructions|verify`
 - **Formal proof**: `lean/NucleusDB/Core/WorktreeIsolation.lean` (7 theorems, 0 sorry)
 
+### Semantic Memory (`src/memory.rs`, `src/embeddings.rs`, `src/vector_index.rs`)
+Agents have persistent semantic memory via three MCP tools:
+- **`agenthalo_memory_store`** — store text with auto-embedding (nomic-embed-text-v1.5, 768-dim). Accepts `session_id`, `agent_id`, `ttl_secs` for context enrichment and expiry.
+- **`agenthalo_memory_recall`** — retrieve memories by natural-language query. Pipeline: HyDE query expansion → cosine search → fused reranking (base similarity + bi-encoder + lexical + negation).
+- **`agenthalo_memory_ingest`** — chunk a document by headings and store each chunk as a memory fragment.
+
+**When to use memory tools:**
+- Store important findings, decisions, or context that should persist across sessions
+- Recall previous decisions or context before starting related work
+- Ingest documents (architecture docs, meeting notes, specs) for later retrieval
+- Key namespace: `mem:chunk:*` (auto-generated from text hash)
+
 ### MCP Tool Surface
-- `agenthalo-mcp-server` exposes 125 tools including 5 Library tools
+- `agenthalo-mcp-server` exposes 128+ tools including 3 memory tools, 5 Library tools
 - Dashboard also exposes Library tools via the rmcp-based `NucleusDbMcpService`
 - Library tools are always read-only; write attempts return helpful error explaining the push protocol
 

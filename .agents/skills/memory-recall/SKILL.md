@@ -1,6 +1,6 @@
 # Skill: memory-recall
 
-> **Trigger:** vector memory, embeddings, memory recall, semantic search, memory store, similarity search, remember, forget, context recall, agent memory
+> **Trigger:** vector memory, embeddings, memory recall, semantic search, memory store, similarity search, remember, forget, context recall, agent memory, store finding, save for later, what did we decide, previous decision, recall context, persist knowledge, ingest document, remember this, look up memory, search memories, prior session, cross-session context, knowledge base
 > **Category:** data
 > **Audience:** Internal (hardwired) + External (controlling agent)
 
