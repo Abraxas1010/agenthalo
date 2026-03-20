@@ -434,6 +434,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/v1/storage/pins", get(api_metered_list_pins))
         // System Monitor (hardware stats)
         .route("/system/snapshot", get(api_system_snapshot))
+        .route("/system/stream", get(ws_system_stream))
         // Observatory (HeytingLean codebase health)
         .route("/observatory/status", get(api_observatory_status))
         .route("/observatory/scan", post(api_observatory_scan))
@@ -11901,7 +11902,7 @@ async fn api_system_snapshot() -> impl IntoResponse {
                         let total = user + nice + system + idle;
                         let busy = user + nice + system;
                         let pct = if total > 0 { (busy as f64 / total as f64) * 100.0 } else { 0.0 };
-                        cores.push(json!({"id": cores.len(), "pct": pct}));
+                        cores.push(json!({"id": cores.len(), "pct": pct, "total": total, "busy": busy}));
                     }
                 }
             }
@@ -12020,6 +12021,147 @@ async fn api_system_snapshot() -> impl IntoResponse {
     .unwrap_or_else(|_| json!({"error": "task failed"}));
 
     Json(result)
+}
+
+// ─── System Monitor WebSocket ─────────────────────────────────────────────────
+// Pushes hardware snapshots at ~500ms with delta-based per-core CPU utilization.
+
+async fn ws_system_stream(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(|socket| handle_system_stream(socket)).into_response()
+}
+
+async fn handle_system_stream(socket: WebSocket) {
+    use futures_util::SinkExt;
+    let (mut tx, mut _rx) = futures_util::StreamExt::split(socket);
+
+    // Previous /proc/stat counters for delta computation
+    let mut prev_cores: Vec<(u64, u64)> = Vec::new(); // (total, busy) per core
+
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+    loop {
+        interval.tick().await;
+
+        let prev = prev_cores.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut data = serde_json::Map::new();
+            let mut new_cores: Vec<(u64, u64)> = Vec::new();
+            let mut core_utils: Vec<serde_json::Value> = Vec::new();
+
+            // Per-core CPU with delta
+            if let Ok(stat) = std::fs::read_to_string("/proc/stat") {
+                let mut idx = 0usize;
+                for line in stat.lines() {
+                    if line.starts_with("cpu") && !line.starts_with("cpu ") {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 5 {
+                            let user: u64 = parts[1].parse().unwrap_or(0);
+                            let nice: u64 = parts[2].parse().unwrap_or(0);
+                            let system: u64 = parts[3].parse().unwrap_or(0);
+                            let idle: u64 = parts[4].parse().unwrap_or(0);
+                            let total = user + nice + system + idle;
+                            let busy = user + nice + system;
+
+                            let util = if idx < prev.len() {
+                                let dt = total.saturating_sub(prev[idx].0);
+                                let db = busy.saturating_sub(prev[idx].1);
+                                if dt > 0 { (db as f64 / dt as f64) * 100.0 } else { 0.0 }
+                            } else {
+                                0.0
+                            };
+
+                            new_cores.push((total, busy));
+                            core_utils.push(json!({
+                                "id": idx,
+                                "util": (util * 10.0).round() / 10.0,
+                                "class": if idx < 10 { "perf" } else { "eff" }
+                            }));
+                            idx += 1;
+                        }
+                    }
+                }
+            }
+
+            data.insert("cpu".into(), json!(core_utils));
+
+            // GPU
+            if let Ok(output) = std::process::Command::new("nvidia-smi")
+                .args(["--query-gpu=temperature.gpu,utilization.gpu,power.draw",
+                       "--format=csv,noheader,nounits"])
+                .output()
+            {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let parts: Vec<&str> = stdout.trim().split(", ").collect();
+                    if parts.len() >= 3 {
+                        data.insert("gpu".into(), json!({
+                            "temp": parts[0].trim().parse::<f64>().unwrap_or(0.0),
+                            "util": parts[1].trim().parse::<f64>().unwrap_or(0.0),
+                            "power": parts[2].trim().parse::<f64>().unwrap_or(0.0),
+                        }));
+                    }
+                }
+            }
+
+            // Thermals
+            let mut thermals = Vec::new();
+            for i in 0..20u32 {
+                let temp_path = format!("/sys/class/thermal/thermal_zone{i}/temp");
+                if let Ok(temp_str) = std::fs::read_to_string(&temp_path) {
+                    let temp_mc: f64 = temp_str.trim().parse().unwrap_or(0.0);
+                    thermals.push(json!({"temp_c": temp_mc / 1000.0}));
+                } else {
+                    break;
+                }
+            }
+            data.insert("thermal".into(), json!(thermals));
+
+            // Memory
+            if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+                let mut mem_total: u64 = 0;
+                let mut mem_available: u64 = 0;
+                for line in meminfo.lines() {
+                    if let Some(val) = line.strip_prefix("MemTotal:") {
+                        mem_total = val.trim().split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                    } else if let Some(val) = line.strip_prefix("MemAvailable:") {
+                        mem_available = val.trim().split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                    }
+                }
+                data.insert("mem".into(), json!({
+                    "total_kb": mem_total,
+                    "used_kb": mem_total.saturating_sub(mem_available),
+                }));
+            }
+
+            // Load average
+            if let Ok(loadavg) = std::fs::read_to_string("/proc/loadavg") {
+                let parts: Vec<&str> = loadavg.split_whitespace().collect();
+                if !parts.is_empty() {
+                    data.insert("load_1m".into(), json!(parts[0].parse::<f64>().unwrap_or(0.0)));
+                }
+            }
+
+            // Entropy
+            if let Ok(ent) = std::fs::read_to_string("/proc/sys/kernel/random/entropy_avail") {
+                data.insert("entropy_avail".into(), json!(ent.trim().parse::<u64>().unwrap_or(0)));
+            }
+
+            data.insert("ts".into(), json!(chrono::Utc::now().timestamp_millis()));
+
+            (serde_json::Value::Object(data), new_cores)
+        })
+        .await;
+
+        match result {
+            Ok((snapshot, new_prev)) => {
+                prev_cores = new_prev;
+                let msg = json!({"type": "snapshot", "data": snapshot}).to_string();
+                if tx.send(Message::Text(msg.into())).await.is_err() {
+                    break; // Client disconnected
+                }
+            }
+            Err(_) => break,
+        }
+    }
 }
 
 /// Cached lean-xray scan result. Shared across all observatory handlers.
