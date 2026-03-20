@@ -11926,35 +11926,77 @@ async fn api_system_snapshot() -> impl IntoResponse {
             }
         }
         data.insert("thermals".into(), json!(thermals));
-        // Top processes by CPU
+        // CPU processes (sorted by CPU%)
         if let Ok(output) = std::process::Command::new("ps")
             .args(["aux", "--sort=-%cpu"])
             .output()
         {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let procs: Vec<serde_json::Value> = stdout
-                    .lines()
-                    .skip(1) // header
-                    .take(15) // top 15
+                let parse_procs = |lines: &str, skip_header: bool, limit: usize| -> Vec<serde_json::Value> {
+                    lines.lines()
+                        .skip(if skip_header { 1 } else { 0 })
+                        .take(limit)
+                        .filter_map(|line| {
+                            let parts: Vec<&str> = line.split_whitespace().collect();
+                            if parts.len() >= 11 {
+                                Some(json!({
+                                    "user": parts[0], "pid": parts[1],
+                                    "cpu": parts[2], "mem": parts[3],
+                                    "vsz": parts[4], "rss": parts[5],
+                                    "cmd": parts[10..].join(" "),
+                                }))
+                            } else { None }
+                        })
+                        .collect()
+                };
+                data.insert("cpu_processes".into(), json!(parse_procs(&stdout, true, 20)));
+            }
+        }
+
+        // Memory processes (sorted by MEM%)
+        if let Ok(output) = std::process::Command::new("ps")
+            .args(["aux", "--sort=-%mem"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let procs: Vec<serde_json::Value> = stdout.lines().skip(1).take(20)
                     .filter_map(|line| {
                         let parts: Vec<&str> = line.split_whitespace().collect();
                         if parts.len() >= 11 {
                             Some(json!({
-                                "user": parts[0],
-                                "pid": parts[1],
-                                "cpu": parts[2],
-                                "mem": parts[3],
-                                "vsz": parts[4],
+                                "user": parts[0], "pid": parts[1],
+                                "cpu": parts[2], "mem": parts[3],
                                 "rss": parts[5],
                                 "cmd": parts[10..].join(" "),
                             }))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                data.insert("processes".into(), json!(procs));
+                        } else { None }
+                    }).collect();
+                data.insert("mem_processes".into(), json!(procs));
+            }
+        }
+
+        // GPU processes
+        if let Ok(output) = std::process::Command::new("nvidia-smi")
+            .args(["--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader,nounits"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let procs: Vec<serde_json::Value> = stdout.lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .filter_map(|line| {
+                        let parts: Vec<&str> = line.split(", ").collect();
+                        if parts.len() >= 3 {
+                            Some(json!({
+                                "pid": parts[0].trim(),
+                                "name": parts[1].trim(),
+                                "gpu_mem_mib": parts[2].trim(),
+                            }))
+                        } else { None }
+                    }).collect();
+                data.insert("gpu_processes".into(), json!(procs));
             }
         }
 

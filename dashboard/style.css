@@ -7945,81 +7945,79 @@ textarea.p2p-input {
 .pe-title-accent { color: var(--green); text-shadow: 0 0 12px rgba(0, 238, 0, 0.3); }
 
 /* ================================================================
-   System Monitor — DGX Spark hardware visualization
+   System Monitor — DGX Spark (ported from HeytingLean System Dashboard)
    ================================================================ */
-.sysmon-page { position: relative; }
-.sysmon-watermark {
-  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-35deg);
-  font-size: 100px; font-weight: 900; color: rgba(255,255,255,0.025);
-  pointer-events: none; z-index: 0; letter-spacing: 0.15em; white-space: nowrap;
-}
+.sysmon-page { position:relative; }
+.sysmon-watermark { position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) rotate(-35deg);font-size:100px;font-weight:900;color:rgba(255,255,255,0.025);pointer-events:none;z-index:0;letter-spacing:0.15em;white-space:nowrap; }
 
 /* Header */
-.sysmon-hdr { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:16px; }
-.sysmon-title { font-size:22px; font-weight:700; }
-.sysmon-sub { font-size:11px; color:var(--text-dim); margin-top:2px; }
-.sysmon-hdr-right { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.sysmon-badge { display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:5px; font-size:10px; font-weight:600; }
-.sysmon-badge.live { border:1px solid var(--green); color:var(--green); }
-.sysmon-badge-dot { width:7px; height:7px; border-radius:50%; background:var(--green); box-shadow:0 0 8px var(--green); animation:cockpit-pulse 2s ease-in-out infinite; }
-.sysmon-badge.link { border:1px solid var(--border); color:var(--accent); text-decoration:none; transition:all 0.15s; }
-.sysmon-badge.link:hover { border-color:var(--accent); background:rgba(255,184,48,0.06); }
-.sysmon-live-ctl { display:flex; align-items:center; gap:6px; }
-.sysmon-live-dot { width:8px; height:8px; border-radius:50%; background:var(--text-dim); transition:all 0.3s; }
-.sysmon-live-dot.on { background:var(--green); box-shadow:0 0 8px var(--green); animation:cockpit-pulse 2s ease-in-out infinite; }
+.sm-hdr { display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px; }
+.sm-title { font-size:22px;font-weight:700; }
+.sm-sub { font-size:11px;color:var(--text-dim);margin-top:2px; }
+.sm-hdr-r { display:flex;align-items:center;gap:10px;flex-wrap:wrap; }
+.sm-badge { display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:5px;font-size:10px;font-weight:600; }
+.sm-badge.live { border:1px solid var(--green);color:var(--green); }
+.sm-badge-dot { width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:cockpit-pulse 2s ease-in-out infinite; }
+.sm-badge.link { border:1px solid var(--border);color:var(--accent);text-decoration:none;transition:all 0.15s; }
+.sm-badge.link:hover { border-color:var(--accent);background:rgba(255,184,48,0.06); }
+.sm-live { display:flex;align-items:center;gap:6px; }
+.sm-live-dot { width:8px;height:8px;border-radius:50%;background:var(--text-dim);transition:all 0.3s; }
+.sm-live-dot.on { background:var(--green);box-shadow:0 0 8px var(--green);animation:cockpit-pulse 2s ease-in-out infinite; }
 
-/* SVG Gauges */
-.sysmon-gauges { display:grid; grid-template-columns:repeat(6, 1fr); gap:6px; margin-bottom:18px; align-items:center; }
-@media(max-width:900px) { .sysmon-gauges { grid-template-columns:repeat(3, 1fr); } }
-.sysmon-gauge { text-align:center; }
-.sysmon-gauge-svg { width:100%; max-width:120px; height:auto; }
-.sysmon-gauge-sub { font-size:9px; color:var(--text-dim); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.sysmon-gauge-spark { display:flex; align-items:center; justify-content:center; }
-.sysmon-spark { width:100px; height:24px; }
+/* Gauge cards (3 columns with expandable process sections) */
+.sm-gauges { display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;margin-bottom:16px; }
+@media(max-width:900px) { .sm-gauges { grid-template-columns:1fr; } }
+.sm-gauge-card { border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-card);overflow:hidden; }
+.sm-gauge { text-align:center;padding:14px 10px 8px; }
+.sm-gauge-svg { width:110px;height:110px; }
+.sm-gauge-sub { font-size:9px;color:var(--text-dim);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.sm-spark { width:100%;max-width:120px;height:28px;margin:0 auto;display:block; }
+
+/* Expandable process sections inside gauge cards */
+.sm-expand { border-top:1px solid var(--border); }
+.sm-expand-toggle { display:flex;align-items:center;justify-content:center;gap:6px;padding:7px;cursor:pointer;font-size:10px;color:var(--text-dim);transition:background 0.15s; }
+.sm-expand-toggle:hover { background:rgba(255,255,255,0.03); }
+.sm-expand-label { flex:1;text-align:center; }
+.sm-expand-count { font-size:9px;background:var(--border);color:var(--text-dim);padding:0 5px;border-radius:8px; }
+.sm-expand-chevron { transition:transform 0.2s; }
+.sm-expand-chevron.open { transform:rotate(180deg); }
+.sm-expand-body { padding:0 8px 8px;max-height:300px;overflow-y:auto; }
+.sm-expand-body table { width:100%;border-collapse:collapse; }
+.sm-expand-body th { font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;padding:4px 6px;text-align:left;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-card); }
+.sm-expand-body td { font-size:10px;padding:3px 6px;border-bottom:1px solid rgba(255,255,255,0.02);color:var(--text); }
+.sm-expand-body .mono { font-family:var(--font-mono); }
+.sm-expand-body .cmd { max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-dim); }
+.sm-expand-body tr:hover { background:rgba(0,238,0,0.02); }
+.sm-expand-empty { text-align:center;color:var(--text-dim);padding:12px;font-size:10px; }
 
 /* Sections */
-.sysmon-section { border:1px solid var(--border); border-radius:var(--radius); background:var(--bg-card); margin-bottom:14px; overflow:hidden; }
-.sysmon-sec-hdr { padding:12px 16px; border-bottom:1px solid var(--border); font-size:14px; font-weight:600; color:var(--text-bright); }
-.sysmon-sec-sub { font-size:10px; font-weight:400; color:var(--text-dim); margin-left:8px; }
+.sm-section { border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-card);margin-bottom:14px;overflow:hidden; }
+.sm-sec-hdr { padding:12px 16px;border-bottom:1px solid var(--border);font-size:14px;font-weight:600;color:var(--text-bright); }
+.sm-sec-sub { font-size:10px;font-weight:400;color:var(--text-dim);margin-left:8px; }
 
-/* CPU Cores — vertical bar grid */
-.sysmon-cores { display:grid; grid-template-columns:repeat(20, 1fr); gap:3px; padding:12px; }
-@media(max-width:768px) { .sysmon-cores { grid-template-columns:repeat(10, 1fr); } }
-.sysmon-core {
-  border:1px solid var(--border); border-radius:4px; padding:4px 2px;
-  text-align:center; position:relative; min-height:70px;
-  display:flex; flex-direction:column; align-items:center; justify-content:flex-end;
-  transition:border-color 0.4s, box-shadow 0.4s;
-}
-.sysmon-core-bar-bg { width:8px; flex:1; min-height:0; background:rgba(255,255,255,0.04); border-radius:2px; position:relative; overflow:hidden; margin-bottom:3px; }
-.sysmon-core-bar-fill { position:absolute; bottom:0; left:0; right:0; border-radius:2px; transition:height 0.6s ease, background 0.4s; }
-.sysmon-core-pct { font-size:9px; font-weight:700; line-height:1; }
-.sysmon-core-label { font-size:7px; color:var(--text-dim); }
-.sysmon-core-id { font-size:6px; color:var(--text-dim); position:absolute; top:1px; right:2px; }
+/* CPU Cores grid */
+.sm-cores { display:grid;grid-template-columns:repeat(20, 1fr);gap:3px;padding:12px; }
+@media(max-width:768px) { .sm-cores { grid-template-columns:repeat(10, 1fr); } }
+.sm-core { border:1px solid var(--border);border-radius:4px;text-align:center;position:relative;height:72px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding:0 2px 4px;transition:border-color 0.4s,box-shadow 0.4s;overflow:hidden; }
+.sm-core-fill { position:absolute;bottom:0;left:0;right:0;transition:height 0.6s ease,background 0.4s;border-radius:0 0 3px 3px;opacity:0.3; }
+.sm-core-info { position:relative;z-index:1; }
+.sm-core-pct { font-size:10px;font-weight:700;line-height:1; }
+.sm-core-type { font-size:7px;color:var(--text-dim); }
+.sm-core-id { font-size:6px;color:var(--text-dim);position:absolute;top:1px;right:2px;z-index:1; }
 
-/* Thermal zones — circular indicators */
-.sysmon-thermals { display:grid; grid-template-columns:repeat(auto-fit, minmax(100px, 1fr)); gap:10px; padding:14px; }
-.sysmon-thermal { text-align:center; }
-.sysmon-thermal-ring {
-  width:64px; height:64px; border-radius:50%; margin:0 auto 6px;
-  border:3px solid var(--border); display:flex; align-items:center; justify-content:center;
-  transition:border-color 0.5s, box-shadow 0.5s;
-}
-.sysmon-thermal-val { font-size:16px; font-weight:700; }
-.sysmon-thermal-name { font-size:9px; color:var(--text-dim); font-weight:600; margin-bottom:3px; }
-.sysmon-thermal-bar { height:3px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden; max-width:80px; margin:0 auto; }
+/* Thermal Map — board layout */
+.sm-board { position:relative;width:100%;aspect-ratio:1.6;min-height:220px;max-height:360px;background:linear-gradient(135deg,#050810,#0a0f1a 50%,#050810);border:2px solid var(--border);border-radius:8px;overflow:hidden;margin:0 auto; }
+.sm-board-grid { position:absolute;inset:0;background-image:linear-gradient(90deg,rgba(0,238,0,0.02) 1px,transparent 1px),linear-gradient(rgba(0,238,0,0.02) 1px,transparent 1px);background-size:16px 16px;pointer-events:none; }
+.sm-board-label { position:absolute;top:6px;left:10px;font-size:9px;color:var(--text-dim);opacity:0.4;font-weight:600;letter-spacing:1px; }
+.sm-sensor { position:absolute;transform:translate(-50%,-50%); }
+.sm-sensor-cell { position:absolute;inset:0;border-radius:6px;text-align:center;display:flex;flex-direction:column;justify-content:center;align-items:center;border:1px solid;transition:all 0.4s ease;z-index:1; }
+.sm-gpu-chip { position:absolute;left:72%;top:35%;transform:translate(-50%,-50%);width:28%;height:50%;border-radius:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;border:1px solid;transition:all 0.4s ease;z-index:1; }
+.sm-mem-chip { position:absolute;left:50%;top:78%;transform:translate(-50%,-50%);background:rgba(0,238,0,0.08);border:1px solid var(--green);border-radius:6px;padding:8px 16px;text-align:center;transition:all 0.3s ease; }
+.sm-board-legend { display:flex;align-items:center;justify-content:center;gap:8px;position:absolute;bottom:6px;left:0;right:0;font-size:9px;color:var(--text-dim); }
+.sm-legend-bar { width:160px;height:10px;border-radius:5px;background:linear-gradient(90deg,#3b82f6 0%,#22c55e 25%,#eab308 50%,#ef4444 75%,#dc2660 100%);border:1px solid rgba(255,255,255,0.1); }
 
 /* Specs */
-.sysmon-specs { display:grid; grid-template-columns:repeat(auto-fit, minmax(100px, 1fr)); gap:8px; margin-top:14px; }
-.sysmon-spec { border:1px solid var(--border); border-radius:6px; padding:10px; text-align:center; background:var(--bg-card); }
-.sysmon-spec span { display:block; font-size:8px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em; }
-.sysmon-spec strong { display:block; font-size:12px; color:var(--green); margin-top:3px; }
-
-/* Process table */
-.sysmon-procs { padding:8px; overflow-x:auto; }
-.sysmon-procs table { width:100%; border-collapse:collapse; }
-.sysmon-procs th { font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em; padding:6px 8px; text-align:left; border-bottom:1px solid var(--border); }
-.sysmon-procs td { font-size:10px; padding:4px 8px; border-bottom:1px solid rgba(255,255,255,0.02); color:var(--text); }
-.sysmon-procs .mono { font-family:var(--font-mono); }
-.sysmon-procs .cmd { max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-dim); }
-.sysmon-procs tr:hover { background:rgba(0,238,0,0.02); }
+.sm-specs { display:grid;grid-template-columns:repeat(auto-fit, minmax(100px, 1fr));gap:8px;margin-top:14px; }
+.sm-spec { border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center;background:var(--bg-card); }
+.sm-spec span { display:block;font-size:8px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em; }
+.sm-spec strong { display:block;font-size:12px;color:var(--green);margin-top:3px; }
