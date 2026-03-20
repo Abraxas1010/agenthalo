@@ -199,16 +199,28 @@
     });
 
     // Tab switching
+    this.activeTab = 'observe';
     el.querySelectorAll('.obs-drawer-tab-btn').forEach(function(tabBtn) {
       tabBtn.addEventListener('click', function() {
         var target = tabBtn.dataset.obsTab;
+        self.activeTab = target;
         el.querySelectorAll('.obs-drawer-tab-btn').forEach(function(b) { b.classList.toggle('is-active', b === tabBtn); });
         el.querySelectorAll('.obs-tab-content').forEach(function(c) {
           c.style.display = c.dataset.obsContent === target ? '' : 'none';
         });
-        if (target === 'command') self.refreshAgentGrid();
+        if (target === 'command') {
+          self.refreshAgentGrid();
+          self.refreshSelfButtons();
+        }
       });
     });
+
+    // Poll agent registry every 2s while command tab is visible
+    setInterval(function() {
+      if (self.activeTab === 'command' && !self.collapsed) {
+        self.refreshAgentGrid();
+      }
+    }, 2000);
 
     // Viz button clicks (existing logic — unchanged)
     el.querySelectorAll('.obs-viz-btn').forEach(function(btn) {
@@ -399,7 +411,7 @@
         '<button class="obs-cmd-agent-badge ' + colorClass + '"' +
         ' data-target-session="' + esc(sessionId) + '"' +
         ' data-target-type="' + esc(info.agentType || 'agent') + '"' +
-        ' title="Click: forward last response to ' + esc(info.letter) + ' \u00B7 Right-click: commands">' +
+        ' title="Send last response to Agent ' + esc(info.letter) + '">' +
           '<span class="obs-cmd-arrow">' + arrow + '</span>' +
           '<span class="obs-cmd-letter">' + esc(info.letter) + '</span>' +
         '</button>';
