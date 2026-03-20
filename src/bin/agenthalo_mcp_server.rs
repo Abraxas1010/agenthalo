@@ -1836,6 +1836,46 @@ async fn mcp(
                     "description": "Check the persistent Library health: whether initialized, total sessions, total keys, storage size.",
                     "inputSchema": {"type": "object", "properties": {}}
                 }),
+                // ── Memory tools (F1-F9 hardening) ──
+                json!({
+                    "name": "agenthalo_memory_store",
+                    "description": "Store a memory fragment, embed it with nomic-embed-text-v1.5, and commit to NucleusDB with seal/witness evidence. Supports session context and TTL expiry.",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["text"],
+                        "properties": {
+                            "text": {"type": "string", "description": "Memory text to store and embed."},
+                            "source": {"type": "string", "description": "Optional source label (e.g. session id, user note, auto:tool_name)."},
+                            "session_id": {"type": "string", "description": "Optional session ID for contextual embedding enrichment."},
+                            "agent_id": {"type": "string", "description": "Optional agent ID for contextual embedding enrichment."},
+                            "ttl_secs": {"type": "integer", "description": "Optional TTL in seconds. After expiry, memory is excluded from recall. null = permanent."}
+                        }
+                    }
+                }),
+                json!({
+                    "name": "agenthalo_memory_recall",
+                    "description": "Recall relevant memory fragments using semantic vector search. Uses HyDE query expansion, fused reranking (cosine + bi-encoder + lexical + negation), and TTL expiry filtering.",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["query"],
+                        "properties": {
+                            "query": {"type": "string", "description": "Natural-language query describing what memory context you need."},
+                            "k": {"type": "integer", "description": "Number of results (1-20, default 5)."}
+                        }
+                    }
+                }),
+                json!({
+                    "name": "agenthalo_memory_ingest",
+                    "description": "Ingest a structured document into chunked semantic memory fragments. Splits by headings, prepends section context, embeds each chunk, and seals into NucleusDB.",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["document"],
+                        "properties": {
+                            "document": {"type": "string", "description": "Structured document text to chunk and ingest."},
+                            "source": {"type": "string", "description": "Optional source label."}
+                        }
+                    }
+                }),
             ];
             tools.extend(orchestrator_tool_defs_for_listing());
             tools.push(tool_def_p2pclaw_configure());
@@ -2319,6 +2359,10 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "library_session_lookup" => tool_library_session_lookup(arguments),
         "library_sessions" => tool_library_sessions(arguments),
         "library_status" => tool_library_status(arguments),
+        // Memory tools (F1-F9)
+        "agenthalo_memory_store" => tool_memory_store(arguments),
+        "agenthalo_memory_recall" => tool_memory_recall(arguments),
+        "agenthalo_memory_ingest" => tool_memory_ingest(arguments),
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -7490,6 +7534,44 @@ fn tool_library_sessions(_arguments: Value) -> Result<Value, String> {
 fn tool_library_status(_arguments: Value) -> Result<Value, String> {
     let resp = nucleusdb::halo::library_mcp::tool_status()?;
     serde_json::to_value(&resp).map_err(|e| format!("serialize library_status response: {e}"))
+}
+
+// ── Memory tool handlers (delegate to NucleusDbMcpService via RMCP) ──
+
+fn tool_memory_store(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::MemoryStoreRequest =
+        parse_tool_args(arguments, "agenthalo_memory_store")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .memory_store(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize memory_store: {e}"))
+    })
+}
+
+fn tool_memory_recall(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::MemoryRecallRequest =
+        parse_tool_args(arguments, "agenthalo_memory_recall")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .memory_recall(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize memory_recall: {e}"))
+    })
+}
+
+fn tool_memory_ingest(arguments: Value) -> Result<Value, String> {
+    let req: nucleusdb::mcp::tools::MemoryIngestRequest =
+        parse_tool_args(arguments, "agenthalo_memory_ingest")?;
+    run_local_nucleusdb_call(move |service| async move {
+        let rmcp::Json(response) = service
+            .memory_ingest(rmcp::handler::server::wrapper::Parameters(req))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        serde_json::to_value(response).map_err(|e| format!("serialize memory_ingest: {e}"))
+    })
 }
 
 fn tool_halo_export(arguments: Value) -> Result<Value, String> {
