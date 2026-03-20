@@ -127,6 +127,14 @@ Metrics: `cosine` (default), `l2`, `ip`
 
 ---
 
+## Cross-Session Recall
+
+Memory tools (`agenthalo_memory_store/recall`) search **current session only**. For cross-session recall (what did a previous agent do?), use `library_semantic_search` — see the `library-search` skill.
+
+For comprehensive recall, use BOTH:
+1. `agenthalo_memory_recall` — current session memories
+2. `library_semantic_search` — all past session summaries
+
 ## Limitations
 
 - **Brute-force kNN with prefix filter**: Exact search over matching key prefix. Fast up to ~100K vectors. Uses BTreeMap range scan to skip non-matching keys.

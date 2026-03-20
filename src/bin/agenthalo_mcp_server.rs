@@ -1836,6 +1836,18 @@ async fn mcp(
                     "description": "Check the persistent Library health: whether initialized, total sessions, total keys, storage size.",
                     "inputSchema": {"type": "object", "properties": {}}
                 }),
+                json!({
+                    "name": "library_semantic_search",
+                    "description": "Semantic search across all past agent sessions in the persistent Library. Uses vector embeddings of session summaries for cross-session recall. Unlike library_search (keyword), this understands meaning.",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["query"],
+                        "properties": {
+                            "query": {"type": "string", "description": "Natural-language query for cross-session semantic search."},
+                            "k": {"type": "integer", "description": "Number of results (1-20, default 5)."}
+                        }
+                    }
+                }),
                 // ── Memory tools (F1-F9 hardening) ──
                 json!({
                     "name": "agenthalo_memory_store",
@@ -2359,6 +2371,7 @@ fn tool_call(name: &str, arguments: Value) -> Result<Value, String> {
         "library_session_lookup" => tool_library_session_lookup(arguments),
         "library_sessions" => tool_library_sessions(arguments),
         "library_status" => tool_library_status(arguments),
+        "library_semantic_search" => tool_library_semantic_search(arguments),
         // Memory tools (F1-F9)
         "agenthalo_memory_store" => tool_memory_store(arguments),
         "agenthalo_memory_recall" => tool_memory_recall(arguments),
@@ -7534,6 +7547,19 @@ fn tool_library_sessions(_arguments: Value) -> Result<Value, String> {
 fn tool_library_status(_arguments: Value) -> Result<Value, String> {
     let resp = nucleusdb::halo::library_mcp::tool_status()?;
     serde_json::to_value(&resp).map_err(|e| format!("serialize library_status response: {e}"))
+}
+
+fn tool_library_semantic_search(arguments: Value) -> Result<Value, String> {
+    let query = arguments.get("query").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if query.is_empty() { return Err("query must be non-empty".to_string()); }
+    let k = arguments.get("k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+    let results = nucleusdb::halo::library_embeddings::semantic_search(&query, k)?;
+    Ok(json!({
+        "query": query,
+        "k": k,
+        "count": results.len(),
+        "results": results,
+    }))
 }
 
 // ── Memory tool handlers (delegate to NucleusDbMcpService via RMCP) ──

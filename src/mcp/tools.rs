@@ -204,6 +204,22 @@ pub struct MemoryRecallResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LibrarySemanticSearchRequest {
+    /// Natural-language query for cross-session semantic search.
+    pub query: String,
+    /// Number of results (1-20, default 5).
+    pub k: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LibrarySemanticSearchResponse {
+    pub query: String,
+    pub k: usize,
+    pub count: usize,
+    pub results: Vec<crate::halo::library_embeddings::SemanticSearchResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryStoreResponse {
     pub key: String,
     pub source: Option<String>,
@@ -2909,6 +2925,33 @@ impl NucleusDbMcpService {
             McpError::internal_error(format!("memory_ingest task join failed: {e}"), None)
         })??;
         Ok(Json(response))
+    }
+
+    #[tool(
+        name = "library_semantic_search",
+        description = "Semantic search across all past agent sessions in the persistent Library. Uses vector embeddings of session summaries for cross-session recall. Unlike library_search (keyword), this understands meaning."
+    )]
+    pub async fn library_semantic_search(
+        &self,
+        Parameters(req): Parameters<LibrarySemanticSearchRequest>,
+    ) -> Result<Json<LibrarySemanticSearchResponse>, McpError> {
+        let query = req.query.trim().to_string();
+        if query.is_empty() {
+            return Err(McpError::invalid_params("query must be non-empty", None));
+        }
+        let k = req.k.unwrap_or(5).clamp(1, 20);
+        let results = tokio::task::spawn_blocking(move || {
+            crate::halo::library_embeddings::semantic_search(&query, k)
+                .map_err(|e| McpError::internal_error(format!("library semantic search: {e}"), None))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("task join: {e}"), None))??;
+        Ok(Json(LibrarySemanticSearchResponse {
+            query: req.query,
+            k,
+            count: results.len(),
+            results,
+        }))
     }
 
     // ── Library tools (read-only agent access to persistent Library) ──

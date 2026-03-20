@@ -77,10 +77,13 @@ Use the Heyting repo only as the read-only canonical theorem source. Do not impo
 
 Agents loading this repo (via worktree injection or MCP) should know:
 
-### Persistent Library (`src/halo/library.rs`, `src/halo/library_mcp.rs`)
+### Persistent Library (`src/halo/library.rs`, `src/halo/library_embeddings.rs`)
 System-wide NucleusDB at `~/.agenthalo/library/`. Accumulates knowledge from all sessions.
-- **Query tools** (read-only, available in MCP): `library_search`, `library_browse`, `library_session_lookup`, `library_sessions`, `library_status`
-- **Push protocol**: auto-push on session end, 24h heartbeat for long-running sessions, manual push via dashboard
+- **Semantic search** (recommended): `library_semantic_search` — vector-based cross-session recall using embedded session summaries. Understands meaning, not just keywords.
+- **Keyword search**: `library_search` — full-text term matching across Library records.
+- **Other query tools** (read-only): `library_browse`, `library_session_lookup`, `library_sessions`, `library_status`
+- **Push protocol**: auto-push on session end (also embeds summary into semantic sidecar), 24h heartbeat for long-running sessions
+- **Embedding sidecar**: `library_embeddings.ndb` stores vector embeddings of session summaries. Regenerable via backfill.
 - **Key namespace**: `lib:session:`, `lib:summary:`, `lib:evt:`, `lib:idx:agent/date/model:`, `lib:push:watermark:`
 - Disable auto-push: `AGENTHALO_LIBRARY_AUTO_PUSH=false`
 

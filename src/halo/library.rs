@@ -309,6 +309,18 @@ pub fn push_session(traces_db_path: &Path, session_id: &str) -> Result<PushResul
     // Append to push log.
     append_push_log(&result);
 
+    // Embed session summary into the semantic sidecar (best-effort, never blocks push).
+    if let Err(e) = crate::halo::library_embeddings::embed_session(
+        session_id,
+        &meta.agent,
+        meta.model.as_deref(),
+        meta.started_at,
+        meta.prompt.as_deref(),
+        summary.as_ref(),
+    ) {
+        eprintln!("library sidecar embed warning (non-fatal): {e}");
+    }
+
     Ok(result)
 }
 

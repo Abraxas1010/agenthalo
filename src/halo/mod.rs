@@ -40,6 +40,7 @@ pub mod hybrid_kem;
 pub mod identity;
 pub mod identity_ledger;
 pub mod library;
+pub mod library_embeddings;
 pub mod library_mcp;
 pub mod local_models;
 pub mod metrics;
