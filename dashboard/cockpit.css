@@ -1669,6 +1669,13 @@ body:not(.no-crt) .cockpit-panel-body::before {
 .explorer-name-file { color:var(--green); }
 
 .explorer-status { font-size:9px; font-weight:700; margin-left:auto; flex-shrink:0; padding:1px 4px; border-radius:2px; }
+
+/* Copy-path button — visible on hover in sidebar entries and explorer nodes */
+.sidebar-copy-btn { background:none; border:1px solid transparent; color:var(--text-dim); font-size:10px; cursor:pointer; padding:1px 3px; border-radius:2px; opacity:0; transition:opacity 0.15s; flex-shrink:0; margin-left:auto; }
+.sidebar-code-entry:hover .sidebar-copy-btn,
+.sidebar-file-entry:hover .sidebar-copy-btn,
+.explorer-node:hover .sidebar-copy-btn { opacity:0.7; }
+.sidebar-copy-btn:hover { opacity:1 !important; color:var(--accent); border-color:var(--border); }
 .explorer-status-m { color:var(--amber); }
 .explorer-status-a { color:var(--green); }
 .explorer-status-d { color:var(--red); text-decoration:line-through; }

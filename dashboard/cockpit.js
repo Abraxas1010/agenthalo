@@ -2132,6 +2132,7 @@
                 '<span class="sidebar-code-fname">' + fileIcon(fname) + ' ' + escapeHtml(fname) + '</span>' +
                 (dir ? '<span class="sidebar-code-dir">' + escapeHtml(dir) + '</span>' : '') +
               '</div>' +
+              '<button class="sidebar-copy-btn" data-copy-path="' + escapeHtml(item.path || '') + '" title="Copy path">&#128203;</button>' +
             '</div>' +
             (previewLines ? '<pre class="sidebar-code-preview">' + escapeHtml(previewLines) + '</pre>' : '') +
           '</div>';
@@ -2146,16 +2147,43 @@
               '<span class="sidebar-code-fname">' + fileIcon(fname) + ' ' + escapeHtml(fname) + '</span>' +
               (dir ? '<span class="sidebar-code-dir">' + escapeHtml(dir) + '</span>' : '') +
             '</div>' +
+            '<button class="sidebar-copy-btn" data-copy-path="' + escapeHtml(item.path || '') + '" title="Copy path">&#128203;</button>' +
           '</div>' +
           (item.summary ? '<div class="sidebar-file-summary">' + escapeHtml(item.summary) + '</div>' : '') +
         '</div>';
       }).join('');
 
-      // Click to open codefile in floating window
+      // Copy-path buttons (click the 📋 icon)
+      body.querySelectorAll('.sidebar-copy-btn').forEach((btn) => {
+        btn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const p = btn.dataset.copyPath;
+          if (p) {
+            navigator.clipboard?.writeText(p);
+            btn.textContent = '✓';
+            setTimeout(() => { btn.innerHTML = '&#128203;'; }, 1200);
+          }
+        });
+      });
+
+      // Click to open codefile in floating window; context menu for actions
       body.querySelectorAll('.sidebar-code-entry').forEach((el) => {
-        el.addEventListener('click', () => {
-          const path = el.dataset.path;
+        const path = el.dataset.path;
+        el.addEventListener('click', (ev) => {
+          if (ev.target.closest('.sidebar-copy-btn')) return;
           if (path) this.openFileInObservatory(path);
+        });
+        el.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (!path) return;
+          showContextMenu(ev.clientX, ev.clientY, [
+            { label: 'Open in Editor Panel', onClick: () => this.openFileInPanel(path) },
+            { label: 'Open in Observatory', onClick: () => this.openFileInObservatory(path) },
+            { label: 'Open Diff', onClick: () => this.openDiffInPanel(path) },
+            { label: 'Copy Path', onClick: () => navigator.clipboard?.writeText(path) },
+            { label: 'Copy Relative Path', onClick: () => navigator.clipboard?.writeText(path) },
+          ]);
         });
       });
     }
@@ -2214,16 +2242,43 @@
             '<div class="sidebar-file-info">' +
               statusBadge +
               '<span class="sidebar-file-fname">' + fileIcon(fname) + ' ' + escapeHtml(fname) + '</span>' +
+              '<button class="sidebar-copy-btn" data-copy-path="' + escapeHtml(f.path) + '" title="Copy path">&#128203;</button>' +
             '</div>' +
             (dir ? '<div class="sidebar-file-dir">' + escapeHtml(dir) + '</div>' : '') +
             (f.summary ? '<div class="sidebar-file-summary">' + escapeHtml(f.summary) + '</div>' : '') +
           '</div>';
         }).join('');
 
+        // Copy-path buttons
+        body.querySelectorAll('.sidebar-copy-btn').forEach((btn) => {
+          btn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const p = btn.dataset.copyPath;
+            if (p) {
+              navigator.clipboard?.writeText(p);
+              btn.textContent = '✓';
+              setTimeout(() => { btn.innerHTML = '&#128203;'; }, 1200);
+            }
+          });
+        });
+
         body.querySelectorAll('.sidebar-file-entry').forEach((el) => {
-          el.addEventListener('click', () => {
-            const path = el.dataset.path;
+          const path = el.dataset.path;
+          el.addEventListener('click', (ev) => {
+            if (ev.target.closest('.sidebar-copy-btn')) return;
             if (path) this.openFileInObservatory(path);
+          });
+          el.addEventListener('contextmenu', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (!path) return;
+            showContextMenu(ev.clientX, ev.clientY, [
+              { label: 'Open in Editor Panel', onClick: () => this.openFileInPanel(path) },
+              { label: 'Open in Observatory', onClick: () => this.openFileInObservatory(path) },
+              { label: 'Open Diff', onClick: () => this.openDiffInPanel(path) },
+              { label: 'Copy Path', onClick: () => navigator.clipboard?.writeText(path) },
+              { label: 'Copy Relative Path', onClick: () => navigator.clipboard?.writeText(path) },
+            ]);
           });
         });
       });
@@ -2399,12 +2454,13 @@
         ? '<span class="explorer-status explorer-status-' + gitSt.toLowerCase() + '">' + escapeHtml(gitSt) + '</span>'
         : '';
       const selected = this._explorerSelected === entry.path ? ' selected' : '';
+      const copyBtn = !isDir ? '<button class="sidebar-copy-btn explorer-copy-btn" data-copy-path="' + escapeHtml(entry.path) + '" title="Copy path">&#128203;</button>' : '';
       return '<div class="explorer-node' + gitClass + selected + '" data-path="' + escapeHtml(entry.path) +
         '" data-is-dir="' + (isDir ? '1' : '0') + '" data-name="' + escapeHtml(entry.name) +
         '" style="padding-left:' + (8 + indent) + 'px">' +
         chevron + '<span class="explorer-icon">' + icon + '</span>' +
         '<span class="explorer-name ' + nameClass + '">' + escapeHtml(entry.name) + '</span>' +
-        statusBadge + '</div>';
+        statusBadge + copyBtn + '</div>';
     }
 
     dirHasGitStatus(dirPath) {
@@ -2427,7 +2483,8 @@
         const isDir = node.dataset.isDir === '1';
         const name = node.dataset.name;
 
-        node.addEventListener('click', () => {
+        node.addEventListener('click', (ev) => {
+          if (ev.target.closest('.sidebar-copy-btn')) return;
           this._explorerSelected = path;
           treeEl.querySelectorAll('.explorer-node.selected').forEach(n => n.classList.remove('selected'));
           node.classList.add('selected');
@@ -2469,6 +2526,19 @@
             }});
           }
           showContextMenu(ev.clientX, ev.clientY, items);
+        });
+      });
+
+      // Copy-path buttons in explorer tree
+      treeEl.querySelectorAll('.explorer-copy-btn').forEach((btn) => {
+        btn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const p = btn.dataset.copyPath;
+          if (p) {
+            navigator.clipboard?.writeText(p);
+            btn.textContent = '✓';
+            setTimeout(() => { btn.innerHTML = '&#128203;'; }, 1200);
+          }
         });
       });
     }
