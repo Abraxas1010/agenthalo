@@ -37,13 +37,52 @@
     { id: 'latex',     label: 'Math',          icon: '\u{222B}',  endpoint: null },
     { id: 'flowchart', label: 'Flowchart',     icon: '\u{1F4C8}', endpoint: null },
     { id: 'table',     label: 'Data',          icon: '\u{1F4CB}', endpoint: '/api/observatory/complexity' },
+    { id: 'codefile',  label: 'Code',          icon: '\u{1F4C4}', endpoint: '/api/files/tree' },
+    { id: 'codediff',  label: 'Diff',          icon: '\u{1F504}', endpoint: '/api/files/git-status' },
   ];
+
+  // Prompt templates for bidirectional viz buttons.
+  // When a push-only button is clicked, this prompt is sent to the agent.
+  var VIZ_PROMPTS = {
+    prooftree: 'Reference your recent work and produce the current proof tree structure. Output it as:\n```observatory:prooftree\n{"nodes":[{"id":"...","label":"...","type":"...","status":"...","children":["..."]}],"root":"..."}\n```',
+    goals:     'Show the current proof goals/obligations. Output as:\n```observatory:goals\n{"goals":[{"hyps":[{"name":"...","type":"..."}],"target":"..."}]}\n```',
+    tactics:   'Suggest tactics for the current goal with confidence scores. Output as:\n```observatory:tactics\n{"tactics":[{"tactic":"...","confidence":0.9,"description":"..."}]}\n```',
+    latex:     'Render the key mathematical statement from your recent work as LaTeX. Output as:\n```observatory:latex\n{"latex":"\\\\forall x, P(x) \\\\to Q(x)","label":"..."}\n```',
+    flowchart: 'Produce a Mermaid flowchart of the current proof/task structure. Output as:\n```observatory:flowchart\n{"mermaid":"graph TD\\n  A[Start] --> B[Step 1]\\n  B --> C[Done]"}\n```',
+    codefile:  'Show me the file you are currently editing. Output as:\n```observatory:codefile\n{"path":"relative/path.lean","content":"...file contents...","language":"lean4"}\n```',
+  };
 
   // ── Global state ───────────────────────────────────────────
   var topZ = 600;
   var allWindows = new Map(); // windowId → { el, panelId, vizType }
 
   function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  function parentPath(path) {
+    if (!path) return '';
+    var idx = path.lastIndexOf('/');
+    return idx >= 0 ? path.slice(0, idx) : '';
+  }
+  function fetchJson(path, params) {
+    var query = new URLSearchParams();
+    Object.keys(params || {}).forEach(function(key) {
+      var value = params[key];
+      if (value !== undefined && value !== null) query.set(key, value);
+    });
+    var url = path + (query.toString() ? ('?' + query.toString()) : '');
+    return fetch(url).then(function(res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    });
+  }
+  function disposeVizContainer(container) {
+    if (!container) return;
+    if (typeof container._disposeViz === 'function') {
+      try { container._disposeViz(); } catch (_err) {}
+    }
+    container._disposeViz = null;
+    container._monacoEditor = null;
+    container._diffEditor = null;
+  }
 
   // ── Mesh Command Registry ──────────────────────────────────
   var MESH_COMMANDS = [
@@ -160,9 +199,17 @@
           '<div class="obs-drawer-buttons">' +
             VIZ_TYPES.map(function(v) {
               var hasEndpoint = !!v.endpoint;
-              return '<button class="obs-viz-btn' + (hasEndpoint ? ' has-endpoint' : '') + '" data-viz="' + v.id + '"' +
-                (hasEndpoint ? '' : ' disabled') +
-                ' title="' + v.label + (hasEndpoint ? ' \u2014 click to load' : ' \u2014 waiting for agent data') + '">' +
+              var hasPrompt = !!VIZ_PROMPTS[v.id];
+              var isClickable = hasEndpoint || hasPrompt;
+              return '<button class="obs-viz-btn' +
+                (hasEndpoint ? ' has-endpoint' : '') +
+                (hasPrompt && !hasEndpoint ? ' has-prompt' : '') +
+                '" data-viz="' + v.id + '"' +
+                (isClickable ? '' : ' disabled') +
+                ' title="' + v.label +
+                  (hasEndpoint ? ' \u2014 click to load' :
+                   hasPrompt ? ' \u2014 click to request from agent' :
+                   ' \u2014 waiting for agent data') + '">' +
                 '<span class="obs-viz-icon">' + v.icon + '</span>' +
                 '<span class="obs-viz-label">' + v.label + '</span>' +
                 '<span class="obs-viz-dot"></span>' +
@@ -228,10 +275,12 @@
       var vizMeta = VIZ_TYPES.find(function(v) { return v.id === vizType; });
       self.btnMap[vizType] = btn;
       btn.addEventListener('click', function() {
+        // If we have pending data from a prior push, open it
         if (self.pendingData[vizType]) {
           self.openWindow(vizType, self.pendingData[vizType]);
           return;
         }
+        // Endpoint-backed buttons: fetch directly
         if (vizMeta && vizMeta.endpoint) {
           btn.disabled = true;
           btn.title = vizMeta.label + ' \u2014 loading...';
@@ -248,6 +297,23 @@
               btn.disabled = false;
               btn.title = vizMeta.label + ' \u2014 click to load';
             });
+          return;
+        }
+        // Push-only buttons with prompt templates: send command to agent
+        var prompt = VIZ_PROMPTS[vizType];
+        if (prompt) {
+          var sent = dispatchCommand(self.panelId, prompt);
+          if (sent) {
+            btn.classList.add('obs-requesting');
+            btn.title = vizMeta.label + ' \u2014 requested from agent...';
+            // Auto-clear requesting state after 30s if no data arrives
+            setTimeout(function() {
+              if (!self.pendingData[vizType]) {
+                btn.classList.remove('obs-requesting');
+                btn.title = vizMeta.label + ' \u2014 no response (try again)';
+              }
+            }, 30000);
+          }
         }
       });
     });
@@ -321,11 +387,33 @@
   // Called when agent pushes data for a visualization type
   ObservatoryDrawer.prototype.pushData = function(vizType, data) {
     this.pendingData[vizType] = data;
+
+    // Lock/follow: if a codefile window is open and locked, update it in-place
+    if (vizType === 'codefile') {
+      var winId = this.panelId + ':codefile';
+      var existing = allWindows.get(winId);
+      if (existing) {
+        var body = existing.el.querySelector('.obs-float-body');
+        if (body && body._locked) {
+          renderViz('codefile', data, body);
+          // Update header path
+          var pathEl = body.querySelector('.obs-code-path');
+          if (pathEl) pathEl.textContent = data.path || 'untitled';
+          bringToFront(existing.el);
+          return;  // Don't create new window or light up button
+        }
+      }
+    }
+
+    // Default behavior: light up button, unfurl drawer
     var btn = this.btnMap[vizType];
-    if (btn && !this.activeWindows.has(vizType)) {
-      btn.disabled = false;
-      btn.classList.add('has-data');
-      btn.title = VIZ_TYPES.find(function(v) { return v.id === vizType; }).label + ' — click to view';
+    if (btn) {
+      btn.classList.remove('obs-requesting');
+      if (!this.activeWindows.has(vizType)) {
+        btn.disabled = false;
+        btn.classList.add('has-data');
+        btn.title = VIZ_TYPES.find(function(v) { return v.id === vizType; }).label + ' — click to view';
+      }
     }
     // Auto-unfurl the drawer when data arrives
     if (this.collapsed) {
@@ -567,6 +655,7 @@
       '<div class="obs-float-resize"></div>';
 
     win.querySelector('.obs-float-close').addEventListener('click', function() {
+      disposeVizContainer(win.querySelector('.obs-float-body'));
       win.remove();
       if (onClose) onClose();
     });
@@ -614,6 +703,7 @@
   // ══════════════════════════════════════════════════════════════
 
   function renderViz(vizType, data, container) {
+    disposeVizContainer(container);
     container.innerHTML = '';
     var fn = RENDERERS[vizType];
     if (fn) {
@@ -1276,6 +1366,285 @@
     container.appendChild(wrap);
   }
 
+  // ── Code File Viewer (Monaco + workspace browser) ──────────
+  // Expects either a tree payload { path, entries: [...] } or a file payload
+  // { path, content, language }.
+  function renderCodeBrowser(data, container) {
+    container.innerHTML = '';
+    container.style.padding = '0';
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+
+    var currentPath = data.path || '';
+    var header = document.createElement('div');
+    header.className = 'obs-code-header';
+    header.innerHTML =
+      '<div class="obs-code-nav">' +
+        '<button class="obs-code-nav-btn obs-code-up"' + (currentPath ? '' : ' disabled') + ' title="Parent directory">\u2191</button>' +
+        '<button class="obs-code-nav-btn obs-code-refresh" title="Reload directory">\u21BB</button>' +
+      '</div>' +
+      '<span class="obs-code-path">' + esc(currentPath || '/') + '</span>' +
+      '<span class="obs-code-subtle">workspace</span>';
+    container.appendChild(header);
+
+    var list = document.createElement('div');
+    list.className = 'obs-code-list';
+    container.appendChild(list);
+
+    var entries = Array.isArray(data.entries) ? data.entries : [];
+    if (!entries.length) {
+      var empty = document.createElement('div');
+      empty.className = 'obs-empty';
+      empty.textContent = 'No visible files in this directory.';
+      list.appendChild(empty);
+    } else {
+      entries.forEach(function(entry) {
+        var row = document.createElement('button');
+        row.className = 'obs-code-row' + (entry.type === 'directory' ? ' is-directory' : '');
+        row.innerHTML =
+          '<span class="obs-code-icon">' + (entry.type === 'directory' ? '\u{1F4C1}' : '\u{1F4C4}') + '</span>' +
+          '<span class="obs-code-name">' + esc(entry.name) + '</span>' +
+          '<span class="obs-code-meta">' + esc(entry.git_status || entry.language || '') + '</span>';
+        row.addEventListener('click', function() {
+          if (entry.type === 'directory') {
+            fetchJson('/api/files/tree', { path: entry.path })
+              .then(function(res) { renderCodefile(res, container); })
+              .catch(function(err) {
+                container.innerHTML = '<div class="obs-error">File tree error: ' + esc(err.message) + '</div>';
+              });
+            return;
+          }
+          fetchJson('/api/files/read', { path: entry.path })
+            .then(function(res) {
+              res.browserPath = currentPath;
+              renderCodefile(res, container);
+            })
+            .catch(function(err) {
+              container.innerHTML = '<div class="obs-error">File read error: ' + esc(err.message) + '</div>';
+            });
+        });
+        list.appendChild(row);
+      });
+    }
+
+    header.querySelector('.obs-code-up').addEventListener('click', function() {
+      if (!currentPath) return;
+      fetchJson('/api/files/tree', { path: parentPath(currentPath) })
+        .then(function(res) { renderCodefile(res, container); })
+        .catch(function(err) {
+          container.innerHTML = '<div class="obs-error">File tree error: ' + esc(err.message) + '</div>';
+        });
+    });
+    header.querySelector('.obs-code-refresh').addEventListener('click', function() {
+      fetchJson('/api/files/tree', { path: currentPath })
+        .then(function(res) { renderCodefile(res, container); })
+        .catch(function(err) {
+          container.innerHTML = '<div class="obs-error">File tree error: ' + esc(err.message) + '</div>';
+        });
+    });
+
+    container._locked = false;
+    container._disposeViz = null;
+  }
+
+  function renderCodeEditor(data, container) {
+    if (!window.__monacoReady) {
+      container.innerHTML = '<div class="obs-error">Monaco Editor not loaded yet. Reload the page.</div>';
+      return;
+    }
+
+    var browserPath = typeof data.browserPath === 'string' ? data.browserPath : parentPath(data.path || '');
+    var wasLocked = !!container._locked;
+    container.innerHTML = '';
+    container.style.padding = '0';
+
+    var header = document.createElement('div');
+    header.className = 'obs-code-header';
+    header.innerHTML =
+      '<div class="obs-code-nav">' +
+        '<button class="obs-code-nav-btn obs-code-browser" title="Browse workspace">\u{2630}</button>' +
+        '<button class="obs-code-nav-btn obs-code-refresh" title="Reload file">\u21BB</button>' +
+      '</div>' +
+      '<span class="obs-code-path">' + esc(data.path || 'untitled') + '</span>' +
+      '<button class="obs-code-lock" title="Lock: auto-follow agent edits"></button>';
+    container.appendChild(header);
+
+    var editorHost = document.createElement('div');
+    editorHost.style.cssText = 'flex:1;min-height:0;';
+    container.appendChild(editorHost);
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+
+    var lang = data.language || 'plaintext';
+    var model = monaco.editor.createModel(data.content || '', lang);
+    var editor = monaco.editor.create(editorHost, {
+      model: model,
+      theme: 'halo-terminal',
+      readOnly: true,
+      minimap: { enabled: true },
+      scrollBeyondLastLine: false,
+      fontSize: 12,
+      fontFamily: "'Share Tech Mono', 'Courier New', monospace",
+      lineNumbers: 'on',
+      renderLineHighlight: 'line',
+      automaticLayout: true,
+    });
+
+    function syncLockButton() {
+      lockBtn.textContent = container._locked ? '\u{1F512}' : '\u{1F513}';
+      lockBtn.title = container._locked ? 'Locked: auto-following agent edits' : 'Unlocked: static view';
+      lockBtn.classList.toggle('is-locked', container._locked);
+    }
+
+    header.querySelector('.obs-code-browser').addEventListener('click', function() {
+      fetchJson('/api/files/tree', { path: browserPath })
+        .then(function(res) { renderCodefile(res, container); })
+        .catch(function(err) {
+          container.innerHTML = '<div class="obs-error">File tree error: ' + esc(err.message) + '</div>';
+        });
+    });
+    header.querySelector('.obs-code-refresh').addEventListener('click', function() {
+      fetchJson('/api/files/read', { path: data.path || '' })
+        .then(function(res) {
+          res.browserPath = browserPath;
+          renderCodefile(res, container);
+        })
+        .catch(function(err) {
+          container.innerHTML = '<div class="obs-error">File read error: ' + esc(err.message) + '</div>';
+        });
+    });
+
+    var lockBtn = header.querySelector('.obs-code-lock');
+    container._locked = wasLocked;
+    container._monacoEditor = editor;
+    lockBtn.addEventListener('click', function() {
+      container._locked = !container._locked;
+      syncLockButton();
+    });
+    syncLockButton();
+    container._disposeViz = function() {
+      if (editor && typeof editor.dispose === 'function') editor.dispose();
+      if (model && typeof model.dispose === 'function') model.dispose();
+    };
+  }
+
+  function renderCodefile(data, container) {
+    if (data && Array.isArray(data.entries)) {
+      renderCodeBrowser(data, container);
+      return;
+    }
+    renderCodeEditor(data, container);
+  }
+
+  // ── Code Diff Viewer (Monaco Diff Editor) ──────────────────
+  // Expects: { changed: [{path, status, staged}] } (from git-status endpoint)
+  // or: { path, original, modified, language } (direct diff data)
+  function renderCodediff(data, container) {
+    if (!window.__monacoReady) {
+      container.innerHTML = '<div class="obs-error">Monaco Editor not loaded yet.</div>';
+      return;
+    }
+
+    // If data is a git-status list (from endpoint), show file picker first
+    if (data.changed && Array.isArray(data.changed)) {
+      container.innerHTML = '';
+      container.style.padding = '8px';
+      var title = document.createElement('div');
+      title.className = 'obs-diff-title';
+      title.textContent = 'Changed Files (' + data.changed.length + ')';
+      container.appendChild(title);
+
+      if (data.changed.length === 0) {
+        var empty = document.createElement('div');
+        empty.className = 'obs-empty';
+        empty.textContent = 'No uncommitted changes.';
+        container.appendChild(empty);
+        return;
+      }
+
+      var list = document.createElement('div');
+      list.className = 'obs-diff-file-list';
+      data.changed.forEach(function(file) {
+        var row = document.createElement('button');
+        row.className = 'obs-diff-file-row';
+        var statusClass = file.status === 'A' ? 'diff-added'
+                        : file.status === 'D' ? 'diff-deleted'
+                        : file.status === 'M' ? 'diff-modified'
+                        : 'diff-other';
+        row.innerHTML =
+          '<span class="obs-diff-status ' + statusClass + '">' + esc(file.status) + '</span>' +
+          '<span class="obs-diff-path">' + esc(file.path) + '</span>';
+        row.addEventListener('click', function() {
+          fetchJson('/api/files/git-diff', { path: file.path })
+            .then(function(res) {
+              if (res.ok && res.diff) {
+                renderDiffEditor(res.diff, container);
+              }
+            });
+        });
+        list.appendChild(row);
+      });
+      container.appendChild(list);
+      return;
+    }
+
+    // Direct diff data (from agent push or after file selection)
+    if (data.diff) {
+      renderDiffEditor(data.diff, container);
+    } else {
+      renderDiffEditor(data, container);
+    }
+  }
+
+  function renderDiffEditor(data, container) {
+    container.innerHTML = '';
+    container.style.padding = '0';
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+
+    var header = document.createElement('div');
+    header.className = 'obs-code-header';
+    header.innerHTML =
+      '<span class="obs-code-path">' + esc(data.path || '') + '</span>' +
+      '<label class="obs-diff-inline-toggle">' +
+        '<input type="checkbox" /> <span>Inline</span>' +
+      '</label>';
+    container.appendChild(header);
+
+    var editorHost = document.createElement('div');
+    editorHost.style.cssText = 'flex:1;min-height:0;';
+    container.appendChild(editorHost);
+
+    var lang = data.language || 'plaintext';
+    var diffEditor = monaco.editor.createDiffEditor(editorHost, {
+      theme: 'halo-terminal',
+      readOnly: true,
+      renderSideBySide: true,
+      enableSplitViewResizing: true,
+      originalEditable: false,
+      automaticLayout: true,
+      fontSize: 12,
+      fontFamily: "'Share Tech Mono', 'Courier New', monospace",
+    });
+
+    diffEditor.setModel({
+      original: monaco.editor.createModel(data.original || '', lang),
+      modified: monaco.editor.createModel(data.modified || '', lang),
+    });
+    var models = diffEditor.getModel();
+    container._diffEditor = diffEditor;
+    container._disposeViz = function() {
+      if (diffEditor && typeof diffEditor.dispose === 'function') diffEditor.dispose();
+      if (models && models.original && typeof models.original.dispose === 'function') models.original.dispose();
+      if (models && models.modified && typeof models.modified.dispose === 'function') models.modified.dispose();
+    };
+
+    // Inline toggle
+    header.querySelector('input[type=checkbox]').addEventListener('change', function(ev) {
+      diffEditor.updateOptions({ renderSideBySide: !ev.target.checked });
+    });
+  }
+
   var RENDERERS = {
     dashboard:  renderDashboard,
     prooftree:  renderProofTree,
@@ -1288,6 +1657,8 @@
     latex:      renderLatex,
     flowchart:  renderFlowchart,
     table:      renderDataTable,
+    codefile:   renderCodefile,
+    codediff:   renderCodediff,
   };
 
   // ── KaTeX helpers ──────────────────────────────────────────

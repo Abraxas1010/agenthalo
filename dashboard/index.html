@@ -31,6 +31,50 @@
   <script src="vendor/d3.v7.min.js"></script>
   <script src="vendor/katex.min.js"></script>
   <script src="vendor/mermaid.min.js"></script>
+  <!-- Monaco Editor (vendored ESM) -->
+  <script src="vendor/monaco/loader.js"></script>
+  <script>
+    require.config({ paths: { vs: 'vendor/monaco' } });
+    require(['vs/editor/editor.main'], function() {
+      monaco.editor.defineTheme('halo-terminal', {
+        base: 'vs-dark',
+        inherit: true,
+        rules: [
+          { token: 'comment',    foreground: '4ca43a', fontStyle: 'italic' },
+          { token: 'keyword',    foreground: 'ff6a00' },
+          { token: 'string',     foreground: '00ff41' },
+          { token: 'number',     foreground: 'ff9f2a' },
+          { token: 'type',       foreground: 'c49bff' },
+          { token: 'function',   foreground: '78ff74' },
+          { token: 'variable',   foreground: '35ff3e' },
+          { token: 'operator',   foreground: '4ba3ff' },
+        ],
+        colors: {
+          'editor.background':                '#080c05',
+          'editor.foreground':                '#35ff3e',
+          'editor.lineHighlightBackground':   '#142210',
+          'editor.selectionBackground':       '#1a331280',
+          'editorCursor.foreground':          '#ff6a00',
+          'editorLineNumber.foreground':      '#4ca43a',
+          'editorLineNumber.activeForeground':'#78ff74',
+          'editor.wordHighlightBackground':   '#1a331240',
+          'editorBracketMatch.background':    '#2a552240',
+          'editorBracketMatch.border':        '#2a5522',
+          'scrollbarSlider.background':       '#1a331240',
+          'scrollbarSlider.hoverBackground':  '#2a552260',
+          'minimap.background':               '#060a04',
+          'diffEditor.insertedTextBackground':    '#00ff4118',
+          'diffEditor.removedTextBackground':     '#ff303018',
+          'diffEditor.insertedLineBackground':    '#00ff4110',
+          'diffEditor.removedLineBackground':     '#ff303010',
+          'diffEditorGutter.insertedLineBackground': '#00ff4120',
+          'diffEditorGutter.removedLineBackground':  '#ff303020',
+        }
+      });
+      window.__monacoReady = true;
+      document.dispatchEvent(new Event('monaco-ready'));
+    });
+  </script>
 </head>
 <body>
   <div id="crypto-lock-overlay" style="display:none"></div>

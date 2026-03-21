@@ -10,3 +10,16 @@ SHA-256:   a53f4a5bfb85520ce11a652c4e883757f477cc62873c1438e0ade330106a24e4  lit
 
 To update: download latest from upstream, replace litegraph.js + litegraph.css,
 update this file, then `touch src/dashboard/assets.rs && cargo build --release`.
+
+monaco-editor vendoring provenance
+===================================
+
+Library:   Monaco Editor (https://github.com/microsoft/monaco-editor)
+Version:   0.52.2
+License:   MIT
+Vendored:  2026-03-20
+Source:    npm registry (monaco-editor@0.52.2), min/ build only
+Contents:  vendor/monaco/ (loader.js + vs/ directory)
+
+To update: download newer tgz from npm, extract min/vs into vendor/monaco/,
+update this file, then `touch src/dashboard/assets.rs && cargo build --release`.
