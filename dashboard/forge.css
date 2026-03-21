@@ -390,6 +390,11 @@ body {
   font-size: 11px;
   color: var(--f-text-dim);
 }
+.forge-status-running { color: var(--f-blue); }
+.forge-status-completed { color: var(--f-ok); }
+.forge-status-verified { color: var(--f-ok); }
+.forge-status-failed { color: var(--f-error); }
+.forge-status-partial { color: var(--f-warn); }
 
 /* Modal */
 .modal-overlay {

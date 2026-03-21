@@ -19,6 +19,7 @@ use futures_util::SinkExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::{broadcast, Mutex};
 
@@ -30,6 +31,7 @@ const MAX_FIX_ITERATIONS: u32 = 5;
 const PIPELINE_CHANNEL_CAPACITY: usize = 64;
 const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 120;
 const MAX_HISTORY_ENTRIES: usize = 50;
+const MAX_STORE_ENTRIES: usize = 200;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -189,7 +191,40 @@ fn now_unix() -> u64 {
 }
 
 fn gen_id(prefix: &str) -> String {
-    format!("{prefix}_{:x}", now_unix() ^ (std::process::id() as u64))
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}_{:x}_{seq:x}", now_unix() ^ (std::process::id() as u64))
+}
+
+/// Evict oldest entries from pipeline store if over capacity.
+async fn evict_oldest_pipelines() {
+    let mut store = PIPELINES.lock().await;
+    while store.len() > MAX_STORE_ENTRIES {
+        // Find the oldest entry by created_at
+        if let Some(oldest_key) = store
+            .iter()
+            .min_by_key(|(_, p)| p.created_at)
+            .map(|(k, _)| k.clone())
+        {
+            store.remove(&oldest_key);
+            BROADCASTS.lock().await.remove(&oldest_key);
+        } else {
+            break;
+        }
+    }
+}
+
+/// Evict oldest entries from verification store if over capacity.
+async fn evict_oldest_verifications() {
+    let mut store = VERIFICATIONS.lock().await;
+    if store.len() > MAX_STORE_ENTRIES {
+        // Verification results don't have timestamps — just drop excess
+        let excess = store.len() - MAX_STORE_ENTRIES;
+        let keys: Vec<String> = store.keys().take(excess).cloned().collect();
+        for k in keys {
+            store.remove(&k);
+        }
+    }
 }
 
 /// Build the list of pipeline phases for a given input mode.
@@ -485,6 +520,7 @@ async fn api_forge_submit(
             created_at: now_unix(),
         };
         PIPELINES.lock().await.insert(pipeline_id.clone(), pipeline);
+        evict_oldest_pipelines().await;
         return Ok(Json(json!({
             "pipeline_id": pipeline_id,
             "status": "completed",
@@ -528,6 +564,7 @@ async fn api_forge_submit(
         .lock()
         .await
         .insert(pipeline_id.clone(), pipeline.clone());
+    evict_oldest_pipelines().await;
 
     // Broadcast initial state
     broadcast_pipeline_update(&pipeline_id, &pipeline).await;
@@ -689,6 +726,7 @@ async fn api_forge_submit(
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct ForgeVerifyRequest {
     lean_code: String,
     #[serde(default)]
@@ -818,6 +856,7 @@ async fn api_forge_verify(
         };
 
         VERIFICATIONS.lock().await.insert(vid, result);
+        evict_oldest_verifications().await;
 
         // Stop the agent
         let _ = orchestrator
@@ -1038,8 +1077,41 @@ async fn api_forge_save(
         ));
     }
 
-    // Build the full file path
+    // Build the full file path and prevent directory traversal (F1 audit fix).
+    // IMPORTANT: containment check BEFORE any filesystem side-effects.
     let full_path = workspace_root.join(&req.file_path);
+    let canonical_root = workspace_root.canonicalize().map_err(|e| {
+        api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("cannot canonicalize workspace root: {e}"),
+        )
+    })?;
+    // Resolve what the canonical path WOULD be without creating anything.
+    // Walk up from full_path until we find an existing ancestor, canonicalize
+    // that, then re-append the remaining suffix.
+    let canonical_path = {
+        let mut existing = full_path.clone();
+        let mut suffix_parts = Vec::new();
+        while !existing.exists() {
+            if let Some(name) = existing.file_name() {
+                suffix_parts.push(name.to_owned());
+            }
+            if !existing.pop() {
+                break;
+            }
+        }
+        let mut resolved = existing.canonicalize().unwrap_or(existing);
+        for part in suffix_parts.into_iter().rev() {
+            resolved.push(part);
+        }
+        resolved
+    };
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(api_err(
+            StatusCode::FORBIDDEN,
+            "file_path escapes workspace root (directory traversal blocked)",
+        ));
+    }
 
     // Ensure parent directory exists (H5: spawn_blocking for file I/O)
     let lean_code = req.lean_code.clone();

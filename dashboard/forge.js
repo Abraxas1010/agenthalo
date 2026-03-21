@@ -195,7 +195,11 @@ function handleFile(file) {
   if (!zone) return;
   const reader = new FileReader();
   reader.onload = () => {
-    zone.innerHTML = '<img class="preview-img" src="' + reader.result + '"/>';
+    zone.innerHTML = '';
+    const img = document.createElement('img');
+    img.className = 'preview-img';
+    img.src = reader.result;
+    zone.appendChild(img);
     zone._base64 = reader.result;
   };
   reader.readAsDataURL(file);
@@ -744,7 +748,9 @@ async function loadTemplates() {
 // ─── Status ───────────────────────────────────────────────────────────────
 
 function setStatus(msg, level) {
-  document.getElementById('forge-status').textContent = 'Status: ' + msg;
+  const el = document.getElementById('forge-status');
+  el.textContent = 'Status: ' + msg;
+  el.className = level ? ('forge-status-' + level) : '';
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
