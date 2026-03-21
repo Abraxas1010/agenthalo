@@ -1730,6 +1730,8 @@ async function route() {
   if (window._destroyHeroParticles) window._destroyHeroParticles();
   // Stop System Monitor polling when navigating away
   if (typeof window.stopSystemMonitor === 'function') window.stopSystemMonitor();
+  // Clean up Proof Game listeners/timers when navigating away
+  if (typeof window.teardownProofGamePage === 'function') window.teardownProofGamePage();
   const overlay = $("#genesis-overlay");
 
   const cryptoReady = await ensureCryptoUnlocked();

@@ -405,16 +405,26 @@
     if (!nodeId) return;
     var node = session.nodes[nodeId];
     if (!node || node.status === 'solved') return;
-    // Check if all children reachable via applied edges are solved
+    // Check if ANY tactic group has all its children solved (Or-semantics
+    // across strategies: one complete proof branch suffices).
     var childEdges = session.edges.filter(function (e) {
       return e.from === nodeId && e.status === 'applied' && e.to !== null;
     });
     if (childEdges.length === 0) return;
-    var allSolved = childEdges.every(function (e) {
-      var child = session.nodes[e.to];
-      return child && child.status === 'solved';
+    // Group by tactic group
+    var groups = {};
+    childEdges.forEach(function (e) {
+      if (!groups[e.group]) groups[e.group] = [];
+      groups[e.group].push(e);
     });
-    if (allSolved) {
+    // Or-semantics: if ANY group has all children solved, parent is solved
+    var anySolved = Object.keys(groups).some(function (g) {
+      return groups[g].every(function (e) {
+        var child = session.nodes[e.to];
+        return child && child.status === 'solved';
+      });
+    });
+    if (anySolved) {
       node.status = 'solved';
       session.solvedSet[nodeId] = true;
       propagateSolved(node.parentId);
@@ -738,6 +748,12 @@
   // ═══════════════════════════════════════════════════════════════
 
   var drag = null;
+  var boundListeners = []; // track listeners for cleanup
+
+  function addTrackedListener(target, event, handler, opts) {
+    target.addEventListener(event, handler, opts);
+    boundListeners.push({ target: target, event: event, handler: handler, opts: opts });
+  }
 
   function screenToWorld(sx, sy) {
     var dpr = window.devicePixelRatio || 1;
@@ -766,7 +782,7 @@
   function setupCanvasEvents() {
     if (!canvas) return;
 
-    canvas.addEventListener('mousemove', function (e) {
+    addTrackedListener(canvas, 'mousemove', function (e) {
       if (drag) {
         cam.x = drag.cx + (e.clientX - drag.sx) / cam.zoom;
         cam.y = drag.cy + (e.clientY - drag.sy) / cam.zoom;
@@ -779,7 +795,7 @@
       canvas.style.cursor = hit ? 'pointer' : 'grab';
     });
 
-    canvas.addEventListener('mousedown', function (e) {
+    addTrackedListener(canvas, 'mousedown', function (e) {
       var w = screenToWorld(e.clientX, e.clientY);
       var hit = hitTest(w.x, w.y);
       if (hit) {
@@ -790,26 +806,27 @@
       }
     });
 
-    window.addEventListener('mouseup', function () {
-      if (drag) { drag = null; canvas.style.cursor = 'grab'; }
+    addTrackedListener(window, 'mouseup', function () {
+      if (drag) { drag = null; if (canvas) canvas.style.cursor = 'grab'; }
     });
 
-    canvas.addEventListener('wheel', function (e) {
+    addTrackedListener(canvas, 'wheel', function (e) {
       e.preventDefault();
       var factor = e.deltaY < 0 ? 1.12 : 0.89;
       cam.zoom = Math.max(0.2, Math.min(4, cam.zoom * factor));
       needsRender = true;
     }, { passive: false });
 
-    // Keyboard shortcuts
-    document.addEventListener('keydown', function (e) {
+    // Keyboard shortcuts — scoped to proof game page via pg-page check
+    addTrackedListener(document, 'keydown', function (e) {
       if (!session) return;
+      if (!document.querySelector('.pg-page')) return;
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
       if (e.key === 'Enter') {
         var input = document.getElementById('pg-tactic-input');
         if (input && input.value.trim()) { doApplyTactic(input.value.trim()); input.value = ''; }
       }
-      if (e.key === 'Backspace' || e.key === 'z' && (e.ctrlKey || e.metaKey)) {
+      if (e.key === 'Backspace' || (e.key === 'z' && (e.ctrlKey || e.metaKey))) {
         e.preventDefault();
         doUndo();
       }
@@ -1018,6 +1035,12 @@
     URL.revokeObjectURL(a.href);
   }
 
+  function hasSorryInProof() {
+    if (!session) return false;
+    var script = buildProofScript();
+    return script.indexOf('sorry') >= 0;
+  }
+
   function showVictory() {
     var graph = document.getElementById('pg-graph');
     if (!graph) return;
@@ -1025,10 +1048,14 @@
     var existing = graph.querySelector('.pg-victory-overlay');
     if (existing) existing.remove();
 
+    var isSorry = hasSorryInProof();
     var overlay = document.createElement('div');
     overlay.className = 'pg-victory-overlay';
-    overlay.innerHTML = '<div class="pg-victory-text">QED</div>' +
-      '<div class="pg-victory-sub">All goals solved — proof complete</div>' +
+    overlay.innerHTML = (isSorry
+      ? '<div class="pg-victory-text" style="color:#ffaa00;text-shadow:0 0 20px #ffaa00">Incomplete</div>' +
+        '<div class="pg-victory-sub" style="color:#ffcc44">Proof uses sorry — connect a Lean server for genuine verification</div>'
+      : '<div class="pg-victory-text">QED</div>' +
+        '<div class="pg-victory-sub">All goals solved — proof complete</div>') +
       '<div class="pg-victory-btns">' +
       '<button class="pg-btn primary" id="pg-v-verify">Verify ✓</button>' +
       '<button class="pg-btn" id="pg-v-export">Export .lean</button>' +
@@ -1167,6 +1194,19 @@
     timerInterval = setInterval(function () {
       if (session && !session.victoryTime) updateStats();
     }, 1000);
+  }
+
+  // Cleanup: remove all listeners, stop timers, cancel animation frame
+  function cleanup() {
+    if (animFrame) { cancelAnimationFrame(animFrame); animFrame = 0; }
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    boundListeners.forEach(function (l) {
+      l.target.removeEventListener(l.event, l.handler, l.opts);
+    });
+    boundListeners = [];
+    canvas = null;
+    ctx = null;
+    drag = null;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1308,8 +1348,13 @@
       }
     });
 
-    // Resize handler
-    window.addEventListener('resize', resizeCanvas);
+    // Resize handler (tracked for cleanup)
+    addTrackedListener(window, 'resize', resizeCanvas);
+  };
+
+  // Teardown — called by SPA router when navigating away
+  window.teardownProofGamePage = function () {
+    cleanup();
   };
 
 })();
