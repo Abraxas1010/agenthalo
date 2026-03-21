@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Gates — Agent H.A.L.O.</title>
+  <link rel="stylesheet" href="gates.css"/>
+</head>
+<body>
+  <header class="gates-topbar">
+    <a href="/" class="back-link">← Dashboard</a>
+    <h1>Gates</h1>
+    <div class="health-indicator" id="health-indicator" title="Overall gate health">●</div>
+  </header>
+
+  <main class="gates-main">
+    <!-- Category 1: Git Gates -->
+    <section class="gate-card" id="card-git">
+      <div class="card-header" data-toggle="card-git-body">
+        <h2>Git Gates</h2>
+        <span class="card-status" id="git-status">—</span>
+        <span class="card-toggle">▾</span>
+      </div>
+      <div class="card-body" id="card-git-body">
+        <div class="gate-row">
+          <span class="gate-label">Worktree Enforcement</span>
+          <span class="gate-value" id="wt-enforcement">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Status</span>
+          <span class="gate-value" id="wt-status">—</span>
+        </div>
+        <div class="gate-row gate-action-row">
+          <button class="gate-btn" id="btn-create-worktree">Create Worktree</button>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Active Worktrees</span>
+        </div>
+        <table class="gate-table" id="wt-table">
+          <thead><tr><th>Path</th><th>Session</th><th>Created</th></tr></thead>
+          <tbody id="wt-tbody"></tbody>
+        </table>
+
+        <div class="gate-divider"></div>
+
+        <div class="gate-row">
+          <span class="gate-label">CodeGuard</span>
+          <span class="gate-value" id="cg-summary">—</span>
+        </div>
+        <div class="gate-row gate-indicators">
+          <span class="gate-indicator" id="cg-gate1" title="Gate 1: Worktree">G1</span>
+          <span class="gate-indicator" id="cg-gate2" title="Gate 2: Schema">G2</span>
+          <span class="gate-indicator" id="cg-gate3" title="Gate 3: Pre-push">G3</span>
+          <a href="/codeguard.html" class="gate-link">Open CodeGuard Page →</a>
+        </div>
+
+        <div class="gate-divider"></div>
+
+        <div class="gate-row">
+          <span class="gate-label">Workspace</span>
+          <span class="gate-value" id="ws-profile">—</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Category 2: Communication Gates -->
+    <section class="gate-card" id="card-comms">
+      <div class="card-header" data-toggle="card-comms-body">
+        <h2>Communication Gates</h2>
+        <span class="card-status" id="comms-status">—</span>
+        <span class="card-toggle">▾</span>
+      </div>
+      <div class="card-body" id="card-comms-body">
+        <div class="gate-row">
+          <span class="gate-label">Proxy Governor</span>
+          <span class="gate-value" id="proxy-status">—</span>
+        </div>
+        <div class="gate-row">
+          <svg id="proxy-sparkline" class="sparkline" viewBox="0 0 200 30"></svg>
+        </div>
+
+        <div class="gate-divider"></div>
+
+        <div class="gate-row">
+          <span class="gate-label">Privacy</span>
+          <span class="gate-value" id="privacy-status">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Mesh</span>
+          <span class="gate-value" id="mesh-status">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">OpenClaw</span>
+          <span class="gate-value" id="openclaw-status">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">P2PCLAW</span>
+          <span class="gate-value" id="p2pclaw-status">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">DIDComm</span>
+          <span class="gate-value" id="didcomm-status">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Nym</span>
+          <span class="gate-value" id="nym-status">—</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Category 3: Internal Gates -->
+    <section class="gate-card" id="card-internal">
+      <div class="card-header" data-toggle="card-internal-body">
+        <h2>Internal Gates</h2>
+        <span class="card-status" id="internal-status">—</span>
+        <span class="card-toggle">▾</span>
+      </div>
+      <div class="card-body" id="card-internal-body">
+        <div class="gate-row">
+          <span class="gate-label">Proof Gate</span>
+          <span class="gate-value" id="proof-gate-status">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Certificates</span>
+          <span class="gate-value" id="proof-gate-certs">—</span>
+        </div>
+
+        <div class="gate-divider"></div>
+
+        <div class="gate-row">
+          <span class="gate-label">Admission</span>
+          <span class="gate-value" id="admission-status">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">EVM Gate</span>
+          <span class="gate-value" id="evm-status">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Crypto</span>
+          <span class="gate-value" id="crypto-status">—</span>
+        </div>
+
+        <div class="gate-divider"></div>
+
+        <div class="gate-row">
+          <span class="gate-label">Governors</span>
+          <span class="gate-value" id="gov-count">—</span>
+        </div>
+        <div id="gov-list" class="gov-list"></div>
+
+        <div class="gate-divider"></div>
+
+        <div class="gate-row">
+          <span class="gate-label">Policy Registry</span>
+          <span class="gate-value" id="policy-status">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Invariant Violations</span>
+          <span class="gate-value" id="policy-violations">—</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="gates-bottombar">
+    <span id="last-refreshed">Last refreshed: —</span>
+    <button class="gate-btn" id="btn-refresh">Refresh All</button>
+    <label class="refresh-label">Auto-refresh:
+      <select id="refresh-interval">
+        <option value="0">Off</option>
+        <option value="5" selected>5s</option>
+        <option value="10">10s</option>
+        <option value="30">30s</option>
+      </select>
+    </label>
+  </footer>
+
+  <!-- Worktree creation modal -->
+  <div class="modal-overlay" id="modal-overlay" style="display:none">
+    <div class="modal-content">
+      <h3>Create Worktree</h3>
+      <label>Purpose<input type="text" id="wt-purpose" placeholder="e.g. feature-xyz"/></label>
+      <label>Agent ID<input type="text" id="wt-agent" placeholder="dashboard" value="dashboard"/></label>
+      <div class="modal-actions">
+        <button class="gate-btn" id="btn-modal-create">Create</button>
+        <button class="gate-btn gate-btn-secondary" id="btn-modal-cancel">Cancel</button>
+      </div>
+      <div id="modal-result" class="modal-result"></div>
+    </div>
+  </div>
+
+  <script src="gates.js"></script>
+</body>
+</html>

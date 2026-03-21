@@ -1,0 +1,389 @@
+/* Gates Dashboard — glassmorphism dark theme matching cockpit aesthetic */
+
+:root {
+  --g-bg: #060a04;
+  --g-surface: rgba(10, 20, 10, 0.85);
+  --g-border: rgba(53, 255, 62, 0.15);
+  --g-text: #c8e6c9;
+  --g-text-dim: #6a8a6a;
+  --g-accent: #35ff3e;
+  --g-accent-dim: rgba(53, 255, 62, 0.3);
+  --g-warn: #ffc107;
+  --g-error: #ff4444;
+  --g-ok: #35ff3e;
+  --g-off: #555;
+  --g-radius: 8px;
+  --g-mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--g-bg);
+  color: var(--g-text);
+  font-family: var(--g-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Top bar */
+.gates-topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: var(--g-surface);
+  border-bottom: 1px solid var(--g-border);
+  backdrop-filter: blur(12px);
+}
+.gates-topbar h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--g-accent);
+  flex: 1;
+}
+.back-link {
+  color: var(--g-text-dim);
+  text-decoration: none;
+  font-size: 13px;
+}
+.back-link:hover { color: var(--g-accent); }
+
+.health-indicator {
+  font-size: 20px;
+  color: var(--g-off);
+  transition: color 0.3s;
+}
+.health-indicator.ok { color: var(--g-ok); }
+.health-indicator.warn { color: var(--g-warn); }
+.health-indicator.error { color: var(--g-error); }
+
+/* Main content area */
+.gates-main {
+  flex: 1;
+  padding: 20px 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Gate cards */
+.gate-card {
+  background: var(--g-surface);
+  border: 1px solid var(--g-border);
+  border-radius: var(--g-radius);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid var(--g-border);
+}
+.card-header:hover { background: rgba(53, 255, 62, 0.03); }
+.card-header h2 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--g-accent);
+  flex: 1;
+}
+.card-status {
+  font-size: 12px;
+  color: var(--g-text-dim);
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.05);
+}
+.card-toggle {
+  color: var(--g-text-dim);
+  font-size: 14px;
+  transition: transform 0.2s;
+}
+.card-body.collapsed + .card-toggle,
+.gate-card.collapsed .card-toggle {
+  transform: rotate(-90deg);
+}
+.card-body {
+  padding: 12px 16px;
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+}
+.card-body.collapsed {
+  display: none;
+}
+
+/* Gate rows */
+.gate-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+.gate-label {
+  color: var(--g-text-dim);
+  min-width: 160px;
+  font-size: 12px;
+}
+.gate-value {
+  color: var(--g-text);
+  font-size: 12px;
+}
+.gate-value.ok { color: var(--g-ok); }
+.gate-value.warn { color: var(--g-warn); }
+.gate-value.error { color: var(--g-error); }
+.gate-value.off { color: var(--g-off); }
+
+.gate-divider {
+  border-top: 1px solid var(--g-border);
+  margin: 8px 0;
+}
+
+/* Gate indicators */
+.gate-indicators {
+  gap: 8px;
+}
+.gate-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid var(--g-border);
+  color: var(--g-off);
+  background: rgba(255,255,255,0.03);
+}
+.gate-indicator.pass {
+  color: var(--g-ok);
+  border-color: var(--g-ok);
+  background: rgba(53, 255, 62, 0.1);
+}
+.gate-indicator.fail {
+  color: var(--g-error);
+  border-color: var(--g-error);
+  background: rgba(255, 68, 68, 0.1);
+}
+
+.gate-link {
+  color: var(--g-accent);
+  text-decoration: none;
+  font-size: 12px;
+  margin-left: auto;
+}
+.gate-link:hover { text-decoration: underline; }
+
+/* Worktree table */
+.gate-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.gate-table th {
+  text-align: left;
+  color: var(--g-text-dim);
+  font-weight: 500;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--g-border);
+}
+.gate-table td {
+  padding: 4px 8px;
+  color: var(--g-text);
+  border-bottom: 1px solid rgba(53, 255, 62, 0.05);
+}
+.gate-table tbody tr:hover { background: rgba(53, 255, 62, 0.03); }
+
+/* Governor list */
+.gov-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.gov-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.02);
+  font-size: 12px;
+}
+.gov-name {
+  min-width: 140px;
+  color: var(--g-text);
+  font-weight: 500;
+}
+.gov-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.gov-badge.stable {
+  background: rgba(53, 255, 62, 0.15);
+  color: var(--g-ok);
+}
+.gov-badge.unstable {
+  background: rgba(255, 193, 7, 0.15);
+  color: var(--g-warn);
+}
+.gov-badge.idle {
+  background: rgba(255,255,255,0.05);
+  color: var(--g-off);
+}
+.gov-epsilon {
+  color: var(--g-text-dim);
+  font-size: 11px;
+}
+.gov-sparkline {
+  width: 80px;
+  height: 20px;
+  margin-left: auto;
+}
+
+/* Sparkline SVG */
+.sparkline {
+  width: 100%;
+  height: 30px;
+}
+.sparkline-line {
+  fill: none;
+  stroke: var(--g-accent);
+  stroke-width: 1.5;
+}
+.sparkline-area {
+  fill: var(--g-accent-dim);
+  opacity: 0.3;
+}
+
+/* Buttons */
+.gate-btn {
+  background: rgba(53, 255, 62, 0.1);
+  color: var(--g-accent);
+  border: 1px solid var(--g-accent);
+  border-radius: 4px;
+  padding: 5px 14px;
+  font-family: var(--g-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.gate-btn:hover {
+  background: rgba(53, 255, 62, 0.2);
+}
+.gate-btn-secondary {
+  border-color: var(--g-text-dim);
+  color: var(--g-text-dim);
+  background: transparent;
+}
+.gate-btn-secondary:hover {
+  background: rgba(255,255,255,0.05);
+}
+
+/* Bottom bar */
+.gates-bottombar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 24px;
+  background: var(--g-surface);
+  border-top: 1px solid var(--g-border);
+  font-size: 11px;
+  color: var(--g-text-dim);
+}
+.gates-bottombar #last-refreshed { flex: 1; }
+.refresh-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--g-text-dim);
+}
+.refresh-label select {
+  background: var(--g-bg);
+  color: var(--g-text);
+  border: 1px solid var(--g-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: var(--g-mono);
+  font-size: 11px;
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-content {
+  background: var(--g-surface);
+  border: 1px solid var(--g-border);
+  border-radius: var(--g-radius);
+  padding: 24px;
+  min-width: 360px;
+  backdrop-filter: blur(16px);
+}
+.modal-content h3 {
+  color: var(--g-accent);
+  margin-bottom: 16px;
+  font-size: 15px;
+}
+.modal-content label {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--g-text-dim);
+  font-size: 12px;
+}
+.modal-content input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  background: var(--g-bg);
+  color: var(--g-text);
+  border: 1px solid var(--g-border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-family: var(--g-mono);
+  font-size: 12px;
+}
+.modal-content input:focus {
+  outline: none;
+  border-color: var(--g-accent);
+}
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+.modal-result {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--g-text-dim);
+  word-break: break-all;
+}
+.modal-result.ok { color: var(--g-ok); }
+.modal-result.error { color: var(--g-error); }
+
+/* Gate action row */
+.gate-action-row { margin: 4px 0; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--g-border);
+  border-radius: 3px;
+}
