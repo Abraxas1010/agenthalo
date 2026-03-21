@@ -63,7 +63,7 @@ fn default_recent_limit() -> usize {
 
 // -- Helpers -----------------------------------------------------------------
 
-fn resolve_workspace_root(
+pub fn resolve_workspace_root(
     override_root: Option<&str>,
 ) -> Result<PathBuf, (StatusCode, Json<Value>)> {
     if let Some(r) = override_root {
@@ -127,7 +127,7 @@ fn normalize_workspace_root(path: PathBuf) -> Option<PathBuf> {
     None
 }
 
-fn guard_traversal(rel: &str, root: &Path) -> Result<PathBuf, (StatusCode, Json<Value>)> {
+pub fn guard_traversal(rel: &str, root: &Path) -> Result<PathBuf, (StatusCode, Json<Value>)> {
     if rel.contains("..") {
         return Err(err(StatusCode::BAD_REQUEST, "path traversal not allowed"));
     }
@@ -141,7 +141,7 @@ fn guard_traversal(rel: &str, root: &Path) -> Result<PathBuf, (StatusCode, Json<
     Ok(full)
 }
 
-fn err(status: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
+pub fn err(status: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
     (status, Json(json!({ "ok": false, "error": msg })))
 }
 
