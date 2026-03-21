@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodeGuard — Agent H.A.L.O.</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <link rel="stylesheet" href="codeguard.css">
+  <!-- Shared vendor scripts -->
+  <script src="vendor/d3.v7.min.js"></script>
+  <script src="vendor/monaco/loader.js"></script>
+  <script>
+    require.config({ paths: { vs: 'vendor/monaco' } });
+    require(['vs/editor/editor.main'], function() {
+      monaco.editor.defineTheme('halo-terminal', {
+        base: 'vs-dark',
+        inherit: true,
+        rules: [
+          { token: 'comment',    foreground: '4ca43a', fontStyle: 'italic' },
+          { token: 'keyword',    foreground: 'ff6a00' },
+          { token: 'string',     foreground: '00ff41' },
+          { token: 'number',     foreground: 'ff9f2a' },
+          { token: 'type',       foreground: 'c49bff' },
+          { token: 'function',   foreground: '78ff74' },
+          { token: 'variable',   foreground: '35ff3e' },
+          { token: 'operator',   foreground: '4ba3ff' },
+        ],
+        colors: {
+          'editor.background':                '#080c05',
+          'editor.foreground':                '#35ff3e',
+          'editor.lineHighlightBackground':   '#142210',
+          'editor.selectionBackground':       '#1a331280',
+          'editorCursor.foreground':          '#ff6a00',
+          'editorLineNumber.foreground':      '#4ca43a',
+          'editorLineNumber.activeForeground':'#78ff74',
+        }
+      });
+      window.__monacoReady = true;
+      document.dispatchEvent(new Event('monaco-ready'));
+    });
+  </script>
+</head>
+<body>
+  <!-- Top Bar -->
+  <div class="codeguard-topbar">
+    <a href="/" class="back-link">&larr; Dashboard</a>
+    <h1>CodeGuard</h1>
+    <select id="repo-selector" title="Select repository">
+      <option value="">Loading...</option>
+    </select>
+    <div class="gate-indicators">
+      <span class="gate-indicator-label">G1</span>
+      <div class="gate-indicator disabled" id="gate-1" title="Gate 1: Worktree Isolation (API-level enforcement only)"></div>
+      <span class="gate-indicator-label">G2</span>
+      <div class="gate-indicator disabled" id="gate-2" title="Gate 2: Schema Mandate"></div>
+      <span class="gate-indicator-label">G3</span>
+      <div class="gate-indicator disabled" id="gate-3" title="Gate 3: Pre-Push Verification"></div>
+    </div>
+  </div>
+
+  <!-- Main Split -->
+  <div class="codeguard-main">
+    <!-- DAG Viewer -->
+    <div class="codeguard-dag" id="dag-container">
+      <div class="empty-state" id="dag-empty">
+        <div class="icon">&#9670;</div>
+        <p>Select a repository to view the CodeGuard dependency graph.</p>
+        <p style="font-size:10px;color:var(--cg-text-dim)">If no manifest exists, click "Run Full Scan" to generate one.</p>
+      </div>
+    </div>
+
+    <!-- Resize Handle -->
+    <div class="codeguard-resize" id="resize-handle"></div>
+
+    <!-- Context Panel -->
+    <div class="codeguard-panel">
+      <div class="codeguard-tabs">
+        <button class="codeguard-tab active" data-tab="detail">Node Detail</button>
+        <button class="codeguard-tab" data-tab="audit">Audit Feed</button>
+        <button class="codeguard-tab" data-tab="gatelog">Gate Log</button>
+        <button class="codeguard-tab" data-tab="studio">Document Studio</button>
+        <button class="codeguard-tab" data-tab="config">Config</button>
+      </div>
+      <!-- Node Detail Tab -->
+      <div class="codeguard-tab-content" id="tab-detail">
+        <div class="empty-state">
+          <p>Click a node in the graph to view its details.</p>
+        </div>
+      </div>
+      <!-- Audit Feed Tab -->
+      <div class="codeguard-tab-content hidden" id="tab-audit">
+        <div class="empty-state">
+          <p>No active audit. Click "Spawn Audit" to start a hostile audit agent.</p>
+          <button class="codeguard-btn primary" onclick="spawnAudit()">Spawn Audit</button>
+        </div>
+      </div>
+      <!-- Gate Log Tab -->
+      <div class="codeguard-tab-content hidden" id="tab-gatelog">
+        <div id="gate-log-list"></div>
+      </div>
+      <!-- Document Studio Tab -->
+      <div class="codeguard-tab-content hidden" id="tab-studio">
+        <div id="studio-content"></div>
+      </div>
+      <!-- Config Tab -->
+      <div class="codeguard-tab-content hidden" id="tab-config">
+        <div id="config-content"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Bar -->
+  <div class="codeguard-bottombar">
+    <div class="manifest-info" id="manifest-info">No manifest loaded</div>
+    <button class="codeguard-btn primary" onclick="saveManifest()">Save Manifest</button>
+    <button class="codeguard-btn" onclick="runFullScan()">Run Full Scan</button>
+    <button class="codeguard-btn" onclick="verifyBindings()">Verify</button>
+    <button class="codeguard-btn" onclick="exportGraph()">Export Graph</button>
+  </div>
+
+  <div class="cg-tooltip" id="tooltip" style="display:none"></div>
+
+  <script src="codeguard.js"></script>
+</body>
+</html>
