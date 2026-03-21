@@ -22,43 +22,76 @@
         <span class="card-toggle">▾</span>
       </div>
       <div class="card-body" id="card-git-body">
+        <!-- Workspace Profile -->
+        <div class="gate-subsection-header">Workspace Profile</div>
         <div class="gate-row">
-          <span class="gate-label">Worktree Enforcement</span>
+          <span class="gate-label">Profile</span>
+          <span class="gate-value" id="ws-profile">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Repo Root</span>
+          <span class="gate-value mono" id="ws-root">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Branch / HEAD</span>
+          <span class="gate-value" id="ws-branch">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Working Directory</span>
+          <span class="gate-value" id="ws-workdir-type">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Dirty Files</span>
+          <span class="gate-value" id="ws-dirty">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Write Policy</span>
+          <span class="gate-value" id="ws-write-policy">—</span>
+        </div>
+
+        <div class="gate-divider"></div>
+
+        <!-- Worktree Enforcement -->
+        <div class="gate-subsection-header">Worktree Enforcement</div>
+        <div class="gate-row">
+          <span class="gate-label">Pre-Edit Gate</span>
           <span class="gate-value" id="wt-enforcement">—</span>
         </div>
         <div class="gate-row">
-          <span class="gate-label">Status</span>
-          <span class="gate-value" id="wt-status">—</span>
+          <span class="gate-label">Worktree Config</span>
+          <span class="gate-value" id="wt-config">—</span>
         </div>
         <div class="gate-row gate-action-row">
           <button class="gate-btn" id="btn-create-worktree">Create Worktree</button>
         </div>
-        <div class="gate-row">
-          <span class="gate-label">Active Worktrees</span>
-        </div>
+
+        <!-- HALO-managed worktrees -->
+        <div class="gate-subsection-header">HALO-Managed Worktrees</div>
         <table class="gate-table" id="wt-table">
-          <thead><tr><th>Path</th><th>Session</th><th>Created</th></tr></thead>
+          <thead><tr><th>Path</th><th>Repo</th><th>Branch</th><th>Session</th><th>Created</th></tr></thead>
           <tbody id="wt-tbody"></tbody>
+        </table>
+
+        <!-- All git worktrees -->
+        <div class="gate-subsection-header">All Git Worktrees</div>
+        <table class="gate-table" id="all-wt-table">
+          <thead><tr><th>Path</th><th>Branch</th><th>HEAD</th></tr></thead>
+          <tbody id="all-wt-tbody"></tbody>
         </table>
 
         <div class="gate-divider"></div>
 
+        <!-- CodeGuard -->
+        <div class="gate-subsection-header">CodeGuard Gates</div>
         <div class="gate-row">
-          <span class="gate-label">CodeGuard</span>
+          <span class="gate-label">Manifest</span>
           <span class="gate-value" id="cg-summary">—</span>
         </div>
         <div class="gate-row gate-indicators">
-          <span class="gate-indicator" id="cg-gate1" title="Gate 1: Worktree">G1</span>
-          <span class="gate-indicator" id="cg-gate2" title="Gate 2: Schema">G2</span>
-          <span class="gate-indicator" id="cg-gate3" title="Gate 3: Pre-push">G3</span>
+          <span class="gate-indicator" id="cg-gate1" title="Gate 1: Worktree isolation">G1</span>
+          <span class="gate-indicator" id="cg-gate2" title="Gate 2: Schema mandate">G2</span>
+          <span class="gate-indicator" id="cg-gate3" title="Gate 3: Pre-push audit">G3</span>
           <a href="/codeguard.html" class="gate-link">Open CodeGuard Page →</a>
-        </div>
-
-        <div class="gate-divider"></div>
-
-        <div class="gate-row">
-          <span class="gate-label">Workspace</span>
-          <span class="gate-value" id="ws-profile">—</span>
         </div>
       </div>
     </section>

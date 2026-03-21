@@ -89,13 +89,30 @@ fn collect_git_gates() -> Value {
     let worktree_enforcement_enabled =
         std::env::var("AGENTHALO_WORKTREE_GATE").unwrap_or_else(|_| "1".into()) == "1";
 
-    // List active worktrees
+    // List active worktrees — richer info per worktree
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let worktrees = crate::container::worktree::list_managed_worktrees(
+    let worktrees_raw = crate::container::worktree::list_managed_worktrees(
         &cwd,
         &profile.worktree_prefix,
     )
     .unwrap_or_default();
+    let worktrees: Vec<Value> = worktrees_raw
+        .iter()
+        .map(|wt| {
+            let short_branch = wt.branch.strip_prefix("refs/heads/").unwrap_or(&wt.branch);
+            json!({
+                "path": wt.path.display().to_string(),
+                "repo_path": wt.repo_path.display().to_string(),
+                "session_id": wt.session_id,
+                "branch": short_branch,
+                "created_at": wt.created_at,
+                "injections_count": wt.injections.len(),
+            })
+        })
+        .collect();
+
+    // Also list ALL git worktrees (not just HALO-managed) for full visibility
+    let all_worktrees = list_all_git_worktrees(&cwd);
 
     // CodeGuard summary from active workspace
     let codeguard = match resolve_workspace_root(None) {
@@ -119,8 +136,62 @@ fn collect_git_gates() -> Value {
                 Some(m) => gate_check::check_pre_push_gate(&root, &[], m, &config).is_ok(),
                 None => true, // no manifest = no pre-push gate to fail
             };
+
+            // Detect if we're in a worktree or main checkout
+            let is_worktree = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["rev-parse", "--git-dir"])
+                .output()
+                .ok()
+                .map(|o| {
+                    let dir = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    // In a worktree, git-dir is typically .git/worktrees/<name>
+                    dir.contains("/worktrees/")
+                })
+                .unwrap_or(false);
+
+            // Get current branch and HEAD
+            let current_branch = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["symbolic-ref", "--short", "HEAD"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            let head_short = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["rev-parse", "--short", "HEAD"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
+            // Dirty file count
+            let dirty_count = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["status", "--porcelain"])
+                .output()
+                .ok()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .filter(|l| !l.is_empty())
+                        .count()
+                })
+                .unwrap_or(0);
+
             json!({
+                "workspace_root": root.display().to_string(),
+                "is_worktree": is_worktree,
+                "current_branch": current_branch,
+                "head": head_short,
+                "dirty_files": dirty_count,
                 "manifest_exists": manifest_path.is_some(),
+                "manifest_path": manifest_path.map(|p| p.display().to_string()),
                 "bindings_count": bindings_count,
                 "gates": {
                     "worktree_required": config.gates.worktree_required,
@@ -129,32 +200,106 @@ fn collect_git_gates() -> Value {
                     "pre_push_human_approval": config.gates.pre_push_human_approval,
                 },
                 "gate1_pass": gate1.is_ok(),
+                "gate1_enabled": config.gates.worktree_required,
                 "gate2_pass": gate2.is_ok(),
+                "gate2_enabled": config.gates.schema_required,
                 "gate3_pass": gate3,
+                "gate3_enabled": config.gates.pre_push_hostile_audit || config.gates.pre_push_human_approval,
             })
         }
         Err(_) => json!({
+            "workspace_root": null,
+            "is_worktree": false,
             "manifest_exists": false,
             "bindings_count": 0,
             "gates": {},
             "gate1_pass": false,
+            "gate1_enabled": false,
             "gate2_pass": false,
+            "gate2_enabled": false,
             "gate3_pass": false,
+            "gate3_enabled": false,
         }),
     };
 
     json!({
         "worktree_enforcement": {
             "enabled": worktree_enforcement_enabled,
-            "active_worktrees": worktrees,
+            "managed_worktrees": worktrees,
+            "all_worktrees": all_worktrees,
         },
         "codeguard": codeguard,
         "workspace_profile": {
             "name": profile.profile_name,
             "lean_project_path": profile.lean_project_path,
             "worktree_isolation": profile.worktree_isolation,
+            "worktree_base": profile.worktree_base,
+            "worktree_prefix": profile.worktree_prefix,
+            "worktree_branch": profile.worktree_branch,
+            "max_worktrees": profile.max_worktrees,
+            "external_write_policy": format!("{:?}", profile.external_write_policy),
+            "hidden_nav_items": profile.hidden_nav_items,
         },
     })
+}
+
+/// List ALL git worktrees (including non-HALO-managed) for full visibility.
+fn list_all_git_worktrees(repo_path: &std::path::Path) -> Vec<Value> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["worktree", "list", "--porcelain"])
+        .output();
+    let output = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => return vec![],
+    };
+
+    let mut worktrees = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+    let mut current_head: Option<String> = None;
+    let mut is_bare = false;
+
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            current_path = Some(rest.to_string());
+            current_branch = None;
+            current_head = None;
+            is_bare = false;
+        } else if let Some(rest) = line.strip_prefix("HEAD ") {
+            current_head = Some(rest[..8.min(rest.len())].to_string());
+        } else if let Some(rest) = line.strip_prefix("branch ") {
+            current_branch = Some(
+                rest.strip_prefix("refs/heads/")
+                    .unwrap_or(rest)
+                    .to_string(),
+            );
+        } else if line == "bare" {
+            is_bare = true;
+        } else if line.is_empty() {
+            if let Some(path) = current_path.take() {
+                if !is_bare {
+                    worktrees.push(json!({
+                        "path": path,
+                        "branch": current_branch.take(),
+                        "head": current_head.take(),
+                    }));
+                }
+            }
+        }
+    }
+    // Handle last entry if file doesn't end with blank line
+    if let Some(path) = current_path {
+        if !is_bare {
+            worktrees.push(json!({
+                "path": path,
+                "branch": current_branch,
+                "head": current_head,
+            }));
+        }
+    }
+    worktrees
 }
 
 /// Collect communication gate data.

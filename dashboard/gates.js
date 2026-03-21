@@ -61,66 +61,126 @@ function renderGitGates(git) {
   const cg = git.codeguard || {};
   const ws = git.workspace_profile || {};
 
-  // Worktree enforcement
-  const enabled = wt.enabled;
-  const el = document.getElementById('wt-enforcement');
-  el.textContent = enabled ? 'ENABLED' : 'DISABLED';
-  el.className = 'gate-value ' + (enabled ? 'ok' : 'off');
+  // -- Workspace Profile --
+  document.getElementById('ws-profile').textContent = ws.name || 'default';
+  document.getElementById('ws-root').textContent = cg.workspace_root || '—';
+  document.getElementById('ws-root').title = cg.workspace_root || '';
 
-  // Worktree status
-  const worktrees = wt.active_worktrees || [];
-  const statusEl = document.getElementById('wt-status');
-  if (worktrees.length > 0) {
-    statusEl.textContent = worktrees.length + ' active worktree' + (worktrees.length > 1 ? 's' : '');
-    statusEl.className = 'gate-value ok';
+  // Branch + HEAD
+  const branchEl = document.getElementById('ws-branch');
+  const branch = cg.current_branch || '(detached)';
+  const head = cg.head || '—';
+  branchEl.textContent = branch + ' @ ' + head;
+
+  // Working directory type
+  const wdEl = document.getElementById('ws-workdir-type');
+  if (cg.is_worktree) {
+    wdEl.textContent = 'Git worktree';
+    wdEl.className = 'gate-value ok';
   } else {
-    statusEl.textContent = 'No active worktrees';
-    statusEl.className = 'gate-value off';
+    wdEl.textContent = 'Main checkout';
+    wdEl.className = 'gate-value warn';
   }
 
-  // Worktree table
+  // Dirty files
+  const dirtyEl = document.getElementById('ws-dirty');
+  const dirty = cg.dirty_files || 0;
+  dirtyEl.textContent = dirty === 0 ? 'Clean' : dirty + ' modified';
+  dirtyEl.className = 'gate-value ' + (dirty === 0 ? 'ok' : dirty > 50 ? 'error' : 'warn');
+
+  // Write policy
+  document.getElementById('ws-write-policy').textContent =
+    ws.external_write_policy || 'Deny';
+
+  // -- Worktree Enforcement --
+  const enabled = wt.enabled;
+  const enfEl = document.getElementById('wt-enforcement');
+  enfEl.textContent = enabled ? 'ENABLED' : 'DISABLED';
+  enfEl.className = 'gate-value ' + (enabled ? 'ok' : 'off');
+
+  // Worktree config summary
+  const configEl = document.getElementById('wt-config');
+  configEl.textContent = 'base=' + (ws.worktree_base || '/tmp') +
+    '  prefix=' + (ws.worktree_prefix || 'halo') +
+    '  branch=' + (ws.worktree_branch || 'origin/master') +
+    '  max=' + (ws.max_worktrees || '?');
+
+  // -- HALO-managed worktree table --
+  const managed = wt.managed_worktrees || [];
   const tbody = document.getElementById('wt-tbody');
   tbody.innerHTML = '';
-  if (worktrees.length === 0) {
+  if (managed.length === 0) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="3" style="color:var(--g-text-dim)">No managed worktrees</td>';
+    tr.innerHTML = '<td colspan="5" style="color:var(--g-text-dim)">No HALO-managed worktrees</td>';
     tbody.appendChild(tr);
   } else {
-    for (const wt of worktrees) {
+    for (const w of managed) {
       const tr = document.createElement('tr');
-      const pathStr = wt.path || '—';
+      const pathStr = w.path || '—';
       const shortPath = pathStr.split('/').slice(-2).join('/');
-      const created = wt.created_at ? timeAgo(wt.created_at) : '—';
-      tr.innerHTML = `<td title="${esc(pathStr)}">${esc(shortPath)}</td>` +
-        `<td>${esc(wt.session_id || '—')}</td>` +
+      const repoStr = w.repo_path || '—';
+      const shortRepo = repoStr.split('/').slice(-2).join('/');
+      const created = w.created_at ? timeAgo(w.created_at) : '—';
+      tr.innerHTML =
+        `<td title="${esc(pathStr)}">${esc(shortPath)}</td>` +
+        `<td title="${esc(repoStr)}">${esc(shortRepo)}</td>` +
+        `<td>${esc(w.branch || '—')}</td>` +
+        `<td>${esc(w.session_id || '—')}</td>` +
         `<td>${esc(created)}</td>`;
       tbody.appendChild(tr);
     }
   }
 
-  // CodeGuard summary
+  // -- All git worktrees table --
+  const allWt = wt.all_worktrees || [];
+  const allTbody = document.getElementById('all-wt-tbody');
+  allTbody.innerHTML = '';
+  if (allWt.length === 0) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="3" style="color:var(--g-text-dim)">No worktrees found</td>';
+    allTbody.appendChild(tr);
+  } else {
+    for (const w of allWt) {
+      const tr = document.createElement('tr');
+      const pathStr = w.path || '—';
+      const shortPath = pathStr.split('/').slice(-3).join('/');
+      tr.innerHTML =
+        `<td title="${esc(pathStr)}">${esc(shortPath)}</td>` +
+        `<td>${esc(w.branch || '(detached)')}</td>` +
+        `<td>${esc(w.head || '—')}</td>`;
+      allTbody.appendChild(tr);
+    }
+  }
+
+  // -- CodeGuard Gates --
   const cgSummary = document.getElementById('cg-summary');
   if (cg.manifest_exists) {
-    cgSummary.textContent = cg.bindings_count + ' bindings';
+    const mPath = cg.manifest_path || '';
+    const shortManifest = mPath.split('/').slice(-2).join('/');
+    cgSummary.textContent = cg.bindings_count + ' bindings' +
+      (shortManifest ? ' (' + shortManifest + ')' : '');
     cgSummary.className = 'gate-value ok';
   } else {
-    cgSummary.textContent = 'No manifest';
+    cgSummary.textContent = 'No manifest found';
     cgSummary.className = 'gate-value off';
   }
 
-  // Gate indicators
-  setIndicator('cg-gate1', cg.gate1_pass);
-  setIndicator('cg-gate2', cg.gate2_pass);
-  setIndicator('cg-gate3', cg.gate3_pass);
+  // Gate indicators — show enabled/disabled/pass/fail
+  setGateIndicator('cg-gate1', cg.gate1_enabled, cg.gate1_pass);
+  setGateIndicator('cg-gate2', cg.gate2_enabled, cg.gate2_pass);
+  setGateIndicator('cg-gate3', cg.gate3_enabled, cg.gate3_pass);
 
   // Git status summary
-  const gitOk = (!enabled || worktrees.length > 0);
-  document.getElementById('git-status').textContent = gitOk ? 'OK' : 'Blocked';
-  document.getElementById('git-status').style.color = gitOk ? 'var(--g-ok)' : 'var(--g-warn)';
-
-  // Workspace
-  const wsEl = document.getElementById('ws-profile');
-  wsEl.textContent = ws.name ? (ws.name + (ws.lean_project_path ? ' (' + ws.lean_project_path + ')' : '')) : 'default';
+  const managedCount = managed.length;
+  const allCount = allWt.length;
+  const gitStatusEl = document.getElementById('git-status');
+  if (enabled && !cg.is_worktree) {
+    gitStatusEl.textContent = 'Enforced — not in worktree';
+    gitStatusEl.style.color = 'var(--g-warn)';
+  } else {
+    gitStatusEl.textContent = managedCount + ' managed / ' + allCount + ' total worktrees';
+    gitStatusEl.style.color = 'var(--g-ok)';
+  }
 }
 
 function renderCommGates(comms) {
@@ -438,6 +498,21 @@ function setIndicator(id, pass) {
   const el = document.getElementById(id);
   if (!el) return;
   el.className = 'gate-indicator ' + (pass ? 'pass' : 'fail');
+}
+
+function setGateIndicator(id, enabled, pass) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!enabled) {
+    el.className = 'gate-indicator off';
+    el.title = el.title.split(':')[0] + ': disabled';
+  } else if (pass) {
+    el.className = 'gate-indicator pass';
+    el.title = el.title.split(':')[0] + ': pass';
+  } else {
+    el.className = 'gate-indicator fail';
+    el.title = el.title.split(':')[0] + ': FAIL';
+  }
 }
 
 function timeAgo(unixSecs) {
