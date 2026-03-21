@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod assets;
+pub mod editor_api;
 pub mod mcp_bridge;
 
 use axum::routing::get;
