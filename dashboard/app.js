@@ -115,6 +115,15 @@ function renderProofExplorerRoute() {
   }
 }
 
+function renderProofGameRoute() {
+  if (typeof window.renderProofGamePage === "function") {
+    window.renderProofGamePage();
+  } else {
+    content.innerHTML =
+      '<div class="loading">Proof Game module not loaded.</div>';
+  }
+}
+
 function renderSystemMonitorRoute() {
   // Stop any previous monitor polling when navigating away
   if (typeof window.stopSystemMonitor === "function") {
@@ -230,6 +239,7 @@ const pages = {
   skills: renderSkillsPageRoute,
   lean: renderLeanPageRoute,
   "proof-explorer": renderProofExplorerRoute,
+  "proof-game": renderProofGameRoute,
   "system-monitor": renderSystemMonitorRoute,
   agentpmt: renderAgentPmt,
 };

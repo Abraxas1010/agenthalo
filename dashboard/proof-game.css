@@ -1,0 +1,234 @@
+/* ─────────────────────────────────────────────────────────────
+   Proof Game — Interactive Theorem Proving
+   Part of Agent H.A.L.O. Dashboard
+   ───────────────────────────────────────────────────────────── */
+
+/* ── Page Layout ─────────────────────────────────────────── */
+.pg-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #060a04;
+  color: #b8e6b0;
+  font-family: 'Space Grotesk', 'SF Mono', monospace;
+}
+
+/* ── Top Bar ─────────────────────────────────────────────── */
+.pg-topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(53,255,62,0.12);
+  background: rgba(8,12,5,0.95);
+  flex-shrink: 0;
+  z-index: 10;
+}
+.pg-title { font-size: 16px; font-weight: 700; color: #35ff3e; white-space: nowrap; }
+.pg-title-accent { color: #ff6a00; }
+.pg-theorem-name {
+  font-size: 13px; color: #78ff74; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: 'SF Mono', monospace;
+}
+.pg-status { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #4ca43a; white-space: nowrap; }
+.pg-status-dot { width: 8px; height: 8px; border-radius: 50%; }
+.pg-status-dot.active { background: #00ff41; box-shadow: 0 0 6px #00ff41; }
+.pg-status-dot.simulated { background: #ffaa00; box-shadow: 0 0 6px #ffaa00; }
+.pg-status-dot.victory { background: #39ff14; box-shadow: 0 0 8px #39ff14; animation: pg-pulse 1s infinite; }
+
+.pg-btn {
+  padding: 5px 12px; font-size: 11px; font-weight: 600;
+  border: 1px solid rgba(53,255,62,0.2); border-radius: 4px;
+  background: rgba(10,20,8,0.6); color: #78ff74;
+  cursor: pointer; transition: all 0.15s; white-space: nowrap; font-family: inherit;
+}
+.pg-btn:hover { background: rgba(0,255,65,0.08); border-color: rgba(53,255,62,0.4); color: #35ff3e; }
+.pg-btn.primary { background: rgba(0,255,65,0.12); border-color: #00ff41; color: #00ff41; }
+.pg-btn.primary:hover { background: rgba(0,255,65,0.2); }
+.pg-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* ── Main Layout ─────────────────────────────────────────── */
+.pg-main { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.pg-graph { flex: 1; position: relative; overflow: hidden; background: #050804; }
+.pg-graph canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+.pg-graph canvas:active { cursor: grabbing; }
+
+/* ── Context Panel ───────────────────────────────────────── */
+.pg-context {
+  width: 340px; border-left: 1px solid rgba(53,255,62,0.12);
+  background: rgba(8,12,5,0.92); overflow-y: auto; flex-shrink: 0;
+  display: flex; flex-direction: column;
+}
+.pg-section { padding: 12px 14px; border-bottom: 1px solid rgba(53,255,62,0.08); }
+.pg-section-title {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 1.5px; color: #4ca43a; margin-bottom: 8px;
+}
+
+/* Goal State */
+.pg-goal-display {
+  padding: 10px; background: rgba(0,255,65,0.04);
+  border: 1px solid rgba(53,255,62,0.1); border-radius: 4px;
+  font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px;
+  color: #78ff74; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+.pg-goal-display .katex { font-size: 14px; }
+
+/* Hypotheses */
+.pg-hyp-list { list-style: none; padding: 0; margin: 0; }
+.pg-hyp-item {
+  display: flex; gap: 6px; padding: 4px 8px;
+  font-size: 12px; font-family: 'SF Mono', monospace;
+  cursor: pointer; border-radius: 3px; transition: background 0.15s;
+}
+.pg-hyp-item:hover { background: rgba(0,255,65,0.06); }
+.pg-hyp-name { color: #00ccff; font-weight: 600; }
+.pg-hyp-colon { color: #4ca43a; }
+.pg-hyp-type { color: #b8e6b0; }
+
+/* Tactics */
+.pg-tactic-list { display: flex; flex-direction: column; gap: 2px; }
+.pg-tactic-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; font-size: 12px; font-family: 'SF Mono', monospace;
+  cursor: pointer; border-radius: 3px; border: 1px solid transparent;
+  transition: all 0.15s; color: #b8e6b0;
+}
+.pg-tactic-item:hover {
+  background: rgba(0,255,65,0.06); border-color: rgba(53,255,62,0.15); color: #78ff74;
+}
+.pg-tactic-arrow { color: #4ca43a; font-size: 10px; }
+.pg-tactic-name { flex: 1; }
+.pg-tactic-desc { font-size: 10px; color: #3a6030; text-align: right; }
+
+/* Custom tactic input */
+.pg-tactic-input-row { display: flex; gap: 6px; margin-top: 6px; }
+.pg-tactic-input {
+  flex: 1; padding: 6px 10px; font-size: 12px; font-family: 'SF Mono', monospace;
+  background: rgba(0,0,0,0.3); border: 1px solid rgba(53,255,62,0.15);
+  border-radius: 3px; color: #78ff74; outline: none;
+}
+.pg-tactic-input:focus { border-color: #35ff3e; box-shadow: 0 0 4px rgba(53,255,62,0.2); }
+.pg-tactic-input::placeholder { color: #3a6030; }
+
+/* Proof Script */
+.pg-script {
+  padding: 10px; background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(53,255,62,0.08); border-radius: 4px;
+  font-family: 'SF Mono', monospace; font-size: 12px;
+  color: #78ff74; line-height: 1.6; white-space: pre-wrap;
+  max-height: 200px; overflow-y: auto;
+}
+
+/* Hint section */
+.pg-hint-btns { display: flex; gap: 8px; }
+
+/* ── Bottom Bar ──────────────────────────────────────────── */
+.pg-bottombar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 8px 16px; border-top: 1px solid rgba(53,255,62,0.12);
+  background: rgba(8,12,5,0.95); font-size: 12px; color: #4ca43a; flex-shrink: 0;
+}
+.pg-stat { display: flex; align-items: center; gap: 4px; }
+.pg-stat-value { color: #78ff74; font-weight: 600; }
+.pg-stat-sep { color: rgba(53,255,62,0.2); margin: 0 4px; }
+
+/* ── Library Modal ───────────────────────────────────────── */
+.pg-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px);
+}
+.pg-modal {
+  background: #0a1408; border: 1px solid rgba(53,255,62,0.2); border-radius: 8px;
+  padding: 24px; max-width: 720px; width: 90%; max-height: 80vh; overflow-y: auto;
+  box-shadow: 0 0 40px rgba(0,255,65,0.08); position: relative;
+}
+.pg-modal-title { font-size: 18px; font-weight: 700; color: #35ff3e; margin-bottom: 16px; }
+.pg-modal-close {
+  position: absolute; top: 12px; right: 16px; background: none; border: none;
+  color: #4ca43a; font-size: 20px; cursor: pointer; line-height: 1;
+}
+.pg-modal-close:hover { color: #78ff74; }
+.pg-category-title {
+  font-size: 13px; font-weight: 700; color: #ff6a00; margin: 16px 0 8px;
+  padding-bottom: 4px; border-bottom: 1px solid rgba(255,106,0,0.2);
+}
+.pg-theorem-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.pg-theorem-card {
+  padding: 12px; background: rgba(0,255,65,0.03);
+  border: 1px solid rgba(53,255,62,0.1); border-radius: 4px;
+  cursor: pointer; transition: all 0.15s;
+}
+.pg-theorem-card:hover { background: rgba(0,255,65,0.07); border-color: rgba(53,255,62,0.25); }
+.pg-tc-name { font-size: 13px; font-weight: 600; color: #78ff74; margin-bottom: 4px; }
+.pg-tc-stmt {
+  font-size: 11px; font-family: 'SF Mono', monospace; color: #4ca43a;
+  margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pg-tc-meta { display: flex; align-items: center; gap: 8px; font-size: 10px; color: #3a6030; }
+.pg-star { color: #ff6a00; }
+.pg-star.dim { color: #2a3020; }
+.pg-tag { padding: 1px 6px; background: rgba(0,255,65,0.06); border-radius: 3px; font-size: 10px; color: #4ca43a; }
+
+/* New theorem input in modal */
+.pg-new-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(53,255,62,0.1); }
+.pg-new-row { display: flex; gap: 8px; margin-top: 8px; }
+.pg-new-input {
+  flex: 1; padding: 8px 12px; font-size: 13px; font-family: 'SF Mono', monospace;
+  background: rgba(0,0,0,0.3); border: 1px solid rgba(53,255,62,0.15);
+  border-radius: 4px; color: #78ff74; outline: none;
+}
+.pg-new-input:focus { border-color: #35ff3e; }
+.pg-new-hint { font-size: 11px; color: #3a6030; margin-top: 4px; }
+
+/* ── Welcome State ───────────────────────────────────────── */
+.pg-welcome {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 16px; color: #4ca43a;
+  background: #050804;
+}
+.pg-welcome-title { font-size: 28px; font-weight: 700; color: #35ff3e; }
+.pg-welcome-sub {
+  font-size: 14px; color: #4ca43a; max-width: 420px;
+  text-align: center; line-height: 1.5;
+}
+.pg-welcome-mode {
+  font-size: 11px; padding: 4px 10px;
+  background: rgba(255,170,0,0.1); border: 1px solid rgba(255,170,0,0.2);
+  border-radius: 3px; color: #ffaa00;
+}
+
+/* ── Victory Overlay ─────────────────────────────────────── */
+.pg-victory-overlay {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.6); z-index: 50; animation: pg-fade-in 0.5s;
+}
+.pg-victory-text {
+  font-size: 32px; font-weight: 700; color: #39ff14;
+  text-shadow: 0 0 20px #39ff14, 0 0 40px rgba(57,255,20,0.5);
+  animation: pg-victory-pulse 1.5s infinite;
+}
+.pg-victory-sub { font-size: 14px; color: #78ff74; margin-top: 8px; }
+.pg-victory-btns { display: flex; gap: 12px; margin-top: 20px; }
+
+/* ── Animations ──────────────────────────────────────────── */
+@keyframes pg-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes pg-victory-pulse {
+  0%, 100% { transform: scale(1); text-shadow: 0 0 20px #39ff14, 0 0 40px rgba(57,255,20,0.5); }
+  50% { transform: scale(1.05); text-shadow: 0 0 30px #39ff14, 0 0 60px rgba(57,255,20,0.5), 0 0 80px rgba(57,255,20,0.3); }
+}
+@keyframes pg-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── Scrollbars ──────────────────────────────────────────── */
+.pg-context::-webkit-scrollbar { width: 6px; }
+.pg-context::-webkit-scrollbar-track { background: transparent; }
+.pg-context::-webkit-scrollbar-thumb { background: rgba(53,255,62,0.15); border-radius: 3px; }
+.pg-script::-webkit-scrollbar { width: 4px; }
+.pg-script::-webkit-scrollbar-track { background: transparent; }
+.pg-script::-webkit-scrollbar-thumb { background: rgba(53,255,62,0.1); border-radius: 2px; }
+.pg-modal::-webkit-scrollbar { width: 6px; }
+.pg-modal::-webkit-scrollbar-track { background: transparent; }
+.pg-modal::-webkit-scrollbar-thumb { background: rgba(53,255,62,0.15); border-radius: 3px; }

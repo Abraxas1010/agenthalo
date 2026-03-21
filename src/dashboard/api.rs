@@ -453,6 +453,15 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .nest("/gates", super::gates_api::router())
         // Proof Forge: autoformalization + verification workbench
         .nest("/forge", super::forge_api::router())
+        // Proof Explorer Game: interactive theorem proving (stub — client-side simulation)
+        .route("/explorer/status", get(super::explorer_api::api_explorer_status))
+        .route("/explorer/load", post(super::explorer_api::api_explorer_load))
+        .route("/explorer/tactic", post(super::explorer_api::api_explorer_tactic))
+        .route("/explorer/suggest", post(super::explorer_api::api_explorer_suggest))
+        .route("/explorer/verify", post(super::explorer_api::api_explorer_verify))
+        .route("/explorer/hint", post(super::explorer_api::api_explorer_hint))
+        .route("/explorer/autosolve", post(super::explorer_api::api_explorer_autosolve))
+        .route("/explorer/library", get(super::explorer_api::api_explorer_library))
         // JSON 404 fallback for unmatched /api/* routes.
         .fallback(api_fallback_not_found)
         .with_state(state)
