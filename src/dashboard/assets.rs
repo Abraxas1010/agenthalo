@@ -37,7 +37,7 @@ fn serve_embedded(path: &str) -> Option<Response> {
                 (header::EXPIRES, "0".to_string()),
                 (
                     header::CONTENT_SECURITY_POLICY,
-                    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self' data:; frame-src 'self' https://p2pclaw.com https://*.p2pclaw.com https://www.agentpmt.com https://*.agentpmt.com".to_string(),
+                    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self' data:; frame-src 'self' https://p2pclaw.com https://*.p2pclaw.com https://www.agentpmt.com https://*.agentpmt.com".to_string(),
                 ),
             ],
             file.data.to_vec(),
