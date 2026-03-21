@@ -342,7 +342,7 @@
             { label: file?.pinned ? 'Unpin' : 'Pin', onClick: () => { if (file) file.pinned = !file.pinned; this.renderEditorTabs(); } },
             { label: 'Close', onClick: () => this.closeEditorTab(idx) },
             { label: 'Close Others', onClick: () => this.closeOtherEditorTabs(idx) },
-            { label: 'Copy Path', onClick: () => navigator.clipboard?.writeText(file?.path || '') },
+            { label: 'Copy Path', onClick: () => copyToClipboard(file?.path || '') },
           ]);
         });
       });
@@ -2153,18 +2153,7 @@
         '</div>';
       }).join('');
 
-      // Copy-path buttons (click the 📋 icon)
-      body.querySelectorAll('.sidebar-copy-btn').forEach((btn) => {
-        btn.addEventListener('click', (ev) => {
-          ev.stopPropagation();
-          const p = btn.dataset.copyPath;
-          if (p) {
-            navigator.clipboard?.writeText(p);
-            btn.textContent = '✓';
-            setTimeout(() => { btn.innerHTML = '&#128203;'; }, 1200);
-          }
-        });
-      });
+      bindCopyPathButtons(body);
 
       // Click to open codefile in floating window; context menu for actions
       body.querySelectorAll('.sidebar-code-entry').forEach((el) => {
@@ -2181,8 +2170,8 @@
             { label: 'Open in Editor Panel', onClick: () => this.openFileInPanel(path) },
             { label: 'Open in Observatory', onClick: () => this.openFileInObservatory(path) },
             { label: 'Open Diff', onClick: () => this.openDiffInPanel(path) },
-            { label: 'Copy Path', onClick: () => navigator.clipboard?.writeText(path) },
-            { label: 'Copy Relative Path', onClick: () => navigator.clipboard?.writeText(path) },
+            { label: 'Copy Path', onClick: () => copyToClipboard(path) },
+            { label: 'Copy File Name', onClick: () => copyToClipboard(path.split('/').pop() || path) },
           ]);
         });
       });
@@ -2250,17 +2239,7 @@
         }).join('');
 
         // Copy-path buttons
-        body.querySelectorAll('.sidebar-copy-btn').forEach((btn) => {
-          btn.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            const p = btn.dataset.copyPath;
-            if (p) {
-              navigator.clipboard?.writeText(p);
-              btn.textContent = '✓';
-              setTimeout(() => { btn.innerHTML = '&#128203;'; }, 1200);
-            }
-          });
-        });
+        bindCopyPathButtons(body);
 
         body.querySelectorAll('.sidebar-file-entry').forEach((el) => {
           const path = el.dataset.path;
@@ -2276,8 +2255,8 @@
               { label: 'Open in Editor Panel', onClick: () => this.openFileInPanel(path) },
               { label: 'Open in Observatory', onClick: () => this.openFileInObservatory(path) },
               { label: 'Open Diff', onClick: () => this.openDiffInPanel(path) },
-              { label: 'Copy Path', onClick: () => navigator.clipboard?.writeText(path) },
-              { label: 'Copy Relative Path', onClick: () => navigator.clipboard?.writeText(path) },
+              { label: 'Copy Path', onClick: () => copyToClipboard(path) },
+              { label: 'Copy File Name', onClick: () => copyToClipboard(path.split('/').pop() || path) },
             ]);
           });
         });
@@ -2454,7 +2433,7 @@
         ? '<span class="explorer-status explorer-status-' + gitSt.toLowerCase() + '">' + escapeHtml(gitSt) + '</span>'
         : '';
       const selected = this._explorerSelected === entry.path ? ' selected' : '';
-      const copyBtn = !isDir ? '<button class="sidebar-copy-btn explorer-copy-btn" data-copy-path="' + escapeHtml(entry.path) + '" title="Copy path">&#128203;</button>' : '';
+      const copyBtn = '<button class="sidebar-copy-btn explorer-copy-btn" data-copy-path="' + escapeHtml(entry.path) + '" title="Copy path">&#128203;</button>';
       return '<div class="explorer-node' + gitClass + selected + '" data-path="' + escapeHtml(entry.path) +
         '" data-is-dir="' + (isDir ? '1' : '0') + '" data-name="' + escapeHtml(entry.name) +
         '" style="padding-left:' + (8 + indent) + 'px">' +
@@ -2507,9 +2486,8 @@
             items.push({ label: 'Open in Editor', onClick: () => this.openFileInPanel(path) });
             items.push({ label: 'Open Diff', onClick: () => this.openDiffInPanel(path) });
           }
-          items.push({ label: 'Copy Path', onClick: () => navigator.clipboard?.writeText(path) });
-          items.push({ label: 'Copy Relative Path', onClick: () => navigator.clipboard?.writeText(path) });
-          items.push({ label: 'Copy File Name', onClick: () => navigator.clipboard?.writeText(name) });
+          items.push({ label: 'Copy Path', onClick: () => copyToClipboard(path) });
+          items.push({ label: 'Copy File Name', onClick: () => copyToClipboard(name) });
           if (!isDir) {
             items.push({ label: 'Open in Observatory', onClick: () => this.openFileInObservatory(path) });
             items.push({ label: 'Reveal in Terminal', onClick: () => {
@@ -2529,18 +2507,7 @@
         });
       });
 
-      // Copy-path buttons in explorer tree
-      treeEl.querySelectorAll('.explorer-copy-btn').forEach((btn) => {
-        btn.addEventListener('click', (ev) => {
-          ev.stopPropagation();
-          const p = btn.dataset.copyPath;
-          if (p) {
-            navigator.clipboard?.writeText(p);
-            btn.textContent = '✓';
-            setTimeout(() => { btn.innerHTML = '&#128203;'; }, 1200);
-          }
-        });
-      });
+      bindCopyPathButtons(treeEl);
     }
 
     // ── Phase 3: In-Panel Monaco Editor ──────────────────────────
@@ -4137,6 +4104,44 @@
       txt: '\u2261', yml: '\u2699', yaml: '\u2699', lock: '\uD83D\uDD12',
     };
     return icons[ext] || '\uD83D\uDCC4';
+  }
+
+  function bindCopyPathButtons(container) {
+    container.querySelectorAll('.sidebar-copy-btn').forEach((btn) => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const p = btn.dataset.copyPath;
+        if (!p) return;
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(p).then(
+            () => { btn.textContent = '\u2713'; setTimeout(() => { btn.innerHTML = '&#128203;'; }, 1200); },
+            () => { copyFallback(p); btn.textContent = '\u2713'; setTimeout(() => { btn.innerHTML = '&#128203;'; }, 1200); }
+          );
+        } else {
+          copyFallback(p);
+          btn.textContent = '\u2713';
+          setTimeout(() => { btn.innerHTML = '&#128203;'; }, 1200);
+        }
+      });
+    });
+  }
+
+  function copyFallback(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (_e) {}
+    ta.remove();
+  }
+
+  function copyToClipboard(text) {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).catch(() => copyFallback(text));
+    } else {
+      copyFallback(text);
+    }
   }
 
   function escapeHtml(s) {
