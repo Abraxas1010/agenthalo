@@ -18,6 +18,7 @@ use nucleusdb::halo::config;
 use nucleusdb::halo::detect::AgentType;
 use nucleusdb::halo::did;
 use nucleusdb::halo::genesis_seed;
+use nucleusdb::halo::p2pclaw;
 use nucleusdb::halo::governor::{GovernorConfig, GovernorState};
 use nucleusdb::halo::http_client;
 use nucleusdb::halo::nym;
@@ -3485,6 +3486,9 @@ fn cmd_genesis_harvest_direct() -> Result<serde_json::Value, String> {
                     }
                 }
             };
+            // Auto-register with P2PCLAW now that identity is established.
+            try_p2pclaw_auto_register();
+
             return Ok(serde_json::json!({
                 "success": true,
                 "already_completed": true,
@@ -3561,6 +3565,9 @@ fn cmd_genesis_harvest_direct() -> Result<serde_json::Value, String> {
         }
     };
 
+    // Auto-register with P2PCLAW now that identity is established.
+    try_p2pclaw_auto_register();
+
     Ok(serde_json::json!({
         "success": true,
         "completed": true,
@@ -3576,6 +3583,29 @@ fn cmd_genesis_harvest_direct() -> Result<serde_json::Value, String> {
         "genesis_entropy_sha256": entry.genesis_entropy_sha256,
         "sovereign_binding": sovereign,
     }))
+}
+
+/// Attempt P2PCLAW auto-registration from agent identity.
+/// Non-fatal: logs a warning on failure so genesis/startup are not blocked.
+fn try_p2pclaw_auto_register() {
+    match p2pclaw::auto_register_from_identity() {
+        Ok(result) if result.registered => {
+            eprintln!(
+                "[AgentHalo/P2PCLAW] auto-registered: agent_id={}, name={}",
+                result.agent_id, result.agent_name
+            );
+        }
+        Ok(result) if result.already_configured => {
+            eprintln!(
+                "[AgentHalo/P2PCLAW] already registered: agent_id={}",
+                result.agent_id
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("[AgentHalo/P2PCLAW] auto-registration skipped: {e}");
+        }
+    }
 }
 
 fn genesis_completed_status(status: &str) -> bool {

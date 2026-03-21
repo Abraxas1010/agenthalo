@@ -4012,6 +4012,11 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                         None => Value::Null,
                     };
 
+                    // Auto-register with P2PCLAW after recovery.
+                    if let Err(e) = p2pclaw::auto_register_from_identity() {
+                        eprintln!("[AgentHalo/P2PCLAW] auto-registration skipped: {e}");
+                    }
+
                     return Ok(Json(json!({
                         "success": true,
                         "completed": true,
@@ -4075,6 +4080,11 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                     _ => Value::Null,
                 },
             };
+            // Auto-register with P2PCLAW (idempotent if already configured).
+            if let Err(e) = p2pclaw::auto_register_from_identity() {
+                eprintln!("[AgentHalo/P2PCLAW] auto-registration skipped: {e}");
+            }
+
             return Ok(Json(json!({
                 "success": true,
                 "already_completed": true,
@@ -4222,6 +4232,26 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                     Value::Null
                 }
             };
+
+            // Auto-register with P2PCLAW now that identity is established.
+            match p2pclaw::auto_register_from_identity() {
+                Ok(r) if r.registered => {
+                    eprintln!(
+                        "[AgentHalo/P2PCLAW] auto-registered: agent_id={}, name={}",
+                        r.agent_id, r.agent_name
+                    );
+                }
+                Ok(r) if r.already_configured => {
+                    eprintln!(
+                        "[AgentHalo/P2PCLAW] already registered: agent_id={}",
+                        r.agent_id
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("[AgentHalo/P2PCLAW] auto-registration skipped: {e}");
+                }
+            }
 
             Ok(Json(json!({
                 "success": true,
