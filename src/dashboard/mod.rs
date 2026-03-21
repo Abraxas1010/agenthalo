@@ -335,16 +335,20 @@ pub async fn serve_with_bootstrap(
     crate::container::agent_hookup::ensure_global_agent_mcp_configs();
 
     // Auto-register with P2PCLAW if identity exists but P2PCLAW is not yet configured.
-    match crate::halo::p2pclaw::auto_register_from_identity() {
-        Ok(r) if r.registered => {
-            eprintln!(
-                "[AgentHalo/P2PCLAW] auto-registered on startup: agent_id={}, name={}",
-                r.agent_id, r.agent_name
-            );
+    // Runs in spawn_blocking because auto_register_from_identity() may call ping()
+    // which does a blocking HTTP request with a 30s timeout.
+    tokio::task::spawn_blocking(|| {
+        match crate::halo::p2pclaw::auto_register_from_identity() {
+            Ok(r) if r.registered => {
+                eprintln!(
+                    "[AgentHalo/P2PCLAW] auto-registered on startup: agent_id={}, name={}",
+                    r.agent_id, r.agent_name
+                );
+            }
+            Ok(_) => {} // already configured or no identity yet
+            Err(_) => {} // identity not available yet — will register on genesis harvest
         }
-        Ok(_) => {} // already configured or no identity yet
-        Err(_) => {} // identity not available yet — will register on genesis harvest
-    }
+    });
 
     println!("Agent H.A.L.O. Dashboard");
     println!("  URL: {url}");

@@ -4013,8 +4013,17 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                     };
 
                     // Auto-register with P2PCLAW after recovery.
-                    if let Err(e) = p2pclaw::auto_register_from_identity() {
-                        eprintln!("[AgentHalo/P2PCLAW] auto-registration skipped: {e}");
+                    match p2pclaw::auto_register_from_identity() {
+                        Ok(r) if r.registered => {
+                            eprintln!(
+                                "[AgentHalo/P2PCLAW] auto-registered: agent_id={}, name={}",
+                                r.agent_id, r.agent_name
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("[AgentHalo/P2PCLAW] auto-registration skipped: {e}");
+                        }
                     }
 
                     return Ok(Json(json!({
@@ -4081,8 +4090,17 @@ async fn api_genesis_harvest(AxumState(state): AxumState<DashboardState>) -> Api
                 },
             };
             // Auto-register with P2PCLAW (idempotent if already configured).
-            if let Err(e) = p2pclaw::auto_register_from_identity() {
-                eprintln!("[AgentHalo/P2PCLAW] auto-registration skipped: {e}");
+            match p2pclaw::auto_register_from_identity() {
+                Ok(r) if r.registered => {
+                    eprintln!(
+                        "[AgentHalo/P2PCLAW] auto-registered: agent_id={}, name={}",
+                        r.agent_id, r.agent_name
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("[AgentHalo/P2PCLAW] auto-registration skipped: {e}");
+                }
             }
 
             return Ok(Json(json!({
