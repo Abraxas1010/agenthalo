@@ -215,11 +215,11 @@ fn normalized_opt(value: Option<&str>) -> Option<String> {
 /// Order:
 /// 1. `agentpmt.json:mcp_endpoint`
 /// 2. `AGENTPMT_MCP_ENDPOINT`
-/// 3. built-in testnet endpoint
+/// 3. built-in production endpoint
 pub fn resolved_mcp_endpoint(cfg: &AgentPmtConfig) -> String {
     normalized_opt(cfg.mcp_endpoint.as_deref())
         .or_else(|| normalized_opt(std::env::var("AGENTPMT_MCP_ENDPOINT").ok().as_deref()))
-        .unwrap_or_else(|| "https://testnet.api.agentpmt.com/mcp".to_string())
+        .unwrap_or_else(|| "https://api.agentpmt.com/mcp".to_string())
 }
 
 fn token_from_vault() -> Option<String> {
@@ -800,7 +800,7 @@ mod tests {
         std::env::remove_var("AGENTPMT_MCP_ENDPOINT");
         assert_eq!(
             resolved_mcp_endpoint(&cfg),
-            "https://testnet.api.agentpmt.com/mcp"
+            "https://api.agentpmt.com/mcp"
         );
         std::env::set_var("AGENTPMT_MCP_ENDPOINT", "https://env.example/mcp");
         assert_eq!(resolved_mcp_endpoint(&cfg), "https://env.example/mcp");
