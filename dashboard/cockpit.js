@@ -927,6 +927,17 @@
       this.activeWorkflowInstance = null;
       this.wfPollTimer = null;
       this.wfExecLog = [];
+
+      // Sidebar mode state (Code / Files / Workflows)
+      this.sidebarMode = 'code';
+      this.sidebarSelectedAgent = null; // sessionId or null for "all"
+      this.sidebarFilesPollTimer = null;
+      this._sidebarResizing = false;
+
+      // Listen for code tracking events from Observatory
+      document.addEventListener('halo-code-tracking', () => {
+        if (this.sidebarMode === 'code') this.renderSidebarCodeContent();
+      });
     }
 
     // ── Agent Lettering (H4: persistent within session, never reassigned) ──
@@ -1093,6 +1104,8 @@
       this.stopMetricsPoll();
       this.startMetricsPoll();
       this.initWorkflowSidebar();
+      this.initSidebarResize();
+      this.initSidebarModes();
     }
 
     renderSkeleton() {
@@ -1108,44 +1121,63 @@
               <div class="cockpit-tabs" id="cockpit-tabs"></div>
               <div class="cockpit-grid" id="cockpit-grid"></div>
             </div>
+            <div class="cockpit-sidebar-resize" id="cockpit-sidebar-resize"></div>
             <aside class="cockpit-mesh-sidebar" id="cockpit-mesh-sidebar">
               <div class="cockpit-mesh-header">
-                <span class="cockpit-mesh-title">&#9851; Workflows</span>
+                <div class="cockpit-sidebar-modes">
+                  <button class="sidebar-mode-btn is-active" data-sidebar-mode="code" title="Live code tracking">Code</button>
+                  <button class="sidebar-mode-btn" data-sidebar-mode="files" title="Recent files">Files</button>
+                  <button class="sidebar-mode-btn" data-sidebar-mode="workflows" title="Workflows">&#9851;</button>
+                </div>
                 <button type="button" class="cockpit-mesh-toggle" id="cockpit-mesh-toggle" title="Collapse sidebar">◀</button>
               </div>
               <div class="cockpit-mesh-body" id="cockpit-mesh-body">
-                <div class="wf-sidebar-body" id="cockpit-wf-sidebar-body">
-                  <div class="wf-section" id="wf-select-section">
-                    <div class="wf-section-title">Workflow</div>
-                    <select class="wf-select" id="wf-workflow-select">
-                      <option value="">— Select Workflow —</option>
-                    </select>
-                    <div class="wf-mini-diagram" id="wf-mini-diagram">
-                      <div class="wf-mini-empty">No workflow selected</div>
+                <div class="sidebar-mode-panel" id="sidebar-panel-code" data-sidebar-panel="code">
+                  <div class="sidebar-agent-strip" id="sidebar-agents-code"></div>
+                  <div class="sidebar-code-body" id="sidebar-code-body">
+                    <div class="sidebar-empty-hint">Launch agents to track code activity</div>
+                  </div>
+                </div>
+                <div class="sidebar-mode-panel" id="sidebar-panel-files" data-sidebar-panel="files" style="display:none">
+                  <div class="sidebar-agent-strip" id="sidebar-agents-files"></div>
+                  <div class="sidebar-file-body" id="sidebar-file-body">
+                    <div class="sidebar-empty-hint">Loading files&#8230;</div>
+                  </div>
+                </div>
+                <div class="sidebar-mode-panel" id="sidebar-panel-workflows" data-sidebar-panel="workflows" style="display:none">
+                  <div class="wf-sidebar-body" id="cockpit-wf-sidebar-body">
+                    <div class="wf-section" id="wf-select-section">
+                      <div class="wf-section-title">Workflow</div>
+                      <select class="wf-select" id="wf-workflow-select">
+                        <option value="">— Select Workflow —</option>
+                      </select>
+                      <div class="wf-mini-diagram" id="wf-mini-diagram">
+                        <div class="wf-mini-empty">No workflow selected</div>
+                      </div>
                     </div>
-                  </div>
-                  <div class="wf-section" id="wf-roles-section" style="display:none">
-                    <div class="wf-section-title">Role Assignment</div>
-                    <div id="wf-roles-list"></div>
-                    <div class="wf-actions">
-                      <button type="button" class="btn btn-sm btn-primary" id="wf-run-btn" disabled>&#9654; Run</button>
-                      <button type="button" class="btn btn-sm" id="wf-stop-btn" disabled>&#9632; Stop</button>
+                    <div class="wf-section" id="wf-roles-section" style="display:none">
+                      <div class="wf-section-title">Role Assignment</div>
+                      <div id="wf-roles-list"></div>
+                      <div class="wf-actions">
+                        <button type="button" class="btn btn-sm btn-primary" id="wf-run-btn" disabled>&#9654; Run</button>
+                        <button type="button" class="btn btn-sm" id="wf-stop-btn" disabled>&#9632; Stop</button>
+                      </div>
                     </div>
-                  </div>
-                  <div class="wf-section" id="wf-exec-section" style="display:none">
-                    <div class="wf-section-title">Execution Log</div>
-                    <div class="wf-exec-log" id="wf-exec-log"></div>
-                    <div class="wf-progress-bar" id="wf-progress-bar" style="display:none">
-                      <div class="wf-progress-fill" id="wf-progress-fill" style="width:0%"></div>
+                    <div class="wf-section" id="wf-exec-section" style="display:none">
+                      <div class="wf-section-title">Execution Log</div>
+                      <div class="wf-exec-log" id="wf-exec-log"></div>
+                      <div class="wf-progress-bar" id="wf-progress-bar" style="display:none">
+                        <div class="wf-progress-fill" id="wf-progress-fill" style="width:0%"></div>
+                      </div>
                     </div>
-                  </div>
-                  <div class="wf-section" id="wf-agents-section">
-                    <div class="wf-section-title">Active Agents</div>
-                    <div id="wf-agents-list"></div>
-                  </div>
-                  <div class="wf-section" id="wf-joint-section" style="display:none">
-                    <div class="wf-section-title">Active Workflow</div>
-                    <div id="wf-joint-card"></div>
+                    <div class="wf-section" id="wf-agents-section">
+                      <div class="wf-section-title">Active Agents</div>
+                      <div id="wf-agents-list"></div>
+                    </div>
+                    <div class="wf-section" id="wf-joint-section" style="display:none">
+                      <div class="wf-section-title">Active Workflow</div>
+                      <div id="wf-joint-card"></div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1197,6 +1229,20 @@
     setMeshCollapsed(collapsed) {
       this.meshCollapsed = !!collapsed;
       this.meshSidebarEl?.classList.toggle('collapsed', this.meshCollapsed);
+      // Restore saved drag width when un-collapsing
+      if (!this.meshCollapsed && this.meshSidebarEl) {
+        const savedWidth = localStorage.getItem('cockpit_sidebar_width');
+        if (savedWidth) {
+          const w = parseInt(savedWidth, 10);
+          if (w >= 180 && w <= 800) {
+            this.meshSidebarEl.style.width = w + 'px';
+            this.meshSidebarEl.style.minWidth = w + 'px';
+          }
+        } else {
+          this.meshSidebarEl.style.width = '';
+          this.meshSidebarEl.style.minWidth = '';
+        }
+      }
       try {
         localStorage.setItem('cockpit_mesh_collapsed', this.meshCollapsed ? '1' : '0');
       } catch (_e) {}
@@ -1537,6 +1583,316 @@
       if (stopBtn) stopBtn.addEventListener('click', () => this.stopActiveWorkflow());
       await this.refreshWorkflowList();
       this.refreshAgentsList();
+    }
+
+    // ── Sidebar Drag Resize ──────────────────────────────────────
+
+    initSidebarResize() {
+      const handle = this.root?.querySelector('#cockpit-sidebar-resize');
+      const sidebar = this.meshSidebarEl;
+      if (!handle || !sidebar) return;
+
+      const savedWidth = localStorage.getItem('cockpit_sidebar_width');
+      if (savedWidth) {
+        const w = parseInt(savedWidth, 10);
+        if (w >= 180 && w <= 800) {
+          sidebar.style.width = w + 'px';
+          sidebar.style.minWidth = w + 'px';
+        }
+      }
+
+      let startX = 0;
+      let startWidth = 0;
+
+      const onDrag = (e) => {
+        e.preventDefault();
+        const diff = startX - e.clientX;
+        const newWidth = Math.max(180, Math.min(800, startWidth + diff));
+        sidebar.style.transition = 'none';
+        sidebar.style.width = newWidth + 'px';
+        sidebar.style.minWidth = newWidth + 'px';
+      };
+
+      const onDragEnd = () => {
+        this._sidebarResizing = false;
+        sidebar.style.transition = '';
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', onDrag);
+        document.removeEventListener('mouseup', onDragEnd);
+        try {
+          localStorage.setItem('cockpit_sidebar_width', parseInt(sidebar.style.width, 10).toString());
+        } catch (_e) {}
+      };
+
+      handle.addEventListener('mousedown', (e) => {
+        if (this.meshCollapsed) return;
+        e.preventDefault();
+        this._sidebarResizing = true;
+        startX = e.clientX;
+        startWidth = sidebar.offsetWidth;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        document.addEventListener('mousemove', onDrag);
+        document.addEventListener('mouseup', onDragEnd);
+      });
+    }
+
+    // ── Sidebar Mode Tabs (Code / Files / Workflows) ─────────────
+
+    initSidebarModes() {
+      const modeButtons = this.root?.querySelectorAll('.sidebar-mode-btn');
+      if (!modeButtons) return;
+      modeButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          this.setSidebarMode(btn.dataset.sidebarMode);
+        });
+      });
+      // Default to code mode
+      this.setSidebarMode('code');
+    }
+
+    setSidebarMode(mode) {
+      this.sidebarMode = mode;
+      const buttons = this.root?.querySelectorAll('.sidebar-mode-btn');
+      const panels = this.root?.querySelectorAll('.sidebar-mode-panel');
+      if (!buttons || !panels) return;
+      buttons.forEach((b) => b.classList.toggle('is-active', b.dataset.sidebarMode === mode));
+      panels.forEach((p) => p.style.display = p.dataset.sidebarPanel === mode ? '' : 'none');
+      this.stopSidebarFilesPoll();
+
+      if (mode === 'code') {
+        this.renderSidebarAgentStrip('sidebar-agents-code');
+        this.renderSidebarCodeContent();
+      } else if (mode === 'files') {
+        this.renderSidebarAgentStrip('sidebar-agents-files');
+        this.renderSidebarFileContent();
+        this.startSidebarFilesPoll();
+      }
+    }
+
+    getTrackedFilesForSession(sessionId) {
+      const tracking = window.__haloAgentCodeTracking || {};
+      const entry = tracking[sessionId];
+      if (!entry) return [];
+      if (Array.isArray(entry.files)) return entry.files.filter((file) => file && file.path);
+      if (entry.path) {
+        return [{
+          path: entry.path,
+          language: entry.language || '',
+          timestamp: entry.timestamp || 0,
+          preview: entry.preview || '',
+        }];
+      }
+      return [];
+    }
+
+    resolveObservatoryTarget(preferredSessionId) {
+      const preferred = preferredSessionId ? this.sessions.get(preferredSessionId) : null;
+      if (preferred?.panel?.el?._obsDrawer) {
+        return { sessionId: preferredSessionId, drawer: preferred.panel.el._obsDrawer };
+      }
+      const active = this.activeTab ? this.sessions.get(this.activeTab) : null;
+      if (active?.panel?.el?._obsDrawer) {
+        return { sessionId: this.activeTab, drawer: active.panel.el._obsDrawer };
+      }
+      for (const [sessionId, entry] of this.sessions) {
+        if (entry?.panel?.el?._obsDrawer) {
+          return { sessionId, drawer: entry.panel.el._obsDrawer };
+        }
+      }
+      return null;
+    }
+
+    renderSidebarAgentStrip(containerId) {
+      const container = this.root?.querySelector('#' + containerId);
+      if (!container) return;
+      const agents = this.getActiveAgentsForRoles();
+      if (agents.length === 0) {
+        container.innerHTML = '<div class="sidebar-strip-empty">No agents</div>';
+        return;
+      }
+      const selectedId = this.sidebarSelectedAgent;
+      let html = '<button class="sidebar-agent-pill' + (!selectedId ? ' is-active' : '') +
+        '" data-sidebar-agent="" title="All agents">ALL</button>';
+      agents.forEach((a) => {
+        const isActive = selectedId === a.sessionId;
+        html += '<button class="sidebar-agent-pill' + (isActive ? ' is-active' : '') +
+          '" data-sidebar-agent="' + escapeHtml(a.sessionId) + '" title="' + escapeHtml(a.agentType) + '">' +
+          this.letterBadgeHtml(a.sessionId, a.agentType) + '</button>';
+      });
+      container.innerHTML = html;
+      container.querySelectorAll('.sidebar-agent-pill').forEach((pill) => {
+        pill.addEventListener('click', () => {
+          this.sidebarSelectedAgent = pill.dataset.sidebarAgent || null;
+          this.renderSidebarAgentStrip(containerId);
+          if (this.sidebarMode === 'code') this.renderSidebarCodeContent();
+          else if (this.sidebarMode === 'files') this.renderSidebarFileContent();
+        });
+      });
+    }
+
+    renderSidebarCodeContent() {
+      const body = this.root?.querySelector('#sidebar-code-body');
+      if (!body) return;
+      const selectedId = this.sidebarSelectedAgent;
+
+      // Collect tracked files for selected agent(s)
+      const items = [];
+      this.sessions.forEach((entry, sessionId) => {
+        if (selectedId && sessionId !== selectedId) return;
+        const letter = this.agentLetters.get(sessionId) || '?';
+        const agentType = entry.panel?.agentType || 'agent';
+        this.getTrackedFilesForSession(sessionId).forEach((info) => {
+          items.push({ sessionId, letter, agentType, ...info });
+        });
+      });
+
+      if (items.length === 0) {
+        body.innerHTML = '<div class="sidebar-empty-hint">No code activity tracked' +
+          (this.sessions.size > 0 ? '<br><span style="font-size:10px;color:var(--text-dim)">Agents send code via observatory:codefile blocks</span>' : '') +
+          '</div>';
+        return;
+      }
+
+      items.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+      body.innerHTML = items.map((item) => {
+        const fname = item.path ? item.path.split('/').pop() : '?';
+        const dir = item.path ? item.path.split('/').slice(0, -1).join('/') : '';
+        const previewLines = (item.preview || '').split('\n').slice(0, 6).join('\n');
+        return '<div class="sidebar-code-entry" data-path="' + escapeHtml(item.path || '') +
+          '" data-session-id="' + escapeHtml(item.sessionId) + '">' +
+          '<div class="sidebar-code-header">' +
+            this.letterBadgeHtml(item.sessionId, item.agentType) +
+            '<div class="sidebar-code-path">' +
+              '<span class="sidebar-code-fname">' + escapeHtml(fname) + '</span>' +
+              (dir ? '<span class="sidebar-code-dir">' + escapeHtml(dir) + '</span>' : '') +
+            '</div>' +
+          '</div>' +
+          (previewLines ? '<pre class="sidebar-code-preview">' + escapeHtml(previewLines) + '</pre>' : '') +
+        '</div>';
+      }).join('');
+
+      // Click to open codefile in floating window
+      body.querySelectorAll('.sidebar-code-entry').forEach((el) => {
+        el.addEventListener('click', () => {
+          const path = el.dataset.path;
+          const sessionId = el.dataset.sessionId || null;
+          if (path) this.openFileInObservatory(path, sessionId);
+        });
+      });
+    }
+
+    renderSidebarFileContent() {
+      const body = this.root?.querySelector('#sidebar-file-body');
+      if (!body) return;
+      body.innerHTML = '<div class="sidebar-empty-hint">Loading files&#8230;</div>';
+
+      // Fetch both git-status (dirty files) and recent (committed files)
+      Promise.all([
+        fetch('/api/files/git-status').then(r => r.ok ? r.json() : { changed: [] }).catch(() => ({ changed: [] })),
+        fetch('/api/files/recent?limit=30').then(r => r.ok ? r.json() : { files: [] }).catch(() => ({ files: [] })),
+      ]).then(([statusData, recentData]) => {
+        const changed = Array.isArray(statusData.changed) ? statusData.changed : [];
+        const recent = Array.isArray(recentData.files) ? recentData.files : [];
+
+        // Merge: dirty files first, then recent committed files (deduplicated)
+        const seen = new Set();
+        const items = [];
+        changed.forEach((f) => {
+          seen.add(f.path);
+          items.push({ path: f.path, status: f.status, source: 'dirty', language: '', summary: '' });
+        });
+        recent.forEach((f) => {
+          if (!seen.has(f.path)) {
+            seen.add(f.path);
+            items.push({ path: f.path, status: '', source: 'recent', language: f.language || '', summary: f.summary || '' });
+          }
+        });
+
+        // Filter by selected agent if applicable
+        const selectedId = this.sidebarSelectedAgent;
+        let filteredItems = items;
+        if (selectedId) {
+          const agentFiles = new Set(
+            this.getTrackedFilesForSession(selectedId).map((info) => info.path).filter(Boolean),
+          );
+          filteredItems = items.filter((f) => agentFiles.has(f.path));
+          if (filteredItems.length === 0) {
+            body.innerHTML = '<div class="sidebar-empty-hint">No tracked files for this agent yet</div>';
+            return;
+          }
+        }
+
+        if (filteredItems.length === 0) {
+          body.innerHTML = '<div class="sidebar-empty-hint">No files found</div>';
+          return;
+        }
+
+        body.innerHTML = filteredItems.map((f) => {
+          const fname = f.path.split('/').pop();
+          const dir = f.path.split('/').slice(0, -1).join('/');
+          const statusBadge = f.status ? '<span class="sidebar-file-status sidebar-file-status-' +
+            escapeHtml(f.status.toLowerCase()) + '">' + escapeHtml(f.status) + '</span>' : '';
+          return '<div class="sidebar-file-entry" data-path="' + escapeHtml(f.path) + '">' +
+            '<div class="sidebar-file-info">' +
+              statusBadge +
+              '<span class="sidebar-file-fname">' + escapeHtml(fname) + '</span>' +
+            '</div>' +
+            (dir ? '<div class="sidebar-file-dir">' + escapeHtml(dir) + '</div>' : '') +
+            (f.summary ? '<div class="sidebar-file-summary">' + escapeHtml(f.summary) + '</div>' : '') +
+          '</div>';
+        }).join('');
+
+        body.querySelectorAll('.sidebar-file-entry').forEach((el) => {
+          el.addEventListener('click', () => {
+            const path = el.dataset.path;
+            if (path) this.openFileInObservatory(path);
+          });
+        });
+      });
+    }
+
+    startSidebarFilesPoll() {
+      this.stopSidebarFilesPoll();
+      this.sidebarFilesPollTimer = setInterval(() => {
+        if (this.sidebarMode === 'files') this.renderSidebarFileContent();
+      }, 5000);
+    }
+
+    stopSidebarFilesPoll() {
+      if (this.sidebarFilesPollTimer) {
+        clearInterval(this.sidebarFilesPollTimer);
+        this.sidebarFilesPollTimer = null;
+      }
+    }
+
+    openFileInObservatory(path, preferredSessionId = null) {
+      // Fetch file content and open it in a floating codefile window via Observatory
+      fetch('/api/files/read?path=' + encodeURIComponent(path))
+        .then(r => r.ok ? r.json() : null)
+        .then((data) => {
+          if (!data || !data.ok) {
+            this.showNotice('Failed to open file in Observatory', 'warn', 4000);
+            return;
+          }
+          const target = this.resolveObservatoryTarget(preferredSessionId);
+          if (!target) {
+            this.showNotice('Open an agent lane before opening files in Observatory', 'warn', 5000);
+            return;
+          }
+          target.drawer.pushData('codefile', {
+            path: data.path,
+            content: data.content,
+            language: data.language || 'plaintext',
+          });
+          target.drawer.openWindow('codefile', target.drawer.pendingData.codefile);
+          if (target.sessionId) this.activateTab(target.sessionId);
+        })
+        .catch(() => {
+          this.showNotice('Failed to open file in Observatory', 'warn', 4000);
+        });
     }
 
     async refreshWorkflowList() {
@@ -1980,6 +2336,13 @@
           </div>
         `;
       }).join('');
+
+      // Also refresh agent strips in Code/Files sidebar modes
+      if (this.sidebarMode === 'code') {
+        this.renderSidebarAgentStrip('sidebar-agents-code');
+      } else if (this.sidebarMode === 'files') {
+        this.renderSidebarAgentStrip('sidebar-agents-files');
+      }
     }
 
     // ── Joint Workflow Indicators (H6) ──────────────────────────

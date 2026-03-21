@@ -445,6 +445,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/observatory/sorrys", get(api_observatory_sorrys))
         .route("/observatory/frontier", get(api_observatory_frontier))
         .route("/observatory/file", get(api_observatory_file))
+        // File browsing + git diff for Observatory codefile/codediff
+        .nest("/files", super::editor_api::router().with_state(()))
         // JSON 404 fallback for unmatched /api/* routes.
         .fallback(api_fallback_not_found)
         .with_state(state)

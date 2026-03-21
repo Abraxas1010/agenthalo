@@ -225,11 +225,49 @@
   flex-direction: column;
   min-width: 360px;
   min-height: 280px;
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  background: rgba(8, 12, 5, 0.98);
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55), 0 0 14px rgba(255, 184, 48, 0.06);
+  border: 1px solid rgba(0, 255, 65, 0.35);
+  border-radius: 4px;
+  background: rgba(8, 12, 5, 0.82);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
   overflow: hidden;
+  /* Spawn animation */
+  animation: obs-window-spawn 0.15s ease-out;
+}
+
+/* GPU-safe neon edge glow via pseudo-element — only opacity animates */
+.obs-float-window::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 5px;
+  pointer-events: none;
+  z-index: -1;
+  background: linear-gradient(
+    135deg,
+    rgba(0, 255, 65, 0.12) 0%,
+    rgba(255, 106, 0, 0.06) 40%,
+    rgba(0, 255, 65, 0.10) 70%,
+    rgba(75, 163, 255, 0.08) 100%
+  );
+  opacity: 0.5;
+  transition: opacity 0.3s ease;
+}
+
+.obs-float-window:hover::after {
+  opacity: 1;
+}
+
+@keyframes obs-window-spawn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
 .obs-float-window.obs-float-maximized {
@@ -246,11 +284,19 @@
   justify-content: space-between;
   height: 32px;
   padding: 0 10px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(13, 20, 8, 0.96);
+  border-bottom: 1px solid rgba(0, 255, 65, 0.2);
+  background: linear-gradient(
+    90deg,
+    rgba(0, 255, 65, 0.04) 0%,
+    rgba(13, 20, 8, 0.96) 30%,
+    rgba(13, 20, 8, 0.96) 70%,
+    rgba(255, 106, 0, 0.04) 100%
+  );
   cursor: move;
   user-select: none;
   flex-shrink: 0;
+  /* Clipped corner — cyberpunk cut */
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%);
 }
 
 .obs-float-title {
@@ -269,21 +315,30 @@
 .obs-float-actions button {
   width: 22px;
   height: 22px;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(0, 255, 65, 0.2);
   background: transparent;
-  color: var(--text);
+  color: var(--text-dim);
   font-size: 12px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 2px;
+  transition: all 0.15s ease;
+}
+
+.obs-float-actions button:hover {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(0, 255, 65, 0.08);
+  box-shadow: 0 0 6px rgba(0, 255, 65, 0.15);
 }
 
 .obs-float-close:hover {
-  border-color: var(--red);
-  color: var(--red);
-  background: rgba(255, 48, 48, 0.15);
+  border-color: var(--red) !important;
+  color: var(--red) !important;
+  background: rgba(255, 48, 48, 0.12) !important;
+  box-shadow: 0 0 6px rgba(255, 48, 48, 0.2) !important;
 }
 
 .obs-float-maximize:hover {
@@ -309,12 +364,23 @@
   width: 14px;
   height: 14px;
   cursor: nwse-resize;
-  opacity: 0.3;
+  opacity: 0.2;
+  background: linear-gradient(
+    135deg,
+    transparent 40%,
+    rgba(0, 255, 65, 0.3) 40%,
+    rgba(0, 255, 65, 0.3) 50%,
+    transparent 50%,
+    transparent 60%,
+    rgba(0, 255, 65, 0.3) 60%,
+    rgba(0, 255, 65, 0.3) 70%,
+    transparent 70%
+  );
+  transition: opacity 0.15s;
 }
 
 .obs-float-resize:hover {
-  opacity: 1;
-  background: rgba(255, 184, 48, 0.2);
+  opacity: 0.8;
 }
 
 /* CRT on floating windows */
@@ -931,6 +997,165 @@ body:not(.no-crt) .obs-float-body::after {
 .obs-cmd-notice.is-visible {
   opacity: 1;
   transform: translateY(0);
+}
+
+/* ── Bidirectional Button States ─────────────────────────── */
+
+.obs-viz-btn.has-prompt {
+  opacity: 0.6;
+  cursor: pointer;
+  border-color: rgba(75, 163, 255, 0.2);
+}
+
+.obs-viz-btn.has-prompt:hover {
+  opacity: 1;
+  border-color: var(--blue);
+  color: var(--blue);
+  background: rgba(75, 163, 255, 0.06);
+}
+
+.obs-viz-btn.obs-requesting {
+  border-color: rgba(75, 163, 255, 0.4);
+  color: var(--blue);
+  opacity: 0.85;
+}
+
+.obs-viz-btn.obs-requesting .obs-viz-dot {
+  background: var(--blue);
+  animation: obs-dot-scan 1.2s ease-in-out infinite;
+}
+
+@keyframes obs-dot-scan {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; box-shadow: 0 0 4px var(--blue); }
+}
+
+/* ── Active data dot glow ───────────────────────────────── */
+.obs-viz-btn.has-data .obs-viz-dot {
+  box-shadow: 0 0 4px var(--accent);
+}
+
+/* ── Codefile / Codediff Styles ─────────────────────────── */
+
+.obs-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(13, 20, 8, 0.96);
+  flex-shrink: 0;
+}
+
+.obs-code-path {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obs-code-lock {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  width: 26px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+}
+
+.obs-code-lock.is-locked {
+  border-color: var(--green);
+  color: var(--green);
+  background: rgba(0, 255, 65, 0.08);
+}
+
+.obs-diff-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.obs-diff-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.obs-diff-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.15);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.obs-diff-file-row:hover {
+  border-color: var(--accent);
+  background: rgba(255, 106, 0, 0.06);
+}
+
+.obs-diff-status {
+  font-weight: 700;
+  font-size: 10px;
+  width: 16px;
+  text-align: center;
+}
+
+.diff-added   { color: var(--green); }
+.diff-deleted { color: var(--red); }
+.diff-modified { color: var(--accent); }
+.diff-other   { color: var(--text-dim); }
+
+.obs-diff-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obs-diff-inline-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.obs-diff-inline-toggle input {
+  accent-color: var(--green);
+}
+
+.obs-empty {
+  padding: 16px;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+  font-style: italic;
+}
+
+/* Scanlines lighter on code viewers for readability */
+body:not(.no-crt) .obs-float-body:has(.monaco-editor)::after,
+body:not(.no-crt) .obs-float-body:has(.obs-code-header)::after {
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.04) 0px, transparent 1px, transparent 2px);
 }
 
 /* ── Responsive ──────────────────────────────────────────── */
