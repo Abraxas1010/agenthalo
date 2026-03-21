@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────
-   Proof Game — Interactive Theorem Proving
+   Proof Builder — Interactive Theorem Proving
    Part of Agent H.A.L.O. Dashboard
    ───────────────────────────────────────────────────────────── */
 
@@ -183,6 +183,12 @@
 .pg-new-input:focus { border-color: #35ff3e; }
 .pg-new-hint { font-size: 11px; color: #3a6030; margin-top: 4px; }
 
+/* ── Import sections in modal ────────────────────────────── */
+#pg-lean-results .pg-theorem-card { margin-bottom: 6px; }
+#pg-lean-file-list::-webkit-scrollbar { width: 5px; }
+#pg-lean-file-list::-webkit-scrollbar-track { background: transparent; }
+#pg-lean-file-list::-webkit-scrollbar-thumb { background: rgba(53,255,62,0.15); border-radius: 3px; }
+
 /* ── Welcome State ───────────────────────────────────────── */
 .pg-welcome {
   position: absolute; inset: 0; display: flex; flex-direction: column;
@@ -200,26 +206,10 @@
   border-radius: 3px; color: #ffaa00;
 }
 
-/* ── Victory Overlay ─────────────────────────────────────── */
-.pg-victory-overlay {
-  position: absolute; inset: 0; display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
-  background: rgba(0,0,0,0.6); z-index: 50; animation: pg-fade-in 0.5s;
-}
-.pg-victory-text {
-  font-size: 32px; font-weight: 700; color: #39ff14;
-  text-shadow: 0 0 20px #39ff14, 0 0 40px rgba(57,255,20,0.5);
-  animation: pg-victory-pulse 1.5s infinite;
-}
-.pg-victory-sub { font-size: 14px; color: #78ff74; margin-top: 8px; }
-.pg-victory-btns { display: flex; gap: 12px; margin-top: 20px; }
+/* (victory overlay removed — completion shown inline) */
 
 /* ── Animations ──────────────────────────────────────────── */
 @keyframes pg-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-@keyframes pg-victory-pulse {
-  0%, 100% { transform: scale(1); text-shadow: 0 0 20px #39ff14, 0 0 40px rgba(57,255,20,0.5); }
-  50% { transform: scale(1.05); text-shadow: 0 0 30px #39ff14, 0 0 60px rgba(57,255,20,0.5), 0 0 80px rgba(57,255,20,0.3); }
-}
 @keyframes pg-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ── Scrollbars ──────────────────────────────────────────── */

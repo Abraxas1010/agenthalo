@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   Proof Game — Interactive Theorem Proving via Multiway Proof Trees
+   Proof Builder — Interactive Theorem Proving via Multiway Proof Trees
    Part of Agent H.A.L.O. Dashboard
 
    Client-side simulation engine with pre-computed proof trees.
@@ -12,8 +12,8 @@
   // ═══════════════════════════════════════════════════════════════
   // §1  Constants
   // ═══════════════════════════════════════════════════════════════
-  var NODE_W = 150, NODE_H = 44, NODE_R = 6;
-  var LEVEL_H = 100, SIB_GAP = 24;
+  var NODE_W = 240, NODE_H = 50, NODE_R = 6;
+  var LEVEL_H = 110, SIB_GAP = 30;
   var EDGE_LABEL_SIZE = 10;
 
   var STATUS_STYLE = {
@@ -324,8 +324,6 @@
       solvedSet: {},       // nodeId -> true
       tacticsApplied: 0,
       branchesExplored: 0,
-      startTime: Date.now(),
-      victoryTime: null,
     };
     return session;
   }
@@ -598,16 +596,16 @@
     ctx.lineWidth = 1;
     var gridStep = 60 * cam.zoom * dpr;
     var ox = (W / 2 + cam.x * cam.zoom * dpr) % gridStep;
-    var oy = (cam.y * cam.zoom * dpr) % gridStep;
+    var oy = (H / 3 + cam.y * cam.zoom * dpr) % gridStep;
     for (var gx = ox; gx < W; gx += gridStep) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke(); }
     for (var gy = oy; gy < H; gy += gridStep) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke(); }
     ctx.restore();
 
     if (!session) return;
 
-    // Transform: center root at top-center
+    // Transform: center root in upper third of canvas
     ctx.save();
-    ctx.translate(W / 2, 60 * dpr);
+    ctx.translate(W / 2, H / 3);
     ctx.scale(cam.zoom * dpr, cam.zoom * dpr);
     ctx.translate(cam.x, cam.y);
 
@@ -660,7 +658,7 @@
       ctx.fillStyle = isFailed ? 'rgba(255,48,48,0.6)' : 'rgba(120,255,116,0.5)';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      var truncTac = tactic.length > 24 ? tactic.slice(0, 22) + '..' : tactic;
+      var truncTac = tactic.length > 36 ? tactic.slice(0, 34) + '..' : tactic;
       ctx.fillText(truncTac, labelX, labelY);
     }
     ctx.restore();
@@ -712,13 +710,13 @@
     var goalDef = node.goalKey ? (session.theorem.goals[node.goalKey] || null) : null;
     var label = '';
     if (node.status === 'failed') {
-      label = node.errorMsg ? node.errorMsg.slice(0, 28) : 'Failed';
+      label = node.errorMsg ? node.errorMsg.slice(0, 42) : 'Failed';
     } else if (goalDef) {
-      // Show just the goal part (after ⊢)
+      // Show the goal text — prefer after ⊢ if present, otherwise full display
       var disp = goalDef.display;
       var turnstile = disp.indexOf('⊢');
       label = turnstile >= 0 ? disp.slice(turnstile) : disp;
-      if (label.length > 28) label = label.slice(0, 26) + '..';
+      if (label.length > 42) label = label.slice(0, 40) + '..';
     }
     ctx.font = '11px SF Mono, monospace';
     ctx.fillStyle = st.text;
@@ -762,7 +760,7 @@
     var cy = (sy - rect.top) * dpr;
     var W = canvas.width, H = canvas.height;
     var wx = (cx - W / 2) / (cam.zoom * dpr) - cam.x;
-    var wy = (cy - 60 * dpr) / (cam.zoom * dpr) - cam.y;
+    var wy = (cy - H / 3) / (cam.zoom * dpr) - cam.y;
     return { x: wx, y: wy };
   }
 
@@ -946,12 +944,6 @@
     });
     setText('pg-stat-depth', '' + maxDepth);
 
-    // Timer
-    var elapsed = Math.floor((Date.now() - session.startTime) / 1000);
-    var mins = Math.floor(elapsed / 60);
-    var secs = elapsed % 60;
-    setText('pg-stat-time', mins + ':' + (secs < 10 ? '0' : '') + secs);
-
     // Theorem display
     setText('pg-theorem-display', session.theorem.statement);
 
@@ -959,17 +951,19 @@
     var verifyBtn = document.getElementById('pg-verify-btn');
     var exportBtn = document.getElementById('pg-export-btn');
     var undoBtn = document.getElementById('pg-undo-btn');
-    if (verifyBtn) verifyBtn.disabled = !isVictory();
+    if (verifyBtn) verifyBtn.disabled = false;
     if (exportBtn) exportBtn.disabled = false;
     if (undoBtn) undoBtn.disabled = !session.selectedId || session.selectedId === session.rootId;
 
     // Status dot
     var dot = document.querySelector('.pg-status-dot');
     if (dot) {
-      dot.className = 'pg-status-dot ' + (isVictory() ? 'victory' : 'simulated');
+      var complete = isVictory();
+      var sorry = complete && hasSorryInProof();
+      dot.className = 'pg-status-dot ' + (complete && !sorry ? 'active' : sorry ? 'simulated' : 'simulated');
       var statusText = dot.parentElement && dot.parentElement.lastChild;
       if (statusText && statusText.nodeType === 3) {
-        statusText.textContent = isVictory() ? ' Victory!' : ' Simulation';
+        statusText.textContent = complete && !sorry ? ' Complete' : sorry ? ' Incomplete (sorry)' : ' Simulation';
       }
     }
   }
@@ -998,8 +992,7 @@
     needsRender = true;
     updateContextPanel();
 
-    if (isVictory() && !session.victoryTime) {
-      session.victoryTime = Date.now();
+    if (isVictory()) {
       showVictory();
     }
   }
@@ -1020,8 +1013,18 @@
   }
 
   function doVerify() {
-    if (!session || !isVictory()) return;
-    alert('Proof verified (simulation mode).\n\nAll goals solved. In production, the Lean compiler would verify the complete tactic script.\n\nScript:\n' + buildProofScript());
+    if (!session) return;
+    if (!isVictory()) {
+      var open = getOpenGoals();
+      alert('Proof incomplete — ' + open.length + ' open goal' + (open.length === 1 ? '' : 's') + ' remaining.\n\nSolve all goals before verifying.');
+      return;
+    }
+    var isSorry = hasSorryInProof();
+    if (isSorry) {
+      alert('Proof uses sorry (incomplete).\n\nConnect a Lean proof server for genuine verification.\n\nScript:\n' + buildProofScript());
+    } else {
+      alert('Proof verified (simulation mode).\n\nAll goals solved. In production, the Lean compiler would verify the complete tactic script.\n\nScript:\n' + buildProofScript());
+    }
   }
 
   function doExport() {
@@ -1042,30 +1045,9 @@
   }
 
   function showVictory() {
-    var graph = document.getElementById('pg-graph');
-    if (!graph) return;
-    // Remove existing overlay
-    var existing = graph.querySelector('.pg-victory-overlay');
-    if (existing) existing.remove();
-
-    var isSorry = hasSorryInProof();
-    var overlay = document.createElement('div');
-    overlay.className = 'pg-victory-overlay';
-    overlay.innerHTML = (isSorry
-      ? '<div class="pg-victory-text" style="color:#ffaa00;text-shadow:0 0 20px #ffaa00">Incomplete</div>' +
-        '<div class="pg-victory-sub" style="color:#ffcc44">Proof uses sorry — connect a Lean server for genuine verification</div>'
-      : '<div class="pg-victory-text">QED</div>' +
-        '<div class="pg-victory-sub">All goals solved — proof complete</div>') +
-      '<div class="pg-victory-btns">' +
-      '<button class="pg-btn primary" id="pg-v-verify">Verify ✓</button>' +
-      '<button class="pg-btn" id="pg-v-export">Export .lean</button>' +
-      '<button class="pg-btn" id="pg-v-dismiss">Continue</button>' +
-      '</div>';
-    graph.appendChild(overlay);
-
-    overlay.querySelector('#pg-v-verify').addEventListener('click', doVerify);
-    overlay.querySelector('#pg-v-export').addEventListener('click', doExport);
-    overlay.querySelector('#pg-v-dismiss').addEventListener('click', function () { overlay.remove(); });
+    // Update status dot and stats — no overlay, just inline feedback
+    updateStats();
+    updateContextPanel();
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1115,6 +1097,30 @@
       '<div class="pg-new-hint">Custom theorems use simulation. Only pre-computed proof trees are interactive.</div>' +
       '</div>';
 
+    // Import proof tree section
+    html += '<div class="pg-new-section">' +
+      '<div class="pg-section-title">Import Proof Sketch</div>' +
+      '<div class="pg-new-hint" style="margin-bottom:8px">Load a Heyting proof tree JSON to visualize strategy trees from pre-project plans.</div>' +
+      '<div class="pg-new-row">' +
+      '<input type="file" accept=".json" id="pg-import-file" style="display:none" />' +
+      '<button class="pg-btn" id="pg-import-btn">Choose File…</button>' +
+      '<button class="pg-btn" id="pg-import-paste-btn">Paste JSON</button>' +
+      '</div>' +
+      '<textarea class="pg-new-input" id="pg-import-textarea" placeholder="Paste proof tree JSON here…" ' +
+      'style="display:none;min-height:100px;resize:vertical;margin-top:8px;font-size:11px"></textarea>' +
+      '<button class="pg-btn primary" id="pg-import-paste-go" style="display:none;margin-top:6px">Load Proof Tree</button>' +
+      '</div>';
+
+    // Import from Lean Database section
+    html += '<div class="pg-new-section">' +
+      '<div class="pg-section-title">Import from Lean Database</div>' +
+      '<div class="pg-new-hint" style="margin-bottom:8px">Browse theorems from the connected Lean project.</div>' +
+      '<div id="pg-lean-browser">' +
+      '<button class="pg-btn" id="pg-lean-browse-btn">Browse Lean Theorems</button>' +
+      '<div id="pg-lean-results" style="margin-top:8px"></div>' +
+      '</div>' +
+      '</div>';
+
     modal.innerHTML = html;
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
@@ -1160,6 +1166,53 @@
         hideLibrary();
       }
     });
+
+    // ── Import proof tree from file ──
+    var importFileInput = modal.querySelector('#pg-import-file');
+    modal.querySelector('#pg-import-btn').addEventListener('click', function () {
+      importFileInput.click();
+    });
+    importFileInput.addEventListener('change', function () {
+      var file = importFileInput.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function (ev) {
+        try {
+          var tree = JSON.parse(ev.target.result);
+          var thm = convertProofTreeToTheorem(tree);
+          if (thm) { loadTheorem(thm, true); hideLibrary(); }
+        } catch (e) {
+          alert('Failed to parse proof tree JSON: ' + e.message);
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    // ── Import proof tree from paste ──
+    var pasteArea = modal.querySelector('#pg-import-textarea');
+    var pasteGoBtn = modal.querySelector('#pg-import-paste-go');
+    modal.querySelector('#pg-import-paste-btn').addEventListener('click', function () {
+      var showing = pasteArea.style.display !== 'none';
+      pasteArea.style.display = showing ? 'none' : 'block';
+      pasteGoBtn.style.display = showing ? 'none' : 'block';
+      if (!showing) pasteArea.focus();
+    });
+    pasteGoBtn.addEventListener('click', function () {
+      var text = pasteArea.value.trim();
+      if (!text) return;
+      try {
+        var tree = JSON.parse(text);
+        var thm = convertProofTreeToTheorem(tree);
+        if (thm) { loadTheorem(thm, true); hideLibrary(); }
+      } catch (e) {
+        alert('Failed to parse proof tree JSON: ' + e.message);
+      }
+    });
+
+    // ── Import from Lean Database ──
+    modal.querySelector('#pg-lean-browse-btn').addEventListener('click', function () {
+      loadLeanTheorems(modal.querySelector('#pg-lean-results'));
+    });
   }
 
   function hideLibrary() {
@@ -1167,10 +1220,19 @@
     if (overlay) overlay.remove();
   }
 
-  function loadTheorem(thm) {
+  function loadTheorem(thm, autoExpand) {
     newSession(thm);
+
+    // For imported trees: auto-expand the full tree so user sees the structure
+    if (autoExpand) {
+      autoExpandTree();
+    }
+
     computeLayout();
-    cam = { x: 0, y: 0, zoom: 1 };
+
+    // Fit zoom to show entire tree
+    var zoom = fitTreeZoom();
+    cam = { x: 0, y: 0, zoom: zoom };
     needsRender = true;
 
     // Hide welcome
@@ -1180,6 +1242,342 @@
     selectNode(session.rootId);
   }
 
+  // Auto-expand all goals by applying first suggested tactic recursively.
+  // Builds out the full tree so the user sees the complete structure on load.
+  function autoExpandTree() {
+    if (!session) return;
+    var maxIter = 200; // safety limit
+    var changed = true;
+    while (changed && maxIter-- > 0) {
+      changed = false;
+      var openNodes = Object.values(session.nodes).filter(function (n) {
+        return n.status === 'open' && n.goalKey;
+      });
+      for (var i = 0; i < openNodes.length; i++) {
+        var n = openNodes[i];
+        var goalDef = getGoalDef(n);
+        if (!goalDef || !goalDef.suggested || !goalDef.suggested.length) continue;
+        var tac = goalDef.suggested[0];
+        var result = applyTactic(n.id, tac);
+        if (result && !result.error) { changed = true; break; } // restart loop
+      }
+    }
+  }
+
+  // Calculate zoom to fit all nodes in the canvas
+  function fitTreeZoom() {
+    if (!session || !canvas) return 1;
+    var nodes = Object.values(session.nodes);
+    if (nodes.length <= 1) return 1;
+    var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    nodes.forEach(function (n) {
+      if (n.x - NODE_W / 2 < minX) minX = n.x - NODE_W / 2;
+      if (n.x + NODE_W / 2 > maxX) maxX = n.x + NODE_W / 2;
+      if (n.y - NODE_H / 2 < minY) minY = n.y - NODE_H / 2;
+      if (n.y + NODE_H / 2 > maxY) maxY = n.y + NODE_H / 2;
+    });
+    var treeW = maxX - minX + 80;  // padding
+    var treeH = maxY - minY + 80;
+    var dpr = window.devicePixelRatio || 1;
+    var canvasW = canvas.width / dpr;
+    var canvasH = canvas.height / dpr;
+    var zoomX = canvasW / treeW;
+    var zoomY = (canvasH * 0.8) / treeH; // leave margin
+    return Math.max(0.2, Math.min(1.5, Math.min(zoomX, zoomY)));
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // §9b  Import Converters
+  // ═══════════════════════════════════════════════════════════════
+
+  // Convert a Heyting proof tree JSON into a Proof Builder theorem.
+  // Heyting trees have: conjecture_id, statement, root, nodes: { id: { node_type, content, outcome, children, ... } }
+  function convertProofTreeToTheorem(tree) {
+    if (!tree || !tree.nodes || !tree.root) {
+      alert('Invalid proof tree: missing nodes or root');
+      return null;
+    }
+    var treeNodes = tree.nodes;
+    var rootNode = treeNodes[tree.root];
+    if (!rootNode) { alert('Root node not found: ' + tree.root); return null; }
+
+    var goalSeq = 0;
+    var goals = {};
+
+    function makeGoalKey() { return 'g' + (goalSeq++); }
+
+    function outcomeToStatus(outcome) {
+      if (outcome === 'accepted' || outcome === 'proved') return 'solved';
+      if (outcome === 'blocked' || outcome === 'failed' || outcome === 'pruned') return 'failed';
+      return 'open';
+    }
+
+    // Recursively build goals from tree nodes
+    function convertNode(nodeId) {
+      var n = treeNodes[nodeId];
+      if (!n) return null;
+      var gk = makeGoalKey();
+      var children = n.children || [];
+      var display = n.content || n.goal_before || nodeId;
+      // Truncate long content for display
+      if (display.length > 120) display = display.slice(0, 117) + '...';
+
+      var tactics = {};
+      var suggested = [];
+
+      if (children.length === 0) {
+        // Leaf node: offer sorry to close it
+        var status = outcomeToStatus(n.outcome);
+        if (status === 'solved') {
+          tactics['QED'] = [];
+          suggested.push('QED');
+        } else {
+          tactics['sorry'] = [];
+          suggested.push('sorry');
+        }
+      } else {
+        // Non-leaf: each child becomes a tactic that leads to subgoals
+        children.forEach(function (childId) {
+          var child = treeNodes[childId];
+          if (!child) return;
+          var tacName = child.content || child.node_type || childId;
+          if (tacName.length > 60) tacName = tacName.slice(0, 57) + '...';
+          var childGoals = (child.children || []).length > 0 ? [] : null;
+
+          if (childGoals === null) {
+            // This child is a leaf — tactic leads directly to a new goal
+            var childGk = convertNode(childId);
+            if (childGk) {
+              tactics[tacName] = [childGk];
+              suggested.push(tacName);
+            }
+          } else {
+            // This child has further children — tactic leads to multiple subgoals
+            var subGoalKeys = [];
+            (child.children || []).forEach(function (grandchildId) {
+              var sgk = convertNode(grandchildId);
+              if (sgk) subGoalKeys.push(sgk);
+            });
+            if (subGoalKeys.length > 0) {
+              tactics[tacName] = subGoalKeys;
+            } else {
+              // No grandchildren resolved — just make it a leaf
+              var leafGk = convertNode(childId);
+              if (leafGk) tactics[tacName] = [leafGk];
+            }
+            suggested.push(tacName);
+          }
+        });
+      }
+
+      goals[gk] = {
+        display: display,
+        hyps: [],
+        tactics: tactics,
+        suggested: suggested,
+      };
+      return gk;
+    }
+
+    var rootGoalKey = convertNode(tree.root);
+    if (!rootGoalKey) { alert('Failed to convert proof tree'); return null; }
+
+    // Determine difficulty from tree depth
+    var maxDepth = 0;
+    Object.values(treeNodes).forEach(function (n) { if ((n.depth || 0) > maxDepth) maxDepth = n.depth; });
+    var difficulty = Math.min(5, Math.max(1, Math.ceil(maxDepth / 2)));
+
+    return {
+      id: 'import_' + (tree.conjecture_id || Date.now()),
+      name: tree.conjecture_id || 'Imported Proof',
+      category: 'Imported',
+      statement: tree.statement || rootNode.content || 'Imported proof tree',
+      difficulty: difficulty,
+      tags: ['imported', rootNode.node_type || 'proof'],
+      hint: 'Imported from Heyting proof tree. Navigate the strategy tree to explore proof approaches.',
+      rootGoal: rootGoalKey,
+      goals: goals,
+    };
+  }
+
+  // Fetch theorems from the Lean Database and render as selectable cards
+  function loadLeanTheorems(container) {
+    if (!container) return;
+    container.innerHTML = '<div style="color:#4ca43a;font-size:12px">Loading Lean project…</div>';
+
+    fetch('/api/lean/scan').then(function (resp) {
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp.json();
+    }).then(function (res) {
+      if (!res || !res.ok) {
+        container.innerHTML = '<div style="color:#ff6666;font-size:12px">' +
+          (res && res.message ? esc(res.message) : 'Lean scan failed — is a project configured?') + '</div>';
+        return;
+      }
+      // Collect all .lean files recursively
+      var files = [];
+      function collectFiles(node, prefix) {
+        if (!node) return;
+        if (node.type === 'file') {
+          files.push({ name: node.name, path: node.path || (prefix ? prefix + '/' + node.name : node.name), size: node.size || 0 });
+        }
+        if (node.type === 'dir' && node.children) {
+          var dirPath = prefix ? prefix + '/' + node.name : node.name;
+          node.children.forEach(function (c) { collectFiles(c, dirPath); });
+        }
+        // Root level
+        if (node.children && !node.type) {
+          node.children.forEach(function (c) { collectFiles(c, ''); });
+        }
+      }
+      collectFiles(res.tree, '');
+
+      if (files.length === 0) {
+        container.innerHTML = '<div style="color:#ffaa00;font-size:12px">No Lean files found</div>';
+        return;
+      }
+
+      // Render file list with search
+      var html = '<input class="pg-new-input" id="pg-lean-search" placeholder="Filter files…" style="margin-bottom:8px;font-size:11px" />' +
+        '<div id="pg-lean-file-list" style="max-height:200px;overflow-y:auto">';
+      files.slice(0, 100).forEach(function (f) {
+        html += '<div class="pg-tactic-item pg-lean-file-card" data-lean-path="' + esc(f.path) + '" ' +
+          'style="padding:4px 8px;font-size:11px;cursor:pointer">' +
+          '<span style="color:#78ff74">' + esc(f.name.replace('.lean', '')) + '</span>' +
+          '<span style="color:#3a6030;margin-left:8px;font-size:10px">' + esc(f.path) + '</span>' +
+          '</div>';
+      });
+      if (files.length > 100) {
+        html += '<div style="color:#4ca43a;font-size:10px;padding:4px 8px">+' + (files.length - 100) + ' more — use filter</div>';
+      }
+      html += '</div>';
+      container.innerHTML = html;
+
+      // Search filter
+      var searchInput = container.querySelector('#pg-lean-search');
+      if (searchInput) {
+        searchInput.addEventListener('input', function () {
+          var q = searchInput.value.toLowerCase();
+          container.querySelectorAll('.pg-lean-file-card').forEach(function (card) {
+            var path = (card.getAttribute('data-lean-path') || '').toLowerCase();
+            card.style.display = (!q || path.indexOf(q) >= 0) ? '' : 'none';
+          });
+        });
+      }
+
+      // Click to load file and extract theorems
+      container.querySelectorAll('.pg-lean-file-card').forEach(function (card) {
+        card.addEventListener('click', function () {
+          var path = card.getAttribute('data-lean-path');
+          loadLeanFileTheorems(path, container);
+        });
+      });
+    }).catch(function (e) {
+      container.innerHTML = '<div style="color:#ff6666;font-size:12px">Error: ' + esc(String(e)) + '</div>';
+    });
+  }
+
+  // Load a specific Lean file and extract theorem declarations
+  function loadLeanFileTheorems(path, container) {
+    container.innerHTML = '<div style="color:#4ca43a;font-size:12px">Loading ' + esc(path) + '…</div>';
+
+    fetch('/api/lean/file?path=' + encodeURIComponent(path)).then(function (resp) {
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp.json();
+    }).then(function (res) {
+      var content = (res && res.content) || '';
+      if (!content) {
+        container.innerHTML = '<div style="color:#ff6666;font-size:12px">Empty file</div>';
+        return;
+      }
+
+      // Extract all declarations (theorem, lemma, def, structure, inductive, etc.)
+      var decls = [];
+      var lines = content.split('\n');
+      var declPattern = /^(?:private\s+|protected\s+|noncomputable\s+|@\[.*?\]\s*)*(theorem|lemma|def|structure|inductive|class|instance|abbrev|opaque|axiom)\s+(\S+)\s*(.*)/;
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        var m = line.match(declPattern);
+        if (m) {
+          // Collect the full statement up to `:= by` or `:=` or `where`
+          var stmt = line;
+          var j = i + 1;
+          while (j < lines.length && j < i + 8 && !/:=/.test(stmt) && !/\bwhere\b/.test(stmt)) {
+            stmt += ' ' + lines[j].trim();
+            j++;
+          }
+          // Clean up: remove everything after `:=` or `where`
+          stmt = stmt.replace(/:=[\s\S]*$/, '').replace(/\bwhere[\s\S]*$/, '').trim();
+          decls.push({ kind: m[1], name: m[2], statement: stmt, line: i + 1 });
+        }
+      }
+
+      if (decls.length === 0) {
+        container.innerHTML = '<div style="color:#ffaa00;font-size:12px">No declarations found in ' + esc(path) +
+          '</div><button class="pg-btn" id="pg-lean-back" style="margin-top:6px">← Back</button>';
+        container.querySelector('#pg-lean-back').addEventListener('click', function () { loadLeanTheorems(container); });
+        return;
+      }
+
+      var html = '<button class="pg-btn" id="pg-lean-back" style="margin-bottom:8px">← Back</button>' +
+        '<div style="color:#4ca43a;font-size:11px;margin-bottom:6px">' + decls.length + ' declarations in ' + esc(path) + '</div>' +
+        '<div style="max-height:240px;overflow-y:auto">';
+      decls.forEach(function (d) {
+        html += '<div class="pg-theorem-card pg-lean-decl-card" data-lean-stmt="' + esc(d.statement) + '" data-lean-name="' + esc(d.name) + '">' +
+          '<div class="pg-tc-name">' + esc(d.name) + '</div>' +
+          '<div class="pg-tc-stmt">' + esc(d.statement) + '</div>' +
+          '<div class="pg-tc-meta"><span class="pg-tag">' + esc(d.kind) + '</span><span class="pg-tag">line ' + d.line + '</span></div>' +
+          '</div>';
+      });
+      html += '</div>';
+      container.innerHTML = html;
+
+      container.querySelector('#pg-lean-back').addEventListener('click', function () { loadLeanTheorems(container); });
+      container.querySelectorAll('.pg-lean-decl-card').forEach(function (card) {
+        card.addEventListener('click', function () {
+          var stmt = card.getAttribute('data-lean-stmt');
+          var name = card.getAttribute('data-lean-name');
+          // Try to match against built-in library first
+          var match = LIBRARY.find(function (t) {
+            return t.statement.toLowerCase().includes(name.toLowerCase());
+          });
+          if (match) {
+            loadTheorem(match);
+            hideLibrary();
+          } else {
+            // Create a custom theorem with sorry
+            var goalDisplay = stmt.replace(/^(theorem|lemma)\s+\S+\s*/, '').trim();
+            // Try to extract what's after the last colon
+            var colonIdx = goalDisplay.lastIndexOf(':');
+            if (colonIdx > 0) goalDisplay = goalDisplay.slice(colonIdx + 1).trim();
+            var custom = {
+              id: 'lean_' + Date.now(),
+              name: name,
+              category: 'Lean Import',
+              statement: stmt,
+              difficulty: 0,
+              tags: ['lean', 'imported'],
+              hint: 'Imported from Lean project. Connect a Lean proof server for interactive tactics.',
+              rootGoal: 'r',
+              goals: {
+                r: {
+                  display: '⊢ ' + goalDisplay,
+                  hyps: [],
+                  tactics: { 'sorry': [] },
+                  suggested: ['sorry'],
+                }
+              }
+            };
+            loadTheorem(custom);
+            hideLibrary();
+          }
+        });
+      });
+    }).catch(function (e) {
+      container.innerHTML = '<div style="color:#ff6666;font-size:12px">Error: ' + esc(String(e)) + '</div>';
+    });
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // §10  Helpers
   // ═══════════════════════════════════════════════════════════════
@@ -1187,14 +1585,7 @@
   function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
   function setText(id, val) { var el = document.getElementById(id); if (el) el.textContent = val; }
 
-  // Timer update
-  var timerInterval = null;
-  function startTimer() {
-    if (timerInterval) clearInterval(timerInterval);
-    timerInterval = setInterval(function () {
-      if (session && !session.victoryTime) updateStats();
-    }, 1000);
-  }
+  var timerInterval = null; // kept for cleanup compatibility
 
   // Cleanup: remove all listeners, stop timers, cancel animation frame
   function cleanup() {
@@ -1224,12 +1615,12 @@
       '<link rel="stylesheet" href="proof-game.css">' +
       '<div class="pg-page">' +
       '  <div class="pg-topbar">' +
-      '    <span class="pg-title">Proof <span class="pg-title-accent">Game</span></span>' +
+      '    <span class="pg-title">Proof <span class="pg-title-accent">Builder</span></span>' +
       '    <button class="pg-btn" id="pg-load-btn">Load ▼</button>' +
       '    <button class="pg-btn" id="pg-new-btn">New</button>' +
       '    <span class="pg-theorem-name" id="pg-theorem-display"></span>' +
       '    <span style="flex:1"></span>' +
-      '    <button class="pg-btn primary" id="pg-verify-btn" disabled>Verify ✓</button>' +
+      '    <button class="pg-btn primary" id="pg-verify-btn">Verify ✓</button>' +
       '    <button class="pg-btn" id="pg-export-btn" disabled>Export</button>' +
       '    <span class="pg-status"><span class="pg-status-dot simulated"></span> Simulation</span>' +
       '  </div>' +
@@ -1237,7 +1628,7 @@
       '    <div class="pg-graph" id="pg-graph">' +
       '      <canvas id="pg-canvas"></canvas>' +
       '      <div class="pg-welcome" id="pg-welcome">' +
-      '        <div class="pg-welcome-title">Proof Game</div>' +
+      '        <div class="pg-welcome-title">Proof Builder</div>' +
       '        <div class="pg-welcome-sub">Navigate proof trees by selecting tactics. ' +
       '          Explore branching paths. Solve all goals to complete the proof.</div>' +
       '        <button class="pg-btn primary" id="pg-welcome-load">Browse Library</button>' +
@@ -1282,8 +1673,6 @@
       '    <span class="pg-stat">Branches: <span class="pg-stat-value" id="pg-stat-branches">0</span></span>' +
       '    <span class="pg-stat-sep">|</span>' +
       '    <span class="pg-stat">Depth: <span class="pg-stat-value" id="pg-stat-depth">0</span></span>' +
-      '    <span class="pg-stat-sep">|</span>' +
-      '    <span class="pg-stat">Time: <span class="pg-stat-value" id="pg-stat-time">0:00</span></span>' +
       '    <span style="flex:1"></span>' +
       '    <button class="pg-btn" id="pg-undo-btn" disabled>Undo ↩</button>' +
       '  </div>' +
@@ -1335,10 +1724,9 @@
       doApplyTactic(goalDef.suggested[0]);
     });
 
-    // Init canvas + timer
+    // Init canvas
     requestAnimationFrame(function () {
       initCanvas();
-      startTimer();
       // Restore session if exists
       if (session) {
         var welcome = document.getElementById('pg-welcome');
