@@ -126,6 +126,252 @@
       }
     }
 
+    // ── Code Editor panel methods (Phase 3) ────────────────────
+
+    attachCodeEditor(initialPath, lineNumber) {
+      this.type = 'codeeditor';
+      this.openFiles = []; // [{path, model, viewState, lang}]
+      this.activeFileIdx = -1;
+      this.monacoEditor = null;
+      this.diffEditor = null;
+      this.isDiffMode = false;
+
+      this.body.innerHTML = '<div class="cockpit-editor-shell">' +
+        '<div class="cockpit-editor-tabs" id="editor-tabs-' + escapeHtml(this.id) + '"></div>' +
+        '<div class="cockpit-editor-breadcrumbs" id="editor-bc-' + escapeHtml(this.id) + '"></div>' +
+        '<div class="cockpit-editor-host" id="editor-host-' + escapeHtml(this.id) + '">' +
+        '<div class="cockpit-editor-empty">Open a file from the Explorer sidebar, search results, or command palette.<br>' +
+        '<span style="font-size:10px;color:var(--text-dim)">Double-click files in the explorer, or use Ctrl+Shift+E to browse.</span></div>' +
+        '</div></div>';
+
+      const initEditor = () => {
+        const host = this.body.querySelector('.cockpit-editor-host');
+        if (!host || !window.monaco) return;
+        this.monacoEditor = monaco.editor.create(host, {
+          theme: 'halo-terminal',
+          readOnly: true,
+          minimap: { enabled: true },
+          stickyScroll: { enabled: true },
+          lineNumbers: 'on',
+          renderLineHighlight: 'all',
+          bracketPairColorization: { enabled: true },
+          automaticLayout: true,
+          fontSize: 12,
+          fontFamily: "'JetBrains Mono', 'Share Tech Mono', monospace",
+        });
+        // Remove the empty hint
+        const empty = host.querySelector('.cockpit-editor-empty');
+        if (empty) empty.remove();
+        if (initialPath) this.openFile(initialPath, lineNumber);
+      };
+
+      if (window.__monacoReady) {
+        initEditor();
+      } else {
+        document.addEventListener('monaco-ready', initEditor, { once: true });
+      }
+    }
+
+    async openFile(path, lineNumber) {
+      if (!this.monacoEditor && !this.openFiles) return;
+
+      // Switch out of diff mode if active
+      if (this.isDiffMode) this.exitDiffMode();
+
+      // Check if already open
+      const existing = this.openFiles.findIndex(f => f.path === path);
+      if (existing >= 0) {
+        this.switchToFile(existing);
+        if (lineNumber) this.revealLine(lineNumber);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/files/read?path=' + encodeURIComponent(path));
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.ok) return;
+
+        const lang = data.language || this.detectLanguage(path);
+        const model = monaco.editor.createModel(data.content, lang);
+        this.openFiles.push({ path, model, viewState: null, lang });
+        this.switchToFile(this.openFiles.length - 1);
+        this.renderEditorTabs();
+        this.renderBreadcrumbs(path);
+        if (lineNumber) this.revealLine(lineNumber);
+        // Update tab label in cockpit tab bar
+        const fname = path.split('/').pop();
+        const entry = this.manager?.sessions?.get(this.id);
+        if (entry?.tab) {
+          const labelEl = entry.tab.querySelector('.tab-label');
+          if (labelEl) labelEl.textContent = fname;
+        }
+      } catch (_e) {}
+    }
+
+    async openDiff(path) {
+      const host = this.body.querySelector('.cockpit-editor-host');
+      if (!host || !window.monaco) return;
+
+      try {
+        const res = await fetch('/api/files/git-diff?path=' + encodeURIComponent(path));
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.ok || !data.diff) return;
+
+        const diff = data.diff;
+        this.isDiffMode = true;
+
+        // Save current editor state if any
+        if (this.monacoEditor && this.activeFileIdx >= 0) {
+          this.openFiles[this.activeFileIdx].viewState = this.monacoEditor.saveViewState();
+        }
+
+        // Hide normal editor, create diff editor
+        if (this.monacoEditor) {
+          this.monacoEditor.getDomNode().style.display = 'none';
+        }
+
+        if (this.diffEditor) this.diffEditor.dispose();
+        this.diffEditor = monaco.editor.createDiffEditor(host, {
+          theme: 'halo-terminal',
+          readOnly: true,
+          automaticLayout: true,
+          renderSideBySide: true,
+          fontSize: 12,
+          fontFamily: "'JetBrains Mono', 'Share Tech Mono', monospace",
+        });
+
+        const lang = diff.language || 'plaintext';
+        this.diffEditor.setModel({
+          original: monaco.editor.createModel(diff.original, lang),
+          modified: monaco.editor.createModel(diff.modified, lang),
+        });
+
+        this.renderBreadcrumbs(path + ' (diff)');
+        this.renderEditorTabs();
+      } catch (_e) {}
+    }
+
+    exitDiffMode() {
+      if (this.diffEditor) {
+        this.diffEditor.dispose();
+        this.diffEditor = null;
+      }
+      this.isDiffMode = false;
+      if (this.monacoEditor) {
+        this.monacoEditor.getDomNode().style.display = '';
+      }
+    }
+
+    switchToFile(idx) {
+      if (idx < 0 || idx >= this.openFiles.length) return;
+      // Save current view state
+      if (this.monacoEditor && this.activeFileIdx >= 0 && this.activeFileIdx < this.openFiles.length) {
+        this.openFiles[this.activeFileIdx].viewState = this.monacoEditor.saveViewState();
+      }
+      this.activeFileIdx = idx;
+      const file = this.openFiles[idx];
+      if (this.monacoEditor) {
+        this.monacoEditor.setModel(file.model);
+        if (file.viewState) this.monacoEditor.restoreViewState(file.viewState);
+      }
+    }
+
+    revealLine(lineNumber) {
+      if (this.monacoEditor && lineNumber > 0) {
+        this.monacoEditor.revealLineInCenter(lineNumber);
+        this.monacoEditor.setPosition({ lineNumber, column: 1 });
+      }
+    }
+
+    renderEditorTabs() {
+      const tabsEl = this.body.querySelector('[id^="editor-tabs-"]');
+      if (!tabsEl) return;
+      tabsEl.innerHTML = this.openFiles.map((f, idx) => {
+        const fname = f.path.split('/').pop();
+        const icon = fileIcon(fname);
+        const active = idx === this.activeFileIdx ? ' active' : '';
+        const pinned = f.pinned ? ' pinned' : '';
+        return '<div class="editor-tab' + active + pinned + '" data-idx="' + idx + '">' +
+          '<span class="tab-icon">' + icon + '</span>' +
+          '<span>' + escapeHtml(fname) + '</span>' +
+          '<span class="tab-close" data-close-idx="' + idx + '">&times;</span></div>';
+      }).join('');
+
+      tabsEl.querySelectorAll('.editor-tab').forEach(tab => {
+        const idx = parseInt(tab.dataset.idx, 10);
+        tab.addEventListener('click', (ev) => {
+          if (ev.target.closest('.tab-close')) return;
+          if (this.isDiffMode) this.exitDiffMode();
+          this.switchToFile(idx);
+          this.renderEditorTabs();
+          this.renderBreadcrumbs(this.openFiles[idx].path);
+        });
+        tab.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          const file = this.openFiles[idx];
+          showContextMenu(ev.clientX, ev.clientY, [
+            { label: file?.pinned ? 'Unpin' : 'Pin', onClick: () => { if (file) file.pinned = !file.pinned; this.renderEditorTabs(); } },
+            { label: 'Close', onClick: () => this.closeEditorTab(idx) },
+            { label: 'Close Others', onClick: () => this.closeOtherEditorTabs(idx) },
+            { label: 'Copy Path', onClick: () => navigator.clipboard?.writeText(file?.path || '') },
+          ]);
+        });
+      });
+      tabsEl.querySelectorAll('.tab-close').forEach(btn => {
+        btn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          this.closeEditorTab(parseInt(btn.dataset.closeIdx, 10));
+        });
+      });
+    }
+
+    closeEditorTab(idx) {
+      if (idx < 0 || idx >= this.openFiles.length) return;
+      const file = this.openFiles[idx];
+      if (file.model) file.model.dispose();
+      this.openFiles.splice(idx, 1);
+      if (this.openFiles.length === 0) {
+        this.activeFileIdx = -1;
+        if (this.monacoEditor) this.monacoEditor.setModel(null);
+      } else {
+        this.activeFileIdx = Math.min(idx, this.openFiles.length - 1);
+        this.switchToFile(this.activeFileIdx);
+      }
+      this.renderEditorTabs();
+      if (this.activeFileIdx >= 0) {
+        this.renderBreadcrumbs(this.openFiles[this.activeFileIdx].path);
+      }
+    }
+
+    closeOtherEditorTabs(keepIdx) {
+      const kept = this.openFiles[keepIdx];
+      this.openFiles.forEach((f, i) => { if (i !== keepIdx && f.model) f.model.dispose(); });
+      this.openFiles = kept ? [kept] : [];
+      this.activeFileIdx = kept ? 0 : -1;
+      if (this.activeFileIdx >= 0) this.switchToFile(0);
+      else if (this.monacoEditor) this.monacoEditor.setModel(null);
+      this.renderEditorTabs();
+    }
+
+    renderBreadcrumbs(path) {
+      const bcEl = this.body.querySelector('[id^="editor-bc-"]');
+      if (!bcEl || !path) return;
+      const parts = path.split('/').filter(Boolean);
+      bcEl.innerHTML = parts.map((part, idx) => {
+        return '<span class="bc-segment">' + escapeHtml(part) + '</span>';
+      }).join('<span class="bc-sep">/</span>');
+    }
+
+    detectLanguage(path) {
+      const ext = (path || '').split('.').pop()?.toLowerCase() || '';
+      const map = { lean: 'lean4', rs: 'rust', py: 'python', js: 'javascript', ts: 'typescript',
+        json: 'json', toml: 'toml', md: 'markdown', css: 'css', html: 'html', sh: 'shell',
+        yml: 'yaml', yaml: 'yaml', c: 'c', cpp: 'cpp', go: 'go', java: 'java', sol: 'sol' };
+      return map[ext] || 'plaintext';
+    }
+
     attachChat(agentId, agentType, options = {}) {
       const panelSelf = this;
       this.agentId = agentId;
@@ -1106,6 +1352,8 @@
       this.initWorkflowSidebar();
       this.initSidebarResize();
       this.initSidebarModes();
+      this.commandPalette = new CommandPalette(this);
+      this.refreshGitStatusAndBranch();
     }
 
     renderSkeleton() {
@@ -1113,6 +1361,10 @@
         <div class="cockpit-container">
           <div class="cockpit-toolbar" id="cockpit-toolbar">
             ${this.layoutOrder.map(k => `<button type="button" class="layout-btn ${this.layout === k ? 'active' : ''}" data-layout="${k}">${k}</button>`).join('')}
+            <span class="cockpit-branch-indicator" id="cockpit-branch" title="Current branch">
+              <span class="branch-icon">&#9095;</span>
+              <span class="branch-name" id="cockpit-branch-name">...</span>
+            </span>
             <div class="cockpit-notice-bar" id="cockpit-notice-bar" aria-live="polite"></div>
             <button type="button" class="btn btn-sm cockpit-new-btn" id="cockpit-new">+ New</button>
           </div>
@@ -1127,6 +1379,7 @@
                 <div class="cockpit-sidebar-modes">
                   <button class="sidebar-mode-btn is-active" data-sidebar-mode="code" title="Live code tracking">Code</button>
                   <button class="sidebar-mode-btn" data-sidebar-mode="files" title="Recent files">Files</button>
+                  <button class="sidebar-mode-btn" data-sidebar-mode="explorer" title="File explorer">&#9776;</button>
                   <button class="sidebar-mode-btn" data-sidebar-mode="workflows" title="Workflows">&#9851;</button>
                 </div>
                 <button type="button" class="cockpit-mesh-toggle" id="cockpit-mesh-toggle" title="Collapse sidebar">◀</button>
@@ -1142,6 +1395,26 @@
                   <div class="sidebar-agent-strip" id="sidebar-agents-files"></div>
                   <div class="sidebar-file-body" id="sidebar-file-body">
                     <div class="sidebar-empty-hint">Loading files&#8230;</div>
+                  </div>
+                </div>
+                <div class="sidebar-mode-panel" id="sidebar-panel-explorer" data-sidebar-panel="explorer" style="display:none">
+                  <div class="sidebar-search-bar" id="sidebar-search-bar">
+                    <input class="input sidebar-search-input" id="sidebar-search-input" placeholder="Search files... (Ctrl+Shift+F)" />
+                    <select class="sidebar-search-glob" id="sidebar-search-glob">
+                      <option value="">All</option>
+                      <option value="*.lean">Lean</option>
+                      <option value="*.rs">Rust</option>
+                      <option value="*.js">JS</option>
+                      <option value="*.py">Py</option>
+                    </select>
+                  </div>
+                  <div class="sidebar-search-results" id="sidebar-search-results" style="display:none"></div>
+                  <div class="sidebar-explorer-toolbar">
+                    <input class="input sidebar-explorer-filter" id="sidebar-explorer-filter" placeholder="Filter tree..." />
+                    <button class="btn btn-sm" id="sidebar-explorer-refresh" title="Refresh">&#8635;</button>
+                  </div>
+                  <div class="sidebar-explorer-tree" id="sidebar-explorer-tree">
+                    <div class="sidebar-empty-hint">Loading file tree&#8230;</div>
                   </div>
                 </div>
                 <div class="sidebar-mode-panel" id="sidebar-panel-workflows" data-sidebar-panel="workflows" style="display:none">
@@ -1267,8 +1540,19 @@
           ev.preventDefault();
           const btn = document.getElementById('cockpit-new');
           if (btn) this.toggleNewDropdown(btn);
+        } else if (ev.ctrlKey && ev.shiftKey && ev.key.toLowerCase() === 'p') {
+          ev.preventDefault();
+          if (this.commandPalette) this.commandPalette.toggle();
+        } else if (ev.ctrlKey && ev.shiftKey && ev.key.toLowerCase() === 'f') {
+          ev.preventDefault();
+          this.setSidebarMode('explorer');
+          setTimeout(() => this.root?.querySelector('#sidebar-search-input')?.focus(), 50);
+        } else if (ev.ctrlKey && ev.shiftKey && ev.key.toLowerCase() === 'e') {
+          ev.preventDefault();
+          this.setSidebarMode('explorer');
         } else if (ev.key === 'Escape') {
           this.hideDropdown();
+          if (this.commandPalette) this.commandPalette.hide();
           const panel = this.gridEl?.querySelector('.cockpit-panel.maximized');
           if (panel) panel.classList.remove('maximized');
         }
@@ -1674,6 +1958,9 @@
         this.renderSidebarAgentStrip('sidebar-agents-files');
         this.renderSidebarFileContent();
         this.startSidebarFilesPoll();
+      } else if (mode === 'explorer') {
+        this.stopSidebarFilesPoll();
+        this.initExplorer();
       } else {
         this.stopSidebarFilesPoll();
       }
@@ -1765,7 +2052,7 @@
             '<div class="sidebar-code-header">' +
               this.letterBadgeHtml(item.sessionId, item.agentType) +
               '<div class="sidebar-code-path">' +
-                '<span class="sidebar-code-fname">' + escapeHtml(fname) + '</span>' +
+                '<span class="sidebar-code-fname">' + fileIcon(fname) + ' ' + escapeHtml(fname) + '</span>' +
                 (dir ? '<span class="sidebar-code-dir">' + escapeHtml(dir) + '</span>' : '') +
               '</div>' +
             '</div>' +
@@ -1779,7 +2066,7 @@
           '<div class="sidebar-code-header">' +
             statusBadge +
             '<div class="sidebar-code-path">' +
-              '<span class="sidebar-code-fname">' + escapeHtml(fname) + '</span>' +
+              '<span class="sidebar-code-fname">' + fileIcon(fname) + ' ' + escapeHtml(fname) + '</span>' +
               (dir ? '<span class="sidebar-code-dir">' + escapeHtml(dir) + '</span>' : '') +
             '</div>' +
           '</div>' +
@@ -1849,7 +2136,7 @@
           return '<div class="sidebar-file-entry" data-path="' + escapeHtml(f.path) + '">' +
             '<div class="sidebar-file-info">' +
               statusBadge +
-              '<span class="sidebar-file-fname">' + escapeHtml(fname) + '</span>' +
+              '<span class="sidebar-file-fname">' + fileIcon(fname) + ' ' + escapeHtml(fname) + '</span>' +
             '</div>' +
             (dir ? '<div class="sidebar-file-dir">' + escapeHtml(dir) + '</div>' : '') +
             (f.summary ? '<div class="sidebar-file-summary">' + escapeHtml(f.summary) + '</div>' : '') +
@@ -1890,6 +2177,312 @@
           }
         })
         .catch(() => {});
+    }
+
+    // ── Phase 1: File Explorer Tree ──────────────────────────────
+
+    initExplorer() {
+      if (this._explorerInitDone) {
+        this.renderExplorerTree();
+        return;
+      }
+      this._explorerInitDone = true;
+      this._explorerExpanded = new Set();
+      this._explorerCache = new Map();
+      this._explorerGitStatus = new Map();
+      this._explorerSelected = null;
+
+      const refreshBtn = this.root?.querySelector('#sidebar-explorer-refresh');
+      if (refreshBtn) refreshBtn.addEventListener('click', () => {
+        this._explorerCache.clear();
+        this.renderExplorerTree();
+      });
+
+      const filterInput = this.root?.querySelector('#sidebar-explorer-filter');
+      if (filterInput) {
+        let debounce = null;
+        filterInput.addEventListener('input', () => {
+          clearTimeout(debounce);
+          debounce = setTimeout(() => this.renderExplorerTree(filterInput.value.trim().toLowerCase()), 200);
+        });
+      }
+
+      // Search bar
+      const searchInput = this.root?.querySelector('#sidebar-search-input');
+      const searchGlob = this.root?.querySelector('#sidebar-search-glob');
+      if (searchInput) {
+        let sDebounce = null;
+        searchInput.addEventListener('input', () => {
+          clearTimeout(sDebounce);
+          const q = searchInput.value.trim();
+          sDebounce = setTimeout(() => {
+            if (q.length >= 2) this.performSearch(q, searchGlob?.value || '');
+            else this.hideSearchResults();
+          }, 300);
+        });
+        searchInput.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Escape') { searchInput.value = ''; this.hideSearchResults(); }
+        });
+      }
+
+      // Fetch git status then render tree
+      this.refreshGitStatusAndBranch().then(() => this.renderExplorerTree());
+    }
+
+    async refreshGitStatusAndBranch() {
+      try {
+        const res = await fetch('/api/files/git-status');
+        if (!res.ok) return;
+        const data = await res.json();
+        this._explorerGitStatus = new Map();
+        if (Array.isArray(data.changed)) {
+          data.changed.forEach(f => this._explorerGitStatus.set(f.path, f.status));
+        }
+        if (data.branch) {
+          const brEl = this.root?.querySelector('#cockpit-branch-name');
+          if (brEl) brEl.textContent = data.branch;
+        }
+      } catch (_e) {}
+    }
+
+    async fetchTreeLevel(dirPath) {
+      const cacheKey = dirPath || '__root__';
+      if (this._explorerCache.has(cacheKey)) return this._explorerCache.get(cacheKey);
+      try {
+        const res = await fetch('/api/files/tree?path=' + encodeURIComponent(dirPath));
+        if (!res.ok) return [];
+        const data = await res.json();
+        const entries = Array.isArray(data.entries) ? data.entries : [];
+        // Sort: directories first, then alphabetically
+        entries.sort((a, b) => {
+          if (a.type === 'directory' && b.type !== 'directory') return -1;
+          if (a.type !== 'directory' && b.type === 'directory') return 1;
+          return a.name.localeCompare(b.name);
+        });
+        // Filter hidden and build dirs
+        const filtered = entries.filter(e => {
+          const n = e.name;
+          return !n.startsWith('.') && n !== 'node_modules' && n !== 'target' && n !== '.lake';
+        });
+        this._explorerCache.set(cacheKey, filtered);
+        return filtered;
+      } catch (_e) { return []; }
+    }
+
+    async renderExplorerTree(filter) {
+      const treeEl = this.root?.querySelector('#sidebar-explorer-tree');
+      if (!treeEl) return;
+      treeEl.innerHTML = '<div class="sidebar-empty-hint">Loading&#8230;</div>';
+      const rootEntries = await this.fetchTreeLevel('');
+      const html = await this.buildTreeHtml(rootEntries, 0, filter);
+      treeEl.innerHTML = html || '<div class="sidebar-empty-hint">No files found</div>';
+      this.bindTreeEvents(treeEl);
+    }
+
+    async buildTreeHtml(entries, depth, filter) {
+      let html = '';
+      for (const entry of entries) {
+        const isDir = entry.type === 'directory';
+        const name = entry.name;
+        const path = entry.path;
+        const gitSt = this._explorerGitStatus.get(path) || this.dirHasGitStatus(path);
+        const indent = depth * 16;
+
+        if (filter && !name.toLowerCase().includes(filter) && !path.toLowerCase().includes(filter)) {
+          // For directories, still render if expanded (children might match)
+          if (isDir && this._explorerExpanded.has(path)) {
+            const children = await this.fetchTreeLevel(path);
+            const childHtml = await this.buildTreeHtml(children, depth + 1, filter);
+            if (childHtml) {
+              html += this.treeNodeHtml(entry, depth, gitSt, true) + childHtml;
+            }
+          }
+          continue;
+        }
+
+        html += this.treeNodeHtml(entry, depth, gitSt, isDir && this._explorerExpanded.has(path));
+        if (isDir && this._explorerExpanded.has(path)) {
+          const children = await this.fetchTreeLevel(path);
+          html += await this.buildTreeHtml(children, depth + 1, filter);
+        }
+      }
+      return html;
+    }
+
+    treeNodeHtml(entry, depth, gitSt, isExpanded) {
+      const isDir = entry.type === 'directory';
+      const indent = depth * 16;
+      const chevron = isDir
+        ? '<span class="explorer-chevron">' + (isExpanded ? '&#9662;' : '&#9656;') + '</span>'
+        : '<span class="explorer-chevron empty"></span>';
+      const icon = isDir ? '&#128193;' : fileIcon(entry.name);
+      const nameClass = isDir ? 'explorer-name-dir' : 'explorer-name-file';
+      const gitClass = gitSt ? ' explorer-git-' + gitSt.toLowerCase() : '';
+      const statusBadge = gitSt && !isDir
+        ? '<span class="explorer-status explorer-status-' + gitSt.toLowerCase() + '">' + escapeHtml(gitSt) + '</span>'
+        : '';
+      const selected = this._explorerSelected === entry.path ? ' selected' : '';
+      return '<div class="explorer-node' + gitClass + selected + '" data-path="' + escapeHtml(entry.path) +
+        '" data-is-dir="' + (isDir ? '1' : '0') + '" data-name="' + escapeHtml(entry.name) +
+        '" style="padding-left:' + (8 + indent) + 'px">' +
+        chevron + '<span class="explorer-icon">' + icon + '</span>' +
+        '<span class="explorer-name ' + nameClass + '">' + escapeHtml(entry.name) + '</span>' +
+        statusBadge + '</div>';
+    }
+
+    dirHasGitStatus(dirPath) {
+      for (const [p, st] of this._explorerGitStatus) {
+        if (p.startsWith(dirPath + '/')) return st;
+      }
+      return '';
+    }
+
+    bindTreeEvents(treeEl) {
+      treeEl.querySelectorAll('.explorer-node').forEach(node => {
+        const path = node.dataset.path;
+        const isDir = node.dataset.isDir === '1';
+        const name = node.dataset.name;
+
+        node.addEventListener('click', () => {
+          this._explorerSelected = path;
+          treeEl.querySelectorAll('.explorer-node.selected').forEach(n => n.classList.remove('selected'));
+          node.classList.add('selected');
+          if (isDir) {
+            if (this._explorerExpanded.has(path)) this._explorerExpanded.delete(path);
+            else this._explorerExpanded.add(path);
+            this.renderExplorerTree(this.root?.querySelector('#sidebar-explorer-filter')?.value?.trim()?.toLowerCase());
+          }
+        });
+
+        node.addEventListener('dblclick', () => {
+          if (!isDir) this.openFileInPanel(path);
+        });
+
+        node.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const items = [];
+          if (!isDir) {
+            items.push({ label: 'Open in Editor', onClick: () => this.openFileInPanel(path) });
+            items.push({ label: 'Open Diff', onClick: () => this.openDiffInPanel(path) });
+          }
+          items.push({ label: 'Copy Path', onClick: () => navigator.clipboard?.writeText(path) });
+          items.push({ label: 'Copy File Name', onClick: () => navigator.clipboard?.writeText(name) });
+          if (!isDir) {
+            items.push({ label: 'Open in Observatory', onClick: () => this.openFileInObservatory(path) });
+          }
+          showContextMenu(ev.clientX, ev.clientY, items);
+        });
+      });
+    }
+
+    // ── Phase 3: In-Panel Monaco Editor ──────────────────────────
+
+    openFileInPanel(path, lineNumber) {
+      // Find existing codeeditor panel or create one
+      let editorEntry = null;
+      this.sessions.forEach((entry) => {
+        if (entry.panel.type === 'codeeditor') editorEntry = entry;
+      });
+      if (editorEntry) {
+        editorEntry.panel.openFile(path, lineNumber);
+        this.activateTab(editorEntry.panel.id);
+      } else {
+        this.attachEditorPanel(path, lineNumber);
+      }
+    }
+
+    openDiffInPanel(path) {
+      // Find existing codeeditor panel or create one, then open diff
+      let editorEntry = null;
+      this.sessions.forEach((entry) => {
+        if (entry.panel.type === 'codeeditor') editorEntry = entry;
+      });
+      if (editorEntry) {
+        editorEntry.panel.openDiff(path);
+        this.activateTab(editorEntry.panel.id);
+      } else {
+        this.attachEditorPanel();
+        // Wait for panel to be created, then open diff
+        setTimeout(() => {
+          this.sessions.forEach((entry) => {
+            if (entry.panel.type === 'codeeditor') entry.panel.openDiff(path);
+          });
+        }, 100);
+      }
+    }
+
+    attachEditorPanel(initialPath, lineNumber) {
+      const id = 'codeeditor-' + Date.now().toString(36);
+      const panel = new CockpitPanel(id, 'codeeditor', 'editor', this);
+      panel.attachCodeEditor(initialPath, lineNumber);
+      const tab = this.createTab(id, 'editor');
+      panel.el.querySelector('[data-action="close"]').addEventListener('click', () => this.detachSession(id, true));
+      this.gridEl.appendChild(panel.el);
+      this.sessions.set(id, { panel, tab, agentId: null });
+      this.activateTab(id);
+      this.applyLayout();
+    }
+
+    // ── Phase 4: Search ──────────────────────────────────────────
+
+    async performSearch(query, glob) {
+      const resultsEl = this.root?.querySelector('#sidebar-search-results');
+      const treeEl = this.root?.querySelector('#sidebar-explorer-tree');
+      const toolbarEl = this.root?.querySelector('.sidebar-explorer-toolbar');
+      if (!resultsEl) return;
+      resultsEl.style.display = '';
+      if (treeEl) treeEl.style.display = 'none';
+      if (toolbarEl) toolbarEl.style.display = 'none';
+      resultsEl.innerHTML = '<div class="sidebar-empty-hint">Searching&#8230;</div>';
+      try {
+        const params = new URLSearchParams({ q: query, limit: '50' });
+        if (glob) params.set('glob', glob);
+        const res = await fetch('/api/files/search?' + params);
+        if (!res.ok) { resultsEl.innerHTML = '<div class="sidebar-empty-hint">Search failed</div>'; return; }
+        const data = await res.json();
+        const results = Array.isArray(data.results) ? data.results : [];
+        if (results.length === 0) {
+          resultsEl.innerHTML = '<div class="sidebar-empty-hint">No results</div>';
+          return;
+        }
+        resultsEl.innerHTML = '<div class="search-result-count">' + results.length + ' result' + (results.length !== 1 ? 's' : '') + '</div>' +
+          results.map(r => {
+            const highlighted = this.highlightMatch(escapeHtml(r.text), query);
+            return '<div class="search-result" data-path="' + escapeHtml(r.path) + '" data-line="' + r.line + '">' +
+              '<div class="search-result-path">' + escapeHtml(r.path) + ':' + r.line + '</div>' +
+              '<div class="search-result-text">' + highlighted + '</div></div>';
+          }).join('');
+        resultsEl.querySelectorAll('.search-result').forEach(el => {
+          el.addEventListener('click', () => {
+            this.openFileInPanel(el.dataset.path, parseInt(el.dataset.line, 10));
+          });
+        });
+      } catch (_e) {
+        resultsEl.innerHTML = '<div class="sidebar-empty-hint">Search error</div>';
+      }
+    }
+
+    hideSearchResults() {
+      const resultsEl = this.root?.querySelector('#sidebar-search-results');
+      const treeEl = this.root?.querySelector('#sidebar-explorer-tree');
+      const toolbarEl = this.root?.querySelector('.sidebar-explorer-toolbar');
+      if (resultsEl) resultsEl.style.display = 'none';
+      if (treeEl) treeEl.style.display = '';
+      if (toolbarEl) toolbarEl.style.display = '';
+    }
+
+    highlightMatch(text, query) {
+      if (!query) return text;
+      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      try {
+        return text.replace(new RegExp('(' + escaped + ')', 'gi'), '<mark>$1</mark>');
+      } catch (_e) { return text; }
+    }
+
+    focusSearch() {
+      this.setSidebarMode('explorer');
+      setTimeout(() => this.root?.querySelector('#sidebar-search-input')?.focus(), 50);
     }
 
     async refreshWorkflowList() {
@@ -2540,6 +3133,7 @@
             { id: 'containers', label: 'Containers', detail: 'Live container state and bootstrap mode', icon: '⬒', needsPreflight: false },
             { id: 'workflow', label: 'Workflow Builder', detail: 'Task graph orchestration', icon: '🔀', needsPreflight: false },
             { id: 'channel', label: 'Agent Channel', detail: 'Inter-agent message surface', icon: '⬡', needsPreflight: false },
+            { id: 'codeeditor', label: 'Code Editor', detail: 'Monaco editor with breadcrumbs and minimap', icon: '✎', needsPreflight: false },
             { id: 'metrics', label: 'Metrics Panel', detail: 'Session telemetry', icon: '📊', needsPreflight: false },
             { id: 'log', label: 'Log Stream', detail: 'Live event feed', icon: '📜', needsPreflight: false },
           ],
@@ -2841,6 +3435,10 @@
         this.attachSystemPanel('log');
         return;
       }
+      if (agent === 'codeeditor') {
+        this.attachEditorPanel();
+        return;
+      }
       if (agent === 'admin' || agent === 'containers' || agent === 'workflow' || agent === 'channel') {
         this.attachSystemPanel(agent);
         return;
@@ -3077,7 +3675,9 @@
         ev.preventDefault();
         const entry = this.sessions.get(sessionId);
         const isChat = entry?.panel?.type === 'chat';
+        const isPinned = tab.classList.contains('pinned');
         showContextMenu(ev.clientX, ev.clientY, [
+          { label: isPinned ? 'Unpin Tab' : 'Pin Tab', onClick: () => tab.classList.toggle('pinned') },
           { label: isChat ? 'Close Panel (agent keeps running)' : 'Close', onClick: () => isChat ? this.closeChatPanel(sessionId) : this.destroySession(sessionId) },
           { label: 'Restart', onClick: () => this.restartSession(sessionId) },
           ...(isChat ? [{ label: 'Reset Agent', onClick: () => this.resetChatAgent(sessionId) }] : []),
@@ -3356,6 +3956,17 @@
 
   function hideContextMenu() {
     document.getElementById('cockpit-context-menu')?.remove();
+  }
+
+  function fileIcon(name) {
+    const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+    const icons = {
+      lean: '\uD835\uDD43', rs: '\u{1F980}', js: '\u26A1', css: '\uD83C\uDFA8', json: '{}', md: '\uD83D\uDCDD',
+      py: '\uD83D\uDC0D', toml: '\u2699', sh: '\u25A3', html: '\u25C7', svg: '\u25CE',
+      ts: '\u26A1', go: '\u25C6', java: '\u2615', c: 'C', cpp: 'C+', h: 'H', sol: '\u2B23',
+      txt: '\u2261', yml: '\u2699', yaml: '\u2699', lock: '\uD83D\uDD12',
+    };
+    return icons[ext] || '\uD83D\uDCC4';
   }
 
   function escapeHtml(s) {
@@ -3970,6 +4581,140 @@
     refresh().catch((e) => {
       panel.body.innerHTML = `<div class="cockpit-panel-error">${escapeHtml(String(e.message || e))}</div>`;
     });
+  }
+
+  // ── Phase 5: Command Palette ──────────────────────────────────
+
+  class CommandPalette {
+    constructor(manager) {
+      this.manager = manager;
+      this.visible = false;
+      this.selectedIdx = 0;
+      this.el = document.createElement('div');
+      this.el.className = 'command-palette-overlay';
+      this.el.style.display = 'none';
+      this.el.innerHTML = '<div class="command-palette-card">' +
+        '<input class="input command-palette-input" placeholder="Type a command..." />' +
+        '<div class="command-palette-results"></div></div>';
+      document.body.appendChild(this.el);
+
+      this.inputEl = this.el.querySelector('.command-palette-input');
+      this.resultsEl = this.el.querySelector('.command-palette-results');
+
+      this.inputEl.addEventListener('input', () => this.updateResults());
+      this.inputEl.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape') { this.hide(); return; }
+        if (ev.key === 'ArrowDown') { ev.preventDefault(); this.moveSelection(1); }
+        else if (ev.key === 'ArrowUp') { ev.preventDefault(); this.moveSelection(-1); }
+        else if (ev.key === 'Enter') { ev.preventDefault(); this.executeSelected(); }
+      });
+      this.el.addEventListener('click', (ev) => {
+        if (ev.target === this.el) this.hide();
+      });
+    }
+
+    buildCommands() {
+      const m = this.manager;
+      const cmds = [
+        { label: 'Open File...', category: 'File', action: () => { m.setSidebarMode('explorer'); } },
+        { label: 'Search in Files', category: 'Search', shortcut: 'Ctrl+Shift+F', action: () => m.focusSearch() },
+        { label: 'Toggle Explorer', category: 'View', shortcut: 'Ctrl+Shift+E', action: () => m.setSidebarMode('explorer') },
+        { label: 'Toggle Code Sidebar', category: 'View', action: () => m.setSidebarMode('code') },
+        { label: 'Toggle Files Sidebar', category: 'View', action: () => m.setSidebarMode('files') },
+        { label: 'Toggle Workflows', category: 'View', action: () => m.setSidebarMode('workflows') },
+        { label: 'New Shell', category: 'Agent', action: () => m.createFromPreset('shell') },
+        { label: 'New Claude Agent', category: 'Agent', action: () => m.createFromPreset('claude') },
+        { label: 'New Codex Agent', category: 'Agent', action: () => m.createFromPreset('codex') },
+        { label: 'New Gemini Agent', category: 'Agent', action: () => m.createFromPreset('gemini') },
+        { label: 'New Code Editor', category: 'Editor', action: () => m.createFromPreset('codeeditor') },
+        { label: 'Layout: Single', category: 'Layout', action: () => m.setLayout('1') },
+        { label: 'Layout: 2 Horizontal', category: 'Layout', action: () => m.setLayout('2h') },
+        { label: 'Layout: 2 Vertical', category: 'Layout', action: () => m.setLayout('2v') },
+        { label: 'Layout: 4 Grid', category: 'Layout', action: () => m.setLayout('4') },
+        { label: 'Layout: 3 Left', category: 'Layout', action: () => m.setLayout('3L') },
+        { label: 'Layout: 6 Grid', category: 'Layout', action: () => m.setLayout('6') },
+        { label: 'Toggle Sidebar', category: 'View', action: () => m.setMeshCollapsed(!m.meshCollapsed) },
+        { label: 'Toggle CRT Effect', category: 'View', action: () => document.body.classList.toggle('no-crt') },
+        { label: 'Refresh Explorer', category: 'File', action: () => { if (m._explorerCache) m._explorerCache.clear(); m.renderExplorerTree?.(); } },
+      ];
+      return cmds;
+    }
+
+    fuzzyMatch(query, label) {
+      const lower = label.toLowerCase();
+      const q = query.toLowerCase();
+      if (!q) return 100;
+      if (lower.includes(q)) return lower.indexOf(q) === 0 ? 100 : 50;
+      let qi = 0;
+      for (let i = 0; i < lower.length && qi < q.length; i++) {
+        if (lower[i] === q[qi]) qi++;
+      }
+      return qi === q.length ? 30 : 0;
+    }
+
+    updateResults() {
+      const q = this.inputEl.value.trim();
+      const cmds = this.buildCommands();
+      const scored = cmds.map(c => ({ ...c, score: this.fuzzyMatch(q, c.label) }))
+        .filter(c => c.score > 0)
+        .sort((a, b) => b.score - a.score);
+      this.filteredCmds = scored;
+      this.selectedIdx = 0;
+      this.renderResults();
+    }
+
+    renderResults() {
+      const cmds = this.filteredCmds || [];
+      this.resultsEl.innerHTML = cmds.map((c, i) => {
+        const sel = i === this.selectedIdx ? ' selected' : '';
+        const shortcut = c.shortcut ? '<span class="cp-shortcut">' + escapeHtml(c.shortcut) + '</span>' : '';
+        return '<div class="command-palette-item' + sel + '" data-idx="' + i + '">' +
+          '<span class="cp-category">' + escapeHtml(c.category) + '</span>' +
+          '<span class="cp-label">' + escapeHtml(c.label) + '</span>' +
+          shortcut + '</div>';
+      }).join('');
+      this.resultsEl.querySelectorAll('.command-palette-item').forEach(item => {
+        item.addEventListener('click', () => {
+          this.selectedIdx = parseInt(item.dataset.idx, 10);
+          this.executeSelected();
+        });
+      });
+    }
+
+    moveSelection(delta) {
+      const cmds = this.filteredCmds || [];
+      if (cmds.length === 0) return;
+      this.selectedIdx = Math.max(0, Math.min(cmds.length - 1, this.selectedIdx + delta));
+      this.renderResults();
+      const sel = this.resultsEl.querySelector('.selected');
+      if (sel) sel.scrollIntoView({ block: 'nearest' });
+    }
+
+    executeSelected() {
+      const cmds = this.filteredCmds || [];
+      if (cmds[this.selectedIdx]?.action) {
+        cmds[this.selectedIdx].action();
+      }
+      this.hide();
+    }
+
+    toggle() {
+      if (this.visible) this.hide();
+      else this.show();
+    }
+
+    show() {
+      this.visible = true;
+      this.el.style.display = '';
+      this.inputEl.value = '';
+      this.updateResults();
+      setTimeout(() => this.inputEl.focus(), 30);
+    }
+
+    hide() {
+      this.visible = false;
+      this.el.style.display = 'none';
+    }
   }
 
   const cockpitPage = {

@@ -23,6 +23,7 @@ pub fn router() -> Router {
         .route("/git-status", get(api_git_status))
         .route("/git-diff", get(api_git_diff))
         .route("/recent", get(api_file_recent))
+        .route("/search", get(api_file_search))
 }
 
 #[derive(Deserialize)]
@@ -58,6 +59,21 @@ struct RecentQuery {
 }
 
 fn default_recent_limit() -> usize {
+    50
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    #[serde(default)]
+    root: Option<String>,
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+    #[serde(default)]
+    glob: Option<String>,
+}
+
+fn default_search_limit() -> usize {
     50
 }
 
@@ -299,6 +315,14 @@ async fn api_git_status(Query(q): Query<TreeQuery>) -> impl IntoResponse {
     let result = tokio::task::spawn_blocking(move || {
         let repo =
             git2::Repository::open(&root).map_err(|e| format!("git open: {e}"))?;
+
+        // Get current branch name
+        let branch = repo
+            .head()
+            .ok()
+            .and_then(|h| h.shorthand().map(|s| s.to_string()))
+            .unwrap_or_else(|| "HEAD".to_string());
+
         let statuses = repo
             .statuses(None)
             .map_err(|e| format!("git statuses: {e}"))?;
@@ -320,12 +344,12 @@ async fn api_git_status(Query(q): Query<TreeQuery>) -> impl IntoResponse {
                 "staged": staged,
             }));
         }
-        Ok::<_, String>(changed)
+        Ok::<_, String>((branch, changed))
     })
     .await;
 
     match result {
-        Ok(Ok(changed)) => Json(json!({ "ok": true, "changed": changed })).into_response(),
+        Ok(Ok((branch, changed))) => Json(json!({ "ok": true, "branch": branch, "changed": changed })).into_response(),
         Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, &e).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &format!("task: {e}")).into_response(),
     }
@@ -465,6 +489,77 @@ async fn api_file_recent(Query(q): Query<RecentQuery>) -> impl IntoResponse {
 
     match result {
         Ok(Ok(files)) => Json(json!({ "ok": true, "files": files })).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, &e).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &format!("task: {e}")).into_response(),
+    }
+}
+
+// -- GET /api/files/search --------------------------------------------------
+
+async fn api_file_search(Query(q): Query<SearchQuery>) -> impl IntoResponse {
+    let root = match resolve_workspace_root(q.root.as_deref()) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    // Sanitize: limit query length, limit result count
+    let query = q.q.chars().take(200).collect::<String>();
+    if query.trim().is_empty() {
+        return Json(json!({ "ok": true, "results": [] })).into_response();
+    }
+    let limit = q.limit.min(200);
+    let glob = q.glob.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("grep");
+        cmd.arg("-rn")
+            .arg("--color=never")
+            .arg("-m").arg(limit.to_string());
+
+        // Exclude common large/binary directories
+        for excl in &[".git", "target", ".lake", "node_modules", "vendor", "__pycache__"] {
+            cmd.arg(format!("--exclude-dir={excl}"));
+        }
+
+        // Optional file glob filter
+        if let Some(ref g) = glob {
+            let safe_glob: String = g.chars().filter(|c| c.is_alphanumeric() || *c == '*' || *c == '.' || *c == '_' || *c == '-').collect();
+            if !safe_glob.is_empty() {
+                cmd.arg(format!("--include={safe_glob}"));
+            }
+        }
+
+        cmd.arg("--").arg(&query).arg(&root);
+
+        let output = cmd.output().map_err(|e| format!("grep exec: {e}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let root_prefix = root.to_string_lossy().to_string();
+
+        let mut results = Vec::new();
+        for line in stdout.lines().take(limit) {
+            // Format: /path/to/file:line_num:matched_text
+            let mut parts = line.splitn(3, ':');
+            let file_path = parts.next().unwrap_or("");
+            let line_num = parts.next().unwrap_or("0");
+            let text = parts.next().unwrap_or("");
+
+            // Make path relative to workspace root
+            let rel_path = file_path.strip_prefix(&root_prefix)
+                .unwrap_or(file_path)
+                .trim_start_matches('/');
+
+            results.push(json!({
+                "path": rel_path,
+                "line": line_num.parse::<usize>().unwrap_or(0),
+                "text": text.chars().take(500).collect::<String>(),
+            }));
+        }
+        Ok::<_, String>(results)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(results)) => Json(json!({ "ok": true, "results": results })).into_response(),
         Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, &e).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &format!("task: {e}")).into_response(),
     }
