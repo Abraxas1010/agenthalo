@@ -232,7 +232,14 @@
           this.monacoEditor.getDomNode().style.display = 'none';
         }
 
-        if (this.diffEditor) this.diffEditor.dispose();
+        if (this.diffEditor) {
+          try {
+            const dm = this.diffEditor.getModel();
+            this.diffEditor.dispose();
+            if (dm?.original) dm.original.dispose();
+            if (dm?.modified) dm.modified.dispose();
+          } catch (_e) {}
+        }
         this.diffEditor = monaco.editor.createDiffEditor(host, {
           theme: 'halo-terminal',
           readOnly: true,
@@ -250,12 +257,32 @@
 
         this.renderBreadcrumbs(path + ' (diff)');
         this.renderEditorTabs();
+        // Add diff layout toggle to breadcrumbs area
+        const bcEl = this.body.querySelector('[id^="editor-bc-"]');
+        if (bcEl) {
+          const toggle = document.createElement('span');
+          toggle.className = 'bc-segment';
+          toggle.style.marginLeft = 'auto';
+          toggle.textContent = '⇄ Inline';
+          toggle.title = 'Toggle inline/side-by-side diff';
+          toggle.addEventListener('click', () => {
+            const current = this.diffEditor.getOption(monaco.editor.EditorOption.renderSideBySide);
+            this.diffEditor.updateOptions({ renderSideBySide: !current });
+            toggle.textContent = current ? '⇄ Side-by-Side' : '⇄ Inline';
+          });
+          bcEl.appendChild(toggle);
+        }
       } catch (_e) {}
     }
 
     exitDiffMode() {
       if (this.diffEditor) {
-        this.diffEditor.dispose();
+        try {
+          const dm = this.diffEditor.getModel();
+          this.diffEditor.dispose();
+          if (dm?.original) dm.original.dispose();
+          if (dm?.modified) dm.modified.dispose();
+        } catch (_e) {}
         this.diffEditor = null;
       }
       this.isDiffMode = false;
@@ -360,8 +387,19 @@
       if (!bcEl || !path) return;
       const parts = path.split('/').filter(Boolean);
       bcEl.innerHTML = parts.map((part, idx) => {
-        return '<span class="bc-segment">' + escapeHtml(part) + '</span>';
+        const partial = parts.slice(0, idx + 1).join('/');
+        return '<span class="bc-segment" data-bc-path="' + escapeHtml(partial) + '">' + escapeHtml(part) + '</span>';
       }).join('<span class="bc-sep">/</span>');
+      // Click breadcrumb → expand that directory in explorer
+      bcEl.querySelectorAll('.bc-segment').forEach(seg => {
+        seg.addEventListener('click', () => {
+          const dir = seg.dataset.bcPath;
+          if (!dir || !this.manager) return;
+          this.manager._explorerExpanded?.add(dir);
+          this.manager.setSidebarMode('explorer');
+          this.manager.renderExplorerTree?.();
+        });
+      });
     }
 
     detectLanguage(path) {
@@ -684,6 +722,37 @@
       }
 
       this.term.open(terminalHost);
+
+      // Terminal file path link detection → open in editor panel
+      if (this.term.registerLinkProvider) {
+        const panelSelf = this;
+        this.term.registerLinkProvider({
+          provideLinks(lineNumber, callback) {
+            const line = panelSelf.term.buffer.active.getLine(lineNumber - 1);
+            if (!line) { callback(undefined); return; }
+            const text = line.translateToString();
+            // Match path:line patterns like src/main.rs:42 or ./dashboard/cockpit.js:100:5
+            const links = [];
+            const re = /(?:^|\s)((?:\.\/|[a-zA-Z0-9_\-]+\/)[a-zA-Z0-9_\-/.]+\.[a-zA-Z0-9]+)(?::(\d+))?/g;
+            let m;
+            while ((m = re.exec(text)) !== null) {
+              const startX = m.index + (text[m.index] === ' ' ? 1 : 0);
+              links.push({
+                range: { start: { x: startX + 1, y: lineNumber }, end: { x: startX + m[1].length + (m[2] ? 1 + m[2].length : 0) + 1, y: lineNumber } },
+                text: m[0].trim(),
+                activate() {
+                  const parts = m[0].trim().split(':');
+                  const path = parts[0];
+                  const line = parseInt(parts[1], 10) || undefined;
+                  if (panelSelf.manager) panelSelf.manager.openFileInPanel(path, line);
+                },
+              });
+            }
+            callback(links.length > 0 ? links : undefined);
+          },
+        });
+      }
+
       setTimeout(() => {
         this.fit();
         this.focusTerminal();
@@ -1118,6 +1187,21 @@
       }
       if (this.costSparkline) {
         try { this.costSparkline.destroy(); } catch (_e) {}
+      }
+      // Dispose Monaco editor instances and models (codeeditor panels)
+      if (this.diffEditor) {
+        try {
+          const dm = this.diffEditor.getModel();
+          this.diffEditor.dispose();
+          if (dm?.original) dm.original.dispose();
+          if (dm?.modified) dm.modified.dispose();
+        } catch (_e) {}
+      }
+      if (this.monacoEditor) {
+        try { this.monacoEditor.dispose(); } catch (_e) {}
+      }
+      if (this.openFiles) {
+        this.openFiles.forEach(f => { try { if (f.model) f.model.dispose(); } catch (_e) {} });
       }
       this.el.remove();
     }
@@ -1875,11 +1959,6 @@
       const handle = this.root?.querySelector('#cockpit-sidebar-resize');
       const sidebar = this.meshSidebarEl;
       if (!handle || !sidebar) return;
-      const refitPanels = () => {
-        this.sessions.forEach((entry) => {
-          try { entry.panel?.fit?.(); } catch (_e) {}
-        });
-      };
 
       const savedWidth = localStorage.getItem('cockpit_sidebar_width');
       if (savedWidth) {
@@ -1900,7 +1979,6 @@
         sidebar.style.transition = 'none';
         sidebar.style.width = newWidth + 'px';
         sidebar.style.minWidth = newWidth + 'px';
-        refitPanels();
       };
 
       const onDragEnd = () => {
@@ -1913,7 +1991,6 @@
         try {
           localStorage.setItem('cockpit_sidebar_width', parseInt(sidebar.style.width, 10).toString());
         } catch (_e) {}
-        refitPanels();
       };
 
       handle.addEventListener('mousedown', (e) => {
@@ -2331,10 +2408,17 @@
     }
 
     dirHasGitStatus(dirPath) {
+      // Return most severe status: D > A > M > R > ''
+      const priority = { 'D': 4, 'A': 3, 'M': 2, 'R': 1 };
+      let best = '', bestP = 0;
       for (const [p, st] of this._explorerGitStatus) {
-        if (p.startsWith(dirPath + '/')) return st;
+        if (p.startsWith(dirPath + '/')) {
+          const prio = priority[st] || 0;
+          if (prio > bestP) { best = st; bestP = prio; }
+          if (bestP >= 4) break; // D is max, short-circuit
+        }
       }
-      return '';
+      return best;
     }
 
     bindTreeEvents(treeEl) {
@@ -2367,9 +2451,22 @@
             items.push({ label: 'Open Diff', onClick: () => this.openDiffInPanel(path) });
           }
           items.push({ label: 'Copy Path', onClick: () => navigator.clipboard?.writeText(path) });
+          items.push({ label: 'Copy Relative Path', onClick: () => navigator.clipboard?.writeText(path) });
           items.push({ label: 'Copy File Name', onClick: () => navigator.clipboard?.writeText(name) });
           if (!isDir) {
             items.push({ label: 'Open in Observatory', onClick: () => this.openFileInObservatory(path) });
+            items.push({ label: 'Reveal in Terminal', onClick: () => {
+              // Find a terminal panel and send cd to its directory
+              const dir = path.split('/').slice(0, -1).join('/') || '.';
+              let termEntry = null;
+              this.sessions.forEach((entry) => {
+                if (entry.panel.type === 'terminal' && entry.panel.ws?.readyState === 1) termEntry = entry;
+              });
+              if (termEntry) {
+                termEntry.panel.ws.send(JSON.stringify({ type: 'stdin', data: `cd "${dir}" && ls\n` }));
+                this.activateTab(termEntry.panel.id);
+              }
+            }});
           }
           showContextMenu(ev.clientX, ev.clientY, items);
         });
@@ -2402,13 +2499,15 @@
         editorEntry.panel.openDiff(path);
         this.activateTab(editorEntry.panel.id);
       } else {
-        this.attachEditorPanel();
-        // Wait for panel to be created, then open diff
-        setTimeout(() => {
-          this.sessions.forEach((entry) => {
-            if (entry.panel.type === 'codeeditor') entry.panel.openDiff(path);
-          });
-        }, 100);
+        const panel = this.attachEditorPanel();
+        // Wait for Monaco to be ready before opening diff
+        const tryDiff = () => panel.openDiff(path);
+        if (window.__monacoReady) {
+          // Small delay for DOM attachment
+          requestAnimationFrame(tryDiff);
+        } else {
+          document.addEventListener('monaco-ready', tryDiff, { once: true });
+        }
       }
     }
 
@@ -2422,6 +2521,7 @@
       this.sessions.set(id, { panel, tab, agentId: null });
       this.activateTab(id);
       this.applyLayout();
+      return panel;
     }
 
     // ── Phase 4: Search ──────────────────────────────────────────
@@ -4637,6 +4737,14 @@
         { label: 'Toggle CRT Effect', category: 'View', action: () => document.body.classList.toggle('no-crt') },
         { label: 'Refresh Explorer', category: 'File', action: () => { if (m._explorerCache) m._explorerCache.clear(); m.renderExplorerTree?.(); } },
       ];
+      // Dynamic: active agent panels
+      if (m.sessions) {
+        m.sessions.forEach((entry, sid) => {
+          const letter = entry.tab?.querySelector('.cockpit-tab-letter')?.textContent || '?';
+          const type = entry.panel.agentType || entry.panel.type || 'panel';
+          cmds.push({ label: 'Switch to ' + letter + ' (' + type + ')', category: 'Agent', action: () => m.activateTab(sid) });
+        });
+      }
       return cmds;
     }
 
