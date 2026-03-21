@@ -1087,6 +1087,322 @@ body:not(.no-crt) .cockpit-panel-body::before {
   display: inline-block;
 }
 
+/* ── Sidebar Drag Resize Handle ─────────────────────────────── */
+
+.cockpit-sidebar-resize {
+  width: 5px;
+  min-width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 10;
+  transition: background 0.15s ease;
+}
+
+.cockpit-sidebar-resize::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 1px;
+  width: 3px;
+  height: 32px;
+  transform: translateY(-50%);
+  border-left: 1px solid var(--border-dim);
+  border-right: 1px solid var(--border-dim);
+  opacity: 0.4;
+  transition: opacity 0.15s ease;
+}
+
+.cockpit-sidebar-resize:hover {
+  background: rgba(0, 255, 65, 0.08);
+}
+
+.cockpit-sidebar-resize:hover::after {
+  opacity: 1;
+  border-color: var(--green);
+}
+
+/* ── Sidebar Mode Tabs ─────────────────────────────────────── */
+
+.cockpit-sidebar-modes {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-mode-btn {
+  flex: 1;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-family: var(--font);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sidebar-mode-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sidebar-mode-btn.is-active {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(0, 255, 65, 0.06);
+}
+
+.cockpit-mesh-sidebar.collapsed .cockpit-sidebar-modes {
+  display: none;
+}
+
+/* ── Sidebar Mode Panels ───────────────────────────────────── */
+
+.sidebar-mode-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.cockpit-mesh-sidebar.collapsed .sidebar-mode-panel {
+  display: none;
+}
+
+/* ── Sidebar Agent Strip ───────────────────────────────────── */
+
+.sidebar-agent-strip {
+  display: flex;
+  gap: 3px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-dim);
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: none;
+}
+
+.sidebar-agent-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar-agent-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.sidebar-agent-pill:hover {
+  border-color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sidebar-agent-pill.is-active {
+  border-color: var(--green);
+  background: rgba(0, 255, 65, 0.1);
+  color: var(--green);
+}
+
+.sidebar-agent-pill .agent-letter-badge {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+}
+
+.sidebar-strip-empty {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 2px;
+}
+
+/* ── Sidebar Code Mode ─────────────────────────────────────── */
+
+.sidebar-code-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.sidebar-code-entry {
+  padding: 8px;
+  border-bottom: 1px solid var(--border-dim);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.sidebar-code-entry:hover {
+  background: rgba(0, 255, 65, 0.04);
+}
+
+.sidebar-code-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-code-header .agent-letter-badge {
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.sidebar-code-path {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sidebar-code-fname {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-code-dir {
+  display: block;
+  font-size: 10px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-code-preview {
+  margin: 4px 0 0;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--text-dim);
+  overflow: hidden;
+  max-height: 80px;
+  white-space: pre;
+  font-family: 'JetBrains Mono', 'Share Tech Mono', monospace;
+}
+
+/* ── Sidebar File Mode ─────────────────────────────────────── */
+
+.sidebar-file-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.sidebar-file-entry {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-dim);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.sidebar-file-entry:hover {
+  background: rgba(0, 255, 65, 0.04);
+}
+
+.sidebar-file-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-file-fname {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-file-dir {
+  font-size: 10px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
+.sidebar-file-summary {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+}
+
+.sidebar-file-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.sidebar-file-status-m {
+  color: var(--amber);
+  border: 1px solid rgba(255, 184, 48, 0.35);
+}
+
+.sidebar-file-status-a {
+  color: var(--green);
+  border: 1px solid rgba(0, 255, 65, 0.35);
+}
+
+.sidebar-file-status-d {
+  color: var(--red);
+  border: 1px solid rgba(255, 48, 48, 0.35);
+}
+
+.sidebar-file-status-r {
+  color: var(--blue);
+  border: 1px solid rgba(100, 149, 237, 0.35);
+}
+
+/* ── Sidebar Empty Hints ───────────────────────────────────── */
+
+.sidebar-empty-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 80px;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 12px;
+  line-height: 1.5;
+}
+
 /* ── Workflow Sidebar (replaces mesh) ───────────────────────── */
 
 .wf-sidebar-body {
