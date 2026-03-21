@@ -226,6 +226,53 @@ body {
 }
 .gate-table tbody tr:hover { background: rgba(53, 255, 62, 0.03); }
 
+/* Git hook list */
+.hooks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.hook-item {
+  border: 1px solid var(--g-border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: rgba(255,255,255,0.02);
+}
+.hook-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.hook-name {
+  font-weight: 600;
+  color: var(--g-accent);
+}
+.hook-desc {
+  color: var(--g-text-dim);
+  font-size: 11px;
+  flex: 1;
+}
+.hook-meta {
+  color: var(--g-text-dim);
+  font-size: 10px;
+}
+.hook-gates {
+  margin-top: 4px;
+  padding-left: 12px;
+}
+.hook-gate-item {
+  font-size: 11px;
+  color: var(--g-text);
+  padding: 1px 0;
+}
+.hook-gate-id {
+  color: var(--g-accent);
+  font-weight: 600;
+  margin-right: 6px;
+}
+
 /* Governor list */
 .gov-list {
   display: flex;

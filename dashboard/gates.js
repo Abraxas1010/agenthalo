@@ -152,6 +152,37 @@ function renderGitGates(git) {
     }
   }
 
+  // -- Git Hook Gates --
+  const hooks = cg.hooks || [];
+  const hooksList = document.getElementById('hooks-list');
+  hooksList.innerHTML = '';
+  if (hooks.length === 0) {
+    hooksList.innerHTML = '<div style="color:var(--g-text-dim);font-size:11px;padding:4px 0">No git hooks installed</div>';
+  } else {
+    for (const hook of hooks) {
+      const item = document.createElement('div');
+      item.className = 'hook-item';
+
+      let gatesHtml = '';
+      const hgates = hook.gates || [];
+      if (hgates.length > 0) {
+        gatesHtml = '<div class="hook-gates">' +
+          hgates.map(g =>
+            `<div class="hook-gate-item"><span class="hook-gate-id">Gate ${esc(g.id)}</span>${esc(g.description)}</div>`
+          ).join('') + '</div>';
+      }
+
+      item.innerHTML =
+        `<div class="hook-header">` +
+        `<span class="hook-name">${esc(hook.name)}</span>` +
+        `<span class="hook-desc">${esc(hook.description || '')}</span>` +
+        `<span class="hook-meta">${hook.lines || 0} lines</span>` +
+        `</div>` +
+        gatesHtml;
+      hooksList.appendChild(item);
+    }
+  }
+
   // -- CodeGuard Gates --
   const cgSummary = document.getElementById('cg-summary');
   if (cg.manifest_exists) {

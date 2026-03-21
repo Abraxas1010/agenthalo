@@ -184,6 +184,9 @@ fn collect_git_gates() -> Value {
                 })
                 .unwrap_or(0);
 
+            // Git hooks — the actual enforcement gates
+            let hooks = detect_git_hooks(&root);
+
             json!({
                 "workspace_root": root.display().to_string(),
                 "is_worktree": is_worktree,
@@ -205,6 +208,7 @@ fn collect_git_gates() -> Value {
                 "gate2_enabled": config.gates.schema_required,
                 "gate3_pass": gate3,
                 "gate3_enabled": config.gates.pre_push_hostile_audit || config.gates.pre_push_human_approval,
+                "hooks": hooks,
             })
         }
         Err(_) => json!({
@@ -241,6 +245,134 @@ fn collect_git_gates() -> Value {
             "hidden_nav_items": profile.hidden_nav_items,
         },
     })
+}
+
+/// Detect active git hooks in a repo and extract their gate descriptions.
+fn detect_git_hooks(repo_root: &std::path::Path) -> Vec<Value> {
+    // Find the hooks directory (could be .git/hooks or a linked worktree hooks dir)
+    let hooks_dir = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--git-path", "hooks"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            let rel = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if std::path::Path::new(&rel).is_absolute() {
+                std::path::PathBuf::from(rel)
+            } else {
+                repo_root.join(rel)
+            }
+        })
+        .unwrap_or_else(|| repo_root.join(".git/hooks"));
+
+    if !hooks_dir.is_dir() {
+        return vec![];
+    }
+
+    let known_hooks = [
+        "pre-commit",
+        "commit-msg",
+        "pre-push",
+        "post-commit",
+        "post-checkout",
+        "post-merge",
+        "pre-rebase",
+        "prepare-commit-msg",
+    ];
+
+    let mut hooks = Vec::new();
+    for hook_name in &known_hooks {
+        let hook_path = hooks_dir.join(hook_name);
+        if !hook_path.is_file() {
+            continue;
+        }
+        // Skip .sample files
+        if hook_path
+            .extension()
+            .map(|e| e == "sample")
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        // Check if executable
+        #[cfg(unix)]
+        let executable = {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(&hook_path)
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        };
+        #[cfg(not(unix))]
+        let executable = true;
+
+        if !executable {
+            continue;
+        }
+
+        // Read first ~50 lines to extract gate descriptions
+        let content = std::fs::read_to_string(&hook_path).unwrap_or_default();
+        let gates = extract_hook_gates(&content);
+        let description = extract_hook_description(&content);
+        let line_count = content.lines().count();
+
+        hooks.push(json!({
+            "name": hook_name,
+            "path": hook_path.display().to_string(),
+            "lines": line_count,
+            "description": description,
+            "gates": gates,
+        }));
+    }
+    hooks
+}
+
+/// Extract gate names from a hook script (looks for "Gate N:", "--- Gate N" patterns).
+fn extract_hook_gates(content: &str) -> Vec<Value> {
+    let mut gates = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim().trim_start_matches('#').trim();
+        // Match patterns like "Gate 0:", "--- Gate 1:", "GATE 2:"
+        if let Some(rest) = trimmed
+            .strip_prefix("Gate ")
+            .or_else(|| trimmed.strip_prefix("GATE "))
+            .or_else(|| trimmed.strip_prefix("--- Gate "))
+        {
+            if let Some(colon_pos) = rest.find(':') {
+                let gate_id = rest[..colon_pos].trim();
+                let gate_desc = rest[colon_pos + 1..].trim().trim_end_matches(" ---");
+                gates.push(json!({
+                    "id": gate_id,
+                    "description": gate_desc,
+                }));
+            }
+        }
+    }
+    gates
+}
+
+/// Extract first meaningful comment line as a description.
+fn extract_hook_description(content: &str) -> String {
+    for line in content.lines().skip(1) {
+        // Skip shebang and empty lines
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed == "#" {
+            continue;
+        }
+        if let Some(comment) = trimmed.strip_prefix("# ") {
+            // Skip install/metadata lines
+            if comment.starts_with("Install via")
+                || comment.starts_with(".git/hooks/")
+                || comment.starts_with("set ")
+            {
+                continue;
+            }
+            return comment.to_string();
+        }
+        break;
+    }
+    String::new()
 }
 
 /// List ALL git worktrees (including non-HALO-managed) for full visibility.
