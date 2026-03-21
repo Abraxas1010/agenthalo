@@ -447,6 +447,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/observatory/file", get(api_observatory_file))
         // File browsing + git diff for Observatory codefile/codediff
         .nest("/files", super::editor_api::router().with_state(()))
+        // CodeGuard: gate enforcement, manifest, DAG, audit
+        .nest("/codeguard", super::codeguard_api::router().with_state(()))
         // JSON 404 fallback for unmatched /api/* routes.
         .fallback(api_fallback_not_found)
         .with_state(state)

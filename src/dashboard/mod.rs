@@ -5,7 +5,9 @@
 
 pub mod api;
 pub mod assets;
+pub mod codeguard_api;
 pub mod editor_api;
+pub mod gate_check;
 pub mod mcp_bridge;
 
 use axum::routing::get;
