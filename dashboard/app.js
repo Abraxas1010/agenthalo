@@ -1824,6 +1824,32 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// ---- Collapsible nav sections ----
+(function initNavSections() {
+  // Restore collapsed state from localStorage
+  const stored = JSON.parse(localStorage.getItem('nav_collapsed') || '{}');
+  document.querySelectorAll('.nav-section[data-section]').forEach(header => {
+    const section = header.getAttribute('data-section');
+    if (stored[section]) {
+      header.classList.add('collapsed');
+      document.querySelectorAll(`li[data-section-item="${section}"]`).forEach(li => {
+        li.classList.add('nav-section-hidden');
+      });
+    }
+    header.addEventListener('click', () => {
+      const isCollapsed = header.classList.toggle('collapsed');
+      document.querySelectorAll(`li[data-section-item="${section}"]`).forEach(li => {
+        li.classList.toggle('nav-section-hidden', isCollapsed);
+      });
+      // Persist
+      const state = JSON.parse(localStorage.getItem('nav_collapsed') || '{}');
+      if (isCollapsed) state[section] = true;
+      else delete state[section];
+      localStorage.setItem('nav_collapsed', JSON.stringify(state));
+    });
+  });
+})();
+
 // ---- Lean nav visibility (hidden until path is configured) ----
 async function __updateNavVisibility() {
   try {

@@ -261,13 +261,49 @@ body.no-crt #crt-overlay { display: none; }
   padding: 14px 16px 4px;
   margin-top: 2px;
   user-select: none;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
   list-style: none;
   opacity: 0.7;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: opacity 0.15s;
+}
+.nav-section:hover {
+  opacity: 1;
 }
 .nav-section:first-child {
   padding-top: 6px;
   margin-top: 0;
+}
+.section-arrow {
+  font-size: 8px;
+  transition: transform 0.25s;
+  opacity: 0.5;
+}
+.nav-section.collapsed .section-arrow {
+  transform: rotate(-90deg);
+}
+li[data-section-item] {
+  overflow: hidden;
+  max-height: 50px;
+  transition: max-height 0.25s ease-out, opacity 0.2s, padding 0.2s;
+}
+.nav-section.collapsed ~ li[data-section-item] {
+  /* CSS sibling combinator doesn't scope to a group, so JS handles this */
+}
+li.nav-section-hidden {
+  max-height: 0 !important;
+  opacity: 0;
+  padding: 0 !important;
+  margin: 0 !important;
+  pointer-events: none;
+}
+.nav-divider {
+  border-top: 1px solid rgba(53, 255, 62, 0.1);
+  margin: 8px 16px;
+  list-style: none;
 }
 
 .nav-link {

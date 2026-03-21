@@ -108,59 +108,63 @@
       <div class="logo-sub">|Human-AI|&gt; Agent Lifecycle Orchestrator</div>
     </div>
     <ul class="nav-links">
-      <li class="nav-section">Operate</li>
-      <li><a href="#/cockpit" class="nav-link" data-page="cockpit">
+      <li class="nav-section" data-section="operate">Operate <span class="section-arrow">&#9662;</span></li>
+      <li data-section-item="operate"><a href="#/cockpit" class="nav-link" data-page="cockpit">
         <span class="nav-icon">&#9654;</span> Cockpit</a></li>
-      <li><a href="#/orchestration" class="nav-link" data-page="orchestration">
+      <li data-section-item="operate"><a href="#/orchestration" class="nav-link" data-page="orchestration">
         <span class="nav-icon">&#9851;</span> Orchestration</a></li>
-      <li><a href="#/config" class="nav-link active" data-page="config">
-        <span class="nav-icon">&#9881;</span> Configuration</a></li>
-      <li><a href="#/system-monitor" class="nav-link" data-page="system-monitor">
+      <li data-section-item="operate"><a href="#/system-monitor" class="nav-link" data-page="system-monitor">
         <span class="nav-icon">&#9881;</span> System Monitor</a></li>
 
-      <li class="nav-section">Build</li>
-      <li><a href="/forge.html" class="nav-link" title="Proof Forge — Autoformalization workbench">
+      <li class="nav-section" data-section="atp">ATP <span class="section-arrow">&#9662;</span></li>
+      <li data-section-item="atp"><a href="/forge.html" class="nav-link" title="Proof Forge — Autoformalization workbench">
         <span class="nav-icon">&#9880;</span> Proof Forge</a></li>
-      <li><a href="#/lean" class="nav-link" data-page="lean">
-        <span class="nav-icon">&#8466;</span> Lean</a></li>
-      <li><a href="#/proof-explorer" class="nav-link" data-page="proof-explorer">
+      <li data-section-item="atp"><a href="#/lean" class="nav-link" data-page="lean">
+        <span class="nav-icon">&#8466;</span> Lean Database</a></li>
+      <li data-section-item="atp"><a href="#/proof-explorer" class="nav-link" data-page="proof-explorer">
         <span class="nav-icon">&#9670;</span> Proof Explorer</a></li>
-      <li><a href="#/mcp-tools" class="nav-link" data-page="mcp-tools">
+
+      <li class="nav-section" data-section="build">Build <span class="section-arrow">&#9662;</span></li>
+      <li data-section-item="build"><a href="#/mcp-tools" class="nav-link" data-page="mcp-tools">
         <span class="nav-icon">&#9874;</span> MCP Tools</a></li>
-      <li><a href="#/skills" class="nav-link" data-page="skills">
+      <li data-section-item="build"><a href="#/skills" class="nav-link" data-page="skills">
         <span class="nav-icon">&#9998;</span> Skills</a></li>
 
-      <li class="nav-section">Enforce</li>
-      <li><a href="/gates.html" class="nav-link" title="Gates — All enforcement mechanisms">
+      <li class="nav-section" data-section="enforce">Enforce <span class="section-arrow">&#9662;</span></li>
+      <li data-section-item="enforce"><a href="/gates.html" class="nav-link" title="Gates — All enforcement mechanisms">
         <span class="nav-icon">&#9878;</span> Gates</a></li>
-      <li><a href="/codeguard.html" class="nav-link" title="CodeGuard — Code lock management and audit">
+      <li data-section-item="enforce"><a href="/codeguard.html" class="nav-link" title="CodeGuard — Code lock management and audit">
         <span class="nav-icon">&#128274;</span> CodeGuard</a></li>
-
-      <li class="nav-section">Connect</li>
-      <li><a href="#/p2pclaw" class="nav-link" data-page="p2pclaw">
-        <span class="nav-icon">&#9788;</span> P2PCLAW</a></li>
-      <li><a href="#/agentpmt" class="nav-link" data-page="agentpmt">
-        <span class="nav-icon">&#9883;</span> AgentPMT</a></li>
-      <li><a href="#/trust" class="nav-link" data-page="trust">
+      <li data-section-item="enforce"><a href="#/trust" class="nav-link" data-page="trust">
         <span class="nav-icon">&#10003;</span> Trust</a></li>
 
-      <li class="nav-section">Data</li>
-      <li><a href="#/nucleusdb" class="nav-link" data-page="nucleusdb">
+      <li class="nav-section" data-section="connect">Connect <span class="section-arrow">&#9662;</span></li>
+      <li data-section-item="connect"><a href="#/p2pclaw" class="nav-link" data-page="p2pclaw">
+        <span class="nav-icon">&#9788;</span> P2PCLAW</a></li>
+      <li data-section-item="connect"><a href="#/agentpmt" class="nav-link" data-page="agentpmt">
+        <span class="nav-icon">&#9883;</span> AgentPMT</a></li>
+
+      <li class="nav-section" data-section="data">Data <span class="section-arrow">&#9662;</span></li>
+      <li data-section-item="data"><a href="#/nucleusdb" class="nav-link" data-page="nucleusdb">
         <span class="nav-icon">&#9762;</span> NucleusDB</a></li>
-      <li><a href="#/sessions" class="nav-link" data-page="sessions">
+      <li data-section-item="data"><a href="#/sessions" class="nav-link" data-page="sessions">
         <span class="nav-icon">&#9776;</span> Sessions</a></li>
-      <li><a href="#/overview" class="nav-link nav-parent" data-page="overview" id="nav-overview-parent">
+      <li data-section-item="data"><a href="#/overview" class="nav-link nav-parent" data-page="overview" id="nav-overview-parent">
         <span class="nav-icon">&#9670;</span> Overview <span class="nav-expand-arrow" id="nav-overview-arrow">&#9662;</span></a></li>
-      <li class="nav-sub-item" data-parent="overview"><a href="#/genesis" class="nav-link nav-sub" data-page="genesis">
+      <li class="nav-sub-item" data-parent="overview" data-section-item="data"><a href="#/genesis" class="nav-link nav-sub" data-page="genesis">
         <span class="nav-icon">&#9733;</span> Genesis</a></li>
-      <li class="nav-sub-item" data-parent="overview"><a href="#/identification" class="nav-link nav-sub" data-page="identification">
+      <li class="nav-sub-item" data-parent="overview" data-section-item="data"><a href="#/identification" class="nav-link nav-sub" data-page="identification">
         <span class="nav-icon">&#9919;</span> Identification</a></li>
-      <li class="nav-sub-item" data-parent="overview"><a href="#/communication" class="nav-link nav-sub" data-page="communication">
+      <li class="nav-sub-item" data-parent="overview" data-section-item="data"><a href="#/communication" class="nav-link nav-sub" data-page="communication">
         <span class="nav-icon">&#9889;</span> Communication</a></li>
-      <li class="nav-sub-item" data-parent="overview"><a href="#/nucleusdb-docs" class="nav-link nav-sub" data-page="nucleusdb-docs">
+      <li class="nav-sub-item" data-parent="overview" data-section-item="data"><a href="#/nucleusdb-docs" class="nav-link nav-sub" data-page="nucleusdb-docs">
         <span class="nav-icon">&#9762;</span> Memories</a></li>
-      <li class="nav-sub-item" data-parent="overview"><a href="#/flowchart" class="nav-link nav-sub" data-page="flowchart">
+      <li class="nav-sub-item" data-parent="overview" data-section-item="data"><a href="#/flowchart" class="nav-link nav-sub" data-page="flowchart">
         <span class="nav-icon">&#9634;</span> Flow Chart</a></li>
+
+      <li class="nav-divider"></li>
+      <li><a href="#/config" class="nav-link active" data-page="config">
+        <span class="nav-icon">&#9881;</span> Configuration</a></li>
     </ul>
     <div class="sidebar-footer">
       <div class="version" id="version-label">v0.3.0</div>
