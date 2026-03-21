@@ -12,6 +12,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+/// Maximum file size served by `/api/files/read` (2 MiB).
+const MAX_READ_SIZE: u64 = 2 * 1024 * 1024;
+
 /// Build the /api/files sub-router.
 pub fn router() -> Router {
     Router::new()
@@ -114,7 +117,14 @@ fn normalize_workspace_root(path: PathBuf) -> Option<PathBuf> {
             return Some(parent.to_path_buf());
         }
     }
-    Some(path)
+    // No git repo found — only accept if the directory looks like a project root
+    // (contains at least a Cargo.toml, lakefile.lean, or package.json).
+    // This prevents falling through to an overly broad CWD like "/".
+    let markers = ["Cargo.toml", "lakefile.lean", "package.json", "pyproject.toml"];
+    if markers.iter().any(|m| path.join(m).is_file()) {
+        return Some(path);
+    }
+    None
 }
 
 fn guard_traversal(rel: &str, root: &Path) -> Result<PathBuf, (StatusCode, Json<Value>)> {
@@ -247,6 +257,14 @@ async fn api_file_read(Query(q): Query<FileQuery>) -> impl IntoResponse {
     }
     let path = q.path.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let meta = std::fs::metadata(&full).map_err(|e| format!("metadata: {e}"))?;
+        if meta.len() > MAX_READ_SIZE {
+            return Err(format!(
+                "file too large ({} bytes, max {})",
+                meta.len(),
+                MAX_READ_SIZE
+            ));
+        }
         let ext = full
             .extension()
             .map(|e| e.to_string_lossy().to_string())
