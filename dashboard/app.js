@@ -310,7 +310,12 @@ function renderNucleusDBDocsPage() {
 }
 async function renderProofGate() {
   clearP2PClawTimers();
-  content.innerHTML = '<div class="loading">Loading proof gate...</div>';
+  content.innerHTML = '<div style="padding:32px;text-align:center">' +
+    '<h2 style="color:var(--accent);margin-bottom:16px">Proof Gate has moved</h2>' +
+    '<p style="color:var(--text-muted);margin-bottom:16px">Full Proof Gate controls are now in the <strong>Gates</strong> page under Internal Gates.</p>' +
+    '<a href="/gates.html" style="color:var(--accent);font-size:14px">Open Gates &rarr;</a>' +
+    '</div><hr style="opacity:0.2;margin:16px 0"><div class="loading">Loading legacy view...</div>';
+  // Legacy view below for backwards compatibility
   const fmtWhen = (ts) =>
     ts ? new Date(Number(ts) * 1000).toLocaleString() : "Never";
   const statusTone = (req) => {

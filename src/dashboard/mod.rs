@@ -8,6 +8,7 @@ pub mod assets;
 pub mod codeguard_api;
 pub mod editor_api;
 pub mod gate_check;
+pub mod forge_api;
 pub mod gates_api;
 pub mod mcp_bridge;
 

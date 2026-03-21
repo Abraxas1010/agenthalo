@@ -155,13 +155,35 @@
         <span class="card-toggle">▾</span>
       </div>
       <div class="card-body" id="card-internal-body">
+        <div class="gate-subsection-header">Proof Gate</div>
         <div class="gate-row">
-          <span class="gate-label">Proof Gate</span>
+          <span class="gate-label">Mode</span>
           <span class="gate-value" id="proof-gate-status">—</span>
+        </div>
+        <div class="gate-row">
+          <span class="gate-label">Tools / Requirements</span>
+          <span class="gate-value" id="proof-gate-counts">—</span>
         </div>
         <div class="gate-row">
           <span class="gate-label">Certificates</span>
           <span class="gate-value" id="proof-gate-certs">—</span>
+        </div>
+
+        <!-- Expandable tool surfaces -->
+        <div class="gate-subsection-header" style="cursor:pointer" id="proof-gate-tools-toggle">
+          Tool Surfaces &#9662;
+        </div>
+        <div id="proof-gate-tools" class="card-body collapsed"></div>
+
+        <!-- Expandable certificate table -->
+        <div class="gate-subsection-header" style="cursor:pointer" id="proof-gate-certs-toggle">
+          Certificate Management &#9662;
+        </div>
+        <div id="proof-gate-certs-detail" class="card-body collapsed">
+          <table class="gate-table" id="proof-gate-cert-table">
+            <thead><tr><th>File</th><th>Status</th><th>Theorems</th></tr></thead>
+            <tbody id="proof-gate-cert-tbody"></tbody>
+          </table>
         </div>
 
         <div class="gate-divider"></div>

@@ -451,6 +451,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .nest("/codeguard", super::codeguard_api::router().with_state(()))
         // Unified Gates: aggregated status of all enforcement mechanisms
         .nest("/gates", super::gates_api::router())
+        // Proof Forge: autoformalization + verification workbench
+        .nest("/forge", super::forge_api::router())
         // JSON 404 fallback for unmatched /api/* routes.
         .fallback(api_fallback_not_found)
         .with_state(state)

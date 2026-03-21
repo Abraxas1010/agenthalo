@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Proof Forge — Agent H.A.L.O.</title>
+  <link rel="stylesheet" href="forge.css"/>
+  <link rel="stylesheet" href="vendor/katex.min.css"/>
+</head>
+<body>
+  <header class="forge-topbar">
+    <a href="/" class="back-link">&larr; Dashboard</a>
+    <h1>Proof Forge</h1>
+    <span class="forge-subtitle">Autoformalization Workbench</span>
+    <button id="btn-history" class="forge-btn-secondary">History</button>
+  </header>
+
+  <main class="forge-panels">
+    <!-- LEFT: Input Panel -->
+    <section class="forge-panel forge-input">
+      <div class="panel-header">
+        <div class="mode-tabs" id="mode-tabs">
+          <button class="mode-tab" data-mode="image">Image</button>
+          <button class="mode-tab active" data-mode="latex">LaTeX</button>
+          <button class="mode-tab" data-mode="nl">Text</button>
+          <button class="mode-tab" data-mode="diagram">Diagram</button>
+          <button class="mode-tab" data-mode="lean">Lean</button>
+        </div>
+      </div>
+      <div class="panel-body" id="input-area"></div>
+      <div class="panel-footer">
+        <button class="forge-btn" id="btn-submit">Submit</button>
+        <select id="template-select" class="forge-select">
+          <option value="">Template...</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- CENTER: Processing Panel -->
+    <section class="forge-panel forge-processing">
+      <div class="panel-header"><h2>Pipeline</h2></div>
+      <div class="panel-body">
+        <div id="pipeline-graph" class="pipeline-graph">
+          <div class="pipeline-idle">Submit input to start the pipeline</div>
+        </div>
+        <div id="task-board" class="task-board">
+          <div class="kanban-col" data-status="pending"><h3>Pending</h3><div class="kanban-cards"></div></div>
+          <div class="kanban-col" data-status="in_progress"><h3>Active</h3><div class="kanban-cards"></div></div>
+          <div class="kanban-col" data-status="completed"><h3>Done</h3><div class="kanban-cards"></div></div>
+          <div class="kanban-col" data-status="failed"><h3>Failed</h3><div class="kanban-cards"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT: Output Panel -->
+    <section class="forge-panel forge-output">
+      <div class="panel-header"><h2>Output</h2></div>
+      <div class="panel-body">
+        <div id="output-editor" class="output-editor">
+          <div class="output-placeholder">Formalized Lean code will appear here</div>
+        </div>
+        <div id="explanation" class="explanation-panel">
+          <div class="explanation-content"></div>
+        </div>
+      </div>
+      <div class="panel-footer">
+        <div class="verify-status" id="verify-status"></div>
+        <button class="forge-btn" id="btn-verify" disabled>Verify</button>
+        <button class="forge-btn" id="btn-fix" disabled style="display:none">Fix with AI</button>
+        <button class="forge-btn" id="btn-prove" disabled style="display:none">Prove Sorrys</button>
+        <button class="forge-btn-secondary" id="btn-save" disabled>Save</button>
+        <button class="forge-btn-secondary" id="btn-export" disabled>Export</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="forge-bottombar">
+    <span id="forge-status">Status: Idle</span>
+    <span id="forge-agent">Agent: none</span>
+    <span id="forge-fix-count"></span>
+  </footer>
+
+  <!-- History modal -->
+  <div class="modal-overlay" id="history-modal" style="display:none">
+    <div class="modal-content modal-wide">
+      <h3>Forge History</h3>
+      <div id="history-list" class="history-list"></div>
+      <div class="modal-actions">
+        <button class="forge-btn-secondary" id="btn-history-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Save modal -->
+  <div class="modal-overlay" id="save-modal" style="display:none">
+    <div class="modal-content">
+      <h3>Save to Workspace</h3>
+      <label>File path<input type="text" id="save-path" placeholder="e.g. lean/MyTheorem.lean"/></label>
+      <div class="modal-actions">
+        <button class="forge-btn" id="btn-save-confirm">Save</button>
+        <button class="forge-btn-secondary" id="btn-save-cancel">Cancel</button>
+      </div>
+      <div id="save-result" class="modal-result"></div>
+    </div>
+  </div>
+
+  <script src="vendor/katex.min.js"></script>
+  <script src="vendor/monaco/loader.js"></script>
+  <script src="forge.js"></script>
+</body>
+</html>

@@ -277,16 +277,29 @@ function renderCommGates(comms) {
 }
 
 function renderInternalGates(internal) {
-  // Proof Gate
+  // Proof Gate — full detail
   const pg = internal.proof_gate || {};
   const pgEl = document.getElementById('proof-gate-status');
   pgEl.textContent = pg.enabled
-    ? 'enabled (' + (pg.requirements_count || 0) + ' requirements)'
-    : 'disabled';
+    ? 'enabled (' + (pg.mode || 'enforcement') + ')'
+    : 'disabled (advisory)';
   pgEl.className = 'gate-value ' + (pg.enabled ? 'ok' : 'off');
+
+  // Counts
+  const countsEl = document.getElementById('proof-gate-counts');
+  if (countsEl) {
+    countsEl.textContent =
+      (pg.tools_count || 0) + ' tools, ' +
+      (pg.requirements_count || 0) + ' requirements, ' +
+      (pg.enforced_count || 0) + ' enforced';
+  }
 
   document.getElementById('proof-gate-certs').textContent =
     (pg.certificates_count || 0) + ' certificates';
+
+  // Tool surfaces expandable section
+  setupProofGateToolSurfaces();
+  setupProofGateCertTable();
 
   // Admission
   const adm = internal.admission || {};
@@ -559,4 +572,113 @@ function esc(str) {
   const el = document.createElement('span');
   el.textContent = str;
   return el.innerHTML;
+}
+
+// ---------------------------------------------------------------------------
+// Proof Gate — full detail (merged from standalone page)
+// ---------------------------------------------------------------------------
+
+let proofGateToolsLoaded = false;
+let proofGateCertsLoaded = false;
+
+function setupProofGateToolSurfaces() {
+  const toggle = document.getElementById('proof-gate-tools-toggle');
+  const body = document.getElementById('proof-gate-tools');
+  if (!toggle || !body) return;
+
+  // Only bind once
+  if (!toggle._bound) {
+    toggle._bound = true;
+    toggle.addEventListener('click', async () => {
+      body.classList.toggle('collapsed');
+      toggle.textContent = body.classList.contains('collapsed')
+        ? 'Tool Surfaces \u25BE' : 'Tool Surfaces \u25B4';
+
+      if (!proofGateToolsLoaded && !body.classList.contains('collapsed')) {
+        proofGateToolsLoaded = true;
+        try {
+          const resp = await fetch('/api/proof-gate/status');
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          renderProofGateTools(body, data.tools || []);
+        } catch (err) {
+          body.innerHTML = '<div style="color:var(--g-error);padding:8px">Failed: ' + esc(err.message) + '</div>';
+        }
+      }
+    });
+  }
+}
+
+function renderProofGateTools(container, tools) {
+  if (tools.length === 0) {
+    container.innerHTML = '<div style="color:var(--g-text-dim);padding:8px;font-size:11px">No tool surfaces configured</div>';
+    return;
+  }
+  let html = '';
+  for (const tool of tools) {
+    const reqs = tool.requirements || [];
+    const reqsHtml = reqs.map(r => {
+      const check = r.check || {};
+      const verified = check.verified;
+      const cls = verified ? 'ok' : r.enforced ? 'error' : 'warn';
+      return '<div class="gate-row" style="padding-left:12px">' +
+        '<span class="gate-label" style="min-width:120px">' + esc(r.id || '') + '</span>' +
+        '<span class="gate-value ' + cls + '">' +
+        (verified ? 'satisfied' : r.enforced ? 'BLOCKED' : 'advisory') +
+        '</span></div>';
+    }).join('');
+    html += '<div style="border:1px solid var(--g-border);border-radius:4px;margin:4px 0;padding:8px">' +
+      '<div style="font-size:12px;color:var(--g-accent);font-weight:600">' + esc(tool.name || tool.id || '') + '</div>' +
+      reqsHtml + '</div>';
+  }
+  container.innerHTML = html;
+}
+
+function setupProofGateCertTable() {
+  const toggle = document.getElementById('proof-gate-certs-toggle');
+  const body = document.getElementById('proof-gate-certs-detail');
+  if (!toggle || !body) return;
+
+  if (!toggle._bound) {
+    toggle._bound = true;
+    toggle.addEventListener('click', async () => {
+      body.classList.toggle('collapsed');
+      toggle.textContent = body.classList.contains('collapsed')
+        ? 'Certificate Management \u25BE' : 'Certificate Management \u25B4';
+
+      if (!proofGateCertsLoaded && !body.classList.contains('collapsed')) {
+        proofGateCertsLoaded = true;
+        try {
+          const resp = await fetch('/api/proof-gate/certificates');
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          renderProofGateCerts(data.certificates || []);
+        } catch (err) {
+          const tbody = document.getElementById('proof-gate-cert-tbody');
+          if (tbody) tbody.innerHTML = '<tr><td colspan="3" style="color:var(--g-error)">Failed: ' + esc(err.message) + '</td></tr>';
+        }
+      }
+    });
+  }
+}
+
+function renderProofGateCerts(certs) {
+  const tbody = document.getElementById('proof-gate-cert-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (certs.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" style="color:var(--g-text-dim)">No certificates</td></tr>';
+    return;
+  }
+  for (const cert of certs) {
+    const tr = document.createElement('tr');
+    const name = cert.file_name || cert.path || '—';
+    const status = cert.valid ? 'valid' : 'invalid';
+    const cls = cert.valid ? 'ok' : 'error';
+    tr.innerHTML =
+      '<td>' + esc(name) + '</td>' +
+      '<td class="gate-value ' + cls + '">' + status + '</td>' +
+      '<td>' + (cert.theorem_count || 0) + '</td>';
+    tbody.appendChild(tr);
+  }
 }
