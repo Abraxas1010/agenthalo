@@ -7269,26 +7269,30 @@ textarea.p2p-input {
   min-height: 0;
 }
 
-/* ── View Bar (Files / Lattice / Proof DAG) ────────── */
+/* ── View Bar (Files / Lattice / DAG / Forge) ──────── */
 .lean-view-bar {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
   flex-shrink: 0;
-  padding: 10px 0;
+  padding: 8px 0 10px;
+  border-bottom: 1px solid var(--border);
 }
 .lean-view-mascot {
-  width: 50px;
-  height: 50px;
+  width: 46px;
+  height: 46px;
   border-radius: 10px;
   object-fit: contain;
   border: 2px solid rgba(255,106,0,0.3);
   box-shadow: 0 0 18px rgba(255,106,0,0.1);
   flex-shrink: 0;
 }
-.lean-view-info { flex: 1; min-width: 0; }
+.lean-view-info {
+  flex-shrink: 0;
+  min-width: 0;
+}
 .lean-view-title {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--green);
   letter-spacing: 0.03em;
@@ -7296,50 +7300,45 @@ textarea.p2p-input {
 }
 .lean-view-title-accent { color: var(--accent); }
 .lean-view-sub {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-dim);
   margin-top: 1px;
 }
-.lean-view-switcher {
-  flex-shrink: 0;
-  text-align: center;
-  margin-left: auto;
-}
-.lean-view-cta {
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 1.5px;
-  color: var(--text-dim);
-  margin-bottom: 5px;
-}
 .lean-view-tabs {
   display: flex;
-  gap: 6px;
+  gap: 4px;
+  margin-left: 12px;
 }
 .lean-view-tab {
-  padding: 7px 16px;
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 20px;
+  font-size: 13px;
   font-weight: 700;
   border: 2px solid var(--border);
-  border-radius: 6px;
-  background: rgba(10,20,8,0.6);
-  color: var(--text);
+  border-radius: 8px;
+  background: rgba(10,20,8,0.5);
+  color: var(--text-dim);
   cursor: pointer;
   transition: all 0.2s;
   font-family: inherit;
   white-space: nowrap;
 }
+.lean-view-tab .lean-tab-icon {
+  font-size: 15px;
+  line-height: 1;
+}
 .lean-view-tab:hover {
   background: rgba(255,106,0,0.08);
-  border-color: rgba(255,106,0,0.4);
-  color: #ff6a00;
+  border-color: rgba(255,106,0,0.35);
+  color: var(--text);
 }
 .lean-view-tab.active {
-  background: rgba(255,106,0,0.12);
+  background: rgba(255,106,0,0.16);
   border-color: #ff6a00;
   color: #ff6a00;
-  box-shadow: 0 0 12px rgba(255,106,0,0.15);
+  box-shadow: 0 0 16px rgba(255,106,0,0.18), inset 0 0 10px rgba(255,106,0,0.06);
 }
 
 /* ── View content area ─────────────────────────────── */
@@ -7354,7 +7353,7 @@ textarea.p2p-input {
   gap: 0;
   overflow: hidden;
 }
-/* Canvas views need their child pages to fill the container */
+/* Canvas views: child pages fill the container */
 .lean-view-mode-canvas .pe-page {
   height: auto;
   flex: 1;
@@ -7363,6 +7362,23 @@ textarea.p2p-input {
 .lean-view-mode-canvas .pg-page {
   flex: 1;
   min-height: 0;
+}
+/* Proof DAG right panel: explicit viewport height (same technique as .lean-sidebar) */
+.lean-view-mode-canvas .pg-context {
+  height: calc(100vh - 200px);
+}
+/* Forge iframe fills the view content */
+.lean-view-content.lean-view-mode-forge {
+  gap: 0;
+}
+.lean-forge-frame {
+  flex: 1;
+  min-height: 0;
+  border: none;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
 }
 
 /* Observatory hero section (top of Lean page) */

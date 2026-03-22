@@ -388,22 +388,26 @@ window.renderLeanPage = async function renderLeanPage(initialView) {
   if (initialView) __leanState.viewMode = initialView;
 
   // Render persistent shell with view bar + content container
+  var tabs = [
+    { id: 'files',   icon: '&#128193;', label: 'Files' },
+    { id: 'lattice', icon: '&#9670;',   label: 'Lattice' },
+    { id: 'dag',     icon: '&#9678;',   label: 'Proof DAG' },
+    { id: 'forge',   icon: '&#9880;',   label: 'Forge' },
+  ];
+  var tabsHtml = tabs.map(function(t) {
+    return '<button class="lean-view-tab' + (__leanState.viewMode === t.id ? ' active' : '') +
+      '" data-lean-view="' + t.id + '"><span class="lean-tab-icon">' + t.icon + '</span>' + t.label + '</button>';
+  }).join('');
+
   content.innerHTML =
     '<div class="lean-page">' +
     '  <div class="lean-view-bar">' +
     '    <img class="lean-view-mascot" src="img/agenthalo_astronaut.png" alt="Agent H.A.L.O." onerror="this.style.display=\'none\'">' +
     '    <div class="lean-view-info">' +
     '      <div class="lean-view-title">Lean <span class="lean-view-title-accent">&amp; Proofs</span></div>' +
-    '      <div class="lean-view-sub">Project browser &middot; Proof lattice &middot; DAG viewer</div>' +
+    '      <div class="lean-view-sub">Browse &middot; Visualize &middot; Prove</div>' +
     '    </div>' +
-    '    <div class="lean-view-switcher">' +
-    '      <div class="lean-view-cta">Choose View</div>' +
-    '      <div class="lean-view-tabs">' +
-    '        <button class="lean-view-tab' + (__leanState.viewMode === 'files' ? ' active' : '') + '" data-lean-view="files">&#128193; Files</button>' +
-    '        <button class="lean-view-tab' + (__leanState.viewMode === 'lattice' ? ' active' : '') + '" data-lean-view="lattice">&#9670; Lattice</button>' +
-    '        <button class="lean-view-tab' + (__leanState.viewMode === 'dag' ? ' active' : '') + '" data-lean-view="dag">&#9678; Proof DAG</button>' +
-    '      </div>' +
-    '    </div>' +
+    '    <div class="lean-view-tabs">' + tabsHtml + '</div>' +
     '  </div>' +
     '  <div class="lean-view-content" id="lean-view-content"></div>' +
     '</div>';
@@ -454,6 +458,9 @@ function __leanSwitchView(mode) {
     } else {
       container.innerHTML = '<div class="loading">Proof DAG module not loaded.</div>';
     }
+  } else if (mode === 'forge') {
+    container.className = 'lean-view-content lean-view-mode-forge';
+    container.innerHTML = '<iframe class="lean-forge-frame" src="/forge.html" title="Proof Forge"></iframe>';
   }
 }
 
