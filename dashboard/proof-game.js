@@ -320,10 +320,8 @@
         }
       }
       var welcomeMode = document.querySelector('.pg-welcome-mode');
-      if (welcomeMode) {
-        welcomeMode.textContent = serverMode
-          ? 'Server mode — connected to Lean proof server'
-          : 'Simulation mode — pre-computed proof trees for ' + LIBRARY.length + ' theorems';
+      if (welcomeMode && serverMode) {
+        welcomeMode.textContent = 'Connected to Lean proof server';
       }
     }).catch(function () { serverMode = false; });
   }
@@ -2296,7 +2294,7 @@
       '        <button class="pg-tab" data-tab="custom">Custom</button>' +
       '        <button class="pg-tab" data-tab="import">Import</button>' +
       '      </div>' +
-      '      <div class="pg-tab-content" id="pg-tab-goal">' +
+      '      <div class="pg-tab-content active" id="pg-tab-goal">' +
       '        <div class="pg-section">' +
       '          <div class="pg-section-title">Current Goal</div>' +
       '          <div class="pg-goal-display" id="pg-goal-display">Select a node to view its goal state</div>' +
@@ -2325,13 +2323,13 @@
       '          </div>' +
       '        </div>' +
       '      </div>' +
-      '      <div class="pg-tab-content" id="pg-tab-leandb" style="display:none">' +
+      '      <div class="pg-tab-content" id="pg-tab-leandb">' +
       '        <div class="pg-section" style="flex:1">' +
       '          <div class="pg-section-title">Lean Database</div>' +
       '          <div id="pg-leandb-content" style="font-size:12px;color:#4ca43a">Loading project files…</div>' +
       '        </div>' +
       '      </div>' +
-      '      <div class="pg-tab-content" id="pg-tab-loogle" style="display:none">' +
+      '      <div class="pg-tab-content" id="pg-tab-loogle">' +
       '        <div class="pg-section" style="flex:1">' +
       '          <div class="pg-section-title">Search Loogle (Mathlib)</div>' +
       '          <div class="pg-tactic-input-row" style="margin-bottom:8px">' +
@@ -2342,7 +2340,7 @@
       '          <div id="pg-loogle-results" style="overflow-y:auto;flex:1"></div>' +
       '        </div>' +
       '      </div>' +
-      '      <div class="pg-tab-content" id="pg-tab-custom" style="display:none">' +
+      '      <div class="pg-tab-content" id="pg-tab-custom">' +
       '        <div class="pg-section" style="flex:1">' +
       '          <div class="pg-section-title">Custom Theorem</div>' +
       '          <div class="pg-new-hint" style="margin-bottom:8px">Enter a Lean 4 theorem statement. The proof tree will start with the type as the root goal.</div>' +
@@ -2350,7 +2348,7 @@
       '          <button class="pg-btn primary" id="pg-custom-go" style="margin-top:8px;width:100%">Start Proof</button>' +
       '        </div>' +
       '      </div>' +
-      '      <div class="pg-tab-content" id="pg-tab-import" style="display:none">' +
+      '      <div class="pg-tab-content" id="pg-tab-import">' +
       '        <div class="pg-section" style="flex:1">' +
       '          <div class="pg-section-title">Import from Local</div>' +
       '          <div class="pg-new-hint" style="margin-bottom:8px">Load a Heyting proof tree JSON file to visualize proof strategies.</div>' +
@@ -2382,15 +2380,15 @@
     document.getElementById('pg-export-btn').addEventListener('click', doExport);
     document.getElementById('pg-undo-btn').addEventListener('click', doUndo);
 
-    // Tab switching
+    // Tab switching — use class toggle so CSS flex layout is preserved
     document.querySelectorAll('.pg-tab').forEach(function (tab) {
       tab.addEventListener('click', function () {
         var tabName = tab.getAttribute('data-tab');
         document.querySelectorAll('.pg-tab').forEach(function (t) { t.classList.remove('active'); });
         tab.classList.add('active');
-        document.querySelectorAll('.pg-tab-content').forEach(function (c) { c.style.display = 'none'; });
+        document.querySelectorAll('.pg-tab-content').forEach(function (c) { c.classList.remove('active'); });
         var target = document.getElementById('pg-tab-' + tabName);
-        if (target) target.style.display = '';
+        if (target) target.classList.add('active');
         // Auto-load Lean DB on first tab click
         if (tabName === 'leandb' && !leanDbLoaded) {
           leanDbLoaded = true;
