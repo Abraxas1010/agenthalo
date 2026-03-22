@@ -97,9 +97,9 @@ function renderSkillsPageRoute() {
   }
 }
 
-function renderLeanPageRoute() {
+function renderLeanPageRoute(initialView) {
   if (typeof window.renderLeanPage === "function") {
-    window.renderLeanPage();
+    window.renderLeanPage(initialView || null);
   } else {
     content.innerHTML =
       '<div class="loading">Lean module not loaded.</div>';
@@ -107,72 +107,7 @@ function renderLeanPageRoute() {
 }
 
 function renderProofExplorerRoute() {
-  const content = document.getElementById("content");
-  if (!content) return;
-  content.innerHTML =
-    '<link rel="stylesheet" href="proof-game.css?v=6">' +
-    '<div class="pe-merged">' +
-    '  <div class="pe-merged-pane active" id="pe-lattice-pane"></div>' +
-    '  <div class="pe-merged-pane" id="pe-dag-pane"></div>' +
-    '</div>';
-
-  // Render Lattice view immediately
-  if (typeof window.renderProofExplorerPage === "function") {
-    window.renderProofExplorerPage(document.getElementById("pe-lattice-pane"));
-  }
-
-  // Inject astronaut + view buttons into the Lattice pane's header
-  requestAnimationFrame(() => {
-    const peHeader = document.querySelector("#pe-lattice-pane .pe-header");
-    if (peHeader) {
-      peHeader.style.display = "flex";
-      peHeader.style.alignItems = "center";
-      peHeader.style.gap = "14px";
-
-      // Prepend astronaut image
-      const img = document.createElement("img");
-      img.src = "img/agenthalo_astronaut.png";
-      img.alt = "Agent H.A.L.O.";
-      img.className = "pe-header-mascot";
-      peHeader.insertBefore(img, peHeader.firstChild);
-
-      // Append view switcher to the right
-      const switcher = document.createElement("div");
-      switcher.className = "pe-view-switcher";
-      switcher.innerHTML =
-        '<div class="pe-view-cta">Choose View</div>' +
-        '<div class="pe-view-btns">' +
-        '  <button class="pe-view-btn active" data-pane="lattice">\u25C6 Lattice</button>' +
-        '  <button class="pe-view-btn" data-pane="dag">\u25CE Proof DAG</button>' +
-        '</div>';
-      peHeader.appendChild(switcher);
-
-      // Wire view buttons
-      switcher.querySelectorAll(".pe-view-btn").forEach(btn => {
-        btn.addEventListener("click", () => switchPane(btn.dataset.pane));
-      });
-    }
-  });
-
-  let dagRendered = false;
-  function switchPane(pane) {
-    document.querySelectorAll(".pe-view-btn").forEach(b => b.classList.remove("active"));
-    document.querySelectorAll(".pe-merged-pane").forEach(p => p.classList.remove("active"));
-    const btn = document.querySelector('.pe-view-btn[data-pane="' + pane + '"]');
-    if (btn) btn.classList.add("active");
-    const target = document.getElementById("pe-" + pane + "-pane");
-    if (target) target.classList.add("active");
-
-    if (pane === "dag" && !dagRendered) {
-      dagRendered = true;
-      if (typeof window.renderProofGamePage === "function") {
-        window.renderProofGamePage(document.getElementById("pe-dag-pane"));
-      }
-    }
-    if (pane === "dag" && typeof window.resizeProofGameCanvas === "function") {
-      requestAnimationFrame(() => window.resizeProofGameCanvas());
-    }
-  }
+  renderLeanPageRoute("lattice");
 }
 
 function renderSystemMonitorRoute() {

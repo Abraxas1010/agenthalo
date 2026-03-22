@@ -2261,7 +2261,6 @@
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 
     content.innerHTML =
-      '<link rel="stylesheet" href="proof-game.css?v=6">' +
       '<div class="pg-page">' +
       '  <div class="pg-topbar">' +
       '    <button class="pg-btn" id="pg-examples-btn">Examples</button>' +

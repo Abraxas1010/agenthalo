@@ -24,6 +24,7 @@ const __leanState = {
   obsStatus: null,
   obsFileData: null,
   obsActiveViz: null, // 'treemap' | 'depgraph' | 'clusters' | null
+  viewMode: 'files', // 'files' | 'lattice' | 'dag'
 };
 
 function __leanEsc(value) {
@@ -380,19 +381,84 @@ function __leanRenderModal() {
 
 // ---- Main render ----
 
-window.renderLeanPage = async function renderLeanPage() {
+window.renderLeanPage = async function renderLeanPage(initialView) {
   const content = document.querySelector('#content');
   if (!content) return;
-  if (!__leanState.tree && !__leanState.loading) {
-    content.innerHTML = '<div class="loading">Loading Lean project...</div>';
-    await __leanScan();
-    return;
-  }
-  __leanRender();
+
+  if (initialView) __leanState.viewMode = initialView;
+
+  // Render persistent shell with view bar + content container
+  content.innerHTML =
+    '<div class="lean-page">' +
+    '  <div class="lean-view-bar">' +
+    '    <img class="lean-view-mascot" src="img/agenthalo_astronaut.png" alt="Agent H.A.L.O." onerror="this.style.display=\'none\'">' +
+    '    <div class="lean-view-info">' +
+    '      <div class="lean-view-title">Lean <span class="lean-view-title-accent">&amp; Proofs</span></div>' +
+    '      <div class="lean-view-sub">Project browser &middot; Proof lattice &middot; DAG viewer</div>' +
+    '    </div>' +
+    '    <div class="lean-view-switcher">' +
+    '      <div class="lean-view-cta">Choose View</div>' +
+    '      <div class="lean-view-tabs">' +
+    '        <button class="lean-view-tab' + (__leanState.viewMode === 'files' ? ' active' : '') + '" data-lean-view="files">&#128193; Files</button>' +
+    '        <button class="lean-view-tab' + (__leanState.viewMode === 'lattice' ? ' active' : '') + '" data-lean-view="lattice">&#9670; Lattice</button>' +
+    '        <button class="lean-view-tab' + (__leanState.viewMode === 'dag' ? ' active' : '') + '" data-lean-view="dag">&#9678; Proof DAG</button>' +
+    '      </div>' +
+    '    </div>' +
+    '  </div>' +
+    '  <div class="lean-view-content" id="lean-view-content"></div>' +
+    '</div>';
+
+  // Wire view tab clicks
+  document.querySelectorAll('[data-lean-view]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      __leanSwitchView(btn.dataset.leanView);
+    });
+  });
+
+  // Load initial view
+  __leanSwitchView(__leanState.viewMode);
 };
 
+function __leanSwitchView(mode) {
+  __leanState.viewMode = mode;
+
+  // Update tab active states
+  document.querySelectorAll('[data-lean-view]').forEach(function(btn) {
+    btn.classList.toggle('active', btn.dataset.leanView === mode);
+  });
+
+  var container = document.getElementById('lean-view-content');
+  if (!container) return;
+
+  if (mode === 'files') {
+    container.className = 'lean-view-content lean-view-mode-files';
+    if (!__leanState.tree && !__leanState.loading) {
+      container.innerHTML = '<div class="loading">Loading Lean project...</div>';
+      __leanScan();
+    } else {
+      __leanRender();
+    }
+  } else if (mode === 'lattice') {
+    container.className = 'lean-view-content lean-view-mode-canvas';
+    container.innerHTML = '';
+    if (typeof window.renderProofExplorerPage === 'function') {
+      window.renderProofExplorerPage(container);
+    } else {
+      container.innerHTML = '<div class="loading">Proof Explorer module not loaded.</div>';
+    }
+  } else if (mode === 'dag') {
+    container.className = 'lean-view-content lean-view-mode-canvas';
+    container.innerHTML = '';
+    if (typeof window.renderProofGamePage === 'function') {
+      window.renderProofGamePage(container);
+    } else {
+      container.innerHTML = '<div class="loading">Proof DAG module not loaded.</div>';
+    }
+  }
+}
+
 function __leanRender() {
-  const content = document.querySelector('#content');
+  const content = document.getElementById('lean-view-content') || document.querySelector('#content');
   if (!content) return;
 
   const treeEl = document.querySelector('.lean-tree');
@@ -429,8 +495,8 @@ function __leanRender() {
     </button>`;
   }).join('')}</div>` : '';
 
-  content.innerHTML = `<div class="lean-page">
-    ${__leanRenderHealthBar()}
+  content.innerHTML =
+    `${__leanRenderHealthBar()}
     ${__leanRenderVizPanel()}
     <div class="lean-shell">
       <aside class="card lean-sidebar">
@@ -445,8 +511,7 @@ function __leanRender() {
       </aside>
       <section class="lean-main">${detailHtml}</section>
     </div>
-    ${__leanRenderModal()}
-  </div>`;
+    ${__leanRenderModal()}`;
 
   const newTree = document.querySelector('.lean-tree');
   if (newTree) newTree.scrollTop = savedTreeScroll;
