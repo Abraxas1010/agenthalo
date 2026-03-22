@@ -1787,6 +1787,15 @@ async function route() {
     li.classList.toggle("nav-sub-visible", shouldExpand);
   });
 
+  // Auto-expand Lean System sub-items when on the lean page
+  const leanParent = document.getElementById("nav-lean-parent");
+  if (leanParent) {
+    leanParent.classList.toggle("nav-expanded", page === "lean");
+  }
+  $$('.nav-sub-item[data-parent="lean"]').forEach((li) => {
+    li.classList.toggle("nav-sub-visible", page === "lean");
+  });
+
   if (pages[page]) pages[page](arg);
   else content.innerHTML = '<div class="loading">Page not found</div>';
 }
@@ -1795,17 +1804,9 @@ async function route() {
 document.addEventListener("click", (e) => {
   const parentLink = e.target.closest("#nav-overview-parent");
   if (!parentLink) return;
-  // If already on overview page, just toggle expansion without navigation
-  const currentPage = (location.hash.replace("#/", "") || "config").split(
-    "/",
-  )[0];
+  const currentPage = (location.hash.replace("#/", "") || "config").split("/")[0];
   const overviewFamily = [
-    "overview",
-    "genesis",
-    "identification",
-    "communication",
-    "nucleusdb-docs",
-    "flowchart",
+    "overview", "genesis", "identification", "communication", "nucleusdb-docs", "flowchart",
   ];
   if (overviewFamily.includes(currentPage)) {
     const isExpanded = parentLink.classList.contains("nav-expanded");
@@ -1813,12 +1814,22 @@ document.addEventListener("click", (e) => {
     $$('.nav-sub-item[data-parent="overview"]').forEach((li) => {
       li.classList.toggle("nav-sub-visible", !isExpanded);
     });
-    // Don't navigate away if toggling — but DO navigate if going TO overview from elsewhere
-    if (currentPage !== "overview") {
-      // Let the default hash navigation happen
-    } else {
-      e.preventDefault();
-    }
+    if (currentPage === "overview") e.preventDefault();
+  }
+});
+
+// Toggle Lean System sub-items on click
+document.addEventListener("click", (e) => {
+  const parentLink = e.target.closest("#nav-lean-parent");
+  if (!parentLink) return;
+  const currentPage = (location.hash.replace("#/", "") || "config").split("/")[0];
+  if (currentPage === "lean") {
+    const isExpanded = parentLink.classList.contains("nav-expanded");
+    parentLink.classList.toggle("nav-expanded", !isExpanded);
+    $$('.nav-sub-item[data-parent="lean"]').forEach((li) => {
+      li.classList.toggle("nav-sub-visible", !isExpanded);
+    });
+    e.preventDefault();
   }
 });
 
