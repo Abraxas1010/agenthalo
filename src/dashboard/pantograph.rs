@@ -1,4 +1,4 @@
-//! Pantograph subprocess manager for the Proof Builder.
+//! Pantograph subprocess manager for the Proof Explorer.
 //!
 //! Manages a long-running Pantograph (or lean-repl) process, communicating
 //! via JSON over stdin/stdout. The process is spawned once and reused across

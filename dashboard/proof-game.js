@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════
-   Proof Builder — Interactive Theorem Proving via Multiway Proof Trees
-   Part of Agent H.A.L.O. Dashboard
+   Proof Explorer — Interactive Theorem Proving via Multiway Proof Trees
+   Part of Agent H.A.L.O. Dashboard (Builder tab)
 
    Client-side simulation engine with pre-computed proof trees.
    API contract is identical to a real Lean server — swap-in transparent.
@@ -2253,31 +2253,29 @@
   // §11  Page Render
   // ═══════════════════════════════════════════════════════════════
 
-  window.renderProofGamePage = function () {
-    var content = document.getElementById('content');
+  window.renderProofGamePage = function (targetEl) {
+    var content = targetEl || document.getElementById('content');
     if (!content) return;
     // Stop previous animation loop
     if (animFrame) { cancelAnimationFrame(animFrame); animFrame = 0; }
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 
     content.innerHTML =
-      '<link rel="stylesheet" href="proof-game.css?v=3">' +
+      '<link rel="stylesheet" href="proof-game.css?v=4">' +
       '<div class="pg-page">' +
       '  <div class="pg-topbar">' +
-      '    <span class="pg-title">Proof <span class="pg-title-accent">Builder</span></span>' +
       '    <button class="pg-btn" id="pg-examples-btn">Examples</button>' +
       '    <span class="pg-theorem-name" id="pg-theorem-display"></span>' +
       '    <span style="flex:1"></span>' +
       '    <button class="pg-btn primary" id="pg-verify-btn">Verify</button>' +
       '    <button class="pg-btn" id="pg-export-btn" disabled>Export</button>' +
-      '    <span class="pg-status"><span class="pg-status-dot simulated"></span> Simulation</span>' +
       '  </div>' +
       '  <div class="pg-main">' +
       '    <div class="pg-graph" id="pg-graph">' +
       '      <canvas id="pg-canvas"></canvas>' +
       '      <div class="pg-welcome" id="pg-welcome">' +
-      '        <img src="agentpmtgenius.png" style="width:140px;height:140px;object-fit:contain;margin-bottom:12px;border-radius:12px" alt="Proof Builder" />' +
-      '        <div class="pg-welcome-title">Proof Builder</div>' +
+      '        <img src="agentpmtgenius.png" style="width:140px;height:140px;object-fit:contain;margin-bottom:12px;border-radius:12px" alt="Proof Explorer" />' +
+      '        <div class="pg-welcome-title">Proof Explorer</div>' +
       '        <div class="pg-welcome-sub" style="max-width:480px">' +
       '          Build and explore proof trees interactively. Load a theorem from the ' +
       '          <b>Lean DB</b> tab, search <b>Loogle</b> for Mathlib results, or type ' +
@@ -2311,7 +2309,7 @@
       '            <button class="pg-btn" id="pg-tactic-apply">Apply</button>' +
       '          </div>' +
       '        </div>' +
-      '        <div class="pg-section" style="flex:1">' +
+      '        <div class="pg-section pg-fill">' +
       '          <div class="pg-section-title">Proof Script</div>' +
       '          <div class="pg-script" id="pg-script">-- No proof in progress</div>' +
       '        </div>' +
@@ -2324,13 +2322,13 @@
       '        </div>' +
       '      </div>' +
       '      <div class="pg-tab-content" id="pg-tab-leandb">' +
-      '        <div class="pg-section" style="flex:1">' +
+      '        <div class="pg-section pg-fill">' +
       '          <div class="pg-section-title">Lean Database</div>' +
       '          <div id="pg-leandb-content" style="font-size:12px;color:#4ca43a">Loading project files…</div>' +
       '        </div>' +
       '      </div>' +
       '      <div class="pg-tab-content" id="pg-tab-loogle">' +
-      '        <div class="pg-section" style="flex:1">' +
+      '        <div class="pg-section pg-fill">' +
       '          <div class="pg-section-title">Search Loogle (Mathlib)</div>' +
       '          <div class="pg-tactic-input-row" style="margin-bottom:8px">' +
       '            <input class="pg-tactic-input" id="pg-loogle-input" placeholder="e.g. List.map, Nat.add_comm, _ -> _ -> _" />' +
@@ -2341,21 +2339,21 @@
       '        </div>' +
       '      </div>' +
       '      <div class="pg-tab-content" id="pg-tab-custom">' +
-      '        <div class="pg-section" style="flex:1">' +
+      '        <div class="pg-section pg-fill">' +
       '          <div class="pg-section-title">Custom Theorem</div>' +
       '          <div class="pg-new-hint" style="margin-bottom:8px">Enter a Lean 4 theorem statement. The proof tree will start with the type as the root goal.</div>' +
-      '          <textarea class="pg-new-input" id="pg-custom-input" placeholder="theorem my_thm (P Q : Prop) : P → Q → P" style="flex:1;min-height:120px;resize:vertical;font-size:12px"></textarea>' +
+      '          <textarea class="pg-new-input" id="pg-custom-input" placeholder="theorem my_thm (P Q : Prop) : P → Q → P" style="min-height:120px;resize:vertical;font-size:12px"></textarea>' +
       '          <button class="pg-btn primary" id="pg-custom-go" style="margin-top:8px;width:100%">Start Proof</button>' +
       '        </div>' +
       '      </div>' +
       '      <div class="pg-tab-content" id="pg-tab-import">' +
-      '        <div class="pg-section" style="flex:1">' +
+      '        <div class="pg-section pg-fill">' +
       '          <div class="pg-section-title">Import from Local</div>' +
       '          <div class="pg-new-hint" style="margin-bottom:8px">Load a Heyting proof tree JSON file to visualize proof strategies.</div>' +
       '          <input type="file" accept=".json" id="pg-import-file-input" style="display:none" />' +
       '          <button class="pg-btn" id="pg-import-file-btn" style="width:100%;margin-bottom:8px">Choose JSON File…</button>' +
       '          <div class="pg-section-title" style="margin-top:12px">Or Paste JSON</div>' +
-      '          <textarea class="pg-new-input" id="pg-import-paste-input" placeholder="Paste proof tree JSON…" style="flex:1;min-height:120px;resize:vertical;font-size:11px"></textarea>' +
+      '          <textarea class="pg-new-input" id="pg-import-paste-input" placeholder="Paste proof tree JSON…" style="min-height:120px;resize:vertical;font-size:11px"></textarea>' +
       '          <button class="pg-btn primary" id="pg-import-paste-go" style="margin-top:8px;width:100%">Load Proof Tree</button>' +
       '        </div>' +
       '      </div>' +
@@ -2556,6 +2554,11 @@
   // Teardown — called by SPA router when navigating away
   window.teardownProofGamePage = function () {
     cleanup();
+  };
+
+  // Expose canvas resize for tab switching
+  window.resizeProofGameCanvas = function () {
+    resizeCanvas();
   };
 
 })();

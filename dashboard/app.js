@@ -107,21 +107,46 @@ function renderLeanPageRoute() {
 }
 
 function renderProofExplorerRoute() {
-  if (typeof window.renderProofExplorerPage === "function") {
-    window.renderProofExplorerPage();
-  } else {
-    content.innerHTML =
-      '<div class="loading">Proof Explorer module not loaded.</div>';
-  }
-}
+  const content = document.getElementById("content");
+  if (!content) return;
+  content.innerHTML =
+    '<link rel="stylesheet" href="proof-game.css?v=4">' +
+    '<div class="pe-merged">' +
+    '  <div class="pe-merged-tabs">' +
+    '    <button class="pe-merged-tab active" data-pane="lattice">\u25C6 Lattice</button>' +
+    '    <button class="pe-merged-tab" data-pane="builder">\u25C9 Builder</button>' +
+    '  </div>' +
+    '  <div class="pe-merged-pane active" id="pe-lattice-pane"></div>' +
+    '  <div class="pe-merged-pane" id="pe-builder-pane"></div>' +
+    '</div>';
 
-function renderProofGameRoute() {
-  if (typeof window.renderProofGamePage === "function") {
-    window.renderProofGamePage();
-  } else {
-    content.innerHTML =
-      '<div class="loading">Proof Game module not loaded.</div>';
+  // Render Lattice tab immediately
+  if (typeof window.renderProofExplorerPage === "function") {
+    window.renderProofExplorerPage(document.getElementById("pe-lattice-pane"));
   }
+
+  let builderRendered = false;
+  document.querySelectorAll(".pe-merged-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      const pane = tab.dataset.pane;
+      document.querySelectorAll(".pe-merged-tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".pe-merged-pane").forEach(p => p.classList.remove("active"));
+      tab.classList.add("active");
+      const target = document.getElementById("pe-" + pane + "-pane");
+      if (target) target.classList.add("active");
+
+      if (pane === "builder" && !builderRendered) {
+        builderRendered = true;
+        if (typeof window.renderProofGamePage === "function") {
+          window.renderProofGamePage(document.getElementById("pe-builder-pane"));
+        }
+      }
+      // Resize canvas when switching back to builder (canvas needs dimensions)
+      if (pane === "builder" && typeof window.resizeProofGameCanvas === "function") {
+        requestAnimationFrame(() => window.resizeProofGameCanvas());
+      }
+    });
+  });
 }
 
 function renderSystemMonitorRoute() {
@@ -239,7 +264,6 @@ const pages = {
   skills: renderSkillsPageRoute,
   lean: renderLeanPageRoute,
   "proof-explorer": renderProofExplorerRoute,
-  "proof-game": renderProofGameRoute,
   "system-monitor": renderSystemMonitorRoute,
   agentpmt: renderAgentPmt,
 };
@@ -252,6 +276,7 @@ const REMOVED_PAGE_REDIRECTS = {
   containers: "cockpit",
   orchestrator: "cockpit",
   setup: "config",
+  "proof-game": "proof-explorer",
 };
 
 const NETWORKS = [

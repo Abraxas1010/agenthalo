@@ -527,8 +527,8 @@
   }
 
   // ── Page render ────────────────────────────────────────────
-  window.renderProofExplorerPage = function() {
-    var content = document.getElementById('content');
+  window.renderProofExplorerPage = function(targetEl) {
+    var content = targetEl || document.getElementById('content');
     if (!content) return;
     content.innerHTML =
       '<div class="pe-page">' +

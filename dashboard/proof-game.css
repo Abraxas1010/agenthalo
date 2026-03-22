@@ -1,18 +1,67 @@
 /* ─────────────────────────────────────────────────────────────
-   Proof Builder — Interactive Theorem Proving
+   Proof Explorer — Interactive Theorem Proving
    Part of Agent H.A.L.O. Dashboard
    ───────────────────────────────────────────────────────────── */
 
-/* ── Page Layout ─────────────────────────────────────────── */
-/* Override #content padding so the proof page fills the viewport */
-#content:has(.pg-page) {
+/* ── Merged Page Shell (Lattice + Builder tabs) ──────────── */
+#content:has(.pe-merged) {
   padding: 0;
   overflow: hidden;
 }
-.pg-page {
+.pe-merged {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  background: #060a04;
+  color: #b8e6b0;
+  font-family: 'Space Grotesk', 'SF Mono', monospace;
+}
+.pe-merged-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid rgba(53,255,62,0.12);
+  background: rgba(8,12,5,0.95);
+  flex-shrink: 0;
+  z-index: 10;
+}
+.pe-merged-tab {
+  padding: 10px 24px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #4ca43a;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.pe-merged-tab:hover { color: #ff6a00; background: rgba(255,106,0,0.06); }
+.pe-merged-tab.active { color: #ff6a00; border-bottom-color: #ff6a00; background: rgba(255,106,0,0.08); }
+.pe-merged-pane {
+  display: none;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.pe-merged-pane.active {
+  display: flex;
+  flex-direction: column;
+}
+/* Lattice pane needs its own padding since #content padding is zeroed */
+#pe-lattice-pane.active {
+  padding: 20px 24px;
+  overflow-y: auto;
+}
+#pe-lattice-pane .pe-page { height: auto; flex: 1; min-height: 0; }
+
+/* ── Builder Page Layout ─────────────────────────────────── */
+.pg-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
   background: #060a04;
   color: #b8e6b0;
   font-family: 'Space Grotesk', 'SF Mono', monospace;
@@ -80,15 +129,13 @@
 }
 .pg-tab:hover { color: #ff6a00; background: rgba(255,106,0,0.06); }
 .pg-tab.active { color: #ff6a00; border-bottom-color: #ff6a00; background: rgba(255,106,0,0.08); }
-.pg-tab-content { display: none; flex-direction: column; flex: 1; min-height: 0; }
+.pg-tab-content { display: none; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .pg-tab-content.active { display: flex; }
 .pg-tab-content > .pg-section { flex-shrink: 0; }
-.pg-tab-content > .pg-section:only-child,
-.pg-tab-content > .pg-section[style*="flex:1"] {
+.pg-tab-content > .pg-section.pg-fill {
   flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
 }
-.pg-tab-content > .pg-section:only-child > div:last-child,
-.pg-tab-content > .pg-section[style*="flex:1"] > div:last-child {
+.pg-tab-content > .pg-section.pg-fill > div:last-child {
   flex: 1; min-height: 0; overflow-y: auto;
 }
 .pg-section { padding: 12px 14px; border-bottom: 1px solid rgba(53,255,62,0.08); }

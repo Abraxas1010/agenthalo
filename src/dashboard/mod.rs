@@ -68,7 +68,7 @@ pub struct DashboardState {
     pub proxy_governor: Arc<crate::halo::proxy::ProxyGovernorRuntime>,
     /// First-run password/bootstrap behavior for this dashboard process.
     pub bootstrap_mode: DashboardBootstrapMode,
-    /// Shared Pantograph subprocess state for the Proof Builder.
+    /// Shared Pantograph subprocess state for the Proof Explorer.
     pub pantograph: pantograph::PantographState,
 }
 
@@ -300,7 +300,7 @@ pub async fn serve_with_bootstrap(
         bootstrap_mode,
     );
 
-    // Try to connect to Pantograph for Proof Builder live mode.
+    // Try to connect to Pantograph for Proof Explorer live mode.
     {
         let vendor_dir = std::env::current_exe()
             .ok()
