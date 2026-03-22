@@ -1,9 +1,9 @@
 /* ─────────────────────────────────────────────────────────────
-   Proof Explorer — Interactive Theorem Proving
+   Proof Explorer — Proof DAG Viewer + Merged Page Shell
    Part of Agent H.A.L.O. Dashboard
    ───────────────────────────────────────────────────────────── */
 
-/* ── Merged Page Shell (Lattice + Builder tabs) ──────────── */
+/* ── Merged Page Shell ───────────────────────────────────── */
 #content:has(.pe-merged) {
   padding: 0;
   overflow: hidden;
@@ -12,87 +12,6 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: #060a04;
-  color: #b8e6b0;
-  font-family: 'Space Grotesk', 'SF Mono', monospace;
-}
-.pe-merged-header {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 14px 24px;
-  border-bottom: 1px solid rgba(53,255,62,0.12);
-  background: rgba(8,12,5,0.95);
-  flex-shrink: 0;
-  z-index: 10;
-}
-.pe-merged-header-left {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-.pe-merged-header-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: #35ff3e;
-}
-.pe-merged-header-title .accent { color: #ff6a00; }
-.pe-merged-header-sub {
-  font-size: 12px;
-  color: #4ca43a;
-  line-height: 1.4;
-}
-.pe-merged-header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
-}
-.pe-merged-header-right img {
-  width: 48px;
-  height: 48px;
-  border-radius: 10px;
-  object-fit: contain;
-  border: 2px solid rgba(255,106,0,0.3);
-  box-shadow: 0 0 20px rgba(255,106,0,0.12);
-}
-.pe-merged-cta-label {
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 1.5px;
-  color: #ff6a00;
-  margin-bottom: 4px;
-}
-.pe-merged-view-btns {
-  display: flex;
-  gap: 6px;
-}
-.pe-merged-view-btn {
-  padding: 8px 20px;
-  font-size: 12px;
-  font-weight: 700;
-  border: 2px solid rgba(53,255,62,0.2);
-  border-radius: 6px;
-  background: rgba(10,20,8,0.6);
-  color: #78ff74;
-  cursor: pointer;
-  transition: all 0.2s;
-  font-family: inherit;
-  white-space: nowrap;
-}
-.pe-merged-view-btn:hover {
-  background: rgba(255,106,0,0.08);
-  border-color: rgba(255,106,0,0.4);
-  color: #ff6a00;
-}
-.pe-merged-view-btn.active {
-  background: rgba(255,106,0,0.12);
-  border-color: #ff6a00;
-  color: #ff6a00;
-  box-shadow: 0 0 12px rgba(255,106,0,0.15);
 }
 .pe-merged-pane {
   display: none;
@@ -104,19 +23,70 @@
   display: flex;
   flex-direction: column;
 }
-/* Lattice pane needs its own padding since #content padding is zeroed */
 #pe-lattice-pane.active {
   padding: 20px 24px;
   overflow-y: auto;
 }
 #pe-lattice-pane .pe-page { height: auto; flex: 1; min-height: 0; }
 
-/* ── Builder Page Layout ─────────────────────────────────── */
+/* ── Injected into Lattice header ────────────────────────── */
+.pe-header-mascot {
+  width: 54px;
+  height: 54px;
+  border-radius: 10px;
+  object-fit: contain;
+  border: 2px solid rgba(255,106,0,0.3);
+  box-shadow: 0 0 20px rgba(255,106,0,0.12);
+  flex-shrink: 0;
+}
+.pe-view-switcher {
+  flex-shrink: 0;
+  text-align: center;
+  margin-left: auto;
+}
+.pe-view-cta {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+}
+.pe-view-btns {
+  display: flex;
+  gap: 6px;
+}
+.pe-view-btn {
+  padding: 7px 16px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 2px solid var(--border);
+  border-radius: 6px;
+  background: rgba(10,20,8,0.6);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.pe-view-btn:hover {
+  background: rgba(255,106,0,0.08);
+  border-color: rgba(255,106,0,0.4);
+  color: #ff6a00;
+}
+.pe-view-btn.active {
+  background: rgba(255,106,0,0.12);
+  border-color: #ff6a00;
+  color: #ff6a00;
+  box-shadow: 0 0 12px rgba(255,106,0,0.15);
+}
+
+/* ── Proof DAG Page Layout ───────────────────────────────── */
 .pg-page {
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-height: 0;          /* CRITICAL — allows shrinking inside flex parent */
+  min-height: 0;
   background: #060a04;
   color: #b8e6b0;
   font-family: 'Space Grotesk', 'SF Mono', monospace;
@@ -161,7 +131,7 @@
 .pg-main {
   display: flex;
   flex: 1;
-  min-height: 0;           /* CRITICAL — allows shrinking */
+  min-height: 0;
   overflow: hidden;
 }
 .pg-graph { flex: 1; position: relative; overflow: hidden; background: #050804; }
@@ -169,23 +139,20 @@
 .pg-graph canvas:active { cursor: grabbing; }
 
 /* ══════════════════════════════════════════════════════════════
-   Context Panel — REWRITTEN FROM SCRATCH
-   The flex chain from .pg-context → tab content → scrollable area
-   must be unbroken. Every element in the chain needs:
-     display: flex; flex-direction: column; flex: 1; min-height: 0;
+   Context Panel — ABSOLUTE POSITIONING APPROACH
+   Instead of relying on a fragile flex chain, the tab content
+   area uses position:absolute to fill whatever space is left
+   below the tab bar. This is bulletproof.
    ══════════════════════════════════════════════════════════════ */
 .pg-context {
   width: 380px;
   flex-shrink: 0;
   border-left: 1px solid rgba(53,255,62,0.12);
   background: rgba(8,12,5,0.92);
-  /* --- flex chain link 1 --- */
   display: flex;
   flex-direction: column;
-  min-height: 0;
 }
 
-/* Tab bar: fixed height, never shrinks */
 .pg-tab-bar {
   display: flex;
   gap: 0;
@@ -203,45 +170,32 @@
 .pg-tab:hover { color: #ff6a00; background: rgba(255,106,0,0.06); }
 .pg-tab.active { color: #ff6a00; border-bottom-color: #ff6a00; background: rgba(255,106,0,0.08); }
 
-/* Tab content pane: hidden by default, flex-fills when active.
-   --- flex chain link 2 --- */
+/* Tab body: fills remaining space via flex:1, establishes
+   a positioning context for absolute children */
+.pg-tab-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* Each tab pane: hidden by default, absolute-fills when active */
 .pg-tab-content {
   display: none;
 }
 .pg-tab-content.active {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  /* overflow is handled by the scrollable child, not here */
-}
-
-/* Sections inside tab content: fixed-height by default */
-.pg-section {
-  padding: 12px 14px;
-  border-bottom: 1px solid rgba(53,255,62,0.08);
-  flex-shrink: 0;
-}
-
-/* .pg-fill sections: grow to fill remaining space + scroll
-   --- flex chain link 3 (terminal — this is the scroll container) --- */
-.pg-section.pg-fill {
-  flex: 1;
-  min-height: 0;
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-/* The last child inside a pg-fill section also fills */
-.pg-section.pg-fill > *:last-child {
-  flex: 1;
-  min-height: 0;
+  padding: 12px 14px;
 }
 
 .pg-section-title {
   font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 1.5px; color: #4ca43a; margin-bottom: 8px;
-  flex-shrink: 0;
 }
 
 /* Goal State */
@@ -265,7 +219,7 @@
 .pg-hyp-colon { color: #4ca43a; }
 .pg-hyp-type { color: #b8e6b0; }
 
-/* Tactics */
+/* Tactics (kept for display, not interactive) */
 .pg-tactic-list { display: flex; flex-direction: column; gap: 2px; }
 .pg-tactic-item {
   display: flex; align-items: center; gap: 8px;
@@ -280,8 +234,8 @@
 .pg-tactic-name { flex: 1; }
 .pg-tactic-desc { font-size: 10px; color: #3a6030; text-align: right; }
 
-/* Custom tactic input */
-.pg-tactic-input-row { display: flex; gap: 6px; margin-top: 6px; flex-shrink: 0; }
+/* Input rows */
+.pg-tactic-input-row { display: flex; gap: 6px; margin-top: 6px; }
 .pg-tactic-input {
   flex: 1; padding: 6px 10px; font-size: 12px; font-family: 'SF Mono', monospace;
   background: rgba(0,0,0,0.3); border: 1px solid rgba(53,255,62,0.15);
@@ -359,7 +313,7 @@
   border-radius: 4px; color: #78ff74; outline: none;
 }
 .pg-new-input:focus { border-color: #35ff3e; }
-.pg-new-hint { font-size: 11px; color: #3a6030; margin-top: 4px; flex-shrink: 0; }
+.pg-new-hint { font-size: 11px; color: #3a6030; margin-top: 4px; }
 
 /* ── Import sections in modal ────────────────────────────── */
 #pg-lean-results .pg-theorem-card { margin-bottom: 6px; }
@@ -389,8 +343,6 @@
   border-radius: 3px; color: #ff6a00;
 }
 
-/* (victory overlay removed — completion shown inline) */
-
 /* ── Animations ──────────────────────────────────────────── */
 @keyframes pg-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 @keyframes pg-fade-in { from { opacity: 0; } to { opacity: 1; } }
@@ -405,6 +357,6 @@
 .pg-modal::-webkit-scrollbar { width: 6px; }
 .pg-modal::-webkit-scrollbar-track { background: transparent; }
 .pg-modal::-webkit-scrollbar-thumb { background: rgba(53,255,62,0.15); border-radius: 3px; }
-.pg-section.pg-fill::-webkit-scrollbar { width: 5px; }
-.pg-section.pg-fill::-webkit-scrollbar-track { background: transparent; }
-.pg-section.pg-fill::-webkit-scrollbar-thumb { background: rgba(53,255,62,0.15); border-radius: 3px; }
+.pg-tab-content::-webkit-scrollbar { width: 5px; }
+.pg-tab-content::-webkit-scrollbar-track { background: transparent; }
+.pg-tab-content::-webkit-scrollbar-thumb { background: rgba(53,255,62,0.15); border-radius: 3px; }
