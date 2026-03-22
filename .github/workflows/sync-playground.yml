@@ -71,8 +71,13 @@ jobs:
           fi
 
           # Verify route manifest has no junk (filesystem paths)
-          JUNK=$(grep -cP '^/(bin|usr|home|tmp|etc|var|dev|proc|sys)/' playground/dashboard/route-manifest.txt 2>/dev/null || echo "0")
-          test "$JUNK" -eq 0 || { echo "GATE FAIL: route manifest contains $JUNK junk entries"; exit 1; }
+          JUNK_LINES=$(grep -P '^/(bin|usr|home|tmp|etc|var|dev|proc|sys)/' playground/dashboard/route-manifest.txt 2>/dev/null || true)
+          if [ -n "$JUNK_LINES" ]; then
+            JUNK=$(echo "$JUNK_LINES" | wc -l)
+            echo "GATE FAIL: route manifest contains $JUNK junk entries"
+            echo "$JUNK_LINES" | head -5
+            exit 1
+          fi
 
           # Verify all manifest route families are covered by the interceptor
           UNCOVERED=0
