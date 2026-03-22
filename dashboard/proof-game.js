@@ -12,6 +12,7 @@
   // ═══════════════════════════════════════════════════════════════
   // §1  Constants
   // ═══════════════════════════════════════════════════════════════
+  var PG_VERSION = '2.1'; // cache-bust marker
   var NODE_W = 240, NODE_H = 50, NODE_R = 6;
   var LEVEL_H = 110, SIB_GAP = 30;
   var EDGE_LABEL_SIZE = 10;
@@ -2321,7 +2322,7 @@
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 
     content.innerHTML =
-      '<link rel="stylesheet" href="proof-game.css">' +
+      '<link rel="stylesheet" href="proof-game.css?v=2">' +
       '<div class="pg-page">' +
       '  <div class="pg-topbar">' +
       '    <span class="pg-title">Proof <span class="pg-title-accent">Builder</span></span>' +
@@ -2341,7 +2342,7 @@
       '        <div class="pg-welcome-sub">Navigate proof trees by selecting tactics. ' +
       '          Explore branching paths. Solve all goals to complete the proof.</div>' +
       '        <button class="pg-btn primary" id="pg-welcome-load">Browse Library</button>' +
-      '        <div class="pg-welcome-mode">Simulation mode — pre-computed proof trees for ' + LIBRARY.length + ' theorems</div>' +
+      '        <div class="pg-welcome-mode">' + (serverMode ? 'Server mode' : 'Simulation mode — ' + LIBRARY.length + ' theorems') + ' v' + PG_VERSION + '</div>' +
       '      </div>' +
       '    </div>' +
       '    <div class="pg-context" id="pg-context">' +

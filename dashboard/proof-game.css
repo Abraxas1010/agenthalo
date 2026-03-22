@@ -4,10 +4,15 @@
    ───────────────────────────────────────────────────────────── */
 
 /* ── Page Layout ─────────────────────────────────────────── */
+/* Override #content padding so the proof page fills the viewport */
+#content:has(.pg-page) {
+  padding: 0;
+  overflow: hidden;
+}
 .pg-page {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  height: 100vh;
   background: #060a04;
   color: #b8e6b0;
   font-family: 'Space Grotesk', 'SF Mono', monospace;
