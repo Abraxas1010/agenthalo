@@ -275,6 +275,57 @@ pub async fn api_explorer_autosolve(
     .into_response()
 }
 
+/// GET /api/explorer/loogle?q=... — proxy Loogle search to avoid CORS.
+pub async fn api_explorer_loogle(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let query = match params.get("q") {
+        Some(q) if !q.trim().is_empty() => q.trim().to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "missing 'q' query parameter"})),
+            )
+                .into_response();
+        }
+    };
+    let encoded: String = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("q", &query)
+        .finish();
+    let url = format!("https://loogle.lean-lang.org/json?{encoded}");
+    match tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(15)))
+            .build()
+            .new_agent();
+        let resp = agent
+            .get(&url)
+            .call()
+            .map_err(|e| format!("Loogle request failed: {e}"))?;
+        resp.into_body()
+            .read_to_string()
+            .map_err(|e| format!("read body: {e}"))
+    })
+    .await
+    {
+        Ok(Ok(body)) => {
+            let val: Value =
+                serde_json::from_str(&body).unwrap_or_else(|_| json!({"error": "parse error"}));
+            Json(val).into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": e})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("task error: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
 /// GET /api/explorer/library — serve the theorem library.
 pub async fn api_explorer_library(State(_state): State<DashboardState>) -> impl IntoResponse {
     Json(json!({

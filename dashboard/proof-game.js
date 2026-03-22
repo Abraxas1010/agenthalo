@@ -1293,40 +1293,6 @@
       html += '</div>';
     });
 
-    // New theorem section
-    html += '<div class="pg-new-section">' +
-      '<div class="pg-section-title">Custom Theorem</div>' +
-      '<div class="pg-new-row">' +
-      '<input class="pg-new-input" id="pg-new-stmt" placeholder="theorem my_thm : P → P" />' +
-      '<button class="pg-btn primary" id="pg-new-go">Start</button>' +
-      '</div>' +
-      '<div class="pg-new-hint">Custom theorems use simulation. Only pre-computed proof trees are interactive.</div>' +
-      '</div>';
-
-    // Import proof tree section
-    html += '<div class="pg-new-section">' +
-      '<div class="pg-section-title">Import Proof Sketch</div>' +
-      '<div class="pg-new-hint" style="margin-bottom:8px">Load a Heyting proof tree JSON to visualize strategy trees from pre-project plans.</div>' +
-      '<div class="pg-new-row">' +
-      '<input type="file" accept=".json" id="pg-import-file" style="display:none" />' +
-      '<button class="pg-btn" id="pg-import-btn">Choose File…</button>' +
-      '<button class="pg-btn" id="pg-import-paste-btn">Paste JSON</button>' +
-      '</div>' +
-      '<textarea class="pg-new-input" id="pg-import-textarea" placeholder="Paste proof tree JSON here…" ' +
-      'style="display:none;min-height:100px;resize:vertical;margin-top:8px;font-size:11px"></textarea>' +
-      '<button class="pg-btn primary" id="pg-import-paste-go" style="display:none;margin-top:6px">Load Proof Tree</button>' +
-      '</div>';
-
-    // Import from Lean Database section
-    html += '<div class="pg-new-section">' +
-      '<div class="pg-section-title">Import from Lean Database</div>' +
-      '<div class="pg-new-hint" style="margin-bottom:8px">Browse theorems from the connected Lean project.</div>' +
-      '<div id="pg-lean-browser">' +
-      '<button class="pg-btn" id="pg-lean-browse-btn">Browse Lean Theorems</button>' +
-      '<div id="pg-lean-results" style="margin-top:8px"></div>' +
-      '</div>' +
-      '</div>';
-
     modal.innerHTML = html;
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
@@ -1343,81 +1309,6 @@
         var thm = LIBRARY.find(function (t) { return t.id === tid; });
         if (thm) { loadTheorem(thm); hideLibrary(); }
       });
-    });
-
-    modal.querySelector('#pg-new-go').addEventListener('click', function () {
-      var stmt = (document.getElementById('pg-new-stmt') || {}).value || '';
-      if (!stmt.trim()) return;
-      // Try to match against library
-      var match = LIBRARY.find(function (t) {
-        return t.statement.toLowerCase().includes(stmt.toLowerCase().replace('theorem ', '').trim());
-      });
-      if (match) {
-        loadTheorem(match);
-        hideLibrary();
-      } else {
-        // Create a minimal simulation with just sorry
-        var custom = {
-          id: 'custom_' + Date.now(), name: 'Custom', category: 'Custom',
-          statement: stmt.trim(), difficulty: 0, tags: ['custom'],
-          hint: 'Custom theorems require a Lean server for interactive proving.',
-          rootGoal: 'r', goals: {
-            r: {
-              display: '⊢ ' + stmt.replace(/theorem\s+\w+[^:]*:\s*/, '').trim(),
-              hyps: [], tactics: { 'sorry': [] }, suggested: ['sorry']
-            }
-          }
-        };
-        loadTheorem(custom);
-        hideLibrary();
-      }
-    });
-
-    // ── Import proof tree from file ──
-    var importFileInput = modal.querySelector('#pg-import-file');
-    modal.querySelector('#pg-import-btn').addEventListener('click', function () {
-      importFileInput.click();
-    });
-    importFileInput.addEventListener('change', function () {
-      var file = importFileInput.files[0];
-      if (!file) return;
-      var reader = new FileReader();
-      reader.onload = function (ev) {
-        try {
-          var tree = JSON.parse(ev.target.result);
-          var thm = convertProofTreeToTheorem(tree);
-          if (thm) { loadTheorem(thm); hideLibrary(); }
-        } catch (e) {
-          alert('Failed to parse proof tree JSON: ' + e.message);
-        }
-      };
-      reader.readAsText(file);
-    });
-
-    // ── Import proof tree from paste ──
-    var pasteArea = modal.querySelector('#pg-import-textarea');
-    var pasteGoBtn = modal.querySelector('#pg-import-paste-go');
-    modal.querySelector('#pg-import-paste-btn').addEventListener('click', function () {
-      var showing = pasteArea.style.display !== 'none';
-      pasteArea.style.display = showing ? 'none' : 'block';
-      pasteGoBtn.style.display = showing ? 'none' : 'block';
-      if (!showing) pasteArea.focus();
-    });
-    pasteGoBtn.addEventListener('click', function () {
-      var text = pasteArea.value.trim();
-      if (!text) return;
-      try {
-        var tree = JSON.parse(text);
-        var thm = convertProofTreeToTheorem(tree);
-        if (thm) { loadTheorem(thm); hideLibrary(); }
-      } catch (e) {
-        alert('Failed to parse proof tree JSON: ' + e.message);
-      }
-    });
-
-    // ── Import from Lean Database ──
-    modal.querySelector('#pg-lean-browse-btn').addEventListener('click', function () {
-      loadLeanTheorems(modal.querySelector('#pg-lean-results'));
     });
   }
 
@@ -2298,7 +2189,7 @@
     if (!container) return;
     container.innerHTML = '<div style="color:#4ca43a;font-size:12px">Searching Loogle…</div>';
 
-    fetch('https://loogle.lean-lang.org/json?q=' + encodeURIComponent(query))
+    fetch('/api/explorer/loogle?q=' + encodeURIComponent(query))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data.hits || data.hits.length === 0) {
@@ -2394,7 +2285,7 @@
       '          <b>Lean DB</b> tab, search <b>Loogle</b> for Mathlib results, or type ' +
       '          a <b>Custom</b> theorem statement. Click nodes to see goals, apply tactics ' +
       '          from the side panel, and watch the proof tree grow.</div>' +
-      '        <div class="pg-welcome-mode">' + (serverMode ? 'Server mode' : 'Simulation mode') + '</div>' +
+      '        <div class="pg-welcome-mode">Interactive Theorem Proving</div>' +
       '      </div>' +
       '    </div>' +
       '    <div class="pg-context" id="pg-context">' +
@@ -2455,7 +2346,7 @@
       '        <div class="pg-section" style="flex:1">' +
       '          <div class="pg-section-title">Custom Theorem</div>' +
       '          <div class="pg-new-hint" style="margin-bottom:8px">Enter a Lean 4 theorem statement. The proof tree will start with the type as the root goal.</div>' +
-      '          <textarea class="pg-new-input" id="pg-custom-input" placeholder="theorem my_thm (P Q : Prop) : P → Q → P" style="min-height:80px;resize:vertical;font-size:12px"></textarea>' +
+      '          <textarea class="pg-new-input" id="pg-custom-input" placeholder="theorem my_thm (P Q : Prop) : P → Q → P" style="flex:1;min-height:120px;resize:vertical;font-size:12px"></textarea>' +
       '          <button class="pg-btn primary" id="pg-custom-go" style="margin-top:8px;width:100%">Start Proof</button>' +
       '        </div>' +
       '      </div>' +
@@ -2466,7 +2357,7 @@
       '          <input type="file" accept=".json" id="pg-import-file-input" style="display:none" />' +
       '          <button class="pg-btn" id="pg-import-file-btn" style="width:100%;margin-bottom:8px">Choose JSON File…</button>' +
       '          <div class="pg-section-title" style="margin-top:12px">Or Paste JSON</div>' +
-      '          <textarea class="pg-new-input" id="pg-import-paste-input" placeholder="Paste proof tree JSON…" style="min-height:100px;resize:vertical;font-size:11px"></textarea>' +
+      '          <textarea class="pg-new-input" id="pg-import-paste-input" placeholder="Paste proof tree JSON…" style="flex:1;min-height:120px;resize:vertical;font-size:11px"></textarea>' +
       '          <button class="pg-btn primary" id="pg-import-paste-go" style="margin-top:8px;width:100%">Load Proof Tree</button>' +
       '        </div>' +
       '      </div>' +

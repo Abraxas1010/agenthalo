@@ -462,6 +462,8 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .route("/explorer/hint", post(super::explorer_api::api_explorer_hint))
         .route("/explorer/autosolve", post(super::explorer_api::api_explorer_autosolve))
         .route("/explorer/library", get(super::explorer_api::api_explorer_library))
+        // Loogle proxy (avoids CORS)
+        .route("/explorer/loogle", get(super::explorer_api::api_explorer_loogle))
         // JSON 404 fallback for unmatched /api/* routes.
         .fallback(api_fallback_not_found)
         .with_state(state)
