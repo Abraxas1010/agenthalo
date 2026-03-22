@@ -404,7 +404,7 @@ window.renderLeanPage = async function renderLeanPage(initialView) {
     '  <div class="lean-view-bar">' +
     '    <img class="lean-view-mascot" src="img/agenthalo_astronaut.png" alt="Agent H.A.L.O." onerror="this.style.display=\'none\'">' +
     '    <div class="lean-view-info">' +
-    '      <div class="lean-view-title">Lean <span class="lean-view-title-accent">&amp; Proofs</span></div>' +
+    '      <div class="lean-view-title">LEAN <span class="lean-view-title-accent">SYSTEM</span></div>' +
     '      <div class="lean-view-sub">Browse &middot; Visualize &middot; Prove</div>' +
     '    </div>' +
     '    <div class="lean-view-tabs">' + tabsHtml + '</div>' +
