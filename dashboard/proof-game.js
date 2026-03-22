@@ -639,12 +639,15 @@
     ctx.scale(cam.zoom * dpr, cam.zoom * dpr);
     ctx.translate(cam.x, cam.y);
 
-    // Draw edges first
+    // Draw edges — labels only shown on edges connected to selected/hovered node
+    var sel = session.selectedId;
+    var hov = hoveredId;
     session.edges.forEach(function (e) {
       if (!e.to) return; // solve-in-place edge
       var from = session.nodes[e.from], to = session.nodes[e.to];
       if (!from || !to) return;
-      drawEdge(from, to, e.tactic, e.status, to.animT);
+      var showLabel = (e.from === sel || e.to === sel || e.from === hov || e.to === hov);
+      drawEdge(from, to, e.tactic, e.status, to.animT, showLabel);
     });
 
     // Draw nodes
@@ -661,13 +664,14 @@
     ctx.restore();
   }
 
-  function drawEdge(from, to, tactic, status, t) {
+  function drawEdge(from, to, tactic, status, t, showLabel) {
     var alpha = Math.max(0.1, t);
     var isFailed = status === 'failed';
+    var isHighlighted = showLabel;
     ctx.save();
-    ctx.globalAlpha = alpha * (isFailed ? 0.4 : 0.7);
-    ctx.strokeStyle = isFailed ? '#ff3030' : 'rgba(53,255,62,0.35)';
-    ctx.lineWidth = isFailed ? 1 : 1.5;
+    ctx.globalAlpha = alpha * (isFailed ? 0.4 : isHighlighted ? 0.9 : 0.5);
+    ctx.strokeStyle = isFailed ? '#ff3030' : isHighlighted ? 'rgba(53,255,62,0.6)' : 'rgba(53,255,62,0.25)';
+    ctx.lineWidth = isFailed ? 1 : (isHighlighted ? 2 : 1);
     if (isFailed) ctx.setLineDash([4, 4]);
 
     // Draw path: vertical from parent bottom, then vertical to child top
@@ -680,15 +684,16 @@
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Edge label
-    if (tactic) {
-      var labelX = (from.x + to.x) / 2;
-      var labelY = midY - 4;
+    // Edge label — only show on edges connected to selected/hovered node
+    if (tactic && showLabel) {
+      // Position label near the child node (avoids overlap at parent midpoint)
+      var labelX = to.x;
+      var labelY = to.y - NODE_H / 2 - 6;
       ctx.font = EDGE_LABEL_SIZE + 'px SF Mono, monospace';
-      ctx.fillStyle = isFailed ? 'rgba(255,48,48,0.6)' : 'rgba(120,255,116,0.5)';
+      ctx.fillStyle = isFailed ? 'rgba(255,48,48,0.8)' : 'rgba(120,255,116,0.75)';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      var truncTac = tactic.length > 36 ? tactic.slice(0, 34) + '..' : tactic;
+      var truncTac = tactic.length > 28 ? tactic.slice(0, 26) + '..' : tactic;
       ctx.fillText(truncTac, labelX, labelY);
     }
     ctx.restore();
@@ -1176,18 +1181,54 @@
 
   function doVerify() {
     if (!session) return;
+    var goalEl = document.getElementById('pg-goal-display');
+    if (!goalEl) return;
+
     if (!isVictory()) {
       var open = getOpenGoals();
-      alert('Proof incomplete — ' + open.length + ' open goal' + (open.length === 1 ? '' : 's') + ' remaining.\n\nSolve all goals before verifying.');
+      showInlineResult(goalEl, 'incomplete',
+        'Proof incomplete — ' + open.length + ' open goal' + (open.length === 1 ? '' : 's') + ' remaining.',
+        'Solve all open goals before verifying.');
       return;
     }
     var isSorry = hasSorryInProof();
+    var script = buildProofScript();
     if (isSorry) {
-      alert('Proof uses sorry (incomplete).\n\nConnect a Lean proof server for genuine verification.\n\nScript:\n' + buildProofScript());
+      showInlineResult(goalEl, 'warning',
+        'Proof uses sorry (incomplete)',
+        'Connect a Lean proof server for genuine verification.');
     } else if (serverMode) {
-      alert('Proof verified by Lean proof server.\n\nAll goals solved and verified.\n\nScript:\n' + buildProofScript());
+      showInlineResult(goalEl, 'success',
+        'Proof verified by Lean proof server',
+        'All goals solved and verified.');
     } else {
-      alert('Proof verified (simulation mode).\n\nAll goals solved. Connect a Lean proof server for genuine verification.\n\nScript:\n' + buildProofScript());
+      showInlineResult(goalEl, 'success',
+        'Proof verified (simulation)',
+        'All goals solved. Connect a Lean server for genuine verification.');
+    }
+    // Show script in the script panel
+    var scriptEl = document.getElementById('pg-script');
+    if (scriptEl) scriptEl.textContent = script;
+  }
+
+  function showInlineResult(container, type, title, detail) {
+    var colors = {
+      success: { bg: 'rgba(57,255,20,0.08)', border: '#39ff14', text: '#78ff74', icon: '✓' },
+      warning: { bg: 'rgba(255,170,0,0.08)', border: '#ffaa00', text: '#ffcc44', icon: '!' },
+      incomplete: { bg: 'rgba(0,170,255,0.08)', border: '#00aaff', text: '#88ccff', icon: '○' },
+    };
+    var c = colors[type] || colors.incomplete;
+    container.innerHTML = '';
+    container.style.cssText = 'padding:12px;background:' + c.bg + ';border:1px solid ' + c.border + ';border-radius:4px';
+    var h = document.createElement('div');
+    h.style.cssText = 'font-size:14px;font-weight:700;color:' + c.text + ';margin-bottom:6px';
+    h.textContent = c.icon + ' ' + title;
+    container.appendChild(h);
+    if (detail) {
+      var d = document.createElement('div');
+      d.style.cssText = 'font-size:12px;color:' + c.text + ';opacity:0.8';
+      d.textContent = detail;
+      container.appendChild(d);
     }
   }
 
@@ -2384,7 +2425,11 @@
       var thm = session.theorem;
       var hint = thm.hint || 'No hint available.';
       var suggestion = goalDef.suggested && goalDef.suggested[0] ? goalDef.suggested[0] : null;
-      alert('Hint: ' + hint + (suggestion ? '\n\nSuggested tactic: ' + suggestion : ''));
+      var goalEl = document.getElementById('pg-goal-display');
+      if (goalEl) {
+        showInlineResult(goalEl, 'warning', 'Hint: ' + hint,
+          suggestion ? 'Suggested tactic: ' + suggestion : null);
+      }
     });
 
     document.getElementById('pg-autosolve-btn').addEventListener('click', function () {
@@ -2416,7 +2461,8 @@
 
       var goalDef = getGoalDef(node);
       if (!goalDef || !goalDef.suggested || !goalDef.suggested.length) {
-        alert('Auto-solve: No solution found in simulation.');
+        var goalEl2 = document.getElementById('pg-goal-display');
+        if (goalEl2) showInlineResult(goalEl2, 'warning', 'Auto-solve', 'No solution found in simulation.');
         return;
       }
       doApplyTactic(goalDef.suggested[0]);
