@@ -2289,6 +2289,56 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // §9d  Loogle Search
+  // ═══════════════════════════════════════════════════════════════
+
+  function doLoogleSearch(query) {
+    if (!query) return;
+    var container = document.getElementById('pg-loogle-results');
+    if (!container) return;
+    container.innerHTML = '<div style="color:#4ca43a;font-size:12px">Searching Loogle…</div>';
+
+    fetch('https://loogle.lean-lang.org/json?q=' + encodeURIComponent(query))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.hits || data.hits.length === 0) {
+          container.innerHTML = '<div style="color:#ffaa00;font-size:12px">No results for "' + esc(query) + '"</div>';
+          return;
+        }
+        var html = '<div style="color:#4ca43a;font-size:11px;margin-bottom:6px">' +
+          (data.header || data.hits.length + ' results') + '</div>';
+        html += '<div style="max-height:calc(100vh - 260px);overflow-y:auto">';
+        data.hits.slice(0, 50).forEach(function (hit) {
+          html += '<div class="pg-theorem-card pg-loogle-card" data-loogle-name="' + esc(hit.name) + '" ' +
+            'data-loogle-type="' + esc(hit.type || '') + '" data-loogle-module="' + esc(hit.module || '') + '" ' +
+            'style="margin-bottom:4px;padding:8px 10px;cursor:pointer">' +
+            '<div class="pg-tc-name" style="font-size:12px">' + esc(hit.name) + '</div>' +
+            '<div class="pg-tc-stmt" style="font-size:10px;white-space:pre-wrap;max-height:40px;overflow:hidden">' + esc(hit.type || '') + '</div>' +
+            '<div class="pg-tc-meta"><span class="pg-tag">' + esc(hit.module || '') + '</span></div>' +
+            '</div>';
+        });
+        html += '</div>';
+        container.innerHTML = html;
+
+        container.querySelectorAll('.pg-loogle-card').forEach(function (card) {
+          card.addEventListener('click', function () {
+            var name = card.getAttribute('data-loogle-name');
+            var type = card.getAttribute('data-loogle-type');
+            var stmt = 'theorem ' + name + ' : ' + type;
+            if (serverMode) {
+              loadLeanTheoremServerMode(stmt, name, null);
+            } else {
+              loadLeanTheoremSimulation(stmt, name);
+            }
+          });
+        });
+      })
+      .catch(function (e) {
+        container.innerHTML = '<div style="color:#ff6666;font-size:12px">Loogle search failed: ' + esc(String(e)) + '</div>';
+      });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // §10  Helpers
   // ═══════════════════════════════════════════════════════════════
 
@@ -2322,15 +2372,14 @@
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 
     content.innerHTML =
-      '<link rel="stylesheet" href="proof-game.css?v=2">' +
+      '<link rel="stylesheet" href="proof-game.css?v=3">' +
       '<div class="pg-page">' +
       '  <div class="pg-topbar">' +
       '    <span class="pg-title">Proof <span class="pg-title-accent">Builder</span></span>' +
-      '    <button class="pg-btn" id="pg-load-btn">Load ▼</button>' +
-      '    <button class="pg-btn" id="pg-new-btn">New</button>' +
+      '    <button class="pg-btn" id="pg-examples-btn">Examples</button>' +
       '    <span class="pg-theorem-name" id="pg-theorem-display"></span>' +
       '    <span style="flex:1"></span>' +
-      '    <button class="pg-btn primary" id="pg-verify-btn">Verify ✓</button>' +
+      '    <button class="pg-btn primary" id="pg-verify-btn">Verify</button>' +
       '    <button class="pg-btn" id="pg-export-btn" disabled>Export</button>' +
       '    <span class="pg-status"><span class="pg-status-dot simulated"></span> Simulation</span>' +
       '  </div>' +
@@ -2338,39 +2387,87 @@
       '    <div class="pg-graph" id="pg-graph">' +
       '      <canvas id="pg-canvas"></canvas>' +
       '      <div class="pg-welcome" id="pg-welcome">' +
+      '        <img src="agentpmtgenius.png" style="width:140px;height:140px;object-fit:contain;margin-bottom:12px;border-radius:12px" alt="Proof Builder" />' +
       '        <div class="pg-welcome-title">Proof Builder</div>' +
-      '        <div class="pg-welcome-sub">Navigate proof trees by selecting tactics. ' +
-      '          Explore branching paths. Solve all goals to complete the proof.</div>' +
-      '        <button class="pg-btn primary" id="pg-welcome-load">Browse Library</button>' +
-      '        <div class="pg-welcome-mode">' + (serverMode ? 'Server mode' : 'Simulation mode — ' + LIBRARY.length + ' theorems') + ' v' + PG_VERSION + '</div>' +
+      '        <div class="pg-welcome-sub" style="max-width:480px">' +
+      '          Build and explore proof trees interactively. Load a theorem from the ' +
+      '          <b>Lean DB</b> tab, search <b>Loogle</b> for Mathlib results, or type ' +
+      '          a <b>Custom</b> theorem statement. Click nodes to see goals, apply tactics ' +
+      '          from the side panel, and watch the proof tree grow.</div>' +
+      '        <div class="pg-welcome-mode">' + (serverMode ? 'Server mode' : 'Simulation mode') + '</div>' +
       '      </div>' +
       '    </div>' +
       '    <div class="pg-context" id="pg-context">' +
-      '      <div class="pg-section">' +
-      '        <div class="pg-section-title">Current Goal</div>' +
-      '        <div class="pg-goal-display" id="pg-goal-display">Select a node to view its goal state</div>' +
+      '      <div class="pg-tab-bar" id="pg-tab-bar">' +
+      '        <button class="pg-tab active" data-tab="goal">Goal</button>' +
+      '        <button class="pg-tab" data-tab="leandb">Lean DB</button>' +
+      '        <button class="pg-tab" data-tab="loogle">Loogle</button>' +
+      '        <button class="pg-tab" data-tab="custom">Custom</button>' +
+      '        <button class="pg-tab" data-tab="import">Import</button>' +
       '      </div>' +
-      '      <div class="pg-section">' +
-      '        <div class="pg-section-title">Hypotheses</div>' +
-      '        <ul class="pg-hyp-list" id="pg-hyp-list"></ul>' +
-      '      </div>' +
-      '      <div class="pg-section">' +
-      '        <div class="pg-section-title">Available Tactics</div>' +
-      '        <div class="pg-tactic-list" id="pg-tactic-list"></div>' +
-      '        <div class="pg-tactic-input-row">' +
-      '          <input class="pg-tactic-input" id="pg-tactic-input" placeholder="Type tactic..." />' +
-      '          <button class="pg-btn" id="pg-tactic-apply">Apply</button>' +
+      '      <div class="pg-tab-content" id="pg-tab-goal">' +
+      '        <div class="pg-section">' +
+      '          <div class="pg-section-title">Current Goal</div>' +
+      '          <div class="pg-goal-display" id="pg-goal-display">Select a node to view its goal state</div>' +
+      '        </div>' +
+      '        <div class="pg-section">' +
+      '          <div class="pg-section-title">Hypotheses</div>' +
+      '          <ul class="pg-hyp-list" id="pg-hyp-list"></ul>' +
+      '        </div>' +
+      '        <div class="pg-section">' +
+      '          <div class="pg-section-title">Available Tactics</div>' +
+      '          <div class="pg-tactic-list" id="pg-tactic-list"></div>' +
+      '          <div class="pg-tactic-input-row">' +
+      '            <input class="pg-tactic-input" id="pg-tactic-input" placeholder="Type tactic..." />' +
+      '            <button class="pg-btn" id="pg-tactic-apply">Apply</button>' +
+      '          </div>' +
+      '        </div>' +
+      '        <div class="pg-section" style="flex:1">' +
+      '          <div class="pg-section-title">Proof Script</div>' +
+      '          <div class="pg-script" id="pg-script">-- No proof in progress</div>' +
+      '        </div>' +
+      '        <div class="pg-section">' +
+      '          <div class="pg-section-title">AI Assist</div>' +
+      '          <div class="pg-hint-btns">' +
+      '            <button class="pg-btn" id="pg-hint-btn">Get Hint</button>' +
+      '            <button class="pg-btn" id="pg-autosolve-btn">Auto-solve</button>' +
+      '          </div>' +
       '        </div>' +
       '      </div>' +
-      '      <div class="pg-section" style="flex:1">' +
-      '        <div class="pg-section-title">Proof Script</div>' +
-      '        <div class="pg-script" id="pg-script">-- No proof in progress</div>' +
+      '      <div class="pg-tab-content" id="pg-tab-leandb" style="display:none">' +
+      '        <div class="pg-section" style="flex:1">' +
+      '          <div class="pg-section-title">Lean Database</div>' +
+      '          <div id="pg-leandb-content" style="font-size:12px;color:#4ca43a">Loading project files…</div>' +
+      '        </div>' +
       '      </div>' +
-      '      <div class="pg-section">' +
-      '        <div class="pg-section-title">AI Assist</div>' +
-      '        <div class="pg-hint-btns">' +
-      '          <button class="pg-btn" id="pg-hint-btn" title="Spawns HALO agent for tactic suggestion">Get Hint</button>' +
-      '          <button class="pg-btn" id="pg-autosolve-btn" title="Spawns proof search agent">Auto-solve</button>' +
+      '      <div class="pg-tab-content" id="pg-tab-loogle" style="display:none">' +
+      '        <div class="pg-section" style="flex:1">' +
+      '          <div class="pg-section-title">Search Loogle (Mathlib)</div>' +
+      '          <div class="pg-tactic-input-row" style="margin-bottom:8px">' +
+      '            <input class="pg-tactic-input" id="pg-loogle-input" placeholder="e.g. List.map, Nat.add_comm, _ -> _ -> _" />' +
+      '            <button class="pg-btn primary" id="pg-loogle-search-btn">Search</button>' +
+      '          </div>' +
+      '          <div class="pg-new-hint" style="margin-bottom:8px">Search Lean/Mathlib declarations by name or type signature via <a href="https://loogle.lean-lang.org" target="_blank" style="color:#78ff74">loogle.lean-lang.org</a></div>' +
+      '          <div id="pg-loogle-results" style="overflow-y:auto;flex:1"></div>' +
+      '        </div>' +
+      '      </div>' +
+      '      <div class="pg-tab-content" id="pg-tab-custom" style="display:none">' +
+      '        <div class="pg-section" style="flex:1">' +
+      '          <div class="pg-section-title">Custom Theorem</div>' +
+      '          <div class="pg-new-hint" style="margin-bottom:8px">Enter a Lean 4 theorem statement. The proof tree will start with the type as the root goal.</div>' +
+      '          <textarea class="pg-new-input" id="pg-custom-input" placeholder="theorem my_thm (P Q : Prop) : P → Q → P" style="min-height:80px;resize:vertical;font-size:12px"></textarea>' +
+      '          <button class="pg-btn primary" id="pg-custom-go" style="margin-top:8px;width:100%">Start Proof</button>' +
+      '        </div>' +
+      '      </div>' +
+      '      <div class="pg-tab-content" id="pg-tab-import" style="display:none">' +
+      '        <div class="pg-section" style="flex:1">' +
+      '          <div class="pg-section-title">Import from Local</div>' +
+      '          <div class="pg-new-hint" style="margin-bottom:8px">Load a Heyting proof tree JSON file to visualize proof strategies.</div>' +
+      '          <input type="file" accept=".json" id="pg-import-file-input" style="display:none" />' +
+      '          <button class="pg-btn" id="pg-import-file-btn" style="width:100%;margin-bottom:8px">Choose JSON File…</button>' +
+      '          <div class="pg-section-title" style="margin-top:12px">Or Paste JSON</div>' +
+      '          <textarea class="pg-new-input" id="pg-import-paste-input" placeholder="Paste proof tree JSON…" style="min-height:100px;resize:vertical;font-size:11px"></textarea>' +
+      '          <button class="pg-btn primary" id="pg-import-paste-go" style="margin-top:8px;width:100%">Load Proof Tree</button>' +
       '        </div>' +
       '      </div>' +
       '    </div>' +
@@ -2384,17 +2481,96 @@
       '    <span class="pg-stat-sep">|</span>' +
       '    <span class="pg-stat">Depth: <span class="pg-stat-value" id="pg-stat-depth">0</span></span>' +
       '    <span style="flex:1"></span>' +
-      '    <button class="pg-btn" id="pg-undo-btn" disabled>Undo ↩</button>' +
+      '    <button class="pg-btn" id="pg-undo-btn" disabled>Undo</button>' +
       '  </div>' +
       '</div>';
 
     // Wire buttons
-    document.getElementById('pg-load-btn').addEventListener('click', showLibrary);
-    document.getElementById('pg-new-btn').addEventListener('click', showLibrary);
-    document.getElementById('pg-welcome-load').addEventListener('click', showLibrary);
+    document.getElementById('pg-examples-btn').addEventListener('click', showLibrary);
     document.getElementById('pg-verify-btn').addEventListener('click', doVerify);
     document.getElementById('pg-export-btn').addEventListener('click', doExport);
     document.getElementById('pg-undo-btn').addEventListener('click', doUndo);
+
+    // Tab switching
+    document.querySelectorAll('.pg-tab').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var tabName = tab.getAttribute('data-tab');
+        document.querySelectorAll('.pg-tab').forEach(function (t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        document.querySelectorAll('.pg-tab-content').forEach(function (c) { c.style.display = 'none'; });
+        var target = document.getElementById('pg-tab-' + tabName);
+        if (target) target.style.display = '';
+        // Auto-load Lean DB on first tab click
+        if (tabName === 'leandb' && !leanDbLoaded) {
+          leanDbLoaded = true;
+          loadLeanTheorems(document.getElementById('pg-leandb-content'));
+        }
+      });
+    });
+
+    // Loogle search
+    var loogleInput = document.getElementById('pg-loogle-input');
+    document.getElementById('pg-loogle-search-btn').addEventListener('click', function () {
+      doLoogleSearch(loogleInput ? loogleInput.value.trim() : '');
+    });
+    if (loogleInput) loogleInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); doLoogleSearch(loogleInput.value.trim()); }
+    });
+
+    // Custom theorem
+    document.getElementById('pg-custom-go').addEventListener('click', function () {
+      var input = document.getElementById('pg-custom-input');
+      var stmt = input ? input.value.trim() : '';
+      if (!stmt) return;
+      var match = LIBRARY.find(function (t) {
+        return t.statement.toLowerCase().includes(stmt.toLowerCase().replace('theorem ', '').trim());
+      });
+      if (match) { loadTheorem(match); }
+      else {
+        var custom = {
+          id: 'custom_' + Date.now(), name: 'Custom', category: 'Custom',
+          statement: stmt, difficulty: 0, tags: ['custom'],
+          hint: 'Custom theorems require a Lean server for interactive proving.',
+          rootGoal: 'r', goals: {
+            r: { display: '⊢ ' + stmt.replace(/theorem\s+\w+[^:]*:\s*/, '').trim(),
+              hyps: [], tactics: { 'sorry': [] }, suggested: ['sorry'] }
+          }
+        };
+        loadTheorem(custom);
+      }
+    });
+
+    // Import from file
+    var importFileInput = document.getElementById('pg-import-file-input');
+    document.getElementById('pg-import-file-btn').addEventListener('click', function () { importFileInput.click(); });
+    importFileInput.addEventListener('change', function () {
+      var file = importFileInput.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function (ev) {
+        try {
+          var tree = JSON.parse(ev.target.result);
+          var thm = convertProofTreeToTheorem(tree);
+          if (thm) loadTheorem(thm);
+        } catch (e) { alert('Failed to parse: ' + e.message); }
+      };
+      reader.readAsText(file);
+    });
+
+    // Import from paste
+    document.getElementById('pg-import-paste-go').addEventListener('click', function () {
+      var ta = document.getElementById('pg-import-paste-input');
+      var text = ta ? ta.value.trim() : '';
+      if (!text) return;
+      try {
+        var tree = JSON.parse(text);
+        var thm = convertProofTreeToTheorem(tree);
+        if (thm) loadTheorem(thm);
+      } catch (e) { alert('Failed to parse: ' + e.message); }
+    });
+
+    // Auto-load Lean DB tab content
+    var leanDbLoaded = false;
 
     document.getElementById('pg-tactic-apply').addEventListener('click', function () {
       var input = document.getElementById('pg-tactic-input');
