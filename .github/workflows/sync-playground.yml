@@ -1,0 +1,117 @@
+name: Sync Dashboard to Playground
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'dashboard/**'
+      - 'src/dashboard/**'
+  workflow_dispatch:
+
+concurrency:
+  group: sync-playground
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout agenthalo
+        uses: actions/checkout@v4
+        with:
+          path: agenthalo
+
+      - name: Checkout playground
+        uses: actions/checkout@v4
+        with:
+          repository: Abraxas1010/agenthalo-playground
+          token: ${{ secrets.PLAYGROUND_SYNC_PAT }}
+          path: playground
+
+      # --- Hook Gate 1: Validate source structure ---
+      - name: Gate - Validate source dashboard
+        run: |
+          test -f agenthalo/dashboard/index.html || { echo "GATE FAIL: index.html missing"; exit 1; }
+          test -f agenthalo/dashboard/app.js     || { echo "GATE FAIL: app.js missing"; exit 1; }
+          test -f agenthalo/dashboard/style.css   || { echo "GATE FAIL: style.css missing"; exit 1; }
+          JS_COUNT=$(find agenthalo/dashboard -maxdepth 1 -name '*.js' | wc -l)
+          test "$JS_COUNT" -ge 5 || { echo "GATE FAIL: expected >=5 JS files, found $JS_COUNT"; exit 1; }
+          echo "Gate 1 PASS: source dashboard validated ($JS_COUNT JS files)"
+
+      # --- Hook Gate 2: Validate playground has transform script ---
+      - name: Gate - Validate playground repo
+        run: |
+          test -f playground/scripts/transform_from_agenthalo.sh || { echo "GATE FAIL: transform script missing"; exit 1; }
+          test -x playground/scripts/transform_from_agenthalo.sh || chmod +x playground/scripts/transform_from_agenthalo.sh
+          test -f playground/src/demo-api.js    || { echo "GATE FAIL: demo-api.js missing"; exit 1; }
+          test -f playground/src/demo-banner.js || { echo "GATE FAIL: demo-banner.js missing"; exit 1; }
+          echo "Gate 2 PASS: playground repo validated"
+
+      - name: Run transform
+        run: bash playground/scripts/transform_from_agenthalo.sh agenthalo playground/dashboard
+
+      # --- Hook Gate 3: Validate transform output ---
+      - name: Gate - Validate transform output
+        run: |
+          test -f playground/dashboard/index.html     || { echo "GATE FAIL: output index.html missing"; exit 1; }
+          test -f playground/dashboard/demo-api.js     || { echo "GATE FAIL: output demo-api.js missing"; exit 1; }
+          test -f playground/dashboard/demo-banner.js  || { echo "GATE FAIL: output demo-banner.js missing"; exit 1; }
+          test -f playground/dashboard/route-manifest.txt || { echo "GATE FAIL: route-manifest.txt missing"; exit 1; }
+          test -d playground/dashboard/demo-fixtures   || { echo "GATE FAIL: demo-fixtures/ missing"; exit 1; }
+
+          # Verify demo-api.js loads before app.js in the HTML
+          DEMO_LINE=$(grep -n 'demo-api.js' playground/dashboard/index.html | head -1 | cut -d: -f1)
+          APP_LINE=$(grep -n 'src="app.js"' playground/dashboard/index.html | head -1 | cut -d: -f1)
+          test "$DEMO_LINE" -lt "$APP_LINE" || { echo "GATE FAIL: demo-api.js must load before app.js"; exit 1; }
+
+          # Verify no production secrets leaked into fixtures
+          if grep -rPi '(sk-[a-zA-Z0-9]{20,}|pk_live_|Bearer [a-zA-Z0-9]{30,})' playground/dashboard/demo-fixtures/ 2>/dev/null; then
+            echo "GATE FAIL: possible secrets in fixtures"
+            exit 1
+          fi
+
+          # Verify route manifest has no junk (filesystem paths)
+          JUNK=$(grep -cP '^/(bin|usr|home|tmp|etc|var|dev|proc|sys)/' playground/dashboard/route-manifest.txt 2>/dev/null || echo "0")
+          test "$JUNK" -eq 0 || { echo "GATE FAIL: route manifest contains $JUNK junk entries"; exit 1; }
+
+          # Verify all manifest route families are covered by the interceptor
+          UNCOVERED=0
+          while IFS= read -r route; do
+            FAMILY=$(echo "$route" | grep -oP '^/[^/{]+' | head -1)
+            [ -z "$FAMILY" ] && continue
+            if ! grep -qP "\"/api${FAMILY}" playground/dashboard/demo-api.js; then
+              echo "UNCOVERED: /api${route}"
+              UNCOVERED=$((UNCOVERED + 1))
+            fi
+          done < playground/dashboard/route-manifest.txt
+          test "$UNCOVERED" -eq 0 || { echo "GATE FAIL: $UNCOVERED manifest routes not covered by interceptor"; exit 1; }
+
+          ROUTE_COUNT=$(wc -l < playground/dashboard/route-manifest.txt)
+          FIXTURE_COUNT=$(find playground/dashboard/demo-fixtures -name '*.json' | wc -l)
+          echo "Gate 3 PASS: output validated ($ROUTE_COUNT routes, $FIXTURE_COUNT fixtures)"
+
+      - name: Check for changes
+        id: diff
+        working-directory: playground
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Changes detected:"
+            git diff --cached --stat
+          fi
+
+      - name: Commit and push
+        if: steps.diff.outputs.changed == 'true'
+        working-directory: playground
+        run: |
+          git config user.name "agenthalo-sync[bot]"
+          git config user.email "sync@apoth3osis.ai"
+          SRC_SHA=$(git -C ../agenthalo rev-parse --short HEAD)
+          git commit -m "sync: dashboard from agenthalo@${SRC_SHA}
+
+          Auto-synced by Abraxas1010/agenthalo sync-playground workflow.
+          Source: https://github.com/Abraxas1010/agenthalo/commit/${SRC_SHA}"
+          git push
