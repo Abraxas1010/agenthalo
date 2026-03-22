@@ -80,11 +80,17 @@
 }
 .pg-tab:hover { color: #ff6a00; background: rgba(255,106,0,0.06); }
 .pg-tab.active { color: #ff6a00; border-bottom-color: #ff6a00; background: rgba(255,106,0,0.08); }
-.pg-tab-content { display: none; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; }
+.pg-tab-content { display: none; flex-direction: column; flex: 1; min-height: 0; }
 .pg-tab-content.active { display: flex; }
 .pg-tab-content > .pg-section { flex-shrink: 0; }
-.pg-tab-content > .pg-section[style*="flex:1"],
-.pg-tab-content > .pg-section:last-child { flex: 1; min-height: 0; }
+.pg-tab-content > .pg-section:only-child,
+.pg-tab-content > .pg-section[style*="flex:1"] {
+  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+}
+.pg-tab-content > .pg-section:only-child > div:last-child,
+.pg-tab-content > .pg-section[style*="flex:1"] > div:last-child {
+  flex: 1; min-height: 0; overflow-y: auto;
+}
 .pg-section { padding: 12px 14px; border-bottom: 1px solid rgba(53,255,62,0.08); }
 .pg-section-title {
   font-size: 10px; font-weight: 700; text-transform: uppercase;
