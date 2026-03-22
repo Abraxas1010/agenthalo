@@ -110,11 +110,23 @@ function renderProofExplorerRoute() {
   const content = document.getElementById("content");
   if (!content) return;
   content.innerHTML =
-    '<link rel="stylesheet" href="proof-game.css?v=4">' +
+    '<link rel="stylesheet" href="proof-game.css?v=5">' +
     '<div class="pe-merged">' +
-    '  <div class="pe-merged-tabs">' +
-    '    <button class="pe-merged-tab active" data-pane="lattice">\u25C6 Lattice</button>' +
-    '    <button class="pe-merged-tab" data-pane="builder">\u25C9 Builder</button>' +
+    '  <div class="pe-merged-header">' +
+    '    <div class="pe-merged-header-left">' +
+    '      <div class="pe-merged-header-title">Proof <span class="accent">Explorer</span></div>' +
+    '      <div class="pe-merged-header-sub">Navigate the HeytingLean proof lattice. Each node is a theorem, lemma, or definition. Explore connections, filter by category, and discover structural patterns.</div>' +
+    '    </div>' +
+    '    <div class="pe-merged-header-right">' +
+    '      <div>' +
+    '        <div class="pe-merged-cta-label">Choose View</div>' +
+    '        <div class="pe-merged-view-btns">' +
+    '          <button class="pe-merged-view-btn active" data-pane="lattice">\u25C6 Lattice</button>' +
+    '          <button class="pe-merged-view-btn" data-pane="builder">\u25C9 Builder</button>' +
+    '        </div>' +
+    '      </div>' +
+    '      <img src="img/agenthalo_astronaut.png" alt="Agent H.A.L.O." />' +
+    '    </div>' +
     '  </div>' +
     '  <div class="pe-merged-pane active" id="pe-lattice-pane"></div>' +
     '  <div class="pe-merged-pane" id="pe-builder-pane"></div>' +
@@ -126,26 +138,27 @@ function renderProofExplorerRoute() {
   }
 
   let builderRendered = false;
-  document.querySelectorAll(".pe-merged-tab").forEach(tab => {
-    tab.addEventListener("click", () => {
-      const pane = tab.dataset.pane;
-      document.querySelectorAll(".pe-merged-tab").forEach(t => t.classList.remove("active"));
-      document.querySelectorAll(".pe-merged-pane").forEach(p => p.classList.remove("active"));
-      tab.classList.add("active");
-      const target = document.getElementById("pe-" + pane + "-pane");
-      if (target) target.classList.add("active");
+  function switchPane(pane) {
+    document.querySelectorAll(".pe-merged-view-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".pe-merged-pane").forEach(p => p.classList.remove("active"));
+    const btn = document.querySelector('.pe-merged-view-btn[data-pane="' + pane + '"]');
+    if (btn) btn.classList.add("active");
+    const target = document.getElementById("pe-" + pane + "-pane");
+    if (target) target.classList.add("active");
 
-      if (pane === "builder" && !builderRendered) {
-        builderRendered = true;
-        if (typeof window.renderProofGamePage === "function") {
-          window.renderProofGamePage(document.getElementById("pe-builder-pane"));
-        }
+    if (pane === "builder" && !builderRendered) {
+      builderRendered = true;
+      if (typeof window.renderProofGamePage === "function") {
+        window.renderProofGamePage(document.getElementById("pe-builder-pane"));
       }
-      // Resize canvas when switching back to builder (canvas needs dimensions)
-      if (pane === "builder" && typeof window.resizeProofGameCanvas === "function") {
-        requestAnimationFrame(() => window.resizeProofGameCanvas());
-      }
-    });
+    }
+    if (pane === "builder" && typeof window.resizeProofGameCanvas === "function") {
+      requestAnimationFrame(() => window.resizeProofGameCanvas());
+    }
+  }
+
+  document.querySelectorAll(".pe-merged-view-btn").forEach(btn => {
+    btn.addEventListener("click", () => switchPane(btn.dataset.pane));
   });
 }
 

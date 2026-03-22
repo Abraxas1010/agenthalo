@@ -16,29 +16,84 @@
   color: #b8e6b0;
   font-family: 'Space Grotesk', 'SF Mono', monospace;
 }
-.pe-merged-tabs {
+.pe-merged-header {
   display: flex;
-  gap: 0;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 24px;
   border-bottom: 1px solid rgba(53,255,62,0.12);
   background: rgba(8,12,5,0.95);
   flex-shrink: 0;
   z-index: 10;
 }
-.pe-merged-tab {
-  padding: 10px 24px;
-  font-size: 13px;
-  font-weight: 600;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
+.pe-merged-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.pe-merged-header-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #35ff3e;
+}
+.pe-merged-header-title .accent { color: #ff6a00; }
+.pe-merged-header-sub {
+  font-size: 12px;
   color: #4ca43a;
+  line-height: 1.4;
+}
+.pe-merged-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.pe-merged-header-right img {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  object-fit: contain;
+  border: 2px solid rgba(255,106,0,0.3);
+  box-shadow: 0 0 20px rgba(255,106,0,0.12);
+}
+.pe-merged-cta-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: #ff6a00;
+  margin-bottom: 4px;
+}
+.pe-merged-view-btns {
+  display: flex;
+  gap: 6px;
+}
+.pe-merged-view-btn {
+  padding: 8px 20px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 2px solid rgba(53,255,62,0.2);
+  border-radius: 6px;
+  background: rgba(10,20,8,0.6);
+  color: #78ff74;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.2s;
   font-family: inherit;
   white-space: nowrap;
 }
-.pe-merged-tab:hover { color: #ff6a00; background: rgba(255,106,0,0.06); }
-.pe-merged-tab.active { color: #ff6a00; border-bottom-color: #ff6a00; background: rgba(255,106,0,0.08); }
+.pe-merged-view-btn:hover {
+  background: rgba(255,106,0,0.08);
+  border-color: rgba(255,106,0,0.4);
+  color: #ff6a00;
+}
+.pe-merged-view-btn.active {
+  background: rgba(255,106,0,0.12);
+  border-color: #ff6a00;
+  color: #ff6a00;
+  box-shadow: 0 0 12px rgba(255,106,0,0.15);
+}
 .pe-merged-pane {
   display: none;
   flex: 1;
@@ -61,7 +116,7 @@
   display: flex;
   flex-direction: column;
   flex: 1;
-  height: 100%;
+  min-height: 0;          /* CRITICAL — allows shrinking inside flex parent */
   background: #060a04;
   color: #b8e6b0;
   font-family: 'Space Grotesk', 'SF Mono', monospace;
@@ -103,22 +158,40 @@
 .pg-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
 /* ── Main Layout ─────────────────────────────────────────── */
-.pg-main { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.pg-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;           /* CRITICAL — allows shrinking */
+  overflow: hidden;
+}
 .pg-graph { flex: 1; position: relative; overflow: hidden; background: #050804; }
 .pg-graph canvas { display: block; width: 100%; height: 100%; cursor: grab; }
 .pg-graph canvas:active { cursor: grabbing; }
 
-/* ── Context Panel ───────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════
+   Context Panel — REWRITTEN FROM SCRATCH
+   The flex chain from .pg-context → tab content → scrollable area
+   must be unbroken. Every element in the chain needs:
+     display: flex; flex-direction: column; flex: 1; min-height: 0;
+   ══════════════════════════════════════════════════════════════ */
 .pg-context {
-  width: 380px; border-left: 1px solid rgba(53,255,62,0.12);
-  background: rgba(8,12,5,0.92); flex-shrink: 0;
-  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  width: 380px;
+  flex-shrink: 0;
+  border-left: 1px solid rgba(53,255,62,0.12);
+  background: rgba(8,12,5,0.92);
+  /* --- flex chain link 1 --- */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
-/* ── Tab Bar ────────────────────────────────────────────── */
+/* Tab bar: fixed height, never shrinks */
 .pg-tab-bar {
-  display: flex; gap: 0; border-bottom: 1px solid rgba(53,255,62,0.12);
-  flex-shrink: 0; overflow-x: auto;
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid rgba(53,255,62,0.12);
+  flex-shrink: 0;
+  overflow-x: auto;
 }
 .pg-tab {
   flex: 1; padding: 7px 4px; font-size: 10px; font-weight: 600;
@@ -129,19 +202,46 @@
 }
 .pg-tab:hover { color: #ff6a00; background: rgba(255,106,0,0.06); }
 .pg-tab.active { color: #ff6a00; border-bottom-color: #ff6a00; background: rgba(255,106,0,0.08); }
-.pg-tab-content { display: none; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-.pg-tab-content.active { display: flex; }
-.pg-tab-content > .pg-section { flex-shrink: 0; }
-.pg-tab-content > .pg-section.pg-fill {
-  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+
+/* Tab content pane: hidden by default, flex-fills when active.
+   --- flex chain link 2 --- */
+.pg-tab-content {
+  display: none;
 }
-.pg-tab-content > .pg-section.pg-fill > div:last-child {
-  flex: 1; min-height: 0; overflow-y: auto;
+.pg-tab-content.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  /* overflow is handled by the scrollable child, not here */
 }
-.pg-section { padding: 12px 14px; border-bottom: 1px solid rgba(53,255,62,0.08); }
+
+/* Sections inside tab content: fixed-height by default */
+.pg-section {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(53,255,62,0.08);
+  flex-shrink: 0;
+}
+
+/* .pg-fill sections: grow to fill remaining space + scroll
+   --- flex chain link 3 (terminal — this is the scroll container) --- */
+.pg-section.pg-fill {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+/* The last child inside a pg-fill section also fills */
+.pg-section.pg-fill > *:last-child {
+  flex: 1;
+  min-height: 0;
+}
+
 .pg-section-title {
   font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 1.5px; color: #4ca43a; margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 /* Goal State */
@@ -181,7 +281,7 @@
 .pg-tactic-desc { font-size: 10px; color: #3a6030; text-align: right; }
 
 /* Custom tactic input */
-.pg-tactic-input-row { display: flex; gap: 6px; margin-top: 6px; }
+.pg-tactic-input-row { display: flex; gap: 6px; margin-top: 6px; flex-shrink: 0; }
 .pg-tactic-input {
   flex: 1; padding: 6px 10px; font-size: 12px; font-family: 'SF Mono', monospace;
   background: rgba(0,0,0,0.3); border: 1px solid rgba(53,255,62,0.15);
@@ -259,7 +359,7 @@
   border-radius: 4px; color: #78ff74; outline: none;
 }
 .pg-new-input:focus { border-color: #35ff3e; }
-.pg-new-hint { font-size: 11px; color: #3a6030; margin-top: 4px; }
+.pg-new-hint { font-size: 11px; color: #3a6030; margin-top: 4px; flex-shrink: 0; }
 
 /* ── Import sections in modal ────────────────────────────── */
 #pg-lean-results .pg-theorem-card { margin-bottom: 6px; }
@@ -305,3 +405,6 @@
 .pg-modal::-webkit-scrollbar { width: 6px; }
 .pg-modal::-webkit-scrollbar-track { background: transparent; }
 .pg-modal::-webkit-scrollbar-thumb { background: rgba(53,255,62,0.15); border-radius: 3px; }
+.pg-section.pg-fill::-webkit-scrollbar { width: 5px; }
+.pg-section.pg-fill::-webkit-scrollbar-track { background: transparent; }
+.pg-section.pg-fill::-webkit-scrollbar-thumb { background: rgba(53,255,62,0.15); border-radius: 3px; }
