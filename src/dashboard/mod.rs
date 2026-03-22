@@ -12,6 +12,7 @@ pub mod gate_check;
 pub mod forge_api;
 pub mod gates_api;
 pub mod mcp_bridge;
+pub mod pantograph;
 
 use axum::routing::get;
 use axum::Router;
@@ -67,6 +68,8 @@ pub struct DashboardState {
     pub proxy_governor: Arc<crate::halo::proxy::ProxyGovernorRuntime>,
     /// First-run password/bootstrap behavior for this dashboard process.
     pub bootstrap_mode: DashboardBootstrapMode,
+    /// Shared Pantograph subprocess state for the Proof Builder.
+    pub pantograph: pantograph::PantographState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,6 +265,7 @@ pub fn build_state_with_bootstrap(
         governor_registry,
         proxy_governor,
         bootstrap_mode,
+        pantograph: pantograph::empty_state(),
     }
 }
 
@@ -290,11 +294,37 @@ pub async fn serve_with_bootstrap(
     open_browser: bool,
     bootstrap_mode: DashboardBootstrapMode,
 ) -> Result<(), String> {
-    let state = build_state_with_bootstrap(
+    let mut state = build_state_with_bootstrap(
         crate::halo::config::db_path(),
         crate::halo::config::credentials_path(),
         bootstrap_mode,
     );
+
+    // Try to connect to Pantograph for Proof Builder live mode.
+    {
+        let vendor_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("../vendor");
+        // Also check relative to cwd
+        let vendor_candidates = [
+            PathBuf::from("vendor"),
+            vendor_dir,
+        ];
+        let lean_project = std::env::var("AGENTHALO_LEAN_PROJECT")
+            .unwrap_or_else(|_| "/home/abraxas/Work/heyting/lean".to_string());
+        for vdir in &vendor_candidates {
+            if vdir.exists() {
+                let ps = pantograph::try_spawn(vdir, &lean_project).await;
+                let connected = ps.lock().await.is_some();
+                if connected {
+                    state.pantograph = ps;
+                    break;
+                }
+            }
+        }
+    }
 
     // Reap expired scoped keys in the background.
     let reaper_state = state.crypto_state.clone();

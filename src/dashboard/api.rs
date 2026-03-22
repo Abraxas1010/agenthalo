@@ -453,7 +453,7 @@ pub fn api_router(state: DashboardState) -> Router<DashboardState> {
         .nest("/gates", super::gates_api::router())
         // Proof Forge: autoformalization + verification workbench
         .nest("/forge", super::forge_api::router())
-        // Proof Explorer Game: interactive theorem proving (stub — client-side simulation)
+        // Proof Explorer: interactive theorem proving (Pantograph when connected, simulation fallback)
         .route("/explorer/status", get(super::explorer_api::api_explorer_status))
         .route("/explorer/load", post(super::explorer_api::api_explorer_load))
         .route("/explorer/tactic", post(super::explorer_api::api_explorer_tactic))

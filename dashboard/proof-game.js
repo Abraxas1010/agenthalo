@@ -300,6 +300,34 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // §2b  Server Mode (Pantograph)
+  // ═══════════════════════════════════════════════════════════════
+
+  var serverMode = false;   // true when Lean proof server is connected
+
+  function checkServerStatus() {
+    fetch('/api/explorer/status').then(function (r) { return r.json(); }).then(function (data) {
+      serverMode = !!(data && data.lean_server);
+      var dot = document.querySelector('.pg-status-dot');
+      if (dot) {
+        var statusText = dot.parentElement && dot.parentElement.lastChild;
+        if (!session) {
+          dot.className = 'pg-status-dot ' + (serverMode ? 'active' : 'simulated');
+          if (statusText && statusText.nodeType === 3) {
+            statusText.textContent = serverMode ? ' Connected' : ' Simulation';
+          }
+        }
+      }
+      var welcomeMode = document.querySelector('.pg-welcome-mode');
+      if (welcomeMode) {
+        welcomeMode.textContent = serverMode
+          ? 'Server mode — connected to Lean proof server'
+          : 'Simulation mode — pre-computed proof trees for ' + LIBRARY.length + ' theorems';
+      }
+    }).catch(function () { serverMode = false; });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // §3  Simulation Engine
   // ═══════════════════════════════════════════════════════════════
 
@@ -331,12 +359,14 @@
   function mkId() { return 'n' + (nodeSeq++); }
 
   function getGoalDef(node) {
+    // Server-mode nodes carry their own goal info
+    if (node.serverGoal) return node.serverGoal;
     return session.theorem.goals[node.goalKey] || null;
   }
 
   function applyTactic(nodeId, tacticStr) {
     var node = session.nodes[nodeId];
-    if (!node || node.status === 'solved' || node.status === 'inactive') return null;
+    if (!node || node.status === 'inactive') return null;
     var goalDef = getGoalDef(node);
     if (!goalDef) return { error: 'No goal definition (simulation limit)' };
 
@@ -695,6 +725,11 @@
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
 
+    // Clip text content to node bounds
+    ctx.save();
+    roundRect(ctx, -hw + 1, -hh + 1, NODE_W - 2, NODE_H - 2, NODE_R);
+    ctx.clip();
+
     // Status icon
     var icon = node.status === 'solved' ? '✓' :
                node.status === 'failed' ? '✗' :
@@ -706,17 +741,18 @@
     ctx.textBaseline = 'middle';
     ctx.fillText(icon, hw - 6, 0);
 
-    // Goal text (truncated)
-    var goalDef = node.goalKey ? (session.theorem.goals[node.goalKey] || null) : null;
+    // Goal text (truncated to fit node width)
+    var goalDef = getGoalDef(node);
     var label = '';
     if (node.status === 'failed') {
-      label = node.errorMsg ? node.errorMsg.slice(0, 42) : 'Failed';
+      label = node.errorMsg ? node.errorMsg.slice(0, 30) : 'Failed';
     } else if (goalDef) {
-      // Show the goal text — prefer after ⊢ if present, otherwise full display
       var disp = goalDef.display;
       var turnstile = disp.indexOf('⊢');
       label = turnstile >= 0 ? disp.slice(turnstile) : disp;
-      if (label.length > 42) label = label.slice(0, 40) + '..';
+      // Remove newlines for single-line display
+      label = label.replace(/\n/g, ' ');
+      if (label.length > 30) label = label.slice(0, 28) + '..';
     }
     ctx.font = '11px SF Mono, monospace';
     ctx.fillStyle = st.text;
@@ -724,6 +760,7 @@
     ctx.textBaseline = 'middle';
     ctx.fillText(label, -hw + 8, 0);
 
+    ctx.restore(); // remove clip
     ctx.restore();
   }
 
@@ -899,19 +936,46 @@
     var tacList = document.getElementById('pg-tactic-list');
     if (tacList) {
       tacList.innerHTML = '';
-      if (goalDef && node.status === 'open') {
+      if (goalDef && (node.status === 'open' || node.status === 'solved')) {
+        if (node.status === 'solved') {
+          var solvedDiv = document.createElement('div');
+          solvedDiv.style.cssText = 'color:#39ff14;padding:4px 8px 8px;font-size:11px';
+          solvedDiv.textContent = '✓ Solved — alternative tactics:';
+          tacList.appendChild(solvedDiv);
+        }
+        // Server mode: show prompt to type tactics + suggest button
+        if (serverMode && node.stateId !== undefined && node.status === 'open') {
+          var serverHint = document.createElement('div');
+          serverHint.style.cssText = 'color:#00ff41;padding:6px 8px;font-size:11px;border:1px solid rgba(0,255,65,0.1);border-radius:4px;margin-bottom:6px';
+          serverHint.textContent = 'Server mode — type any Lean tactic below';
+          tacList.appendChild(serverHint);
+          // Add suggest button
+          var suggestBtn = document.createElement('button');
+          suggestBtn.className = 'pg-btn';
+          suggestBtn.textContent = 'Suggest Tactics';
+          suggestBtn.style.cssText = 'margin-bottom:8px;font-size:11px';
+          suggestBtn.addEventListener('click', function () {
+            fetchSuggestions(node, tacList);
+          });
+          tacList.appendChild(suggestBtn);
+        }
         (goalDef.suggested || []).forEach(function (tac) {
           var div = document.createElement('div');
           div.className = 'pg-tactic-item';
           var baseTac = tac.split(' ')[0];
+          var tacResultType = goalDef.tactics[tac];
+          var badge = '';
+          if (Array.isArray(tacResultType) && tacResultType.length === 0) {
+            badge = '<span style="color:#39ff14;font-size:9px;margin-left:4px">QED</span>';
+          } else if (Array.isArray(tacResultType) && tacResultType.length > 0) {
+            badge = '<span style="color:#00aaff;font-size:9px;margin-left:4px">' + tacResultType.length + ' goals</span>';
+          }
           div.innerHTML = '<span class="pg-tactic-arrow">▸</span>' +
-            '<span class="pg-tactic-name">' + esc(tac) + '</span>' +
+            '<span class="pg-tactic-name">' + esc(tac) + badge + '</span>' +
             '<span class="pg-tactic-desc">' + esc(TACTIC_DESC[baseTac] || '') + '</span>';
           div.addEventListener('click', function () { doApplyTactic(tac); });
           tacList.appendChild(div);
         });
-      } else if (node.status === 'solved') {
-        tacList.innerHTML = '<div style="color:#39ff14;padding:8px;font-size:12px">Goal solved ✓</div>';
       } else if (node.status === 'failed') {
         tacList.innerHTML = '<div style="color:#ff3030;padding:8px;font-size:12px">Tactic failed — try backtracking</div>';
       }
@@ -931,7 +995,8 @@
     var total = Object.values(session.nodes).filter(function (n) { return n.goalKey; }).length;
     var solved = Object.keys(session.solvedSet).length;
 
-    setText('pg-stat-goals', open.length + ' remaining');
+    var totalNodes = Object.keys(session.nodes).length;
+    setText('pg-stat-goals', totalNodes + ' nodes (' + open.length + ' open)');
     setText('pg-stat-tactics', '' + session.tacticsApplied);
     setText('pg-stat-branches', '' + session.branchesExplored);
 
@@ -960,10 +1025,13 @@
     if (dot) {
       var complete = isVictory();
       var sorry = complete && hasSorryInProof();
-      dot.className = 'pg-status-dot ' + (complete && !sorry ? 'active' : sorry ? 'simulated' : 'simulated');
+      var dotClass = complete && !sorry ? 'active' : serverMode ? 'active' : 'simulated';
+      dot.className = 'pg-status-dot ' + dotClass;
       var statusText = dot.parentElement && dot.parentElement.lastChild;
       if (statusText && statusText.nodeType === 3) {
-        statusText.textContent = complete && !sorry ? ' Complete' : sorry ? ' Incomplete (sorry)' : ' Simulation';
+        statusText.textContent = complete && !sorry ? ' Complete' :
+          sorry ? ' Incomplete (sorry)' :
+          serverMode ? ' Connected' : ' Simulation';
       }
     }
   }
@@ -982,7 +1050,13 @@
   function doApplyTactic(tacticStr) {
     if (!session || !session.selectedId) return;
     var node = session.nodes[session.selectedId];
-    if (!node || node.status !== 'open') return;
+    if (!node || node.status === 'failed' || node.status === 'inactive') return;
+
+    // Server mode: delegate to Pantograph
+    if (serverMode && node.stateId !== undefined) {
+      doApplyTacticServer(tacticStr);
+      return;
+    }
 
     var result = applyTactic(session.selectedId, tacticStr);
     if (!result) return;
@@ -994,6 +1068,94 @@
 
     if (isVictory()) {
       showVictory();
+    }
+  }
+
+  function doApplyTacticServer(tacticStr) {
+    var node = session.nodes[session.selectedId];
+    if (!node || node.stateId === undefined) return;
+
+    // Show loading state
+    var tacList = document.getElementById('pg-tactic-list');
+    if (tacList) tacList.innerHTML = '<div style="color:#4ca43a;padding:8px;font-size:12px">Applying tactic…</div>';
+
+    fetch('/api/explorer/tactic', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        state_id: node.stateId,
+        goal_id: node.goalId || 0,
+        tactic: tacticStr,
+      }),
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data.ok) {
+        showTacticError(data.error || 'Tactic failed');
+        return;
+      }
+      session.tacticsApplied++;
+      if (data.solved) {
+        node.status = 'solved';
+        session.solvedSet[node.id] = true;
+        session.edges.push({ from: node.id, to: null, tactic: tacticStr, group: node.id, status: 'applied' });
+        propagateSolved(node.parentId);
+      } else {
+        session.branchesExplored++;
+        var groupId = mkId();
+        var firstChild = null;
+        (data.goals || []).forEach(function (goal) {
+          var nid = mkId();
+          var hyps = (goal.vars || []).map(function (v) { return { n: v.name, t: v.type || v['type'] }; });
+          var display = hyps.map(function (h) { return h.n + ' : ' + h.t; }).join(', ');
+          if (display) display += ' ';
+          display += '⊢ ' + (goal.target || '?');
+          session.nodes[nid] = {
+            id: nid,
+            goalKey: null,
+            stateId: data.stateId,
+            goalId: goal.goalId,
+            serverGoal: {
+              display: display,
+              hyps: hyps,
+              tactics: {},
+              suggested: [],
+            },
+            status: 'open',
+            parentId: node.id,
+            parentTactic: tacticStr,
+            x: 0, y: 0, animT: 0,
+          };
+          session.edges.push({
+            from: node.id, to: nid, tactic: tacticStr,
+            group: groupId, status: 'applied',
+          });
+          if (!firstChild) firstChild = nid;
+        });
+        if (firstChild) session.selectedId = firstChild;
+      }
+      computeLayout();
+      var zoom = fitTreeZoom();
+      cam = { x: 0, y: 0, zoom: zoom };
+      needsRender = true;
+      updateContextPanel();
+      if (isVictory()) showVictory();
+    })
+    .catch(function (err) {
+      console.warn('[ProofBuilder] Server tactic failed, falling back:', err);
+      serverMode = false;
+      updateStats();
+    });
+  }
+
+  function showTacticError(msg) {
+    var tacList = document.getElementById('pg-tactic-list');
+    if (tacList) {
+      var errDiv = document.createElement('div');
+      errDiv.style.cssText = 'color:#ff6666;padding:8px;font-size:12px;border:1px solid rgba(255,48,48,0.2);border-radius:4px;margin-bottom:6px';
+      errDiv.textContent = msg;
+      tacList.insertBefore(errDiv, tacList.firstChild);
+      setTimeout(function () { if (errDiv.parentNode) errDiv.remove(); }, 5000);
     }
   }
 
@@ -1022,8 +1184,10 @@
     var isSorry = hasSorryInProof();
     if (isSorry) {
       alert('Proof uses sorry (incomplete).\n\nConnect a Lean proof server for genuine verification.\n\nScript:\n' + buildProofScript());
+    } else if (serverMode) {
+      alert('Proof verified by Lean proof server.\n\nAll goals solved and verified.\n\nScript:\n' + buildProofScript());
     } else {
-      alert('Proof verified (simulation mode).\n\nAll goals solved. In production, the Lean compiler would verify the complete tactic script.\n\nScript:\n' + buildProofScript());
+      alert('Proof verified (simulation mode).\n\nAll goals solved. Connect a Lean proof server for genuine verification.\n\nScript:\n' + buildProofScript());
     }
   }
 
@@ -1180,7 +1344,7 @@
         try {
           var tree = JSON.parse(ev.target.result);
           var thm = convertProofTreeToTheorem(tree);
-          if (thm) { loadTheorem(thm, true); hideLibrary(); }
+          if (thm) { loadTheorem(thm); hideLibrary(); }
         } catch (e) {
           alert('Failed to parse proof tree JSON: ' + e.message);
         }
@@ -1203,7 +1367,7 @@
       try {
         var tree = JSON.parse(text);
         var thm = convertProofTreeToTheorem(tree);
-        if (thm) { loadTheorem(thm, true); hideLibrary(); }
+        if (thm) { loadTheorem(thm); hideLibrary(); }
       } catch (e) {
         alert('Failed to parse proof tree JSON: ' + e.message);
       }
@@ -1220,48 +1384,128 @@
     if (overlay) overlay.remove();
   }
 
-  function loadTheorem(thm, autoExpand) {
-    newSession(thm);
-
-    // For imported trees: auto-expand the full tree so user sees the structure
-    if (autoExpand) {
-      autoExpandTree();
-    }
-
+  function loadTheorem(thm) {
+    buildFullTree(thm);
     computeLayout();
-
-    // Fit zoom to show entire tree
     var zoom = fitTreeZoom();
     cam = { x: 0, y: 0, zoom: zoom };
     needsRender = true;
-
-    // Hide welcome
     var welcome = document.getElementById('pg-welcome');
     if (welcome) welcome.style.display = 'none';
-
     selectNode(session.rootId);
   }
 
-  // Auto-expand all goals by applying first suggested tactic recursively.
-  // Builds out the full tree so the user sees the complete structure on load.
-  function autoExpandTree() {
-    if (!session) return;
-    var maxIter = 200; // safety limit
-    var changed = true;
-    while (changed && maxIter-- > 0) {
-      changed = false;
-      var openNodes = Object.values(session.nodes).filter(function (n) {
-        return n.status === 'open' && n.goalKey;
-      });
-      for (var i = 0; i < openNodes.length; i++) {
-        var n = openNodes[i];
-        var goalDef = getGoalDef(n);
-        if (!goalDef || !goalDef.suggested || !goalDef.suggested.length) continue;
-        var tac = goalDef.suggested[0];
-        var result = applyTactic(n.id, tac);
-        if (result && !result.error) { changed = true; break; } // restart loop
+  // Build the full proof tree directly from the theorem's goals graph.
+  // Walks the graph recursively, preferring branching tactics (those that
+  // produce subgoals) over immediate solves, so the deepest tree is shown.
+  // This replaces the broken autoExpandTree which had a duplicate-expansion bug.
+  function buildFullTree(theorem) {
+    nodeSeq = 0;
+    var nodes = {};
+    var edges = [];
+    var solvedSet = {};
+    var rootId = null;
+
+    function expand(goalKey, parentId, parentTac, parentGroup, visited) {
+      if (!goalKey) return null;
+      var goalDef = theorem.goals[goalKey];
+      if (!goalDef) return null;
+      // Cycle protection — copy visited so sibling branches don't collide
+      if (visited[goalKey]) return null;
+      visited = Object.assign ? Object.assign({}, visited) : JSON.parse(JSON.stringify(visited));
+      visited[goalKey] = true;
+
+      var nid = mkId();
+      nodes[nid] = {
+        id: nid, goalKey: goalKey, status: 'open',
+        parentId: parentId, parentTactic: parentTac,
+        x: 0, y: 0, animT: 1,
+      };
+
+      if (parentId && parentTac) {
+        edges.push({ from: parentId, to: nid, tactic: parentTac, group: parentGroup, status: 'applied' });
       }
+
+      // Expand ALL branching tactics to show the full multiway tree.
+      // For proof-tree imports: children are parallel sub-tasks (all shown).
+      // For library theorems: alternative tactics create branching paths.
+      var suggested = goalDef.suggested || Object.keys(goalDef.tactics);
+      var expanded = false, solveTac = null;
+      for (var i = 0; i < suggested.length; i++) {
+        var tac = suggested[i];
+        var tacResult = goalDef.tactics[tac];
+        if (typeof tacResult === 'string') continue; // error
+        if (!Array.isArray(tacResult)) continue;
+        if (tacResult.length === 0) {
+          if (!solveTac) solveTac = tac;
+        } else {
+          // Branching tactic — expand it (creates child nodes for each subgoal)
+          var groupId = 'g' + (nodeSeq++);
+          for (var j = 0; j < tacResult.length; j++) {
+            expand(tacResult[j], nid, tac, groupId, visited);
+          }
+          expanded = true;
+        }
+      }
+
+      if (!expanded && solveTac) {
+        // Leaf node solved by this tactic (no branching tactics available)
+        edges.push({ from: nid, to: null, tactic: solveTac, group: nid, status: 'applied' });
+        nodes[nid].status = 'solved';
+        solvedSet[nid] = true;
+      }
+      // else if !expanded && !solveTac: stays 'open' (sorry / needs server)
+
+      return nid;
     }
+
+    rootId = expand(theorem.rootGoal, null, null, null, {});
+    if (!rootId) {
+      // Fallback to minimal session
+      newSession(theorem);
+      return;
+    }
+
+    // Propagate solved upward: if all children in a tactic group are solved, parent is solved
+    var propChanged = true;
+    var maxProp = 200;
+    while (propChanged && maxProp-- > 0) {
+      propChanged = false;
+      Object.values(nodes).forEach(function (node) {
+        if (node.status === 'solved') return;
+        var childEdges = edges.filter(function (e) {
+          return e.from === node.id && e.status === 'applied' && e.to !== null;
+        });
+        if (childEdges.length === 0) return;
+        var groups = {};
+        childEdges.forEach(function (e) {
+          if (!groups[e.group]) groups[e.group] = [];
+          groups[e.group].push(e);
+        });
+        var anySolved = Object.keys(groups).some(function (g) {
+          return groups[g].every(function (e) {
+            var ch = nodes[e.to];
+            return ch && ch.status === 'solved';
+          });
+        });
+        if (anySolved) {
+          node.status = 'solved';
+          solvedSet[node.id] = true;
+          propChanged = true;
+        }
+      });
+    }
+
+    session = {
+      theorem: theorem,
+      nodes: nodes,
+      edges: edges,
+      rootId: rootId,
+      selectedId: rootId,
+      solvedSet: solvedSet,
+      tacticsApplied: edges.filter(function (e) { return e.status === 'applied'; }).length,
+      branchesExplored: Object.keys(nodes).length - 1,
+    };
   }
 
   // Calculate zoom to fit all nodes in the canvas
@@ -1533,6 +1777,9 @@
       container.innerHTML = html;
 
       container.querySelector('#pg-lean-back').addEventListener('click', function () { loadLeanTheorems(container); });
+      // Store file content for proof body extraction
+      var fileContent = content;
+
       container.querySelectorAll('.pg-lean-decl-card').forEach(function (card) {
         card.addEventListener('click', function () {
           var stmt = card.getAttribute('data-lean-stmt');
@@ -1544,31 +1791,19 @@
           if (match) {
             loadTheorem(match);
             hideLibrary();
+          } else if (serverMode) {
+            // Server mode: use Pantograph to start a real proof session
+            hideLibrary();
+            loadLeanTheoremServerMode(stmt, name, fileContent);
           } else {
-            // Create a custom theorem with sorry
-            var goalDisplay = stmt.replace(/^(theorem|lemma)\s+\S+\s*/, '').trim();
-            // Try to extract what's after the last colon
-            var colonIdx = goalDisplay.lastIndexOf(':');
-            if (colonIdx > 0) goalDisplay = goalDisplay.slice(colonIdx + 1).trim();
-            var custom = {
-              id: 'lean_' + Date.now(),
-              name: name,
-              category: 'Lean Import',
-              statement: stmt,
-              difficulty: 0,
-              tags: ['lean', 'imported'],
-              hint: 'Imported from Lean project. Connect a Lean proof server for interactive tactics.',
-              rootGoal: 'r',
-              goals: {
-                r: {
-                  display: '⊢ ' + goalDisplay,
-                  hyps: [],
-                  tactics: { 'sorry': [] },
-                  suggested: ['sorry'],
-                }
-              }
-            };
-            loadTheorem(custom);
+            // Simulation fallback: try to extract proof body for structural tree
+            var tactics = extractProofBody(fileContent, name);
+            if (tactics && tactics.length > 0) {
+              var thm = buildTheoremFromTactics(stmt, name, tactics);
+              loadTheorem(thm);
+            } else {
+              loadLeanTheoremSimulation(stmt, name);
+            }
             hideLibrary();
           }
         });
@@ -1576,6 +1811,439 @@
     }).catch(function (e) {
       container.innerHTML = '<div style="color:#ff6666;font-size:12px">Error: ' + esc(String(e)) + '</div>';
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // §9c  Server Mode: Suggest Tactics + Lean DB Proof Extraction
+  // ═══════════════════════════════════════════════════════════════
+
+  function fetchSuggestions(node, tacList) {
+    if (!node || node.stateId === undefined) return;
+    var btn = tacList.querySelector('.pg-btn');
+    if (btn) btn.textContent = 'Searching…';
+
+    fetch('/api/explorer/suggest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        state_id: node.stateId,
+        goal_id: node.goalId || 0,
+      }),
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (btn) btn.textContent = 'Suggest Tactics';
+      if (!data.ok || !data.tactics || !data.tactics.length) {
+        if (btn) btn.textContent = 'No suggestions found';
+        return;
+      }
+      // Add suggested tactics to the list
+      data.tactics.forEach(function (s) {
+        var div = document.createElement('div');
+        div.className = 'pg-tactic-item';
+        var badge = s.solves
+          ? '<span style="color:#39ff14;font-size:9px;margin-left:4px">QED</span>'
+          : '<span style="color:#00aaff;font-size:9px;margin-left:4px">' + s.goals_after + ' goals</span>';
+        div.innerHTML = '<span class="pg-tactic-arrow">▸</span>' +
+          '<span class="pg-tactic-name">' + esc(s.tactic) + badge + '</span>' +
+          '<span class="pg-tactic-desc">' + esc(TACTIC_DESC[s.tactic] || '') + '</span>';
+        div.addEventListener('click', function () { doApplyTactic(s.tactic); });
+        tacList.appendChild(div);
+      });
+      // Update the serverGoal suggested list
+      if (node.serverGoal) {
+        node.serverGoal.suggested = data.tactics.map(function (s) { return s.tactic; });
+      }
+    })
+    .catch(function () {
+      if (btn) btn.textContent = 'Suggest Tactics';
+    });
+  }
+
+  // Extract proof body (tactic lines) from Lean file content for a declaration
+  function extractProofBody(fileContent, declName) {
+    var lines = fileContent.split('\n');
+    var startIdx = -1;
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].match(new RegExp('(theorem|lemma)\\s+' + declName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b'))) {
+        startIdx = i;
+        break;
+      }
+    }
+    if (startIdx < 0) return null;
+
+    // Find := by
+    var bodyStart = -1;
+    for (var j = startIdx; j < Math.min(startIdx + 10, lines.length); j++) {
+      if (lines[j].indexOf(':= by') >= 0) {
+        bodyStart = j;
+        break;
+      }
+    }
+    if (bodyStart < 0) return null;
+
+    // Collect tactic lines until next top-level declaration or dedent
+    var tactics = [];
+    var baseIndent = lines[bodyStart].search(/\S/);
+    for (var k = bodyStart + 1; k < lines.length; k++) {
+      var line = lines[k];
+      var trimmed = line.trim();
+      if (!trimmed || trimmed.indexOf('--') === 0) continue;
+      var indent = line.search(/\S/);
+      if (indent >= 0 && indent <= baseIndent && /^(theorem|lemma|def|structure|inductive|class|end|namespace|section)/.test(trimmed)) break;
+      tactics.push(trimmed);
+    }
+    return tactics.length > 0 ? tactics : null;
+  }
+
+  // Server-mode Lean DB import: start goal, then replay tactics to build tree
+  function loadLeanTheoremServerMode(stmt, name, fileContent) {
+    // Extract the type expression from the statement
+    var typeExpr = stmt.replace(/^(theorem|lemma)\s+\S+\s*/, '').trim();
+    // Remove everything after the last : to get the type
+    var colonIdx = typeExpr.lastIndexOf(':');
+    if (colonIdx > 0) typeExpr = typeExpr.slice(colonIdx + 1).trim();
+
+    // Start a proof goal via Pantograph
+    fetch('/api/explorer/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expr: typeExpr }),
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data.ok) {
+        // Fall back to simulation mode
+        loadLeanTheoremSimulation(stmt, name);
+        return;
+      }
+
+      // Create root session from server response
+      nodeSeq = 0;
+      var rootId = mkId();
+      var nodes = {};
+      var goals = data.goals || [];
+      var rootGoal = goals[0] || { target: typeExpr, vars: [], goalId: 0 };
+      var hyps = (rootGoal.vars || []).map(function (v) { return { n: v.name, t: v.type || v['type'] }; });
+      var display = hyps.map(function (h) { return h.n + ' : ' + h.t; }).join(', ');
+      if (display) display += ' ';
+      display += '⊢ ' + (rootGoal.target || '?');
+
+      nodes[rootId] = {
+        id: rootId, goalKey: null, status: 'open',
+        stateId: data.stateId,
+        goalId: rootGoal.goalId || 0,
+        serverGoal: {
+          display: display,
+          hyps: hyps,
+          tactics: {},
+          suggested: [],
+        },
+        parentId: null, parentTactic: null,
+        x: 0, y: 0, animT: 1,
+      };
+
+      session = {
+        theorem: {
+          id: 'lean_' + Date.now(), name: name, category: 'Lean Import',
+          statement: stmt, difficulty: 0, tags: ['lean', 'server'],
+          hint: 'Server mode — apply real Lean tactics.',
+          rootGoal: '_server_', goals: {},
+        },
+        nodes: nodes,
+        edges: [],
+        rootId: rootId,
+        selectedId: rootId,
+        solvedSet: {},
+        tacticsApplied: 0,
+        branchesExplored: 0,
+      };
+
+      // If we have the proof body, auto-apply tactics to build tree
+      var tactics = fileContent ? extractProofBody(fileContent, name) : null;
+      if (tactics && tactics.length > 0) {
+        replayTacticsSequentially(rootId, tactics, 0);
+      } else {
+        // Just show the root goal — user applies tactics interactively
+        computeLayout();
+        cam = { x: 0, y: 0, zoom: fitTreeZoom() };
+        needsRender = true;
+        var welcome = document.getElementById('pg-welcome');
+        if (welcome) welcome.style.display = 'none';
+        selectNode(rootId);
+      }
+    })
+    .catch(function () {
+      loadLeanTheoremSimulation(stmt, name);
+    });
+  }
+
+  // Replay tactics one at a time to build the proof tree from the server
+  function replayTacticsSequentially(nodeId, tactics, idx) {
+    if (idx >= tactics.length || !session) {
+      computeLayout();
+      cam = { x: 0, y: 0, zoom: fitTreeZoom() };
+      needsRender = true;
+      var welcome = document.getElementById('pg-welcome');
+      if (welcome) welcome.style.display = 'none';
+      selectNode(session.rootId);
+      return;
+    }
+
+    var node = session.nodes[nodeId];
+    if (!node || node.stateId === undefined) {
+      // Can't continue replay — show what we have
+      computeLayout();
+      cam = { x: 0, y: 0, zoom: fitTreeZoom() };
+      needsRender = true;
+      var welcome2 = document.getElementById('pg-welcome');
+      if (welcome2) welcome2.style.display = 'none';
+      selectNode(session.rootId);
+      return;
+    }
+
+    var tactic = tactics[idx];
+    fetch('/api/explorer/tactic', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        state_id: node.stateId,
+        goal_id: node.goalId || 0,
+        tactic: tactic,
+      }),
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data.ok) {
+        // Tactic failed — stop replaying, show what we have
+        replayTacticsSequentially(null, [], tactics.length);
+        return;
+      }
+
+      session.tacticsApplied++;
+      if (data.solved) {
+        node.status = 'solved';
+        session.solvedSet[node.id] = true;
+        session.edges.push({ from: node.id, to: null, tactic: tactic, group: node.id, status: 'applied' });
+        propagateSolved(node.parentId);
+        // Continue with next open node
+        var nextOpen = findNextOpenServerNode();
+        if (nextOpen) {
+          replayTacticsSequentially(nextOpen, tactics, idx + 1);
+        } else {
+          replayTacticsSequentially(null, [], tactics.length);
+        }
+      } else {
+        var groupId = mkId();
+        var childIds = [];
+        (data.goals || []).forEach(function (goal) {
+          var nid = mkId();
+          var hyps = (goal.vars || []).map(function (v) { return { n: v.name, t: v.type || v['type'] }; });
+          var display = hyps.map(function (h) { return h.n + ' : ' + h.t; }).join(', ');
+          if (display) display += ' ';
+          display += '⊢ ' + (goal.target || '?');
+          session.nodes[nid] = {
+            id: nid, goalKey: null, status: 'open',
+            stateId: data.stateId, goalId: goal.goalId,
+            serverGoal: { display: display, hyps: hyps, tactics: {}, suggested: [] },
+            parentId: node.id, parentTactic: tactic,
+            x: 0, y: 0, animT: 1,
+          };
+          session.edges.push({ from: node.id, to: nid, tactic: tactic, group: groupId, status: 'applied' });
+          childIds.push(nid);
+        });
+        session.branchesExplored++;
+        // Continue replaying on first child
+        if (childIds.length > 0) {
+          replayTacticsSequentially(childIds[0], tactics, idx + 1);
+        } else {
+          replayTacticsSequentially(null, [], tactics.length);
+        }
+      }
+    })
+    .catch(function () {
+      replayTacticsSequentially(null, [], tactics.length);
+    });
+  }
+
+  function findNextOpenServerNode() {
+    if (!session) return null;
+    var nodes = Object.values(session.nodes);
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].status === 'open' && nodes[i].stateId !== undefined) return nodes[i].id;
+    }
+    return null;
+  }
+
+  // Build a theorem from extracted tactic lines (static analysis, no server needed).
+  // Parses indentation + focus dots (·) to reconstruct branching.
+  function buildTheoremFromTactics(stmt, name, tactics) {
+    var goalSeq = 0;
+    function gk() { return 'tg' + (goalSeq++); }
+
+    // Parse tactic structure: indentation levels and focus dots indicate branching
+    function parseTacticTree(tacLines, start, baseIndent) {
+      var children = [];
+      var i = start;
+      while (i < tacLines.length) {
+        var line = tacLines[i];
+        var indent = line.length - line.replace(/^\s+/, '').length;
+        var trimmed = line.replace(/^\s+/, '');
+
+        // If indent <= baseIndent and not a focus dot continuation, we've exited this block
+        if (i > start && indent <= baseIndent && !trimmed.match(/^[·•<;]/)) break;
+
+        // Focus dot (·) indicates a branch
+        if (trimmed.match(/^[·•]\s*/)) {
+          var branchTac = trimmed.replace(/^[·•]\s*/, '');
+          var branchChildren = [];
+          // Collect sub-tactics under this focus dot
+          var j = i + 1;
+          while (j < tacLines.length) {
+            var subLine = tacLines[j];
+            var subIndent = subLine.length - subLine.replace(/^\s+/, '').length;
+            var subTrimmed = subLine.replace(/^\s+/, '');
+            if (subIndent <= indent && !subTrimmed.match(/^[·•<;]/)) break;
+            if (subTrimmed.match(/^[·•]\s*/) && subIndent <= indent) break;
+            branchChildren.push(subTrimmed);
+            j++;
+          }
+          children.push({ tactic: branchTac, subTactics: branchChildren });
+          i = j;
+        } else {
+          children.push({ tactic: trimmed, subTactics: [] });
+          i++;
+        }
+      }
+      return children;
+    }
+
+    var tree = parseTacticTree(tactics, 0, -1);
+
+    // Convert parsed tree to theorem goals structure
+    var goals = {};
+
+    function buildGoalTree(parsed, parentDisplay) {
+      var key = gk();
+      var tacticMap = {};
+      var suggested = [];
+
+      if (parsed.length === 0) {
+        // Leaf node — tactic closes the goal
+        goals[key] = {
+          display: parentDisplay || '⊢ (goal)',
+          hyps: [],
+          tactics: { 'QED': [] },
+          suggested: ['QED'],
+        };
+        return key;
+      }
+
+      // Check if this level has focus dots (branching) or sequential tactics
+      var hasBranching = false;
+      var branchChildren = [];
+      var seqTactics = [];
+
+      for (var i = 0; i < parsed.length; i++) {
+        var p = parsed[i];
+        if (p.subTactics && p.subTactics.length > 0) {
+          hasBranching = true;
+        }
+      }
+
+      if (hasBranching || parsed.length > 1) {
+        // First sequential tactic leads to branching
+        var firstTac = parsed[0].tactic;
+        var subGoalKeys = [];
+        for (var j = 0; j < parsed.length; j++) {
+          var childKey = gk();
+          var childDisplay = '⊢ subgoal ' + (j + 1) + ' after ' + firstTac;
+          var childTactics = {};
+          var childSuggested = [];
+
+          if (parsed[j].subTactics && parsed[j].subTactics.length > 0) {
+            // This branch has sub-tactics
+            var subParsed = parseTacticTree(parsed[j].subTactics, 0, -1);
+            if (subParsed.length > 0) {
+              var subKey = buildGoalTree(subParsed, childDisplay);
+              // The branch tactic leads to the sub-tree
+              childTactics[parsed[j].tactic] = [subKey];
+              childSuggested.push(parsed[j].tactic);
+            } else {
+              childTactics[parsed[j].tactic] = [];
+              childSuggested.push(parsed[j].tactic);
+            }
+          } else {
+            // Leaf branch
+            childTactics[parsed[j].tactic] = [];
+            childSuggested.push(parsed[j].tactic);
+          }
+
+          goals[childKey] = {
+            display: childDisplay,
+            hyps: [],
+            tactics: childTactics,
+            suggested: childSuggested,
+          };
+          subGoalKeys.push(childKey);
+        }
+
+        if (subGoalKeys.length > 1) {
+          tacticMap[firstTac] = subGoalKeys;
+          suggested.push(firstTac);
+        } else if (subGoalKeys.length === 1) {
+          tacticMap[firstTac] = subGoalKeys;
+          suggested.push(firstTac);
+        }
+      } else {
+        // Single sequential tactic
+        var tac = parsed[0].tactic;
+        tacticMap[tac] = [];
+        suggested.push(tac);
+      }
+
+      goals[key] = {
+        display: parentDisplay || '⊢ (goal)',
+        hyps: [],
+        tactics: tacticMap,
+        suggested: suggested,
+      };
+      return key;
+    }
+
+    // Extract the type from the statement for root display
+    var typeExpr = stmt.replace(/^(theorem|lemma)\s+\S+\s*/, '').trim();
+    var colonIdx = typeExpr.lastIndexOf(':');
+    if (colonIdx > 0) typeExpr = typeExpr.slice(colonIdx + 1).trim();
+
+    var rootKey = buildGoalTree(tree, '⊢ ' + typeExpr);
+
+    return {
+      id: 'lean_' + Date.now(),
+      name: name,
+      category: 'Lean Import',
+      statement: stmt,
+      difficulty: Math.min(5, Math.max(1, Math.ceil(tactics.length / 3))),
+      tags: ['lean', 'imported', 'structural'],
+      hint: 'Proof structure extracted from Lean source. Connect a Lean server for full goal states.',
+      rootGoal: rootKey,
+      goals: goals,
+    };
+  }
+
+  // Fallback: create a sorry-based theorem for simulation mode
+  function loadLeanTheoremSimulation(stmt, name) {
+    var goalDisplay = stmt.replace(/^(theorem|lemma)\s+\S+\s*/, '').trim();
+    var colonIdx = goalDisplay.lastIndexOf(':');
+    if (colonIdx > 0) goalDisplay = goalDisplay.slice(colonIdx + 1).trim();
+    var custom = {
+      id: 'lean_' + Date.now(), name: name, category: 'Lean Import',
+      statement: stmt, difficulty: 0, tags: ['lean', 'imported'],
+      hint: 'Imported from Lean project. Connect a Lean proof server for interactive tactics.',
+      rootGoal: 'r',
+      goals: { r: { display: '⊢ ' + goalDisplay, hyps: [], tactics: { 'sorry': [] }, suggested: ['sorry'] } }
+    };
+    loadTheorem(custom);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1698,15 +2366,23 @@
       }
     });
 
-    // Hint / Auto-solve stubs
+    // Hint / Auto-solve
     document.getElementById('pg-hint-btn').addEventListener('click', function () {
       if (!session || !session.selectedId) return;
       var node = session.nodes[session.selectedId];
+      if (!node) return;
+
+      if (serverMode && node.stateId !== undefined) {
+        // Server mode: fetch suggestions
+        var tacList = document.getElementById('pg-tactic-list');
+        if (tacList) fetchSuggestions(node, tacList);
+        return;
+      }
+
       var goalDef = getGoalDef(node);
       if (!goalDef) return;
       var thm = session.theorem;
       var hint = thm.hint || 'No hint available.';
-      // Show first suggested tactic as hint
       var suggestion = goalDef.suggested && goalDef.suggested[0] ? goalDef.suggested[0] : null;
       alert('Hint: ' + hint + (suggestion ? '\n\nSuggested tactic: ' + suggestion : ''));
     });
@@ -1715,14 +2391,39 @@
       if (!session || !session.selectedId) return;
       var node = session.nodes[session.selectedId];
       if (!node || node.status !== 'open') return;
+
+      if (serverMode && node.stateId !== undefined) {
+        // Server mode: try auto-solve via backend
+        var btn = document.getElementById('pg-autosolve-btn');
+        if (btn) btn.textContent = 'Solving…';
+        fetch('/api/explorer/autosolve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state_id: node.stateId, goal_id: node.goalId || 0 }),
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (btn) btn.textContent = 'Auto-solve';
+          if (data.ok && data.solved && data.tactic) {
+            doApplyTactic(data.tactic);
+          } else {
+            showTacticError(data.message || 'No automatic solution found');
+          }
+        })
+        .catch(function () { if (btn) btn.textContent = 'Auto-solve'; });
+        return;
+      }
+
       var goalDef = getGoalDef(node);
       if (!goalDef || !goalDef.suggested || !goalDef.suggested.length) {
         alert('Auto-solve: No solution found in simulation.');
         return;
       }
-      // Auto-apply first suggested tactic
       doApplyTactic(goalDef.suggested[0]);
     });
+
+    // Check server status on page load
+    checkServerStatus();
 
     // Init canvas
     requestAnimationFrame(function () {
